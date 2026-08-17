@@ -54,8 +54,9 @@ jobs:
       pull-requests: write
     env:
       # Job-level so the AI steps can test it — the `secrets` context is not
-      # available in a job-level `if`. Empty means no key configured: the
-      # deploy PR still opens, with a plain body.
+      # available in a job-level `if`. Empty means no key configured, which
+      # only skips the user-facing release notes. The deploy PR is built from
+      # git and does not depend on it.
       LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}
       TAG: ${{ needs.release-please.outputs.tag_name }}
       REPO_URL: ${{ github.server_url }}/${{ github.repository }}
@@ -69,17 +70,11 @@ jobs:
       # release-please builds CHANGELOG.md from commit subjects, which describe
       # the code. These notes describe the product, and are read from the actual
       # diff so a vague commit message cannot hide a user-visible change.
-      # The two audiences read different ranges. A GitHub Release must describe
-      # exactly its own version, so those notes read tag-to-tag. The deploy PR
-      # merges dev into main and can carry several releases at once, so its
-      # notes read main-to-dev — otherwise a deploy that ships three migrations
-      # is announced as shipping none.
       #
-      # The deploy head is dev, not the tag. Commits typed chore:, ci:, test: or
-      # build: never produce a release, so they would land on dev after the tag,
-      # ship with the deploy and appear in no set of notes at all. Some of them
-      # touch .lagoon.yml and helm/.
-      - name: Collect the ranges
+      # Tag-to-tag, because a GitHub Release must describe exactly its own
+      # version. The deploy PR body is a different job with a different range,
+      # and it is built from git rather than written by a model.
+      - name: Collect the released range
         if: env.LITELLM_API_KEY != ''
         run: |
           PREV=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
@@ -88,80 +83,24 @@ jobs:
             PREV=$(jq -er '.["bootstrap-sha"]' release-please-config.json)
           fi
           git rev-parse --verify --quiet "$PREV^{commit}" > /dev/null
-
-          # The checkout resolved a tag, so no branch is a local ref yet.
-          git fetch --quiet origin main dev
-
-          # Everything the approval notes cannot say anything useful about. They
-          # stay in the file list and the stat, they just do not get to eat the
-          # diff budget: the lockfile alone is 40% of a typical deploy diff, and
-          # CHANGELOG.md only repeats the commit log printed above.
-          NOISE=":(exclude,glob)**/package-lock.json :(exclude)CHANGELOG.md"
-
-          # Read in full, always, however large the deploy: these decide whether
-          # a deploy needs a maintenance window, a new secret or a rollback plan.
-          # docker-compose.yml belongs here because it carries the lagoon.type
-          # service definitions, not just local development.
-          CRITICAL="app/migrations/versions .lagoon.yml docker-compose.yml helm"
-          CRITICAL="$CRITICAL Dockerfile frontend/Dockerfile backend-start.sh"
-          CRITICAL="$CRITICAL requirements.txt app/core/config.py frontend/next.config.ts"
-
-          # The same paths again as exclusions, so "everything else" does not
-          # repeat what the full section already printed.
-          SKIP="$NOISE"
-          for path in $CRITICAL; do
-            SKIP="$SKIP :(exclude)$path"
-          done
-
-          BUDGET=8000
-
-          dump() {
-            base=$1 head=$2 out=$3
-            rest=$(mktemp)
-            # shellcheck disable=SC2086 # word splitting builds the pathspec list
-            git diff "$base..$head" -- . $SKIP > "$rest"
-            {
-              echo "## Commit log"
-              echo
-              git log --oneline "$base..$head"
-              echo
-              # --stat elides leading directories on long paths, which hides
-              # app/migrations/versions/ entirely. List the paths in full so a
-              # schema change cannot slip past the deploy approver.
-              echo "## Changed files (complete)"
-              echo
-              git diff --name-status "$base..$head"
-              echo
-              echo "## Diff stat"
-              echo
-              git diff --stat "$base..$head"
-              echo
-              echo "## Deploy-sensitive files (full)"
-              echo
-              # shellcheck disable=SC2086
-              git diff "$base..$head" -- $CRITICAL
-              echo
-              echo "## Everything else"
-              echo
-              head -"$BUDGET" "$rest"
-              if [ "$(wc -l < "$rest")" -gt "$BUDGET" ]; then
-                echo
-                echo "[Truncated at $BUDGET lines. The complete file list is above; say so if a change may be missing.]"
-              fi
-            } > "$out"
-            rm -f "$rest"
-          }
-
           echo "Release range: $PREV..$TAG"
-          dump "$PREV" "$TAG" /tmp/release-range.md
 
-          echo "Deploy range:  origin/main..origin/dev"
-          dump origin/main origin/dev /tmp/deploy-range.md
-
-          # The approver needs to know where the notes stop, because dev keeps
-          # moving after this body is written.
-          echo "main...$(git rev-parse --short origin/dev) ($(git rev-list --count origin/main..origin/dev) commits)" \
-            > /tmp/deploy-range.txt
+          {
+            echo "## Commit log"
+            echo
+            git log --oneline "$PREV..$TAG"
+            echo
+            # --stat elides leading directories on long paths, which hides
+            # app/migrations/versions/ entirely. List the paths in full.
+            echo "## Changed files"
+            echo
+            git diff --name-status "$PREV..$TAG"
+            echo
+            echo "## Detailed diff (truncated)"
+            echo
+            git diff "$PREV..$TAG" -- . ':(exclude,glob)**/package-lock.json' \
+              ':(exclude)CHANGELOG.md' | head -3000
+          } > /tmp/release-range.md
 
       # Assemble the prompts here instead of letting the action template them.
       # It substitutes template variables into the raw text of a *.prompt.yml
@@ -169,23 +108,18 @@ jobs:
       # keeps the block-scalar indentation — so a multi-line diff terminates the
       # scalar and the parse fails. Any prompt file that is not *.prompt.yml is
       # sent verbatim, which is what we want.
-      - name: Build the prompts
+      - name: Build the prompt
         if: env.LITELLM_API_KEY != ''
         run: |
-          build() {
-            {
-              sed "s|{{version}}|$TAG|g" ".github/prompts/changelog-$1.md"
-              echo
-              cat "$2"
-            } > "/tmp/$1-prompt.md"
-          }
-
-          build user /tmp/release-range.md
-          build product /tmp/deploy-range.md
+          {
+            sed "s|{{version}}|$TAG|g" .github/prompts/changelog-user.md
+            echo
+            cat /tmp/release-range.md
+          } > /tmp/user-prompt.md
 
       # The notes are a convenience; opening the deploy PR is the job's real
       # output. Never let a model or endpoint failure hold back a released
-      # version, so the inference steps report but do not fail the job.
+      # version, so the inference step reports but does not fail the job.
       - name: Write the user-facing notes
         id: ai_user
         if: env.LITELLM_API_KEY != ''
@@ -198,31 +132,11 @@ jobs:
           endpoint: https://litellm.amazeeai-us1.amazeeio.review
           token: ${{ secrets.LITELLM_API_KEY }}
 
-      # The action reuses one response file per run, so keep this answer before
-      # the next inference overwrites it.
       - name: Keep the user-facing notes
         if: steps.ai_user.outcome == 'success'
         env:
           RESPONSE_FILE: ${{ steps.ai_user.outputs.response-file }}
         run: cp "$RESPONSE_FILE" /tmp/user-notes.md
-
-      - name: Write the product notes
-        id: ai_product
-        if: env.LITELLM_API_KEY != ''
-        continue-on-error: true
-        uses: actions/ai-inference@b81b2afb8390ee6839b494a404766bef6493c7d9 # v1
-        with:
-          prompt-file: /tmp/product-prompt.md
-          model: claude-4-6-sonnet
-          max-tokens: 4000
-          endpoint: https://litellm.amazeeai-us1.amazeeio.review
-          token: ${{ secrets.LITELLM_API_KEY }}
-
-      - name: Keep the product notes
-        if: steps.ai_product.outcome == 'success'
-        env:
-          RESPONSE_FILE: ${{ steps.ai_product.outputs.response-file }}
-        run: cp "$RESPONSE_FILE" /tmp/product-notes.md
 
       - name: Append the user-facing notes to the GitHub Release
         if: steps.ai_user.outcome == 'success'
@@ -250,26 +164,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TITLE="Deploy $TAG to production"
+          # The checkout resolved a tag, so no branch is a local ref yet.
+          git fetch --quiet origin main dev
+          bash .github/scripts/deploy-pr-body.sh origin/main origin/dev "$TAG" > /tmp/pr-body.md
 
-          {
-            echo "Deploys [\`$TAG\`]($REPO_URL/releases/tag/$TAG) to production."
-            echo
-            if [ -f /tmp/product-notes.md ]; then
-              cat /tmp/product-notes.md
-              echo
-            else
-              echo "See the release notes for the full changelog."
-              echo
-            fi
-            if [ -f /tmp/deploy-range.txt ]; then
-              # dev keeps moving after this body is written, so name the cutoff
-              # rather than let the notes look current when they are not.
-              echo "These notes cover \`$(cat /tmp/deploy-range.txt)\`. Anything merged to dev afterwards ships too, but is not described above."
-              echo
-            fi
-            echo "Opened automatically by the Release Please workflow."
-          } > /tmp/pr-body.md
+          TITLE="Deploy $TAG to production"
 
           # A previous deploy PR may still be open — merging dev into main is
           # what deploys, so reuse it and retitle it to the newest tag rather
@@ -282,3 +181,50 @@ jobs:
           else
             gh pr create --base main --head dev --title "$TITLE" --body-file /tmp/pr-body.md
           fi
+
+  # The body describes what merging dev into main would deploy, so it goes stale
+  # the moment anything else lands on dev. Rebuilding it costs one git read, so
+  # refresh it on every push instead of letting an approver trust a snapshot.
+  # Skipped when a release was just created, because the job above already wrote
+  # a fresh body in that same run.
+  refresh-prod-deploy-pr:
+    needs: release-please
+    if: needs.release-please.outputs.release_created != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    concurrency:
+      group: prod-deploy-pr-body
+      cancel-in-progress: true
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+    steps:
+      - name: Find the open deploy PR
+        id: find
+        run: |
+          NUMBER=$(gh pr list --repo "$GITHUB_REPOSITORY" --base main --head dev \
+            --state open --json number --jq '.[0].number // empty')
+          if [ -z "$NUMBER" ]; then
+            echo "No open deploy PR, nothing to refresh"
+          fi
+          echo "number=$NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        if: steps.find.outputs.number != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Rewrite the body
+        if: steps.find.outputs.number != ''
+        env:
+          NUMBER: ${{ steps.find.outputs.number }}
+        run: |
+          git fetch --quiet origin main dev
+          # Name the release the deploy carries, which is the newest tag on dev.
+          TAG=$(git describe --tags --abbrev=0 origin/dev 2>/dev/null || true)
+          bash .github/scripts/deploy-pr-body.sh origin/main origin/dev "$TAG" > /tmp/pr-body.md
+          gh pr edit "$NUMBER" --body-file /tmp/pr-body.md
+          echo "Refreshed prod deploy PR #$NUMBER"
