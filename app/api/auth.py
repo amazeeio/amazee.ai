@@ -9,7 +9,17 @@ import email_validator
 
 from typing import Optional, List, Union
 
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, Form
+from fastapi import (
+    APIRouter,
+    Cookie,
+    Depends,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    status,
+)
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from urllib.parse import urlparse
@@ -64,6 +74,7 @@ from app.api.users import _create_user_in_db, get_user_by_email
 from app.core.email import normalize_email_for_lookup
 from app.services.disposable_domains import assert_email_domain_allowed
 from app.services.signup_velocity import enforce_signup_velocity
+from app.services.token_revocation import revoke_access_token
 
 auth_logger = logging.getLogger(__name__)
 
@@ -89,6 +100,16 @@ def get_cookie_domain():
     # Remove the first part (e.g., 'backend' or 'frontend')
     domain = ".".join(hostname.split(".")[1:])
     return domain
+
+
+def _bearer_token(authorization: Optional[str]) -> Optional[str]:
+    """Token out of an ``Authorization: Bearer <token>`` header, or None."""
+    if not isinstance(authorization, str):
+        return None
+    parts = authorization.split()
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1]
+    return None
 
 
 async def get_login_data(
@@ -222,7 +243,29 @@ async def login(
 
 
 @router.post("/logout")
-async def logout(response: Response):
+async def logout(
+    response: Response,
+    access_token: Optional[str] = Cookie(None, alias="access_token"),
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    """Log the caller out and stop the presented access token from working again.
+
+    The endpoint stays open to anonymous callers so a client can always clear its
+    cookie. It reports success either way and never says whether a token was real.
+    """
+    token = _bearer_token(authorization) or (
+        access_token if isinstance(access_token, str) else None
+    )
+    if token:
+        try:
+            revoke_access_token(db, token)
+        except Exception:
+            # The cookie must still be cleared, so a failed write cannot make
+            # logout look broken to the client. It is logged for follow-up.
+            auth_logger.exception("Failed to revoke access token during logout")
+            db.rollback()
+
     # Get cookie domain for logout
     cookie_domain = get_cookie_domain()
 

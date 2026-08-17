@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timedelta, UTC
 from typing import Optional
 from jose import JWTError, jwt
@@ -12,6 +13,7 @@ from app.db.database import get_db
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, inspect as sa_inspect
 from app.db.models import DBUser, DBAPIToken
+from app.services.token_revocation import is_token_revoked
 from app.core.rbac import (
     require_system_admin,
     require_team_admin,
@@ -41,7 +43,11 @@ def get_password_hash(password: str) -> str:
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """Create JWT access token."""
+    """Create JWT access token.
+
+    Every token gets a unique ``jti`` so logout can revoke this token alone,
+    without ending the user's other sessions. See app/services/token_revocation.py.
+    """
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.now(UTC) + expires_delta
@@ -49,7 +55,13 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
         expire = datetime.now(UTC) + timedelta(
             minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
         )
-    to_encode.update({"exp": expire})
+    to_encode.update(
+        {
+            "exp": expire,
+            "iat": datetime.now(UTC),
+            "jti": to_encode.get("jti") or str(uuid.uuid4()),
+        }
+    )
     encoded_jwt = jwt.encode(
         to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM
     )
@@ -75,6 +87,17 @@ async def get_current_user(
             token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
         )
     except JWTError:
+        raise credentials_exception
+
+    # A token with no jti cannot be revoked at logout, so it is not accepted.
+    # Only tokens signed before this check existed lack one.
+    jti = payload.get("jti")
+    if not jti:
+        logger.info("Rejected access token without a jti claim")
+        raise credentials_exception
+
+    if is_token_revoked(db, jti):
+        logger.info("Rejected revoked access token jti=%s", jti)
         raise credentials_exception
 
     raw_email: str = payload.get("sub")
