@@ -69,32 +69,51 @@ jobs:
       # release-please builds CHANGELOG.md from commit subjects, which describe
       # the code. These notes describe the product, and are read from the actual
       # diff so a vague commit message cannot hide a user-visible change.
-      - name: Collect the released range
+      # The two audiences read different ranges. The release notes describe one
+      # release, so they read tag-to-tag. The deploy PR merges dev into main and
+      # can carry several releases at once, so its notes read main-to-tag —
+      # otherwise a deploy that ships three migrations is announced as shipping
+      # none, and the approver cannot see what is about to go live.
+      - name: Collect the ranges
         if: env.LITELLM_API_KEY != ''
         run: |
-          # The range is tag-to-tag, so it holds exactly what this release
-          # contains — not "whatever is on dev right now".
           PREV=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
           if [ -z "$PREV" ]; then
             # First release: fall back to where release-please started counting.
             PREV=$(jq -er '.["bootstrap-sha"]' release-please-config.json)
           fi
-          echo "Range: $PREV..$TAG"
           git rev-parse --verify --quiet "$PREV^{commit}" > /dev/null
 
-          {
-            echo "## Commit log"
-            echo
-            git log --oneline "$PREV..$TAG"
-            echo
-            echo "## Diff stat"
-            echo
-            git diff --stat "$PREV..$TAG"
-            echo
-            echo "## Detailed diff (truncated)"
-            echo
-            git diff "$PREV..$TAG" | head -3000
-          } > /tmp/changelog-input.md
+          # The checkout resolved a tag, so main is not a local ref yet.
+          git fetch --quiet origin main
+          echo "Release range: $PREV..$TAG"
+          echo "Deploy range:  origin/main..$TAG"
+
+          dump() {
+            {
+              echo "## Commit log"
+              echo
+              git log --oneline "$1..$TAG"
+              echo
+              # --stat elides leading directories on long paths, which hides
+              # app/migrations/versions/ entirely. List the paths in full so a
+              # schema change cannot slip past the deploy approver.
+              echo "## Changed files"
+              echo
+              git diff --name-status "$1..$TAG"
+              echo
+              echo "## Diff stat"
+              echo
+              git diff --stat "$1..$TAG"
+              echo
+              echo "## Detailed diff (truncated)"
+              echo
+              git diff "$1..$TAG" | head -3000
+            } > "$2"
+          }
+
+          dump "$PREV" /tmp/release-range.md
+          dump origin/main /tmp/deploy-range.md
 
       # Assemble the prompts here instead of letting the action template them.
       # It substitutes template variables into the raw text of a *.prompt.yml
@@ -105,13 +124,16 @@ jobs:
       - name: Build the prompts
         if: env.LITELLM_API_KEY != ''
         run: |
-          for kind in user product; do
+          build() {
             {
-              sed "s|{{version}}|$TAG|g" ".github/prompts/changelog-$kind.md"
+              sed "s|{{version}}|$TAG|g" ".github/prompts/changelog-$1.md"
               echo
-              cat /tmp/changelog-input.md
-            } > "/tmp/$kind-prompt.md"
-          done
+              cat "$2"
+            } > "/tmp/$1-prompt.md"
+          }
+
+          build user /tmp/release-range.md
+          build product /tmp/deploy-range.md
 
       # The notes are a convenience; opening the deploy PR is the job's real
       # output. Never let a model or endpoint failure hold back a released
