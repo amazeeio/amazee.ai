@@ -29,6 +29,7 @@ from app.core.config import settings
 from app.core.dependencies import get_limit_service
 from app.core.roles import UserRole
 from app.core.security import (
+    assert_token_not_revoked,
     create_access_token,
     get_current_user_from_auth,
     get_password_hash,
@@ -74,7 +75,7 @@ from app.api.users import _create_user_in_db, get_user_by_email
 from app.core.email import normalize_email_for_lookup
 from app.services.disposable_domains import assert_email_domain_allowed
 from app.services.signup_velocity import enforce_signup_velocity
-from app.services.token_revocation import revoke_access_token
+from app.services.token_revocation import is_token_revoked, revoke_access_token
 
 auth_logger = logging.getLogger(__name__)
 
@@ -779,6 +780,9 @@ async def validate_jwt(
         payload = jwt.decode(
             token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
         )
+        # A revoked token must not be able to buy a fresh one, which would undo
+        # the logout that revoked it.
+        assert_token_not_revoked(db, payload)
         email: str = payload.get("sub")
         user = get_user_by_email(db, email)
         if not user:
@@ -802,6 +806,13 @@ async def validate_jwt(
                 email = payload.get("sub")
 
                 if not email:
+                    raise credentials_exception
+
+                # A revoked token gets no recovery email either. A token with no
+                # jti still does: it predates revocation, and this branch is how
+                # the holder of an old link gets a working one.
+                if is_token_revoked(db, payload.get("jti")):
+                    auth_logger.info("Refused to refresh a revoked expired token")
                     raise credentials_exception
 
                 send_validation_url(email)
