@@ -33,10 +33,14 @@ for file in "${MARKED[@]}"; do
   before=$(grep -c "$MARKER" "$file")
   # Anchored on the marker, so no other version-shaped string can be caught.
   # Two expressions because the YAML mixes bare and quoted values.
-  sed -i -E \
+  #
+  # Written through a temp file rather than `sed -i`, whose spelling differs
+  # between GNU and BSD sed. This runs on a GitHub runner and on a laptop.
+  sed -E \
     -e "s/([0-9]+\.[0-9]+\.[0-9]+)([[:space:]]*#[[:space:]]*$MARKER)/$VERSION\2/" \
     -e "s/\"([0-9]+\.[0-9]+\.[0-9]+)\"([[:space:]]*#[[:space:]]*$MARKER)/\"$VERSION\"\2/" \
-    "$file"
+    "$file" > "$file.bumped"
+  mv "$file.bumped" "$file"
   after=$(grep -c "$VERSION.*$MARKER\|\"$VERSION\".*$MARKER" "$file")
   if [ "$before" -ne "$after" ]; then
     echo "$file: expected $before versions, wrote $after" >&2
@@ -47,11 +51,11 @@ done
 
 # jq rather than sed: a lockfile holds thousands of versions and only these paths
 # are ours. jq also keeps the JSON valid, which a stray regex would not.
-jq --arg v "$VERSION" '.version = $v' frontend/package.json > /tmp/pkg.json
-mv /tmp/pkg.json frontend/package.json
+jq --arg v "$VERSION" '.version = $v' frontend/package.json > frontend/package.json.bumped
+mv frontend/package.json.bumped frontend/package.json
 echo "bumped frontend/package.json"
 
 jq --arg v "$VERSION" '.version = $v | .packages[""].version = $v' \
-  frontend/package-lock.json > /tmp/lock.json
-mv /tmp/lock.json frontend/package-lock.json
+  frontend/package-lock.json > frontend/package-lock.json.bumped
+mv frontend/package-lock.json.bumped frontend/package-lock.json
 echo "bumped frontend/package-lock.json"
