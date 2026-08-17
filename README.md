@@ -36,9 +36,9 @@ Three steps, all of them yours to start.
 - Opens `release/vX.Y.Z` → `main` with a description read from git.
 
 It branches from `main` rather than `dev` on purpose. `main` carries the bump
-commit from the previous release and `dev` does not, so a branch cut from `dev`
-would conflict on every version file, and would need a third pull request to
-carry `main` back to `dev`.
+commit from the previous release and `dev` does not, so from the second release
+onward a branch cut from `dev` conflicts on all six version files, and would need
+a third pull request carrying `main` back to `dev` to avoid it.
 
 Because the head is a release branch and not `dev`, its description keeps
 describing the code it was written for however long the review takes.
