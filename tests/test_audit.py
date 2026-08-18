@@ -1,8 +1,13 @@
 from datetime import datetime, UTC, timedelta
 from urllib.parse import urlparse
+from sqlalchemy import text as sql_text
 from app.db.models import DBAuditLog, DBUser
 from app.core.security import get_password_hash
-from app.middleware.audit import sanitize_referer, MAX_HEADER_URL_LENGTH
+from app.middleware.audit import (
+    sanitize_referer,
+    MAX_HEADER_URL_LENGTH,
+    _strip_null_bytes,
+)
 
 
 def test_get_audit_logs_admin_access_success(client, admin_token, db):
@@ -722,6 +727,135 @@ def test_sanitize_referer():
     assert len(sanitize_referer("https://x.example/" + "a" * 5000)) == (
         MAX_HEADER_URL_LENGTH
     )
+
+
+def test_strip_null_bytes():
+    """
+    Given: A details payload containing a null byte, e.g. from a path-traversal
+        probe such as "/etc/passwd\x00"
+    When: It is stripped before persisting
+    Then: The null byte is gone from every string, at any nesting depth, and
+        every other value is left untouched
+    """
+    payload = {
+        "path": "/etc/passwd\x00",
+        "query_params": {"file": "../../etc/passwd\x00", "clean": "value"},
+        "status_code": 500,
+        "nested_list": ["a\x00b", "c"],
+    }
+    cleaned = _strip_null_bytes(payload)
+    assert cleaned == {
+        "path": "/etc/passwd",
+        "query_params": {"file": "../../etc/passwd", "clean": "value"},
+        "status_code": 500,
+        "nested_list": ["ab", "c"],
+    }
+    assert "\x00" not in cleaned["path"]
+    assert _strip_null_bytes(None) is None
+    assert _strip_null_bytes(200) == 200
+
+
+def test_audit_middleware_strips_null_byte_from_query_params(
+    client, admin_token, test_admin, db
+):
+    """
+    Given: A request whose query string carries a null byte, as a
+        path-traversal probe would send
+    When: The audit middleware persists the request
+    Then: The stored details never contain a null byte or its escape sequence
+
+    Uses GET /users/{id} rather than /audit/logs: the middleware skips
+    auditing /audit/logs itself, and /audit/logs binds its query params
+    straight into a DB filter, which a null byte fails before the middleware
+    is even reached.
+    """
+    response = client.get(
+        f"/users/{test_admin.id}",
+        params={"probe": "../../etc/passwd\x00"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+
+    log = (
+        db.query(DBAuditLog)
+        .filter(DBAuditLog.action.like(f"%/users/{test_admin.id}%"))
+        .order_by(DBAuditLog.id.desc())
+        .first()
+    )
+    assert log is not None
+    probe_param = log.details["query_params"].get("probe")
+    assert probe_param is not None
+    assert "\x00" not in probe_param
+    assert "\\u0000" not in probe_param
+
+
+def test_get_audit_logs_metadata_survives_null_byte_row(client, admin_token, db):
+    """
+    Given: A pre-existing audit row whose details contain a raw "\\u0000"
+        unicode escape (the shape a null byte takes once serialized to JSON) -
+        the state a row written before the null-byte-stripping fix is in
+    When: An admin requests audit logs metadata
+    Then: The endpoint returns 200, and the offending row's own status_code
+        is still extracted correctly, instead of the DISTINCT query failing
+        for every row because one row cannot be cast to text
+    """
+    test_user = db.query(DBUser).filter(DBUser.email == "test@example.com").first()
+    if not test_user:
+        test_user = DBUser(
+            email="test@example.com",
+            hashed_password=get_password_hash("testpassword"),
+            is_active=True,
+            is_admin=False,
+        )
+        db.add(test_user)
+        db.commit()
+        db.refresh(test_user)
+
+    # Inserted via raw SQL: psycopg2 refuses an actual NUL byte in a text
+    # parameter, but a legacy row carries the six-character escape sequence
+    # "\u0000" inside its JSON text, which a `json` column accepts unchanged
+    # since it only validates syntax at write time.
+    db.execute(
+        sql_text(
+            """
+            INSERT INTO audit_logs
+                (timestamp, user_id, event_type, resource_type, action, details)
+            VALUES
+                (:timestamp, :user_id, :event_type, :resource_type, :action,
+                 CAST(:details AS json))
+            """
+        ),
+        {
+            "timestamp": datetime.now(UTC).replace(tzinfo=None),
+            "user_id": test_user.id,
+            "event_type": "GET",
+            "resource_type": "files",
+            "action": "GET /files/../../../../etc/passwd",
+            "details": (
+                '{"path": "/files/../../../../etc/passwd\\u0000", '
+                '"query_params": {}, "status_code": 599}'
+            ),
+        },
+    )
+    db.commit()
+
+    response = client.get(
+        "/audit/logs/metadata", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "files" in data["resource_types"]
+    assert "599" in data["status_codes"]
+
+    # The same expression backs the /logs status_code filter; it must not
+    # fail either once a row like this exists.
+    filtered = client.get(
+        "/audit/logs?status_code=599",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert filtered.status_code == 200
+    assert filtered.json()["total"] >= 1
 
 
 def test_get_audit_logs_with_referer_filter(client, admin_token, db):
