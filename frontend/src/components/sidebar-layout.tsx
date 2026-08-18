@@ -13,6 +13,7 @@ import {
   Users2,
   Package,
   DollarSign,
+  Cpu,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -51,6 +52,7 @@ const navigation = [
       { name: "Teams", href: "/admin/teams", icon: <Users2 size={16} /> },
       { name: "Users", href: "/admin/users", icon: <Users size={16} /> },
       { name: "Regions", href: "/admin/regions", icon: <Globe size={16} /> },
+      { name: "Models", href: "/admin/models", icon: <Cpu size={16} /> },
       {
         name: "Products",
         href: "/admin/products",

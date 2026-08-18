@@ -6,37 +6,17 @@ to create a LiteLLM token + vector DB as part of the external key provisioning
 flow.  Auth is the standard amazee.ai admin API token mechanism.
 """
 
-import os
 import pytest
 from unittest.mock import patch, AsyncMock, Mock
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from app.main import app
 from app.db.database import get_db
-from app.db.models import Base, DBRegion, DBUser, DBTeam
+from app.db.models import DBRegion, DBUser, DBTeam
 from app.core.security import get_password_hash
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://postgres:postgres@amazee-test-postgres/postgres_service",
-)
-
-engine = create_engine(DATABASE_URL)
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-@pytest.fixture
-def db():
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
-    db = TestingSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-        Base.metadata.drop_all(bind=engine)
+# The db fixture comes from tests/conftest.py; the module used to run its own
+# drop_all/create_all copy, whose teardown left the DB with no tables at all.
 
 
 @pytest.fixture

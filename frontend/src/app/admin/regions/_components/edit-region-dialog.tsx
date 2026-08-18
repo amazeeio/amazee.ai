@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { Region } from "@/types/region";
+import { Region, REGIONAL_AREAS } from "@/types/region";
 import { put } from "@/utils/api";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -48,6 +48,7 @@ export function EditRegionDialog({
         litellm_api_url: string;
         is_active: boolean;
         is_dedicated: boolean;
+        regional_area: string | null;
         postgres_admin_password?: string;
         litellm_api_key?: string;
       };
@@ -62,6 +63,7 @@ export function EditRegionDialog({
         litellm_api_url: regionData.litellm_api_url,
         is_active: regionData.is_active,
         is_dedicated: regionData.is_dedicated,
+        regional_area: regionData.regional_area || null,
       };
 
       // Only include passwords if they are not empty
@@ -233,6 +235,29 @@ export function EditRegionDialog({
                 placeholder="Leave blank to keep current"
               />
             </div>
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="edit_regional_area" className="text-sm font-medium">
+              Regional Area
+            </label>
+            <select
+              id="edit_regional_area"
+              value={editingRegion.regional_area || ""}
+              onChange={(e) =>
+                setEditingRegion({
+                  ...editingRegion,
+                  regional_area: e.target.value || null,
+                })
+              }
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+            >
+              <option value="">— Not set —</option>
+              {REGIONAL_AREAS.map((area) => (
+                <option key={area} value={area}>
+                  {area}
+                </option>
+              ))}
+            </select>
           </div>
           <div className="flex items-center space-x-2">
             <input
