@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException, status
 from sqlalchemy.orm import Session, joinedload
 from typing import Optional
 from datetime import datetime, UTC
-from sqlalchemy import distinct, or_
+from sqlalchemy import distinct, or_, cast, func, String, JSON
 from app.db.database import get_db
 from app.api.auth import get_current_user_from_auth
 from app.schemas.models import (
@@ -24,9 +24,21 @@ def _as_naive_utc(dt: datetime) -> datetime:
     return dt.astimezone(UTC).replace(tzinfo=None) if dt.tzinfo else dt
 
 
-# Renders as (details ->> 'status_code') on PostgreSQL; must match the
-# expression index ix_audit_logs_status_code.
-_status_code_expr = DBAuditLog.details["status_code"].as_string()
+# A historical row can carry a literal `\u0000` unicode escape inside a
+# details string (e.g. a path-traversal probe payload). Postgres accepts that
+# into a `json` column at write time (it only validates the text, it does not
+# decode it), but `->>` decodes the string and rejects the null byte -
+# failing the whole query, not just the offending row. Casting the column to
+# text first (no decode happens on a json->text cast) and stripping the
+# escape sequence before re-parsing as JSON keeps every other row's data
+# intact. New rows never carry this escape - see
+# app/middleware/audit.py:_strip_null_bytes - so this only protects rows
+# written before that fix.
+_sanitized_details = cast(
+    func.replace(cast(DBAuditLog.details, String), "\\u0000", ""),
+    JSON,
+)
+_status_code_expr = _sanitized_details["status_code"].as_string()
 
 
 @router.get("/logs", response_model=PaginatedAuditLogResponse)
