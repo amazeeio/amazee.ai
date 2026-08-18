@@ -858,6 +858,87 @@ def test_get_audit_logs_metadata_survives_null_byte_row(client, admin_token, db)
     assert filtered.json()["total"] >= 1
 
 
+def test_metadata_fallback_does_not_corrupt_a_legitimate_escaped_backslash(
+    client, admin_token, db
+):
+    """
+    Given: One row with a null-byte escape (forcing the fallback path) and a
+        second, otherwise-valid row whose details contain a legitimately
+        escaped backslash followed by literal "u0000" text (JSON: "\\\\u0000",
+        a real backslash character followed by four digits, not a null byte)
+    When: An admin requests audit logs metadata
+    Then: Both rows' status codes come back correctly. A text-level fix that
+        blindly strips every "\\u0000" substring would instead corrupt the
+        second row's already-valid escape into a dangling backslash
+    """
+    test_user = db.query(DBUser).filter(DBUser.email == "test@example.com").first()
+    if not test_user:
+        test_user = DBUser(
+            email="test@example.com",
+            hashed_password=get_password_hash("testpassword"),
+            is_active=True,
+            is_admin=False,
+        )
+        db.add(test_user)
+        db.commit()
+        db.refresh(test_user)
+
+    insert = sql_text(
+        """
+        INSERT INTO audit_logs
+            (timestamp, user_id, event_type, resource_type, action, details)
+        VALUES
+            (:timestamp, :user_id, :event_type, :resource_type, :action,
+             CAST(:details AS json))
+        """
+    )
+    db.execute(
+        insert,
+        {
+            "timestamp": datetime.now(UTC).replace(tzinfo=None),
+            "user_id": test_user.id,
+            "event_type": "GET",
+            "resource_type": "null-byte-row",
+            "action": "GET /probe",
+            "details": (
+                '{"path": "/probe\\u0000", "query_params": {}, "status_code": 591}'
+            ),
+        },
+    )
+    db.execute(
+        insert,
+        {
+            "timestamp": datetime.now(UTC).replace(tzinfo=None),
+            "user_id": test_user.id,
+            "event_type": "GET",
+            "resource_type": "literal-backslash-row",
+            "action": "GET /literal",
+            # A real backslash followed by literal "u0000" text - JSON-encoded
+            # as an escaped backslash ("\\\\") immediately followed by "u0000".
+            "details": (
+                '{"note": "\\\\u0000", "query_params": {}, "status_code": 592}'
+            ),
+        },
+    )
+    db.commit()
+
+    response = client.get(
+        "/audit/logs/metadata", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "591" in data["status_codes"]
+    assert "592" in data["status_codes"]
+
+    literal_log = (
+        db.query(DBAuditLog)
+        .filter(DBAuditLog.resource_type == "literal-backslash-row")
+        .first()
+    )
+    assert literal_log.details["note"] == "\\u0000"
+
+
 def test_get_audit_logs_with_referer_filter(client, admin_token, db):
     """
     Given: Audit logs with referer/origin values
