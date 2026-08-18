@@ -1,0 +1,12 @@
+# LiteLLM proxy settings for the integration suite only (mounted by
+# docker-compose.integration.yml). Models are NOT defined here — they are
+# registered via /model/new by the test fixtures, matching how production
+# regions are managed (STORE_MODEL_IN_DB).
+general_settings:
+  # Budget resets normally fire on a ~10min scheduler; the forced-reset test
+  # backdates budget_reset_at and must observe the reset within seconds.
+  proxy_budget_rescheduler_min_time: 3
+  proxy_budget_rescheduler_max_time: 6
+  # Spend writes are batched (default ~10s). Tests poll, but a 1s flush keeps
+  # cap-enforcement assertions fast and non-flaky.
+  proxy_batch_write_at: 1

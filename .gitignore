@@ -61,3 +61,6 @@ CLAUDE.md
 
 .pi
 scripts/local
+
+# Local ollama model store (contains an auto-generated ssh keypair)
+ollama_data/

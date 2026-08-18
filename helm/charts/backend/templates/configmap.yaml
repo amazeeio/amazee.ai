@@ -15,3 +15,4 @@ data:
   ENV_SUFFIX: "{{ .Values.envSuffix }}"
   FORWARDED_ALLOW_IPS: "{{ .Values.forwardedAllowIps }}"
   PASSWORDLESS_SIGN_IN: "{{ .Values.passwordlessSignIn }}"
+  CATALOG_MANAGED_REGIONS: "{{ .Values.catalogManagedRegions }}"

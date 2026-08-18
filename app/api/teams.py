@@ -49,6 +49,7 @@ from app.schemas.models import (
     TeamWithUsers,
 )
 from app.services.disposable_domains import assert_email_domain_allowed
+from app.services.access_groups import effective_team_group_slugs
 from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -80,12 +81,13 @@ def _create_default_limits_for_team(team: DBTeam, db: Session) -> None:
             # Don't fail team creation if limit creation fails
 
 
-async def _create_litellm_team_for_region(team: DBTeam, region: DBRegion) -> None:
+async def _create_litellm_team_for_region(db: Session, team: DBTeam, region: DBRegion) -> None:
     """
     Create a region-scoped LiteLLM team for the given team in the given region.
 
     POOL teams start with $0 budget and a configurable duration (purchases raise budget).
     PERIODIC teams start with the default budget (DEFAULT_MAX_SPEND).
+    When the region has a default access group, the team starts restricted to it.
     """
     max_budget = 0.0 if team.requires_pool_purchase_gate else DEFAULT_MAX_SPEND
     budget_duration = (
@@ -102,6 +104,7 @@ async def _create_litellm_team_for_region(team: DBTeam, region: DBRegion) -> Non
         team_alias=lite_team_id,
         max_budget=max_budget,
         budget_duration=budget_duration,
+        models=effective_team_group_slugs(db, team.id, region),
     )
 
 
@@ -179,7 +182,7 @@ async def register_team(
         # Create the single team_region row for backwards compatibility
         db.add(DBTeamRegion(team_id=db_team.id, region_id=region.id))
         db.flush()
-        await _create_litellm_team_for_region(db_team, region)
+        await _create_litellm_team_for_region(db, db_team, region)
         db.commit()
         db.refresh(db_team)
     except HTTPException:

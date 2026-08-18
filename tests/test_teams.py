@@ -139,6 +139,7 @@ def test_register_team_creates_litellm_team_for_active_shared_regions(
         team_alias=f"{test_region.name}_{team_data['id']}",
         max_budget=0.0,
         budget_duration="365d",
+        models=None,
     )
 
 
@@ -184,6 +185,7 @@ def test_register_pool_team_excludes_dedicated_regions_from_litellm_bootstrap(
         team_alias=f"{test_region.name}_{team_data['id']}",
         max_budget=0.0,
         budget_duration="365d",
+        models=None,
     )
 
 
@@ -230,6 +232,7 @@ def test_register_periodic_team_excludes_dedicated_regions_from_litellm_bootstra
         team_alias=f"{test_region.name}_{team_data['id']}",
         max_budget=27.0,
         budget_duration=None,
+        models=None,
     )
 
 
