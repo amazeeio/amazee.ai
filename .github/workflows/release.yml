@@ -1,0 +1,219 @@
+name: Release
+
+# One button, one pull request. Run it from the Actions tab when you want to
+# ship, and it does everything that is not a decision: cuts the version, tags
+# it, publishes the charts, writes the release notes and opens the dev -> main
+# pull request. You review that pull request, merge it, then promote main to
+# prod in Lagoon by hand.
+#
+# The pull request head is a frozen release branch rather than dev, so its
+# description keeps describing the code it was written for however long the
+# review takes.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Which part of the version to raise'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+      commit_sha:
+        description: 'Commit on dev to release (blank = the tip of dev)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# Two releases at once would fight over the tag sequence.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # push the release branch and the tag, create the Release
+      pull-requests: write  # open the deploy pull request
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      branch: ${{ steps.version.outputs.branch }}
+    env:
+      LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}
+      REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Configure git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Resolve the commit to release
+        id: target
+        env:
+          INPUT_SHA: ${{ inputs.commit_sha }}
+        run: |
+          git fetch --quiet origin main dev
+          SHA=${INPUT_SHA:-$(git rev-parse origin/dev)}
+
+          # Releasing something that is not on dev would ship code no dev
+          # environment ever ran.
+          if ! git merge-base --is-ancestor "$SHA" origin/dev; then
+            echo "::error::$SHA is not on dev"
+            exit 1
+          fi
+          if git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error::$SHA is already on main, nothing to release"
+            exit 1
+          fi
+
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Work out the next version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          # sed, not head: head closes the pipe and kills git with SIGPIPE, which
+          # pipefail would turn into a failed step.
+          PREV=$(git tag --list 'v*' --sort=-v:refname | sed -n 1p)
+          PREV=${PREV:-v0.0.0}
+          IFS=. read -r MAJOR MINOR PATCH <<< "${PREV#v}"
+
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+            *) echo "::error::unknown bump $BUMP"; exit 1 ;;
+          esac
+
+          VERSION="$MAJOR.$MINOR.$PATCH"
+          if git rev-parse -q --verify "refs/tags/v$VERSION" > /dev/null; then
+            echo "::error::v$VERSION already exists"
+            exit 1
+          fi
+
+          {
+            echo "previous=$PREV"
+            echo "version=$VERSION"
+            echo "tag=v$VERSION"
+            echo "branch=release/v$VERSION"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing v$VERSION, previous $PREV"
+
+      # Branch from main and merge dev into it, rather than branching from dev.
+      # The bump commit then sits on top of main's own history, so it does not
+      # collide with the bump main already carries from the previous release.
+      # Branching from dev instead means every release conflicts on every version
+      # file, and needs a third pull request to carry main's commits back to dev.
+      - name: Cut the release branch and bump the version
+        env:
+          SHA: ${{ steps.target.outputs.sha }}
+          BRANCH: ${{ steps.version.outputs.branch }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git checkout -b "$BRANCH" origin/main
+          git merge --no-edit -m "chore: merge dev into $BRANCH" "$SHA"
+          bash .github/scripts/bump-version.sh "$VERSION"
+          git commit -qam "chore: release $VERSION"
+          git push origin "$BRANCH"
+
+      - name: Tag the release
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "$TAG"
+
+      # The notes describe the product, and are read from the diff so a vague
+      # commit subject cannot hide a user-visible change.
+      - name: Collect the released range
+        if: env.LITELLM_API_KEY != ''
+        env:
+          PREV: ${{ steps.version.outputs.previous }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          {
+            echo "## Commit log"
+            echo
+            git log --oneline "$PREV..$TAG"
+            echo
+            echo "## Changed files"
+            echo
+            git diff --name-status "$PREV..$TAG"
+            echo
+            echo "## Detailed diff (truncated)"
+            echo
+            git diff "$PREV..$TAG" -- . ':(exclude,glob)**/package-lock.json' |
+              sed -n '1,3000p'
+          } > /tmp/released-range.md
+
+          # Substituting a diff into a *.prompt.yml breaks the YAML: only the
+          # first line keeps the block-scalar indentation. Any other extension is
+          # sent verbatim, so assemble a plain-text prompt here instead.
+          {
+            sed "s|{{version}}|$TAG|g" .github/prompts/changelog-user.md
+            echo
+            cat /tmp/released-range.md
+          } > /tmp/user-prompt.md
+
+      # Notes are a nicety. A model or endpoint failure must never leave a
+      # release tagged but undeployed, so this reports and carries on.
+      - name: Write the user-facing notes
+        id: notes
+        if: env.LITELLM_API_KEY != ''
+        continue-on-error: true
+        uses: actions/ai-inference@b81b2afb8390ee6839b494a404766bef6493c7d9 # v1
+        with:
+          prompt-file: /tmp/user-prompt.md
+          model: claude-4-6-sonnet
+          max-tokens: 4000
+          endpoint: https://litellm.amazeeai-us1.amazeeio.review
+          token: ${{ secrets.LITELLM_API_KEY }}
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          PREV: ${{ steps.version.outputs.previous }}
+          RESPONSE_FILE: ${{ steps.notes.outputs.response-file }}
+        run: |
+          # A release with nothing a user can see is normal — infrastructure and
+          # refactor work. The model says so with this sentinel.
+          if [ "${{ steps.notes.outcome }}" = "success" ] &&
+             ! grep -q "NO_USER_CHANGES" "$RESPONSE_FILE"; then
+            gh release create "$TAG" --title "$TAG" --notes-file "$RESPONSE_FILE" \
+              --generate-notes --verify-tag
+          else
+            gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag
+          fi
+
+      - name: Open the deploy pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.version.outputs.branch }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          bash .github/scripts/deploy-pr-body.sh origin/main "$BRANCH" "$TAG" > /tmp/pr-body.md
+          gh pr create --base main --head "$BRANCH" \
+            --title "Deploy $TAG to production" --body-file /tmp/pr-body.md
+
+  # Published from the release branch, so the chart versions are the bumped ones.
+  publish-helm-charts:
+    needs: release
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/helm-package-publish.yml
+    with:
+      publish: true
+      ref: ${{ needs.release.outputs.branch }}
+    secrets: inherit
