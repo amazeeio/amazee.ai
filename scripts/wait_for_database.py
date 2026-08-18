@@ -5,6 +5,7 @@ Script to wait for PostgreSQL database to be ready and create it if it doesn't e
 
 import sys
 import psycopg2
+from psycopg2 import sql
 import os
 from urllib.parse import urlparse
 import time
@@ -40,8 +41,11 @@ def create_database_if_not_exists():
                 # Extract database name from the original URL
                 db_name = parsed.path.lstrip("/")
 
-                # Create the database
-                cursor.execute(f"CREATE DATABASE {db_name}")
+                # Create the database. Quote the identifier so names with
+                # hyphens/special chars (common in k8s/Lagoon) produce valid DDL.
+                cursor.execute(
+                    sql.SQL("CREATE DATABASE {}").format(sql.Identifier(db_name))
+                )
                 cursor.close()
                 conn.close()
 

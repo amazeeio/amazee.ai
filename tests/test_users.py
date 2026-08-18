@@ -1,4 +1,5 @@
 from app.db.models import (
+    DBBudgetAlertState,
     DBRegion,
     DBSpendCap,
     DBUser,
@@ -30,6 +31,7 @@ def test_create_user(client, test_admin, admin_token):
     user_data = response.json()
     assert user_data["email"] == "newuser@example.com"
     assert user_data["is_admin"] is False
+    assert user_data["receive_marketing_updates"] is False
     assert "id" in user_data
 
 
@@ -54,6 +56,78 @@ def test_get_users(client, admin_token, test_user):
     assert isinstance(users, list)
     assert len(users) >= 1
     assert any(user["email"] == test_user.email for user in users)
+
+
+def test_get_users_include_inactive(client, admin_token, db):
+    inactive = DBUser(
+        email="inactive-list@example.com",
+        hashed_password=get_password_hash("password"),
+        is_active=False,
+    )
+    db.add(inactive)
+    db.commit()
+
+    response = client.get("/users/", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == 200
+    assert "inactive-list@example.com" not in [u["email"] for u in response.json()]
+
+    response = client.get(
+        "/users/?include_inactive=true",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert "inactive-list@example.com" in [u["email"] for u in response.json()]
+
+
+def test_get_users_paginated(client, admin_token, db):
+    for i in range(3):
+        db.add(
+            DBUser(
+                email=f"paginated-{i}@example.com",
+                hashed_password=get_password_hash("password"),
+                is_active=True,
+            )
+        )
+    db.commit()
+
+    response = client.get(
+        "/users/?search=paginated-&limit=2&sort_by=email&sort_order=desc",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "3"
+    assert [u["email"] for u in response.json()] == [
+        "paginated-2@example.com",
+        "paginated-1@example.com",
+    ]
+
+    response = client.get(
+        "/users/?search=paginated-&limit=2&skip=2&sort_by=email&sort_order=desc",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "3"
+    assert [u["email"] for u in response.json()] == ["paginated-0@example.com"]
+
+
+def test_get_users_search_escapes_wildcards(client, admin_token, db):
+    for email in ["wild_card@example.com", "wildxcard@example.com"]:
+        db.add(
+            DBUser(
+                email=email,
+                hashed_password=get_password_hash("password"),
+                is_active=True,
+            )
+        )
+    db.commit()
+
+    response = client.get(
+        "/users/?search=wild_card",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "1"
+    assert [u["email"] for u in response.json()] == ["wild_card@example.com"]
 
 
 def test_get_user_by_id(client, admin_token, test_user):
@@ -83,6 +157,84 @@ def test_update_user(client, admin_token, test_user):
     assert response.status_code == 200
     user_data = response.json()
     assert user_data["email"] == "updated@example.com"
+
+
+def test_update_user_marketing_updates_by_id(client, admin_token, test_user):
+    response = client.put(
+        f"/users/{test_user.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"receive_marketing_updates": True},
+    )
+    assert response.status_code == 200
+    user_data = response.json()
+    assert user_data["receive_marketing_updates"] is True
+
+
+@patch(
+    "app.api.users.HubSpotService.upsert_contact_marketing_updates",
+    new_callable=AsyncMock,
+)
+def test_update_users_marketing_updates_by_email(
+    mock_upsert_contact_marketing_updates, client, admin_token, db
+):
+    team = DBTeam(
+        name="Marketing Team",
+        admin_email="marketing-team@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    u1 = DBUser(
+        email="marketing+one@example.com",
+        hashed_password=get_password_hash("pw"),
+        is_active=True,
+        is_admin=False,
+        team=team,
+    )
+    u2 = DBUser(
+        email="marketing+two@example.com",
+        hashed_password=get_password_hash("pw"),
+        is_active=True,
+        is_admin=False,
+        team=team,
+    )
+    db.add_all([team, u1, u2])
+    db.commit()
+
+    with patch.object(settings, "HUBSPOT_MARKETING_SUBSCRIPTION_ID", "1110685904"):
+        response = client.put(
+            "/users/by-email/marketing-updates",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"email": "marketing@example.com", "receive_marketing_updates": True},
+        )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 2
+    assert all(u["receive_marketing_updates"] is True for u in data)
+    mock_upsert_contact_marketing_updates.assert_awaited_once_with(
+        email="marketing@example.com", enabled=True
+    )
+
+
+@patch(
+    "app.api.users.HubSpotService.upsert_contact_marketing_updates",
+    new_callable=AsyncMock,
+)
+def test_update_users_marketing_updates_by_email_returns_404_when_subscription_missing(
+    mock_upsert_contact_marketing_updates, client, admin_token
+):
+    with patch.object(settings, "HUBSPOT_MARKETING_SUBSCRIPTION_ID", None):
+        response = client.put(
+            "/users/by-email/marketing-updates",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"email": "marketing@example.com", "receive_marketing_updates": True},
+        )
+
+    assert response.status_code == 404
+    assert (
+        response.json()["detail"] == "HubSpot marketing subscription is not configured"
+    )
+    mock_upsert_contact_marketing_updates.assert_not_awaited()
 
 
 def test_delete_user(client, admin_token, test_user):
@@ -925,6 +1077,37 @@ def test_user_privilege_escalation(client, team_admin_token):
     assert "User not found" in response.json()["detail"]
 
 
+def test_admin_update_user_rejects_password_fields(client, admin_token, test_user):
+    """
+    PUT /users/{id} does not support password changes and must reject them
+    with a 422 (previously they were silently discarded). Password changes go
+    through /auth/me.
+    """
+    response = client.put(
+        f"/users/{test_user.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"new_password": "brand-new-password"},
+    )
+    assert response.status_code == 422
+
+
+def test_team_admin_cannot_change_is_active(client, team_admin_token, test_team_user):
+    """
+    A team admin may manage their own team members but not toggle activation.
+
+    GIVEN: A team member in the team admin's team
+    WHEN: the team admin tries to deactivate them via PUT /users/{id}
+    THEN: A 403 is returned and the member stays active
+    """
+    response = client.put(
+        f"/users/{test_team_user.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"is_active": False},
+    )
+    assert response.status_code == 403
+    assert "Not authorized to perform this action" in response.json()["detail"]
+
+
 @patch("app.api.users.settings.ENABLE_LIMITS", True)
 def test_create_user_with_limits_enabled(client, team_admin_token, test_team, db):
     """
@@ -1307,3 +1490,57 @@ def test_sign_in_creates_user_with_default_limits(client, db):
     )
     assert budget_limit is None  # Should be inherited from team, not user-specific
     assert rpm_limit is None  # Should be inherited from team, not user-specific
+
+
+def test_delete_user_with_member_budget_and_alert_state(
+    client, admin_token, db, test_team, test_region
+):
+    """
+    GIVEN: A user who has a team member spend cap and a budget alert state row
+    WHEN: The user is deleted
+    THEN: A 200 is returned and both budget rows are gone
+
+    Both tables reference users.id without a cascade, so before this was fixed
+    the delete raised a foreign key violation and surfaced as a 500.
+    """
+    user = DBUser(email="member-budget@example.com", team_id=test_team.id)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=user.id,
+            max_budget=3.0,
+            budget_duration="1mo",
+        )
+    )
+    db.add(
+        DBBudgetAlertState(
+            subject_key=f"team_member:{test_team.id}:{user.id}",
+            subject_type="team_member",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=user.id,
+            period_key="2026-08",
+        )
+    )
+    db.commit()
+    user_id = user.id
+
+    response = client.delete(
+        f"/users/{user_id}", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200
+
+    assert db.query(DBUser).filter(DBUser.id == user_id).first() is None
+    assert db.query(DBSpendCap).filter(DBSpendCap.user_id == user_id).count() == 0
+    assert (
+        db.query(DBBudgetAlertState)
+        .filter(DBBudgetAlertState.user_id == user_id)
+        .count()
+        == 0
+    )

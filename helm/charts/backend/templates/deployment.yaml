@@ -15,6 +15,12 @@ spec:
     type: Recreate
   template:
     metadata:
+      annotations:
+        # Every env var below comes from the ConfigMap by reference, so a
+        # `helm upgrade` that only changes a value leaves the pod template
+        # identical and the running pods keep the old value. Hashing the
+        # rendered ConfigMap into the template makes the change roll the pods.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
       labels:
         {{- include "backend.selectorLabels" . | nindent 8 }}
     spec:
@@ -33,7 +39,7 @@ spec:
                 configMapKeyRef:
                   name: {{ include "backend.fullname" . }}-config
                   key: DATABASE_URL
-            - name: SECRET_KEY
+            - name: AMAZEEAI_JWT_SECRET
               valueFrom:
                 secretKeyRef:
                   name: {{ include "backend.fullname" . }}-secret
@@ -80,11 +86,21 @@ spec:
                 configMapKeyRef:
                   name: {{ include "backend.fullname" . }}-config
                   key: ENV_SUFFIX
+            - name: FORWARDED_ALLOW_IPS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "backend.fullname" . }}-config
+                  key: FORWARDED_ALLOW_IPS
             - name: PASSWORDLESS_SIGN_IN
               valueFrom:
                 configMapKeyRef:
                   name: {{ include "backend.fullname" . }}-config
                   key: PASSWORDLESS_SIGN_IN
+            - name: CATALOG_MANAGED_REGIONS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "backend.fullname" . }}-config
+                  key: CATALOG_MANAGED_REGIONS
             - name: AWS_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:

@@ -1,4 +1,4 @@
-.PHONY: backend-test backend-test-build test-clean test-network test-postgres frontend-test frontend-test-build migration-create migration-upgrade migration-downgrade migration-stamp
+.PHONY: backend-test backend-test-build test-clean test-teardown test-network test-postgres frontend-test frontend-test-build integration-test migration-create migration-upgrade migration-downgrade migration-stamp
 
 # Default target
 all: backend-test
@@ -11,25 +11,38 @@ test-network:
 backend-test-build:
 	docker build -t amazee-backend-test -f Dockerfile.test .
 
-# Start PostgreSQL container for testing
-test-postgres: test-clean test-network
+# Start PostgreSQL container for testing.
+# Durability is off and data lives on tmpfs: the DB is throwaway, and the
+# test suite is DDL/commit-heavy enough that fsync dominates otherwise.
+test-postgres: test-network
 	docker run -d \
 		--name amazee-test-postgres \
 		--network amazeeai_default \
+		--tmpfs /var/lib/postgresql/data \
 		-e POSTGRES_USER=postgres \
 		-e POSTGRES_PASSWORD=postgres \
 		-e POSTGRES_DB=postgres_service \
-		-p 5432:5432 \
-		pgvector/pgvector:pg16 && \
-	sleep 5
+		pgvector/pgvector:pg16 \
+		-c fsync=off -c synchronous_commit=off -c full_page_writes=off && \
+	i=0; until docker exec amazee-test-postgres pg_isready -U postgres >/dev/null 2>&1; do \
+		i=$$((i+1)); [ $$i -ge 60 ] && echo "postgres not ready after 60s" && exit 1; sleep 1; \
+	done; sleep 1
+
+# Teardown: stop and remove test containers, network, and image
+test-teardown:
+	docker stop amazee-test-postgres 2>/dev/null || true
+	docker rm amazee-test-postgres 2>/dev/null || true
+	docker network rm amazeeai_default 2>/dev/null || true
+	docker rmi amazee-backend-test 2>/dev/null || true
 
 # Run backend tests for a specific regex
 # Usage: make backend-test-regex regex="test_pattern"
-backend-test-regex: test-clean backend-test-build test-postgres
+backend-test-regex: backend-test-build test-postgres
 	@if [ -z "$(regex)" ]; then \
 		echo "Error: regex parameter is required. Usage: make backend-test-regex regex=\"test_pattern\""; \
 		exit 1; \
 	fi
+	@status=0; \
 	docker run --rm \
 		--network amazeeai_default \
 		-e DATABASE_URL="postgresql://postgres:postgres@amazee-test-postgres/postgres_service" \
@@ -43,12 +56,15 @@ backend-test-regex: test-clean backend-test-build test-postgres
 		-e TESTING="1" \
 		-e ENV_SUFFIX="test" \
 		-v $(PWD)/app:/app/app \
-		-v $(PWD)/tests:/app/tests \
 		-v $(PWD)/scripts:/app/scripts \
-		amazee-backend-test pytest -vv -k "$(regex)"
+		-v $(PWD)/tests:/app/tests \
+		amazee-backend-test pytest -vv --ignore=tests/integration -k "$(regex)" || status=$$?; \
+	$(MAKE) test-clean; \
+	exit $$status
 
 # Run backend tests in a new container
-backend-test: test-clean backend-test-build test-postgres
+backend-test: backend-test-build test-postgres
+	@status=0; \
 	docker run --rm \
 		--network amazeeai_default \
 		-e DATABASE_URL="postgresql://postgres:postgres@amazee-test-postgres/postgres_service" \
@@ -62,12 +78,15 @@ backend-test: test-clean backend-test-build test-postgres
 		-e TESTING="1" \
 		-e ENV_SUFFIX="test" \
 		-v $(PWD)/app:/app/app \
-		-v $(PWD)/tests:/app/tests \
 		-v $(PWD)/scripts:/app/scripts \
-		amazee-backend-test
+		-v $(PWD)/tests:/app/tests \
+		amazee-backend-test || status=$$?; \
+	$(MAKE) test-clean; \
+	exit $$status
 
 # Run backend tests with coverage report
-backend-test-cov: test-clean backend-test-build test-postgres
+backend-test-cov: backend-test-build test-postgres
+	@status=0; \
 	docker run --rm \
 		--network amazeeai_default \
 		-e DATABASE_URL="postgresql://postgres:postgres@amazee-test-postgres/postgres_service" \
@@ -81,9 +100,11 @@ backend-test-cov: test-clean backend-test-build test-postgres
 		-e TESTING="1" \
 		-e ENV_SUFFIX="test" \
 		-v $(PWD)/app:/app/app \
-		-v $(PWD)/tests:/app/tests \
 		-v $(PWD)/scripts:/app/scripts \
-		amazee-backend-test pytest -v --cov=app tests/
+		-v $(PWD)/tests:/app/tests \
+		amazee-backend-test pytest -v --cov=app --ignore=tests/integration tests/ || status=$$?; \
+	$(MAKE) test-clean; \
+	exit $$status
 
 # Build the frontend test container
 frontend-test-build:
@@ -97,6 +118,20 @@ frontend-test: frontend-test-build
 
 # Run all tests (backend and frontend)
 test-all: backend-test frontend-test
+
+# Integration tests against real LiteLLM instances (see
+# litellm-integration-tests-plan.md). Runs under its own compose project so
+# teardown can never touch the dev stack's containers or volumes.
+# Override the proxy image with LITELLM_IMAGE / LITELLM_TAG, e.g.:
+#   make integration-test LITELLM_TAG=v1.95.0
+INTEGRATION_COMPOSE = docker compose -p amazeeai-integration \
+	-f docker-compose.yml -f docker-compose.integration.yml
+
+integration-test:
+	@status=0; \
+	$(INTEGRATION_COMPOSE) run --rm --build integration-test || status=$$?; \
+	$(INTEGRATION_COMPOSE) down -v --remove-orphans; \
+	exit $$status
 
 # Clean up test containers and images
 test-clean:

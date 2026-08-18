@@ -232,7 +232,7 @@ class AuditRunner:
                     await service.update_team_budget(
                         team_id=lite_team_id,
                         max_budget=0.0,
-                        budget_duration=f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
+                        budget_duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
                     )
                     keys = get_team_region_litellm_keys(
                         self.session,

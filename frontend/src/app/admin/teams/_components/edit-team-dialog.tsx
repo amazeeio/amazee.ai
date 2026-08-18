@@ -26,7 +26,7 @@ export function EditTeamDialog({
   open,
   onOpenChange,
 }: EditTeamDialogProps) {
-  const { updateTeam, isUpdating } = useTeams();
+  const { updateTeam, isUpdating } = useTeams(false, { enabled: false });
   const [form, setForm] = useState({
     name: "",
     phone: "",

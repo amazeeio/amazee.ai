@@ -6,9 +6,11 @@ from app.core.rbac import (
     require_key_creator_or_higher,
     require_read_only_or_higher,
     require_sales_or_higher,
+    key_in_team,
+    enforce_declared_team_scope,
 )
 from app.core.roles import UserRole
-from app.db.models import DBUser
+from app.db.models import DBUser, DBPrivateAIKey
 
 
 class TestRBACDependency:
@@ -267,3 +269,34 @@ class TestUserRole:
         assert "admin" in roles
         assert "key_creator" in roles
         assert "read_only" in roles
+
+
+class TestDeclaredTeamScope:
+    """Issue #600 — declared team scope gate for key-by-id endpoints.
+
+    The team-owned and no-scope branches never touch the DB, so these cases are
+    exercised with db=None. The user-owned (owner-lookup) branch is covered by
+    the HTTP-level tests in test_private_ai.py.
+    """
+
+    def _team_key(self, team_id):
+        return DBPrivateAIKey(id=1, team_id=team_id, owner_id=None)
+
+    def test_team_owned_key_in_team_true(self):
+        assert key_in_team(self._team_key(5), 5, None) is True
+
+    def test_team_owned_key_in_team_false(self):
+        assert key_in_team(self._team_key(5), 6, None) is False
+
+    def test_enforce_noop_when_no_scope_declared(self):
+        # No declared scope → no-op, backward compatible (and no DB access).
+        enforce_declared_team_scope(self._team_key(5), None, None)
+
+    def test_enforce_allows_matching_team(self):
+        enforce_declared_team_scope(self._team_key(5), 5, None)
+
+    def test_enforce_denies_mismatched_team_with_404(self):
+        with pytest.raises(HTTPException) as exc_info:
+            enforce_declared_team_scope(self._team_key(5), 6, None)
+        assert exc_info.value.status_code == 404
+        assert "Private AI Key not found" in exc_info.value.detail

@@ -58,7 +58,9 @@ export default function TeamAIKeysPage() {
           : data.key_type === "llm"
             ? "private-ai-keys/token"
             : "private-ai-keys/vector-db";
-      const response = await post(endpoint, data);
+      const response = await post(endpoint, data, {
+        headers: { "X-Amazee-Source": "frontend" },
+      });
       return response.json();
     },
     onSuccess: () => {
@@ -135,6 +137,7 @@ export default function TeamAIKeysPage() {
         showOwner={true}
         teamDetails={teamDetails}
         teamMembers={teamMembers}
+        regions={regions}
       />
     </div>
   );

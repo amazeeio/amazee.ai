@@ -7,6 +7,19 @@ interface Config {
 let configCache: Config | null = null;
 let configPromise: Promise<Config> | null = null;
 
+// PASSWORDLESS_SIGN_IN and STRIPE_PUBLISHABLE_KEY come only from the server via
+// /api/config — they are not NEXT_PUBLIC_ vars, so process.env cannot read them
+// in the browser (it previously always yielded false/""). The fallback uses
+// inert defaults and relies on the async /api/config load for the real values.
+function fallbackConfig(): Config {
+  return {
+    NEXT_PUBLIC_API_URL:
+      process.env.NEXT_PUBLIC_API_URL || "http://localhost:8800",
+    PASSWORDLESS_SIGN_IN: false,
+    STRIPE_PUBLISHABLE_KEY: "",
+  };
+}
+
 export async function getConfig(): Promise<Config> {
   // If we have a cached value, return it
   if (configCache) {
@@ -31,13 +44,7 @@ export async function getConfig(): Promise<Config> {
       return config;
     } catch (error) {
       console.error("Error loading configuration:", error);
-      // Fallback configuration
-      const fallback: Config = {
-        NEXT_PUBLIC_API_URL:
-          process.env.NEXT_PUBLIC_API_URL || "http://localhost:8800",
-        PASSWORDLESS_SIGN_IN: process.env.PASSWORDLESS_SIGN_IN === "true",
-        STRIPE_PUBLISHABLE_KEY: process.env.STRIPE_PUBLISHABLE_KEY || "",
-      };
+      const fallback = fallbackConfig();
       configCache = fallback;
       return fallback;
     } finally {
@@ -57,14 +64,8 @@ export async function getApiUrl(): Promise<string> {
 // Synchronous function to get cached config (use this when you can't use async/await)
 export function getCachedConfig(): Config {
   if (!configCache) {
-    // Initialize with fallback values
-    configCache = {
-      NEXT_PUBLIC_API_URL:
-        process.env.NEXT_PUBLIC_API_URL || "http://localhost:8800",
-      PASSWORDLESS_SIGN_IN: process.env.PASSWORDLESS_SIGN_IN === "true",
-      STRIPE_PUBLISHABLE_KEY: process.env.STRIPE_PUBLISHABLE_KEY || "",
-    };
-    // Trigger async load
+    // Seed with inert fallback, then trigger the async load for real values.
+    configCache = fallbackConfig();
     getConfig().catch(console.error);
   }
   return configCache;

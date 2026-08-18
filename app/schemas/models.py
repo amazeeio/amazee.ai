@@ -1,8 +1,10 @@
 from pydantic import BaseModel, ConfigDict, EmailStr, AfterValidator, Field
 from typing import Optional, List, ClassVar, Literal, Dict, Annotated, Any
-from datetime import datetime
+from datetime import date, datetime
 from sqlalchemy.orm import relationship
 from enum import Enum
+from urllib.parse import urlparse
+import ipaddress
 
 
 class BudgetType(str, Enum):
@@ -47,14 +49,33 @@ class UserCreate(UserBase):
     password: Optional[str] = None
     team_id: Optional[int] = None
     role: Optional[str] = None
+    receive_marketing_updates: Optional[bool] = None
     model_config = ConfigDict(from_attributes=True)
 
 
 class UserUpdate(BaseModel):
     email: Optional[CaseInsensitiveEmailStr] = None
     is_admin: Optional[bool] = None
+    receive_marketing_updates: Optional[bool] = None
     current_password: Optional[str] = None
     new_password: Optional[str] = None
+
+
+class AdminUserUpdate(BaseModel):
+    """Fields an admin/team-admin may change via PUT /users/{id}.
+
+    Deliberately excludes password fields: this route never applied them (it
+    silently dropped current_password/new_password). extra='forbid' now rejects
+    them with a 422 instead of pretending to succeed. Self-service password
+    changes go through /auth/me.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    email: Optional[CaseInsensitiveEmailStr] = None
+    is_admin: Optional[bool] = None
+    is_active: Optional[bool] = None
+    receive_marketing_updates: Optional[bool] = None
 
 
 class User(UserBase):
@@ -64,8 +85,14 @@ class User(UserBase):
     team_id: Optional[int] = None
     team_name: Optional[str] = None
     role: Optional[str] = None
+    receive_marketing_updates: bool = False
     model_config = ConfigDict(from_attributes=True)
     audit_logs: ClassVar = relationship("AuditLog", back_populates="user")
+
+
+class UserMarketingUpdatesByEmailUpdate(BaseModel):
+    email: CaseInsensitiveEmailStr
+    receive_marketing_updates: bool
 
 
 class APITokenBase(BaseModel):
@@ -133,18 +160,84 @@ class Product(ProductBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+_BLOCKED_HOST_ALIASES = {
+    "localhost",
+    "ip6-localhost",
+    "ip6-loopback",
+    "broadcasthost",
+}
+
+
+def _host_is_blocked(host: str) -> bool:
+    """Reject hosts that a region endpoint should never legitimately point at.
+
+    RFC1918/private addresses are intentionally allowed — regions often live on
+    the cluster's internal network. Loopback, link-local (incl. the cloud
+    metadata address 169.254.169.254), multicast and unspecified are blocked.
+    Non-IP hostnames can't be judged statically and are allowed (admin-only);
+    operator-side egress policy should still block loopback names. The common
+    OS loopback aliases below are blocked as cheap defense-in-depth.
+    """
+    if not host or host.lower() in _BLOCKED_HOST_ALIASES:
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    # Unwrap IPv4-mapped IPv6 (e.g. ::ffff:169.254.169.254): is_loopback /
+    # is_link_local return False for the mapped form, so without this a mapped
+    # metadata/loopback address would bypass the block.
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified
+
+
+def validate_region_api_url(value: str) -> str:
+    # Require https: the region master LiteLLM key is sent in request headers on
+    # every proxied call, so a plain-http URL would transmit it in cleartext.
+    # Internal services that need it can terminate TLS at the ingress.
+    # NOTE: existing http:// regions in the DB keep serving live traffic and
+    # stay editable — update_region only validates this field when its value
+    # changes. Find legacy rows with:
+    #   SELECT id, name, litellm_api_url FROM regions WHERE litellm_api_url LIKE 'http://%';
+    parsed = urlparse(value)
+    if parsed.scheme != "https":
+        raise ValueError("litellm_api_url must use the https scheme")
+    if not parsed.hostname or _host_is_blocked(parsed.hostname):
+        raise ValueError("litellm_api_url must not target an internal/link-local host")
+    return value
+
+
+def validate_region_host(value: str) -> str:
+    if _host_is_blocked(value):
+        raise ValueError("host must not be an internal/link-local address")
+    return value
+
+
+RegionApiUrl = Annotated[str, AfterValidator(validate_region_api_url)]
+RegionDbHost = Annotated[str, AfterValidator(validate_region_host)]
+
+
+# Which market a LiteLLM region serves. Fixed enum: extending it is a
+# deliberate code change (drives bedrock candidate suggestions in the model
+# dialog and appears on region admin responses).
+REGIONAL_AREAS = ("US", "US+CA", "EU", "DE", "CH", "UK", "AU", "APAC", "GLOBAL")
+RegionalArea = Literal["US", "US+CA", "EU", "DE", "CH", "UK", "AU", "APAC", "GLOBAL"]
+
+
 class RegionBase(BaseModel):
     name: str
     label: Optional[str] = None
     description: Optional[str] = None
-    postgres_host: str
+    postgres_host: RegionDbHost
     postgres_port: int = 5432
     postgres_admin_user: str
     postgres_admin_password: str
-    litellm_api_url: str
+    litellm_api_url: RegionApiUrl
     litellm_api_key: str
     is_active: bool = True
     is_dedicated: bool = False
+    regional_area: Optional[RegionalArea] = None
 
 
 class RegionCreate(RegionBase):
@@ -152,6 +245,10 @@ class RegionCreate(RegionBase):
 
 
 class RegionUpdate(BaseModel):
+    # postgres_host / litellm_api_url are deliberately plain str here: legacy
+    # regions may hold values (e.g. http:// URLs) that predate validation, and
+    # a full PUT must not 422 on unchanged fields. update_region validates
+    # these only when the submitted value differs from the stored one.
     name: str
     label: Optional[str] = None
     description: Optional[str] = None
@@ -163,6 +260,7 @@ class RegionUpdate(BaseModel):
     litellm_api_key: Optional[str] = None
     is_active: bool
     is_dedicated: bool
+    regional_area: Optional[RegionalArea] = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -179,6 +277,16 @@ class RegionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class RegionAdminResponse(RegionResponse):
+    # Admin view: includes DB connection identity but never secrets
+    # (postgres_admin_password / litellm_api_key stay server-side).
+    postgres_port: int
+    postgres_admin_user: str
+    regional_area: Optional[str] = None
+    # NULL = access-group enforcement off (legacy all-models behavior)
+    default_access_group_id: Optional[int] = None
+
+
 class RegionSummaryResponse(BaseModel):
     id: int
     name: str
@@ -189,6 +297,10 @@ class RegionSummaryResponse(BaseModel):
 
 
 class Region(RegionBase):
+    # Response model: override validated input types so stored legacy values
+    # (e.g. http:// URLs) don't fail serialization on reads/updates.
+    postgres_host: str
+    litellm_api_url: str
     id: int
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
@@ -239,9 +351,32 @@ class PublicModelSummary(BaseModel):
     context_length: Optional[int] = None
     max_output_tokens: Optional[int] = None
     description: str
-    manufacturer: PublicModelManufacturer
+    manufacturer: Optional[PublicModelManufacturer] = None
     capabilities: PublicModelCapabilities
     pricing: PublicModelPricing
+    aliased_to: Optional[str] = Field(
+        default=None,
+        description=(
+            "The canonical model_id this entry points at, or null when this "
+            "model is itself canonical. Two models in the same region are the "
+            "same deployment when they share a litellm_params.model."
+        ),
+    )
+    eol_date: Optional[str] = Field(
+        default=None,
+        description=(
+            "End-of-Life date as ISO YYYY-MM-DD, or null when the model has no "
+            "known EOL date."
+        ),
+    )
+    eol_source: Optional[str] = Field(
+        default=None,
+        description=(
+            "Where eol_date came from: 'manual' for an operator-authored "
+            "'(EOL: ...)' annotation in the LiteLLM model metadata, 'bedrock' "
+            "for the upstream AWS Bedrock catalog. Null when eol_date is null."
+        ),
+    )
 
 
 class PublicRegionModels(BaseModel):
@@ -447,7 +582,13 @@ class PrivateAIKeySpend(BaseModel):
     expires: datetime
     created_at: datetime
     updated_at: datetime
-    max_budget: Optional[float] = None
+    max_budget: Optional[float] = Field(
+        default=None,
+        description=(
+            "Key spend cap from Amazee AI DB (spend_caps) for this key. "
+            "Returns null when no key-level cap is configured."
+        ),
+    )
     budget_duration: Optional[str] = None
     budget_reset_at: Optional[datetime] = None
     period_start: Optional[datetime] = None
@@ -463,7 +604,13 @@ class SpendKeyItem(BaseModel):
     owner_id: Optional[int] = None
     team_id: Optional[int] = None
     spend: float
-    max_budget: Optional[float] = None
+    max_budget: Optional[float] = Field(
+        default=None,
+        description=(
+            "Key spend cap from Amazee AI DB (spend_caps) for this key. "
+            "Returns null when no key-level cap is configured."
+        ),
+    )
     cached_spend: Optional[float] = None
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
@@ -478,16 +625,63 @@ class TeamSpendResponse(BaseModel):
     region_name: str
     team_id: int
     team_name: str
-    total_spend: float
-    total_budget: float
+    total_spend: float = Field(
+        description=(
+            "Team spend from provider/API aggregation. May include provider-side "
+            "projection/cumulative behavior."
+        )
+    )
+    total_budget: float = Field(
+        description=(
+            "Effective team budget currently projected/enforced in provider/API totals."
+        )
+    )
+    # Current-period values (may differ from total_* when provider counters are cumulative)
+    period_spend: Optional[float] = Field(
+        default=None,
+        description="Current period spend (period-local view).",
+    )
+    period_budget: Optional[float] = Field(
+        default=None,
+        description=(
+            "Current period budget. For subscription-managed POOL/PERIODIC teams, "
+            "this reflects ledger semantics for the active period."
+        ),
+    )
     total_prompt_tokens: Optional[int] = None
     total_completion_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
-    budget_duration: Optional[str] = None
-    budget_reset_at: Optional[datetime] = None
-    period_start: Optional[datetime] = None
+    budget_duration: Optional[str] = Field(
+        default=None,
+        description="Active team budget window duration (e.g. 31d, 365d, 1mo).",
+    )
+    budget_reset_at: Optional[datetime] = Field(
+        default=None,
+        description="End timestamp of the active team budget window.",
+    )
+    period_start: Optional[datetime] = Field(
+        default=None,
+        description="Start timestamp of the active team budget window.",
+    )
+    periodic_budget: Optional["PeriodicTeamBudgetView | float"] = Field(
+        default=None,
+        description=(
+            "PERIODIC teams: structured PeriodicTeamBudgetView. "
+            "POOL teams with active subscription: current cycle subscription amount (float). "
+            "Otherwise null."
+        ),
+    )
     key_count: int
     keys: List[SpendKeyItem]
+
+
+class PeriodicTeamBudgetView(BaseModel):
+    purchased_budget_cents: int
+    purchased_budget: float
+    remaining_budget_cents: int
+    remaining_budget: float
+    configured_max_budget_cents: int
+    configured_max_budget: float
 
 
 class UserSpendResponse(BaseModel):
@@ -502,6 +696,119 @@ class UserSpendResponse(BaseModel):
     total_tokens: Optional[int] = None
     key_count: int
     keys: List[SpendKeyItem]
+
+
+class KeyLastUsedResponse(BaseModel):
+    region_id: int
+    key_id: int
+    last_used_at: Optional[datetime] = Field(
+        default=None,
+        description=(
+            "Timestamp the key was last used, derived from LiteLLM spend logs. "
+            "Null when the key has never been used."
+        ),
+    )
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DailyActivityModelBreakdown(BaseModel):
+    """Per-model slice of a day's usage, taken from LiteLLM's breakdown block.
+
+    Only present on daily-activity rows when the request opts in with
+    ``include_breakdown=true``. The metric fields mirror the flat row and, for
+    a given day, sum to the row's aggregate totals.
+    """
+
+    model: str = Field(
+        description="LiteLLM model name, e.g. 'bedrock/us.anthropic.claude-sonnet-4-6'.",
+    )
+    spend: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    request_count: int = 0
+    # `model` is a normal field here; opt out of pydantic's protected `model_`
+    # namespace so it doesn't warn/clash.
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+
+class KeyDailyActivityRow(BaseModel):
+    date: date
+    spend: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cache_read_input_tokens: int = Field(
+        default=0,
+        description=(
+            "Prompt tokens served from LiteLLM's prompt cache on this day "
+            "(billed at the cheaper cache-read rate)."
+        ),
+    )
+    cache_creation_input_tokens: int = Field(
+        default=0,
+        description=(
+            "Prompt tokens written to LiteLLM's prompt cache on this day "
+            "(billed at the cache-write rate)."
+        ),
+    )
+    request_count: int = Field(
+        default=0,
+        description="Number of API requests made with this key on this day.",
+    )
+    breakdown: Optional[List[DailyActivityModelBreakdown]] = Field(
+        default=None,
+        description=(
+            "Per-model usage for this day, ordered by descending spend. Only "
+            "populated when the request sets include_breakdown=true; omitted "
+            "otherwise."
+        ),
+    )
+    model_config = ConfigDict(from_attributes=True)
+
+
+class KeyDailyActivityResponse(BaseModel):
+    region_id: int
+    key_id: int
+    start_date: date
+    end_date: date
+    activity: List[KeyDailyActivityRow] = Field(
+        description=(
+            "Per-day usage rows for the key, ordered ascending by date. "
+            "Days with no usage are omitted."
+        )
+    )
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserDailyActivityResponse(BaseModel):
+    region_id: int
+    user_id: int
+    start_date: date
+    end_date: date
+    activity: List[KeyDailyActivityRow] = Field(
+        description=(
+            "Per-day usage rows aggregated across all of the user's keys, "
+            "ordered ascending by date. Days with no usage are omitted."
+        )
+    )
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TeamDailyActivityResponse(BaseModel):
+    region_id: int
+    team_id: int
+    start_date: date
+    end_date: date
+    activity: List[KeyDailyActivityRow] = Field(
+        description=(
+            "Per-day usage rows aggregated across all of the team's keys, "
+            "ordered ascending by date. Days with no usage are omitted."
+        )
+    )
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SpendBudgetUpdateRequest(BaseModel):
@@ -541,6 +848,9 @@ class TeamSpendHistoryPeriodItem(BaseModel):
     total_prompt_tokens: Optional[int] = None
     total_completion_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
+    subscription_remaining_cents: Optional[int] = None
+    topup_remaining_cents: Optional[int] = None
+    desired_remaining_cents: Optional[int] = None
     source: str
     stripe_event_id: Optional[str] = None
     stripe_invoice_id: Optional[str] = None
@@ -554,6 +864,21 @@ class TeamSpendHistoryResponse(BaseModel):
     team_id: int
     team_name: str
     periods: List[TeamSpendHistoryPeriodItem]
+    periodic_transactions: List["TeamPeriodicTransactionItem"] = Field(
+        default_factory=list
+    )
+
+
+class TeamPeriodicTransactionItem(BaseModel):
+    id: int
+    payment_type: str
+    amount_cents: int
+    currency: str
+    stripe_payment_id: str
+    payment_date: datetime
+    status: str
+    sync_status: str
+    source: str
 
 
 class LiteLLMToken(BaseModel):
@@ -579,6 +904,8 @@ class AuditLog(BaseModel):
     ip_address: Optional[str]
     user_agent: Optional[str]
     request_source: Optional[str]
+    referer: Optional[str] = None
+    origin: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -595,6 +922,8 @@ class AuditLogResponse(BaseModel):
     ip_address: Optional[str]
     user_agent: Optional[str]
     request_source: Optional[str]
+    referer: Optional[str] = None
+    origin: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -624,6 +953,7 @@ class TeamCreate(TeamBase):
     hide_public_regions: bool = False
     budget_type: BudgetType = BudgetType.PERIODIC
     require_purchase_for_requests: bool = True
+    region_id: int
 
 
 class TeamUpdate(BaseModel):
@@ -633,7 +963,10 @@ class TeamUpdate(BaseModel):
     billing_address: Optional[str] = None
     is_active: Optional[bool] = None
     is_always_free: Optional[bool] = None
-    force_user_keys: Optional[bool] = False
+    # Defaults to None (not False) like the other admin-only fields: otherwise a
+    # GET-then-PUT round-trip marks it "set", and update_team's admin_only_fields
+    # guard would 403 non-admins on innocuous edits (name/phone).
+    force_user_keys: Optional[bool] = None
     hide_public_regions: Optional[bool] = None
     budget_type: Optional[BudgetType] = None
     require_purchase_for_requests: Optional[bool] = None
@@ -653,6 +986,7 @@ class Team(TeamBase):
     last_payment: Optional[datetime] = None
     deleted_at: Optional[datetime] = None
     retention_warning_sent_at: Optional[datetime] = None
+    region_id: Optional[int] = None
     products: List[Product] = []
     allowed_regions: List[RegionSummaryResponse] = []
     model_config = ConfigDict(from_attributes=True)
@@ -822,6 +1156,27 @@ class PoolPurchaseResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PeriodicTopupRequest(BaseModel):
+    amount_cents: int = Field(gt=0)
+    currency: str
+    purchased_at: datetime
+    stripe_payment_id: str
+
+
+class PeriodicTopupResponse(BaseModel):
+    id: int
+    team_id: int
+    region_id: int
+    amount_cents: int
+    currency: str
+    purchased_at: datetime
+    stripe_payment_id: str
+    created_at: datetime
+    new_total_budget_cents: int
+    budget_type: BudgetType = BudgetType.PERIODIC
+    model_config = ConfigDict(from_attributes=True)
+
+
 class PoolPurchaseHistoryItem(BaseModel):
     id: int
     amount_cents: int
@@ -856,6 +1211,17 @@ class PoolRegionPurchaseHistoryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PeriodicBudgetStatusResponse(BaseModel):
+    team_id: int
+    region_id: int
+    subscription_remaining_cents: int
+    topup_remaining_cents: int
+    desired_remaining_cents: int
+    subscription_period_end: Optional[datetime] = None
+    nearest_topup_expiry: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
 class UserSpendRegion(BaseModel):
     region_id: int
     region_name: str
@@ -876,3 +1242,218 @@ class UserSpendByEmailResponse(BaseModel):
     total_spend: float
     teams: List[UserSpendTeam]
     cached_at: datetime
+
+
+class SubscriptionCycleRequest(BaseModel):
+    transaction_id: str
+    budget_cents: int
+    team_id: int
+    region_id: int
+
+
+class SubscriptionDeactivateRequest(BaseModel):
+    transaction_id: str
+    team_id: int
+    region_id: int
+    reason: Optional[str] = None
+
+
+class SubscriptionCycleResponse(BaseModel):
+    status: str
+    team_id: int
+    payment_id: Optional[int] = None
+    budget_dollars: Optional[float] = None
+    idempotent: bool = False
+
+
+class SubscriptionDeactivateResponse(BaseModel):
+    status: str
+    team_id: int
+    payment_id: Optional[int] = None
+    idempotent: bool = False
+
+
+class AdminModelRegionResponse(BaseModel):
+    region_id: int
+    region_name: str
+    is_active: bool
+    sync_status: str
+    sync_error: Optional[str] = None
+    synced_at: Optional[datetime] = None
+    # Merged over the model's litellm_params at sync time (credentials redacted)
+    litellm_params_override: Optional[dict] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AdminModelAliasTarget(BaseModel):
+    region_id: int
+    target_model_id: int
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AdminModelBase(BaseModel):
+    model_id: str
+    display_name: str
+    provider: str
+    type: str
+    context_length: Optional[int] = None
+    max_output_tokens: Optional[int] = None
+    description: Optional[str] = None
+    real_eol: Optional[datetime] = None
+    override_eol: Optional[datetime] = None
+    is_active_globally: bool = True
+    litellm_params: Optional[dict] = None
+
+
+class AdminModelResponse(AdminModelBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+    deleted_at: Optional[datetime] = None
+    regions: List[AdminModelRegionResponse] = Field(default_factory=list)
+    access_group_slugs: List[str] = Field(default_factory=list)
+    access_group_ids: List[int] = Field(default_factory=list)
+    is_alias: bool = False
+    alias_targets: List[AdminModelAliasTarget] = Field(default_factory=list)
+    model_config = ConfigDict(from_attributes=True)
+
+
+# The slug is the literal string synced into LiteLLM model_info.access_groups
+# and team models lists — immutable after creation (see DBModelAccessGroup).
+ACCESS_GROUP_SLUG_PATTERN = r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+
+
+class AccessGroupCreate(BaseModel):
+    slug: str = Field(min_length=1, max_length=64, pattern=ACCESS_GROUP_SLUG_PATTERN)
+    label: str = Field(min_length=1)
+    description: Optional[str] = None
+    model_ids: List[int] = Field(default_factory=list)
+    region_ids: List[int] = Field(default_factory=list)
+
+
+class AccessGroupUpdate(BaseModel):
+    label: Optional[str] = None
+    description: Optional[str] = None
+    model_ids: Optional[List[int]] = None
+    region_ids: Optional[List[int]] = None
+
+
+class AccessGroupResponse(BaseModel):
+    id: int
+    slug: str
+    label: str
+    description: Optional[str] = None
+    model_ids: List[int] = Field(default_factory=list)
+    region_ids: List[int] = Field(default_factory=list)
+    default_in_region_ids: List[int] = Field(default_factory=list)
+    team_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RegionDefaultAccessGroupRequest(BaseModel):
+    # None = turn enforcement off for the region (legacy all-models behavior)
+    group_id: Optional[int] = None
+
+
+class TeamAccessGroupsUpdateRequest(BaseModel):
+    access_groups: List[str] = Field(default_factory=list)
+
+
+class TeamAccessGroupsResponse(BaseModel):
+    team_id: int
+    access_groups: List[str] = Field(default_factory=list)
+    # region_name -> default group slug, for each enforced region the team belongs to
+    defaults: Dict[str, str] = Field(default_factory=dict)
+
+
+class TeamGroupSyncRunResponse(BaseModel):
+    id: int
+    region_id: int
+    status: str
+    total: int
+    done: int
+    failed_team_ids: Optional[List[int]] = None
+    error_sample: Optional[str] = None
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+# --- Declarative config apply (GitOps flow: config repo -> /admin/models/apply) ---
+# Everything is keyed by stable strings (model_id, group slug, region name), never
+# DB ids, so the payload can live in a repo with no knowledge of this database.
+
+
+class ApplyAccessGroupSpec(BaseModel):
+    slug: str = Field(min_length=1, max_length=64, pattern=ACCESS_GROUP_SLUG_PATTERN)
+    label: str = Field(min_length=1)
+    description: Optional[str] = None
+    # region names the group is deployed to
+    regions: List[str] = Field(default_factory=list)
+
+
+class ApplyDeploymentSpec(BaseModel):
+    region: str
+    litellm_params_override: Optional[dict] = None
+
+
+class ApplyAliasTargetSpec(BaseModel):
+    region: str
+    # catalog model_id of the target (must be a non-alias model in the payload or DB)
+    target: str
+
+
+class ApplyModelSpec(BaseModel):
+    model_id: str
+    display_name: str
+    provider: str
+    type: str
+    context_length: Optional[int] = None
+    max_output_tokens: Optional[int] = None
+    description: Optional[str] = None
+    real_eol: Optional[datetime] = None
+    override_eol: Optional[datetime] = None
+    litellm_params: Optional[dict] = None
+    access_groups: List[str] = Field(default_factory=list)  # group slugs
+    is_alias: bool = False
+    deployments: List[ApplyDeploymentSpec] = Field(default_factory=list)
+    alias_targets: List[ApplyAliasTargetSpec] = Field(default_factory=list)
+
+
+class ApplyConfigRequest(BaseModel):
+    dry_run: bool = False
+    # prune=True deactivates catalog models absent from the payload (soft —
+    # never hard-deletes). Access groups are never pruned automatically.
+    prune: bool = False
+    access_groups: List[ApplyAccessGroupSpec] = Field(default_factory=list)
+    models: List[ApplyModelSpec] = Field(default_factory=list)
+
+
+class ApplyChange(BaseModel):
+    entity: str  # access_group | model | deployment | alias_target
+    key: str
+    action: str  # create | update | deactivate | prune | prune_blocked | resync
+    detail: Optional[str] = None
+
+
+class SkippedRegion(BaseModel):
+    region: str
+    reason: str  # unknown | inactive | not_catalog_managed
+
+
+class ApplyConfigResponse(BaseModel):
+    dry_run: bool
+    changes: List[ApplyChange] = Field(default_factory=list)
+    # catalog model_ids present in the DB but not in the payload (and not pruned)
+    unmanaged_models: List[str] = Field(default_factory=list)
+    # group slugs present in the DB but not in the payload (never auto-pruned)
+    unmanaged_access_groups: List[str] = Field(default_factory=list)
+    # Regions the payload named that this environment left untouched. Not an
+    # error — one catalog is posted to every environment. Callers surface these
+    # (PR comment, Slack) so a typo'd or retired region stays visible.
+    skipped_regions: List[SkippedRegion] = Field(default_factory=list)
+    syncs_scheduled: int = 0
+
+

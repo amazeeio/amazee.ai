@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session, contains_eager
 
 from sqlalchemy import func, or_
@@ -9,7 +9,7 @@ from collections import defaultdict
 
 from app.core.config import settings
 from app.core.litellm_user_sync import (
-    get_target_regions_for_user,
+    get_team_region,
     sync_add_user_to_team,
     sync_create_user_across_regions,
     sync_delete_user_across_regions,
@@ -21,7 +21,7 @@ from app.db.database import get_db
 from app.core.dependencies import get_limit_service
 from app.schemas.models import (
     User,
-    UserUpdate,
+    AdminUserUpdate,
     UserCreate,
     TeamOperation,
     UserAdminRegionResponse,
@@ -29,8 +29,10 @@ from app.schemas.models import (
     UserSpendRegion,
     UserSpendByEmailResponse,
     UserSpendTeam,
+    UserMarketingUpdatesByEmailUpdate,
 )
 from app.db.models import (
+    DBBudgetAlertState,
     DBPrivateAIKey,
     DBRegion,
     DBSpendCap,
@@ -46,8 +48,11 @@ from app.core.security import (
     get_current_user_from_auth,
     get_role_min_team_admin,
 )
+from app.core.email import normalize_email_for_lookup
 from app.core.roles import UserRole
 from app.services.litellm import LiteLLMService
+from app.services.disposable_domains import assert_email_domain_allowed
+from app.services.hubspot import HubSpotService
 from datetime import datetime, UTC
 import logging
 import asyncio
@@ -61,20 +66,38 @@ _USER_SPEND_SEMAPHORE = asyncio.Semaphore(10)
 
 def get_user_by_email(db: Session, email: str) -> Optional[DBUser]:
     """
-    Get a user by email (case-insensitive).
+    Get a user by email (case-insensitive, plus-tag insensitive).
+
+    Plus-tags (e.g. "user+p12@") are stripped to the canonical base email so
+    that all tag variants resolve to the single identity for the human. This
+    prevents identity fragmentation across Drupal, moad, and the amazee.ai API.
+
+    Backward compatibility: if no user matches the normalized form, fall back
+    to an exact (case-insensitive) match on the raw input. This keeps legacy
+    users whose stored email still contains a plus-tag (created before
+    normalization was enforced) login-able until their row is migrated to the
+    base form. The normalized match is preferred when both exist so new,
+    canonical identities always win over stale tagged duplicates.
     """
-    return db.query(DBUser).filter(func.lower(DBUser.email) == email.lower()).first()
+    normalized = normalize_email_for_lookup(email)
+    raw = email.lower()
+
+    # Fast path: the two queries collapse to one when the input is already
+    # normalized (no plus-tag), which is the common case.
+    if normalized == raw:
+        return db.query(DBUser).filter(func.lower(DBUser.email) == normalized).first()
+
+    # Plus-tag input: try the normalized identity first, then fall back to the
+    # exact tagged form for legacy rows.
+    normalized_user = (
+        db.query(DBUser).filter(func.lower(DBUser.email) == normalized).first()
+    )
+    if normalized_user is not None:
+        return normalized_user
+    return db.query(DBUser).filter(func.lower(DBUser.email) == raw).first()
 
 
 router = APIRouter(tags=["users"])
-
-
-def _normalize_email_for_lookup(email: str) -> str:
-    parts = email.lower().rsplit("@", 1)
-    if len(parts) == 2:
-        local_part = parts[0].split("+")[0]
-        return f"{local_part}@{parts[1]}"
-    return email.lower()
 
 
 def invalidate_user_spend_cache(db: Session, email: str) -> None:
@@ -87,7 +110,7 @@ def invalidate_user_spend_cache(db: Session, email: str) -> None:
     This helper intentionally does not commit; callers control the transaction
     boundary so cache invalidation remains atomic with the related write.
     """
-    normalized = _normalize_email_for_lookup(email)
+    normalized = normalize_email_for_lookup(email)
     db.query(DBUserSpendCache).filter(
         DBUserSpendCache.normalized_email == normalized
     ).delete(synchronize_session=False)
@@ -105,7 +128,7 @@ def invalidate_users_spend_cache_bulk(db: Session, emails: list[str]) -> None:
     """
     if not emails:
         return
-    normalized_emails = [_normalize_email_for_lookup(e) for e in emails]
+    normalized_emails = [normalize_email_for_lookup(e) for e in emails]
     db.query(DBUserSpendCache).filter(
         DBUserSpendCache.normalized_email.in_(normalized_emails)
     ).delete(synchronize_session=False)
@@ -505,6 +528,56 @@ async def get_users_by_email(
     return result
 
 
+@router.put(
+    "/by-email/marketing-updates",
+    response_model=List[User],
+    dependencies=[Depends(get_role_min_system_admin)],
+)
+async def update_users_marketing_updates_by_email(
+    payload: UserMarketingUpdatesByEmailUpdate,
+    db: Session = Depends(get_db),
+):
+    if not settings.HUBSPOT_MARKETING_SUBSCRIPTION_ID:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="HubSpot marketing subscription is not configured",
+        )
+
+    normalized_email = normalize_email_for_lookup(payload.email)
+
+    users = (
+        db.query(DBUser)
+        .outerjoin(DBTeam, DBUser.team_id == DBTeam.id)
+        .filter(
+            func.regexp_replace(func.lower(DBUser.email), r"\+[^@]*@", "@")
+            == normalized_email,
+            DBUser.is_active.is_(True),
+            (DBUser.team_id.is_(None)) | (DBTeam.deleted_at.is_(None)),
+        )
+        .all()
+    )
+    hubspot = HubSpotService()
+    try:
+        await hubspot.upsert_contact_marketing_updates(
+            email=normalized_email, enabled=payload.receive_marketing_updates
+        )
+    except HTTPException:
+        logger.exception(
+            "HubSpot marketing-updates sync failed for email=%s", normalized_email
+        )
+
+    if not users:
+        return []
+
+    for user in users:
+        user.receive_marketing_updates = payload.receive_marketing_updates
+    db.commit()
+    for user in users:
+        db.refresh(user)
+
+    return users
+
+
 @router.get(
     "/spend",
     response_model=UserSpendByEmailResponse,
@@ -523,7 +596,7 @@ async def get_user_spend(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Missing or invalid email",
         )
-    normalized_email = _normalize_email_for_lookup(email)
+    normalized_email = normalize_email_for_lookup(email)
 
     cached = _get_user_spend_cache(db, normalized_email)
     if cached:
@@ -639,31 +712,40 @@ async def remove_user_admin_region(
     "/", response_model=List[User], dependencies=[Depends(get_role_min_team_admin)]
 )
 async def list_users(
+    response: Response,
     current_user: DBUser = Depends(get_current_user_from_auth),
     search: Optional[str] = None,
+    team: Optional[str] = None,
+    role: Optional[str] = None,
+    include_inactive: bool = False,
+    skip: int = Query(0, ge=0),
+    limit: Optional[int] = Query(None, ge=1, le=1000),
+    sort_by: Optional[str] = Query(None, pattern="^(email|team_name|role)$"),
+    sort_order: str = Query("asc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db),
 ):
     """
     List users. Accessible by admin users or team admins for their team members.
     Users from soft-deleted teams and inactive users are excluded from the results.
-    Optionally filter by search term (partial email match).
+    System admins can pass include_inactive=true to also see inactive users.
+    Optionally filter by search term (partial email match), team (partial team
+    name match), and role (exact match).
+    Supports pagination via skip/limit (unpaginated when limit is omitted, for
+    backwards compatibility); the total match count is returned in the
+    X-Total-Count response header.
     """
     if current_user.is_admin:
         # Use LEFT JOIN to get all users and their team information in a single query
-        # Exclude users from soft-deleted teams and inactive users
+        # Exclude users from soft-deleted teams
         query = (
             db.query(DBUser, DBTeam.name.label("team_name"))
             .outerjoin(DBTeam, DBUser.team_id == DBTeam.id)
             .filter(
-                DBUser.is_active.is_(True),
                 (DBUser.team_id.is_(None)) | (DBTeam.deleted_at.is_(None)),
             )
         )
-
-        if search:
-            query = query.filter(DBUser.email.ilike(f"%{search}%"))
-
-        users = query.all()
+        if not include_inactive:
+            query = query.filter(DBUser.is_active.is_(True))
     else:
         # Return only users in the team admin's team with team information
         # Exclude if team is soft-deleted or user is inactive
@@ -677,14 +759,37 @@ async def list_users(
             )
         )
 
-        if search:
-            query = query.filter(DBUser.email.ilike(f"%{search}%"))
+    if search:
+        escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query = query.filter(DBUser.email.ilike(f"%{escaped}%", escape="\\"))
+    if team:
+        escaped = team.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query = query.filter(DBTeam.name.ilike(f"%{escaped}%", escape="\\"))
+    if role:
+        query = query.filter(DBUser.role == role)
 
-        users = query.all()
+    total = query.count()
+    response.headers["X-Total-Count"] = str(total)
+
+    sort_columns = {
+        "email": func.lower(DBUser.email),
+        "team_name": func.lower(DBTeam.name),
+        "role": func.lower(DBUser.role),
+    }
+    order_by = []
+    if sort_by:
+        column = sort_columns[sort_by]
+        order_by.append(column.desc() if sort_order == "desc" else column.asc())
+    # Stable ordering so skip/limit pagination is deterministic
+    order_by.append(DBUser.id)
+    query = query.order_by(*order_by)
+
+    if limit is not None:
+        query = query.offset(skip).limit(limit)
 
     # Map the results to DBUser objects with team_name
     result = []
-    for user, team_name in users:
+    for user, team_name in query.all():
         user.team_name = team_name
         result.append(user)
     return result
@@ -710,8 +815,14 @@ async def create_user(
     """
     Create a new user. Accessible by admin users or team admins for their own team.
     """
-    # Check if email already exists
-    db_user = get_user_by_email(db, user.email)
+    # Check if email already exists. Use an exact (case-insensitive) match here
+    # rather than the normalizing get_user_by_email(), because tagged emails such as
+    # "user+team_id@domain" (created by moad's provision-key flow) are intentionally
+    # distinct identities scoped to a specific Applications workspace team.  Normalizing
+    # would strip the tag and find the base user, incorrectly blocking creation.
+    db_user = (
+        db.query(DBUser).filter(func.lower(DBUser.email) == user.email.lower()).first()
+    )
     if db_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
@@ -728,6 +839,10 @@ async def create_user(
 
 
 async def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
+    # Defense-in-depth: reject disposable / dynamic-DNS domains at the narrowest
+    # user-creation choke point (covers create_user, sign-in auto-provision, trial).
+    assert_email_domain_allowed(db, user.email)
+
     limit_service = get_limit_service(db)
     if settings.ENABLE_LIMITS and user.team_id is not None:
         limit_service.check_team_user_limit(user.team_id)
@@ -737,6 +852,14 @@ async def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid role. Must be one of: {', '.join(UserRole.get_all_roles())}",
+        )
+
+    # This path always creates non-admin users (is_admin=False below), so a
+    # system_admin role here would be an inconsistent row (see rbac invariant).
+    if user.role == UserRole.SYSTEM_ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="system_admin role cannot be assigned via user creation.",
         )
 
     # Default to the lowest permissions for a user in a team
@@ -754,6 +877,11 @@ async def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
         is_admin=False,  # Users are created as non-admin by default
         team_id=user.team_id,
         role=user.role,
+        receive_marketing_updates=(
+            user.receive_marketing_updates
+            if user.receive_marketing_updates is not None
+            else False
+        ),
     )
 
     db.add(db_user)
@@ -809,7 +937,7 @@ async def get_user(
 )
 async def update_user(
     user_id: int,
-    user_update: UserUpdate,
+    user_update: AdminUserUpdate,
     current_user: DBUser = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db),
 ):
@@ -835,6 +963,15 @@ async def update_user(
                 detail="Team members cannot be made administrators",
             )
 
+    # Only system admins may change a user's activation status (mirrors the
+    # is_admin guard above). Team admins manage membership/role, not whether an
+    # account is active.
+    if user_update.is_active is not None and not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action",
+        )
+
     previous_email = db_user.email
     for key, value in user_update.model_dump(exclude_unset=True).items():
         setattr(db_user, key, value)
@@ -842,7 +979,8 @@ async def update_user(
     synced_regions = []
     updated_regions = []
     if user_update.email is not None:
-        synced_regions = get_target_regions_for_user(db, db_user.team_id)
+        region = get_team_region(db, db_user.team_id) if db_user.team_id else None
+        synced_regions = [region] if region else []
         for region in synced_regions:
             service = LiteLLMService(
                 api_url=region.litellm_api_url, api_key=region.litellm_api_key
@@ -904,6 +1042,7 @@ async def update_user(
         raise
 
     db.refresh(db_user)
+
     return db_user
 
 
@@ -913,11 +1052,21 @@ async def update_user(
     dependencies=[Depends(get_role_min_team_admin)],
 )
 async def add_user_to_team(
-    user_id: int, team_operation: TeamOperation, db: Session = Depends(get_db)
+    user_id: int,
+    team_operation: TeamOperation,
+    db: Session = Depends(get_db),
+    current_user: DBUser = Depends(get_current_user_from_auth),
 ):
     """
     Add a user to a team. Accessible by admin users or team admins.
     """
+    # A team admin may only add users to their own team; system admins any team.
+    if not current_user.is_admin and current_user.team_id != team_operation.team_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action",
+        )
+
     db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -970,7 +1119,7 @@ async def add_user_to_team(
 @router.post(
     "/{user_id}/remove-from-team",
     response_model=User,
-    dependencies=[Depends(get_role_min_system_admin)],
+    dependencies=[Depends(get_role_min_team_admin)],
 )
 async def remove_user_from_team(
     user_id: int,
@@ -978,11 +1127,20 @@ async def remove_user_from_team(
     db: Session = Depends(get_db),
 ):
     """
-    Remove a user from a team. Accessible by admin users.
+    Remove a user from a team. Accessible by system admins or team admins for
+    members of their own team.
     """
     db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    # Team admins may only remove members of their own team (mirrors
+    # update_user_role); system admins are unrestricted.
+    if not current_user.is_admin and db_user.team_id != current_user.team_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action",
+        )
 
     # Check if user is a member of a team
     if db_user.team_id is None:
@@ -990,6 +1148,25 @@ async def remove_user_from_team(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User is not a member of any team",
         )
+
+    # Don't orphan a team: block removing its last remaining team admin (a team
+    # admin can now remove members, including themselves). Promote another admin
+    # first.
+    if db_user.role == UserRole.TEAM_ADMIN:
+        other_admins = (
+            db.query(DBUser)
+            .filter(
+                DBUser.team_id == db_user.team_id,
+                DBUser.id != db_user.id,
+                DBUser.role == UserRole.TEAM_ADMIN,
+            )
+            .count()
+        )
+        if other_admins == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot remove the last team admin from the team",
+            )
 
     # Remove user from team
     previous_team_id = db_user.team_id
@@ -1037,6 +1214,17 @@ async def delete_user(
         )
 
     team_id = db_user.team_id
+
+    # Budget rows reference the user without a cascade, so a user who ever had a
+    # member budget or fired a budget alert cannot be deleted until they are
+    # cleared. Both only describe spend limits, so they die with the user.
+    db.query(DBSpendCap).filter(DBSpendCap.user_id == user_id).delete(
+        synchronize_session=False
+    )
+    db.query(DBBudgetAlertState).filter(DBBudgetAlertState.user_id == user_id).delete(
+        synchronize_session=False
+    )
+
     db.delete(db_user)
     try:
         db.commit()
@@ -1088,6 +1276,15 @@ async def update_user_role(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to perform this action",
             )
+
+    # Only system admins may assign the system_admin role. Anyone else would
+    # create an inconsistent record (role=system_admin, is_admin=False) that
+    # spams rbac warnings on every request.
+    if role_update.role == UserRole.SYSTEM_ADMIN and not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only system administrators can assign the system_admin role",
+        )
 
     # Don't allow changing admin roles through this endpoint
     if db_user.is_admin:

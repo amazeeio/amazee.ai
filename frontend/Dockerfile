@@ -1,5 +1,14 @@
 FROM uselagoon/node-22:25.12.1@sha256:2988e452b032e33b98fb5102ae6685b3bbbf0bb3f1f24fdf6dc5f87198b32a7a AS builder
 
+ARG NEXT_PUBLIC_NEW_DASHBOARD_URL
+ENV NEXT_PUBLIC_NEW_DASHBOARD_URL=${NEXT_PUBLIC_NEW_DASHBOARD_URL}
+# Inlined into the client bundle via next.config.ts `env` at build time —
+# without these the use-config error fallback reads undefined in the browser.
+ARG PASSWORDLESS_SIGN_IN
+ENV PASSWORDLESS_SIGN_IN=${PASSWORDLESS_SIGN_IN}
+ARG STRIPE_PUBLISHABLE_KEY
+ENV STRIPE_PUBLISHABLE_KEY=${STRIPE_PUBLISHABLE_KEY}
+
 WORKDIR /app
 
 # Copy package files
@@ -16,6 +25,9 @@ RUN npm run build
 
 # Production stage
 FROM uselagoon/node-22:25.12.1@sha256:2988e452b032e33b98fb5102ae6685b3bbbf0bb3f1f24fdf6dc5f87198b32a7a
+
+ARG NEXT_PUBLIC_NEW_DASHBOARD_URL
+ENV NEXT_PUBLIC_NEW_DASHBOARD_URL=${NEXT_PUBLIC_NEW_DASHBOARD_URL}
 
 WORKDIR /app
 

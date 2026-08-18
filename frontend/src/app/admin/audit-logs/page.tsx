@@ -25,6 +25,9 @@ export default function AuditLogsPage() {
     resource_type: [],
     status_code: [],
     user_email: "",
+    referer: "",
+    from_date: "",
+    to_date: "",
   });
 
   const {
@@ -51,6 +54,13 @@ export default function AuditLogsPage() {
     if (filters.status_code?.length)
       params.append("status_code", filters.status_code.join(","));
     if (filters.user_email) params.append("user_email", filters.user_email);
+    if (filters.referer) params.append("referer", filters.referer);
+    // datetime-local values are local time; send UTC so the backend
+    // compares against its UTC-stored timestamps correctly.
+    if (filters.from_date)
+      params.append("from_date", new Date(filters.from_date).toISOString());
+    if (filters.to_date)
+      params.append("to_date", new Date(filters.to_date).toISOString());
     return params.toString();
   }, [currentPage, filters]);
 

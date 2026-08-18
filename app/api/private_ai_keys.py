@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from fastapi import status
 import logging
+
+import httpx
 
 from app.db.database import get_db
 from app.core.dependencies import get_limit_service
@@ -20,21 +21,23 @@ from app.schemas.models import (
 )
 from app.db.postgres import PostgresManager
 from app.db.models import (
-    DBPoolPurchase,
     DBPrivateAIKey,
     DBRegion,
     DBUser,
     DBTeam,
     DBSpendCap,
 )
-from app.services.litellm import LiteLLMService
+from app.core.email import normalize_email_for_lookup
+from app.services.litellm import INFERENCE_ONLY_ROUTES, LiteLLMService
 from app.core.security import (
     get_current_user_from_auth,
     get_role_min_team_admin,
     get_private_ai_access,
+    get_private_ai_direct_access,
     get_role_min_system_admin,
 )
 from app.core.roles import UserRole
+from app.core.rbac import enforce_declared_team_scope
 from app.core.config import settings
 from app.core.limit_service import (
     LimitService,
@@ -42,6 +45,9 @@ from app.core.limit_service import (
     DEFAULT_MAX_SPEND,
     DEFAULT_RPM_PER_KEY,
 )
+from app.core.pool_budget_service import pool_team_has_ever_purchased
+from app.core.spend_period_service import canonical_budget_duration
+from app.core.team_service import is_anonymous_trial_team
 
 router = APIRouter(tags=["private-ai-keys"])
 
@@ -57,6 +63,7 @@ def _validate_permissions_and_get_ownership_info(
     team_id: Optional[int],
     current_user: DBUser,
     user_role: UserRole,
+    db: Session,
 ) -> tuple[Optional[int], Optional[int]]:
     """
     Helper function to determine ownership information based on user role and input.
@@ -81,6 +88,27 @@ def _validate_permissions_and_get_ownership_info(
                 detail="Not authorized to perform this action",
             )
 
+    # A non-system-admin may only assign ownership to a user in their own team.
+    # Without this, a key_creator/team_admin could set owner_id to a user in
+    # another team and mint resources billed to that team (H1).
+    if (
+        owner_id is not None
+        and owner_id != current_user.id
+        and not current_user.is_admin
+    ):
+        owner = db.query(DBUser).filter(DBUser.id == owner_id).first()
+        # A teamless caller must never own another user's resource, and both
+        # sides being teamless (None == None) must NOT count as the same team.
+        if (
+            not owner
+            or current_user.team_id is None
+            or owner.team_id != current_user.team_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to perform this action",
+            )
+
     if team_id is not None and owner_id is not None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -94,7 +122,7 @@ def _validate_permissions_and_get_ownership_info(
 async def create_vector_db(
     vector_db: VectorDBCreate,
     current_user=Depends(get_current_user_from_auth),
-    user_role: UserRole = Depends(get_private_ai_access),
+    user_role: UserRole = Depends(get_private_ai_direct_access),
     db: Session = Depends(get_db),
     limit_service: LimitService = Depends(get_limit_service),
     store_result: bool = True,
@@ -132,7 +160,7 @@ async def create_vector_db(
     """
     # Get ownership information
     owner_id, team_id = _validate_permissions_and_get_ownership_info(
-        vector_db.owner_id, vector_db.team_id, current_user, user_role
+        vector_db.owner_id, vector_db.team_id, current_user, user_role, db
     )
 
     # Get the region
@@ -205,6 +233,7 @@ async def create_vector_db(
 @router.post("", response_model=PrivateAIKey)
 @router.post("/", response_model=PrivateAIKey)
 async def create_private_ai_key(
+    request: Request,
     private_ai_key: PrivateAIKeyCreate,
     current_user=Depends(get_current_user_from_auth),
     user_role: UserRole = Depends(get_private_ai_access),
@@ -243,7 +272,51 @@ async def create_private_ai_key(
     - Key budgets apply per key.
     - For team workflows with shared pool budget, prefer team-owned keys
       (`team_id`).
+
+    Requests without the `X-Amazee-Source` header from non-admin users are
+    delegated to the moad dashboard backend (Drupal onboarding flow).
     """
+    bypass_delegation = bool(request.headers.get("X-Amazee-Source"))
+    return await _create_private_ai_key(
+        private_ai_key=private_ai_key,
+        current_user=current_user,
+        user_role=user_role,
+        db=db,
+        limit_service=limit_service,
+        bypass_delegation=bypass_delegation,
+    )
+
+
+async def _create_private_ai_key(
+    private_ai_key: PrivateAIKeyCreate,
+    current_user: DBUser,
+    user_role: UserRole,
+    db: Session,
+    limit_service: LimitService,
+    bypass_delegation: bool = False,
+) -> PrivateAIKey:
+    """
+    Internal implementation for private AI key creation.
+
+    ``bypass_delegation=True`` skips moad routing — used by internal callers
+    (``/internal/provision-key``, ``generate-trial-access``) that already
+    operate in a trusted server-side context.
+    """
+    # --- moad delegation ---
+    # Delegate to moad when:
+    #   - the caller has not opted out via bypass_delegation (set from the
+    #     X-Amazee-Source header by the route handler, or True for internal
+    #     callers), AND
+    #   - the user is not a system admin (admins always create keys directly).
+    # The Drupal module never sends X-Amazee-Source so its requests always
+    # reach moad.
+    if not bypass_delegation and not current_user.is_admin:
+        logger.info(
+            f"[drupal-attribution] delegating key creation to moad for "
+            f"{current_user.email} (reason: no bypass header and non-admin user)"
+        )
+        return await _delegate_to_moad(private_ai_key, current_user, db)
+
     llm_token = None
     db_info = None
     region = None
@@ -327,7 +400,11 @@ async def create_private_ai_key(
             if db_info and region:
                 # Delete vector database
                 postgres_manager = PostgresManager(region=region)
-                await postgres_manager.delete_database(db_info.database_name)
+                # Drop the role too — a leftover role keeps valid, unowned
+                # credentials on the shared cluster.
+                await postgres_manager.delete_database(
+                    db_info.database_name, db_info.database_username
+                )
                 logger.info("Cleaned up vector database after failure")
         except Exception as cleanup_error:
             logger.error(
@@ -349,7 +426,7 @@ async def create_private_ai_key(
 async def create_llm_token(
     private_ai_key: PrivateAIKeyCreate,
     current_user=Depends(get_current_user_from_auth),
-    user_role: UserRole = Depends(get_private_ai_access),
+    user_role: UserRole = Depends(get_private_ai_direct_access),
     db: Session = Depends(get_db),
     limit_service: LimitService = Depends(get_limit_service),
     store_result: bool = True,
@@ -383,7 +460,7 @@ async def create_llm_token(
     """
     # Get ownership information
     owner_id, team_id = _validate_permissions_and_get_ownership_info(
-        private_ai_key.owner_id, private_ai_key.team_id, current_user, user_role
+        private_ai_key.owner_id, private_ai_key.team_id, current_user, user_role, db
     )
 
     # Get the region
@@ -397,7 +474,10 @@ async def create_llm_token(
             status_code=status.HTTP_404_NOT_FOUND, detail="Region not found or inactive"
         )
 
-    # Get the owner user if different from current user
+    # Get the owner user if different from current user. The primary cross-team
+    # ownership check is in _validate_permissions_and_get_ownership_info (called
+    # earlier); this guard is defence-in-depth and also fetches `owner` for use
+    # below. It can still fire if the owner is deleted between the two reads.
     owner = None
     if (
         owner_id is not None
@@ -406,7 +486,8 @@ async def create_llm_token(
     ):
         owner = db.query(DBUser).filter(DBUser.id == owner_id).first()
         if not owner or (
-            user_role == "admin" and owner.team_id != current_user.team_id
+            not current_user.is_admin
+            and (current_user.team_id is None or owner.team_id != current_user.team_id)
         ):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Owner user not found"
@@ -441,18 +522,19 @@ async def create_llm_token(
     is_pool_team = (
         effective_team is not None and effective_team.requires_pool_purchase_gate
     )
-    pool_purchased_total = None
+    has_pool_purchase = False
     if is_pool_team and effective_team is not None:
-        total_cents = (
-            db.query(func.sum(DBPoolPurchase.amount_cents))
-            .filter(
-                DBPoolPurchase.team_id == effective_team.id,
-                DBPoolPurchase.region_id == region.id,
-            )
-            .scalar()
-            or 0
+        has_pool_purchase = pool_team_has_ever_purchased(
+            db, effective_team.id, region.id
         )
-        pool_purchased_total = float(total_cents) / 100.0
+
+    # Every anonymous trial lands in ONE shared team (so the keys stay
+    # trackable), and LiteLLM lets any key in a team read that team —
+    # /team/info returns every sibling key with its owner, spend and budget.
+    # Trial keys therefore get LiteLLM's inference-only route group: LLM calls
+    # work, every management route returns 403. Members of a real (customer)
+    # team are colleagues, so this scoping is deliberately trial-only.
+    allowed_routes = INFERENCE_ONLY_ROUTES if is_anonymous_trial_team(effective_team) else None
 
     if (owner is not None and owner.team_id) or team_id:
         if settings.ENABLE_LIMITS and not is_pool_team:
@@ -513,15 +595,17 @@ async def create_llm_token(
             max_budget=max_max_spend,
             rpm_limit=max_rpm_limit,
             apply_limits=not is_pool_team,
+            allowed_routes=allowed_routes,
         )
-        if (
-            is_pool_team
-            and pool_purchased_total is not None
-            and pool_purchased_total <= 0
-        ):
+        if is_pool_team and not has_pool_purchase:
+            # Gate the key with a zero budget instead of LiteLLM's `blocked`
+            # flag. A blocked key fails with an auth error telling the caller to
+            # ask an admin for an unblock, which the user cannot act on. A zero
+            # max_budget makes LiteLLM reject inference with a budget error,
+            # which says the real reason: the team has not purchased yet.
             await litellm_service.update_key_budget(
                 litellm_token=litellm_token,
-                budget_duration="1mo",
+                budget_duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
                 max_budget=0.0,
                 clear_max_budget=False,
             )
@@ -561,15 +645,20 @@ async def list_private_ai_keys(
     owner_id: Optional[int] = None,
     team_id: Optional[int] = None,
     search: Optional[str] = None,
+    show_all: bool = False,
     current_user=Depends(get_current_user_from_auth),
     db: Session = Depends(get_db),
 ):
     """
     List private AI keys.
     If user is admin:
-        - Returns all keys if no owner_id or team_id is provided
         - Returns keys for specific owner if owner_id is provided
         - Returns keys for specific team if team_id is provided
+        - Returns every key in the system if show_all=true is passed
+        - Otherwise (no params), returns only the admin's own keys — the
+          same safe default as any other caller. This avoids handing back
+          every secret in the database to any admin-scoped integration
+          (e.g. a management token) that calls this endpoint with no filters.
     If user is team admin:
         - Returns keys owned by users in their team AND keys owned by their team
     If user is not admin:
@@ -606,6 +695,10 @@ async def list_private_ai_keys(
                 (DBPrivateAIKey.owner_id.in_(team_user_ids))
                 | (DBPrivateAIKey.team_id == team_id)
             )
+        elif not show_all:
+            # Safe default: no filters and no explicit opt-in means "my own
+            # keys", not "every key in the system".
+            query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
     else:
         # Check if user is a team admin
         if current_user.team_id is not None:
@@ -634,10 +727,16 @@ async def list_private_ai_keys(
                     # If force_user_keys is enabled, users can only see their own keys
                     query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
                 else:
-                    # Otherwise, can see their own keys and team-owned keys
+                    # Otherwise, can see their own keys and team-owned keys.
+                    # "Team-owned" means owner_id is NULL — individually-owned
+                    # keys are only attributed to a team_id for billing/limits
+                    # and must not leak to the rest of the team.
                     query = query.filter(
                         (DBPrivateAIKey.owner_id == current_user.id)
-                        | (DBPrivateAIKey.team_id == current_user.team_id)
+                        | (
+                            (DBPrivateAIKey.team_id == current_user.team_id)
+                            & (DBPrivateAIKey.owner_id.is_(None))
+                        )
                     )
         else:
             # Regular users can only see their own keys
@@ -652,6 +751,7 @@ async def list_private_ai_keys_by_region(
     region_id: int,
     team_id: Optional[int] = None,
     user_id: Optional[int] = None,
+    show_all: bool = False,
     current_user=Depends(get_current_user_from_auth),
     db: Session = Depends(get_db),
 ):
@@ -669,6 +769,9 @@ async def list_private_ai_keys_by_region(
       parameter silently ignored. May be combined with `team_id` to further scope
       results to keys owned by that user within a particular team.
       Returns an empty list when the specified user does not exist.
+    - **show_all**: System admin only. Without it (and without team_id/user_id),
+      an admin caller gets only their own keys in this region rather than every
+      key in the region.
     """
     query = db.query(DBPrivateAIKey).outerjoin(
         DBTeam, DBPrivateAIKey.team_id == DBTeam.id
@@ -705,6 +808,11 @@ async def list_private_ai_keys_by_region(
             if user is None:
                 return []
             query = query.filter(DBPrivateAIKey.owner_id == user_id)
+
+        if team_id is None and user_id is None and not show_all:
+            # Safe default: no filters and no explicit opt-in means "my own
+            # keys in this region", not "every key in the region".
+            query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
     else:
         # Check if user is a team admin
         if current_user.team_id is not None:
@@ -733,10 +841,16 @@ async def list_private_ai_keys_by_region(
                     # If force_user_keys is enabled, users can only see their own keys
                     query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
                 else:
-                    # Otherwise, can see their own keys and team-owned keys
+                    # Otherwise, can see their own keys and team-owned keys.
+                    # "Team-owned" means owner_id is NULL — individually-owned
+                    # keys are only attributed to a team_id for billing/limits
+                    # and must not leak to the rest of the team.
                     query = query.filter(
                         (DBPrivateAIKey.owner_id == current_user.id)
-                        | (DBPrivateAIKey.team_id == current_user.team_id)
+                        | (
+                            (DBPrivateAIKey.team_id == current_user.team_id)
+                            & (DBPrivateAIKey.owner_id.is_(None))
+                        )
                     )
         else:
             # Regular users can only see their own keys
@@ -753,6 +867,7 @@ async def list_private_ai_keys_by_region(
 )
 async def get_private_ai_key(
     key_id: int,
+    team_id: Optional[int] = None,
     current_user=Depends(get_current_user_from_auth),
     db: Session = Depends(get_db),
 ):
@@ -776,8 +891,15 @@ async def get_private_ai_key(
 
     Note: You must be authenticated to use this endpoint.
     Only system administrators can access this endpoint.
+
+    Optional query parameter:
+    - **team_id**: When provided, the key must belong to this team or the
+      request 404s — a defence-in-depth scope check (issue #600) that applies
+      even to system-admin callers.
     """
-    private_ai_key = _get_key_if_allowed(key_id, current_user, "system_admin", db)
+    private_ai_key = _get_key_if_allowed(
+        key_id, current_user, "system_admin", db, declared_team_id=team_id
+    )
 
     # Get the region
     region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()
@@ -827,7 +949,11 @@ async def get_private_ai_key(
 
 
 def _get_key_if_allowed(
-    key_id: int, current_user: DBUser, user_role: UserRole, db: Session
+    key_id: int,
+    current_user: DBUser,
+    user_role: UserRole,
+    db: Session,
+    declared_team_id: Optional[int] = None,
 ) -> DBPrivateAIKey:
     # First try to find the key
     private_ai_key = (
@@ -838,6 +964,11 @@ def _get_key_if_allowed(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Private AI Key not found"
         )
+
+    # Defence-in-depth (issue #600): when the caller declares the team it is
+    # acting for, the key must belong to that team — enforced even for system
+    # admins (e.g. the moad shared-admin token), closing the cross-tenant IDOR.
+    enforce_declared_team_scope(private_ai_key, declared_team_id, db)
 
     # Check if user has permission to view the key
     team_users: list[UserRole] = [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR]
@@ -877,11 +1008,14 @@ def _get_key_if_allowed(
 @router.delete("/{key_id}")
 async def delete_private_ai_key(
     key_id: int,
+    team_id: Optional[int] = None,
     current_user=Depends(get_current_user_from_auth),
     user_role: UserRole = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
 ):
-    private_ai_key = _get_key_if_allowed(key_id, current_user, user_role, db)
+    private_ai_key = _get_key_if_allowed(
+        key_id, current_user, user_role, db, declared_team_id=team_id
+    )
     # Get the region
     region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()
     if not region:
@@ -937,13 +1071,32 @@ async def get_private_ai_key_spend(
     litellm_service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
+    configured_key_cap = (
+        db.query(DBSpendCap.max_budget)
+        .filter(
+            DBSpendCap.scope == "key",
+            DBSpendCap.region_id == private_ai_key.region_id,
+            DBSpendCap.team_id == private_ai_key.team_id,
+            DBSpendCap.user_id == private_ai_key.owner_id,
+            DBSpendCap.key_id == private_ai_key.id,
+        )
+        .scalar()
+    )
 
     try:
         data = await litellm_service.get_key_info(private_ai_key.litellm_token)
         info = data.get("info", {})
 
-        # Only set default for spend field
-        spend_info = {"spend": info.get("spend", 0.0), **info}
+        # Only set default for spend field; key max_budget comes from DB spend cap.
+        spend_info = {
+            "spend": info.get("spend", 0.0),
+            **info,
+            "max_budget": (
+                round(float(configured_key_cap), 4)
+                if configured_key_cap is not None
+                else None
+            ),
+        }
 
         return PrivateAIKeySpendBasic.model_validate(spend_info)
     except HTTPException as e:
@@ -958,6 +1111,11 @@ async def get_private_ai_key_spend(
                     "created_at": private_ai_key.created_at,
                     "updated_at": private_ai_key.updated_at,
                     "expires": None,
+                    "max_budget": (
+                        round(float(configured_key_cap), 4)
+                        if configured_key_cap is not None
+                        else None
+                    ),
                 }
             )
         logger.error(f"Failed to get Private AI Key spend: {str(e)}", exc_info=True)
@@ -987,7 +1145,9 @@ async def update_budget_period(
     3. Return the updated spend information
 
     Required parameters:
-    - **budget_duration**: The new budget period (e.g. "monthly", "weekly", "daily")
+    - **budget_duration**: The new budget period. Accepts canonical forms such
+      as "30d", "7d" or "24h", and the word forms "monthly", "weekly", "daily"
+      and "hourly", which are stored in their canonical equivalent.
 
     Note: You must be authenticated to use this endpoint.
     Only the owner of the key or an admin can update it.
@@ -1006,10 +1166,12 @@ async def update_budget_period(
     )
 
     try:
-        # Update budget period in LiteLLM
+        # Canonicalise before writing. A word form stored on the key leaves it
+        # with no computable period start, so period spend and budget alerts go
+        # blank for that key.
         await litellm_service.update_budget(
             litellm_token=private_ai_key.litellm_token,
-            budget_duration=budget_update.budget_duration,
+            budget_duration=canonical_budget_duration(budget_update.budget_duration),
         )
 
         # Get updated spend information
@@ -1078,3 +1240,237 @@ async def extend_token_life(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to extend token life: {str(e)}",
         )
+
+
+async def _delegate_to_moad(
+    private_ai_key: PrivateAIKeyCreate,
+    current_user: DBUser,
+    db: Session,
+) -> PrivateAIKey:
+    """
+    Delegate key creation to the moad dashboard backend.
+
+    Called when a regular (non-admin) user hits ``POST /private-ai-keys``
+    — the Drupal email/code sign-in workflow.  moad handles Keycloak user
+    creation, workspace provisioning, and calls back via
+    ``POST /internal/provision-key`` (with its admin API token) to create
+    the actual LiteLLM token + vector DB on this backend.
+
+    The moad response is used to extract the newly created LiteLLM token.
+    A fully populated key record (including ``id``, ``team_id``, region info,
+    etc.) is then loaded from the local DB using ``litellm_token`` so the
+    result matches the ``PrivateAIKey`` shape expected by the Drupal module
+    and remains visible via ``GET /private-ai-keys``.
+    """
+    if not settings.MOAD_DASHBOARD_API_URL or not settings.MOAD_DASHBOARD_API_TOKEN:
+        logger.error(
+            "MOAD_DASHBOARD_API_URL or MOAD_DASHBOARD_API_TOKEN is not configured"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Key provisioning service is not configured.",
+        )
+
+    # Idempotency: if the user's team already has a key for this region,
+    # return it instead of provisioning a new one. This matches the
+    # "one key per team per region" invariant and prevents key
+    # proliferation when Drupal retries the provisioning call.
+    #
+    # The match is intentionally name-agnostic: moad stores the key name as
+    # "<appName> - <date>" (it stamps a date suffix), while Drupal sends the
+    # bare appName — so a name-based match would never fire. Matching on
+    # team + region is both more robust and the true invariant.
+    #
+    # SECURITY: because we only ever look at the requesting user's OWN team
+    # (current_user.team_id), cross-tenant leakage is impossible by
+    # construction — there is no global name+region match to exploit.
+    existing_key = None
+    base_email = normalize_email_for_lookup(current_user.email).lower()
+
+    if current_user.team_id is not None:
+        existing_key = (
+            db.query(DBPrivateAIKey)
+            .join(DBTeam, DBPrivateAIKey.team_id == DBTeam.id)
+            .filter(
+                DBPrivateAIKey.region_id == private_ai_key.region_id,
+                DBPrivateAIKey.team_id == current_user.team_id,
+                DBTeam.deleted_at.is_(None),
+            )
+            .order_by(DBPrivateAIKey.created_at.desc())
+            .first()
+        )
+
+    # Fallback: the team-scoped lookup above missed a reusable key. Look up
+    # any key under a team whose admin_email belongs to this same human —
+    # either the exact base email or moad’s +tagged surrogate variants
+    # (e.g. "base+team-abc@domain").
+    #
+    # This covers two cases:
+    #   1. Retry before pinning completed: moad already created the key under a
+    #      fresh team, but current_user.team_id still points at the stale
+    #      auto-team, so the team-scoped query missed it.
+    #   2. Region switch: the user was previously pinned to team T1 (region 1)
+    #      and is now requesting region 2, for which moad has already created
+    #      team T2. The team-scoped query (T1 + region 2) correctly misses;
+    #      this fallback finds the T2 key and re-pins the user to T2.
+    #
+    # The re-pinning in case 2 is intentional: the design is one key / one
+    # region at a time per user (scalar team_id models the user’s current
+    # region). Without this fallback, moad would be re-invoked and would mint
+    # a duplicate key (its provision-key endpoint is deliberately
+    # non-idempotent).
+    #
+    # SECURITY: admin_email matching is scoped to this human’s identity (base
+    # form + moad tag variants), so cross-tenant collision is impossible.
+    # Guard on "@" so a malformed stored email (no @, bypassing validators)
+    # skips this branch and degrades to moad delegation instead of crashing on
+    # the unpack below.
+    if existing_key is None and "@" in base_email:
+        local, domain = base_email.split("@", 1)
+        tag_pattern = f"{local}+%@{domain}"
+        existing_key = (
+            db.query(DBPrivateAIKey)
+            .join(DBTeam, DBPrivateAIKey.team_id == DBTeam.id)
+            .filter(
+                DBPrivateAIKey.region_id == private_ai_key.region_id,
+                DBTeam.deleted_at.is_(None),
+                (DBTeam.admin_email.ilike(base_email))
+                | (DBTeam.admin_email.ilike(tag_pattern)),
+            )
+            .order_by(DBPrivateAIKey.created_at.desc())
+            .first()
+        )
+    if existing_key is not None:
+        # Only treat this as an idempotent retry if the caller is asking for
+        # the same key (names match).  If the name differs the user is
+        # explicitly requesting a NEW key — bypass idempotency and fall through
+        # to moad so a fresh key is provisioned.
+        requested_name = (private_ai_key.name or "").strip().lower()
+        existing_name = (existing_key.name or "").strip().lower()
+        is_retry = (not requested_name) or (requested_name == existing_name)
+
+        if is_retry:
+            logger.info(
+                "[drupal-attribution] reusing existing key %s for %s + region %s (idempotent retry)",
+                existing_key.id,
+                current_user.email,
+                private_ai_key.region_id,
+            )
+            # Ensure the user is pinned to the key's team (see note below).
+            _pin_user_to_key_team(current_user, existing_key, db)
+            return PrivateAIKey.model_validate(existing_key.to_dict())
+        else:
+            logger.info(
+                "[drupal-attribution] user %s requested new key '%s' (existing: '%s') — bypassing idempotency",
+                current_user.email,
+                requested_name,
+                existing_name,
+            )
+
+    # Send the base email (plus-tags stripped) so moad resolves the real
+    # Keycloak/MOAD identity instead of creating a new tagged surrogate.
+    base_email = normalize_email_for_lookup(current_user.email)
+    payload = {
+        "email": base_email,
+        "appName": private_ai_key.name,
+        "regionId": private_ai_key.region_id,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{settings.MOAD_DASHBOARD_API_URL}/api/external/provision-key",
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {settings.MOAD_DASHBOARD_API_TOKEN}"
+                },
+            )
+    except httpx.RequestError as exc:
+        logger.error("Failed to reach moad for key provisioning: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Key provisioning service is unreachable.",
+        )
+
+    if response.status_code == 404:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Region not found.",
+        )
+    if response.status_code >= 400:
+        logger.error(
+            "moad returned %s for provision-key: %s",
+            response.status_code,
+            response.text,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Key provisioning failed.",
+        )
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        logger.error("moad provision-key returned invalid JSON: %s", response.text)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Key provisioning returned an invalid response.",
+        ) from exc
+
+    litellm_token = data.get("llm", {}).get("token")
+    if not litellm_token:
+        logger.error("moad provision-key response missing llm.token: %s", data)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Key provisioning returned an invalid response.",
+        )
+
+    # Look up the key that moad just created via /internal/provision-key so we
+    # return a fully populated PrivateAIKey (with id, team_id, region, etc.).
+    # This also ensures the key is visible via GET /private-ai-keys.
+    db_key = (
+        db.query(DBPrivateAIKey)
+        .filter(DBPrivateAIKey.litellm_token == litellm_token)
+        .first()
+    )
+
+    if not db_key:
+        logger.error(
+            "Could not find newly provisioned key by litellm_token after moad call"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Key provisioning failed: key not found after creation.",
+        )
+
+    # Pin the Drupal user to the key's team. moad creates the key under a
+    # team (8748 in the example) that is distinct from the user's auto-team
+    # (8746). Without this, list_private_ai_keys — which scopes by
+    # user.team_id — would never see the key (the original "key never
+    # returned" bug). Once pinned, GET /private-ai-keys and GET /auth/me
+    # both resolve to the team that actually owns the key.
+    _pin_user_to_key_team(current_user, db_key, db)
+
+    return PrivateAIKey.model_validate(db_key.to_dict())
+
+
+def _pin_user_to_key_team(
+    current_user: DBUser, db_key: DBPrivateAIKey, db: Session
+) -> None:
+    """
+    Pin ``current_user`` to the team that owns ``db_key``.
+
+    Idempotent: no-op when the user is already on the key's team. Skipped
+    for keys without a team (team_id is None) since there is nothing to pin.
+    """
+    if db_key.team_id is None or current_user.team_id == db_key.team_id:
+        return
+    logger.info(
+        "[drupal-attribution] pinning user %s to team %s (was %s)",
+        current_user.id,
+        db_key.team_id,
+        current_user.team_id,
+    )
+    current_user.team_id = db_key.team_id
+    db.commit()
+    db.refresh(current_user)

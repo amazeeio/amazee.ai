@@ -298,6 +298,7 @@ def test_system_default_budget_update_skips_pool_team_defaults(db, test_team):
     """
     pool_team = test_team
     pool_team.budget_type = "pool"
+    pool_team.require_purchase_for_requests = True
     db.add(pool_team)
 
     from app.db.models import DBTeam
@@ -353,6 +354,48 @@ def test_system_default_budget_update_skips_pool_team_defaults(db, test_team):
     )
     assert pool_budget.max_value == 0.0
     assert periodic_budget.max_value == 123.0
+
+
+def test_get_team_limits_skips_default_budget_for_purchase_gated_pool_teams(
+    db, test_team
+):
+    """
+    GIVEN: A purchase-gated POOL team with no explicit team budget row
+    WHEN: get_team_limits is called
+    THEN: The inherited system BUDGET limit is not returned or materialized
+    """
+    test_team.budget_type = "pool"
+    test_team.require_purchase_for_requests = True
+    db.add(test_team)
+    db.commit()
+
+    limit_service = LimitService(db)
+    limit_service.set_limit(
+        owner_type=OwnerType.SYSTEM,
+        owner_id=0,
+        resource_type=ResourceType.BUDGET,
+        limit_type=LimitType.DATA_PLANE,
+        unit=UnitType.DOLLAR,
+        max_value=27.0,
+        limited_by=LimitSource.DEFAULT,
+    )
+
+    team_limits = limit_service.get_team_limits(test_team)
+
+    assert not any(limit.resource == ResourceType.BUDGET for limit in team_limits)
+
+    from app.db.models import DBLimitedResource
+
+    persisted_budget_limit = (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == test_team.id,
+            DBLimitedResource.resource == ResourceType.BUDGET,
+        )
+        .first()
+    )
+    assert persisted_budget_limit is None
 
 
 def test_set_team_limits_uses_dedicated_region_default_overrides(db, test_team):
@@ -464,7 +507,7 @@ def test_trigger_budget_propagation_uses_pool_duration(
     """
     GIVEN: A POOL team budget update
     WHEN: _trigger_team_budget_propagation runs
-    THEN: It propagates with POOL_BUDGET_EXPIRATION_DAYS duration, not product default duration
+    THEN: It propagates with POOL_PURCHASE_EXPIRY_DAYS duration, not product default duration
     """
     from app.core.config import settings
 
@@ -486,7 +529,7 @@ def test_trigger_budget_propagation_uses_pool_duration(
     args = mock_propagate.call_args[0]
     assert args[1] == test_team.id
     assert args[2] == 42.0
-    assert args[3] == f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+    assert args[3] == f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
 
 
 def test_get_product_max_by_type_no_products(db, test_team):

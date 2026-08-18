@@ -4,7 +4,9 @@ from unittest.mock import Mock, patch, AsyncMock
 from sqlalchemy.orm import Session
 
 from app.db.models import (
+    DBAuditLog,
     DBTeam,
+    DBTeamRegion,
     DBUser,
     DBPrivateAIKey,
     DBTeamProduct,
@@ -16,6 +18,7 @@ from app.core.worker import (
     _calculate_last_team_activity,
     _send_retention_warning,
     _check_team_retention_policy,
+    hard_delete_expired_teams,
 )
 from app.core.team_service import (
     soft_delete_team,
@@ -469,7 +472,9 @@ def test_get_team_denies_deleted_access_for_non_admin(
     """
     Given: A soft-deleted team in the database and a non-admin user
     When: Getting the team with include_deleted=true parameter
-    Then: Should return 404 Not Found (team appears to not exist)
+    Then: Should return 403 Forbidden — auth layer rejects suspended-team users
+          before the endpoint is even reached (not 404, because the check is
+          in get_current_user_from_auth which runs first)
     """
     # Soft delete the team
     db.query(DBTeam).filter(DBTeam.id == test_team.id).update(
@@ -483,8 +488,8 @@ def test_get_team_denies_deleted_access_for_non_admin(
     )
 
     assert (
-        response.status_code == 404
-    )  # Should be not found for non-admin (team appears to not exist)
+        response.status_code == 403
+    )  # Auth layer suspends team users before endpoint logic runs
 
 
 def test_teams_with_products_never_deleted(db: Session, test_team):
@@ -933,7 +938,10 @@ async def test_restore_soft_deleted_team_integration(
     mock_litellm_class.return_value = mock_service
 
     # Call the function
-    await restore_soft_deleted_team(db, test_team)
+    result = await restore_soft_deleted_team(db, test_team)
+
+    # Verify no LiteLLM provisioning failures
+    assert result["litellm_warnings"] == []
 
     # Verify team was restored
     db.refresh(test_team)
@@ -954,6 +962,11 @@ async def test_restore_soft_deleted_team_integration(
     mock_service.update_key_duration.assert_any_call(
         litellm_token="token2", duration="30d"
     )
+
+    # Verify LiteLLM team and users were re-provisioned
+    mock_service.create_team.assert_called_once()
+    assert mock_service.create_user.call_count == 2
+    assert mock_service.add_team_member.call_count == 2
 
 
 @patch("app.core.team_service.LiteLLMService")
@@ -1148,3 +1161,216 @@ def test_get_team_keys_by_region_skips_keys_without_token(
     region_keys = keys_by_region[test_region]
     assert len(region_keys) == 1
     assert region_keys[0].name == "with-token"
+
+
+# ── Audit trail tests ──────────────────────────────────────────────────────────
+
+
+@patch("app.core.team_service.LiteLLMService")
+@pytest.mark.asyncio
+async def test_soft_delete_team_writes_audit_log(
+    mock_litellm_class, db: Session, test_team
+):
+    """
+    Given: A team
+    When: Calling soft_delete_team()
+    Then: A WORKER/team.soft_delete audit log entry is created
+    """
+    mock_litellm_class.return_value = AsyncMock()
+    test_time = datetime.now(UTC)
+
+    await soft_delete_team(db, test_team, test_time)
+
+    audit = (
+        db.query(DBAuditLog)
+        .filter(
+            DBAuditLog.resource_id == str(test_team.id),
+            DBAuditLog.action == "team.soft_delete",
+        )
+        .first()
+    )
+    assert audit is not None
+    assert audit.event_type == "WORKER"
+    assert audit.resource_type == "team"
+    assert audit.user_id is None
+    assert audit.details["team_name"] == test_team.name
+
+
+@patch("app.core.team_service.LiteLLMService")
+@pytest.mark.asyncio
+async def test_restore_soft_deleted_team_writes_audit_log(
+    mock_litellm_class, db: Session, test_team
+):
+    """
+    Given: A soft-deleted team
+    When: Calling restore_soft_deleted_team()
+    Then: A WORKER/team.restore audit log entry is created
+    """
+    mock_litellm_class.return_value = AsyncMock()
+    test_team.deleted_at = datetime.now(UTC)
+    db.commit()
+
+    await restore_soft_deleted_team(db, test_team)
+
+    audit = (
+        db.query(DBAuditLog)
+        .filter(
+            DBAuditLog.resource_id == str(test_team.id),
+            DBAuditLog.action == "team.restore",
+        )
+        .first()
+    )
+    assert audit is not None
+    assert audit.event_type == "WORKER"
+    assert audit.resource_type == "team"
+    assert audit.user_id is None
+
+
+@patch("app.core.worker.LiteLLMService")
+@pytest.mark.asyncio
+async def test_hard_delete_writes_audit_log(mock_litellm, db: Session, test_team):
+    """
+    Given: A team that was soft-deleted 91 days ago
+    When: Running the hard delete job
+    Then: A WORKER/team.hard_delete audit log entry is created (keyed by team ID string)
+    """
+    mock_litellm.return_value = AsyncMock()
+    team_id_str = str(test_team.id)
+    soft_delete_team_for_test(
+        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
+    )
+
+    await hard_delete_expired_teams(db)
+
+    audit = (
+        db.query(DBAuditLog)
+        .filter(
+            DBAuditLog.resource_id == team_id_str,
+            DBAuditLog.action == "team.hard_delete",
+        )
+        .first()
+    )
+    assert audit is not None
+    assert audit.event_type == "WORKER"
+    assert audit.resource_type == "team"
+    assert audit.user_id is None
+    assert audit.details["team_name"] == test_team.name
+
+
+# ── Restore re-provisioning tests ─────────────────────────────────────────────
+
+
+@patch("app.core.team_service.LiteLLMService")
+@pytest.mark.asyncio
+async def test_restore_reprovisions_litellm_team_and_users(
+    mock_litellm_class, db: Session, test_team, test_region
+):
+    """
+    Given: A soft-deleted team with users and an associated region
+    When: Calling restore_soft_deleted_team()
+    Then: LiteLLM create_team, create_user, and add_team_member are called
+          for every user in every allowed region
+    """
+    user1 = DBUser(email="u1@example.com", team_id=test_team.id, is_active=False)
+    user2 = DBUser(email="u2@example.com", team_id=test_team.id, is_active=False)
+    db.add_all([user1, user2])
+    db.commit()
+
+    # Associate test_region with the team (the fixture may already do this)
+    existing = (
+        db.query(DBTeamRegion)
+        .filter(
+            DBTeamRegion.team_id == test_team.id,
+            DBTeamRegion.region_id == test_region.id,
+        )
+        .first()
+    )
+    if not existing:
+        db.add(DBTeamRegion(team_id=test_team.id, region_id=test_region.id))
+        db.commit()
+
+    test_team.deleted_at = datetime.now(UTC)
+    db.commit()
+
+    mock_service = AsyncMock()
+    mock_litellm_class.return_value = mock_service
+
+    await restore_soft_deleted_team(db, test_team)
+
+    # LiteLLM team must be (re-)created
+    mock_service.create_team.assert_called_once()
+    # Each user must be (re-)created and added as a member
+    assert mock_service.create_user.call_count == 2
+    assert mock_service.add_team_member.call_count == 2
+
+
+@patch("app.core.team_service.LiteLLMService")
+@pytest.mark.asyncio
+async def test_restore_skips_user_reprovision_when_team_create_fails(
+    mock_litellm_class, db: Session, test_team, test_region
+):
+    user1 = DBUser(email="u1@example.com", team_id=test_team.id, is_active=False)
+    user2 = DBUser(email="u2@example.com", team_id=test_team.id, is_active=False)
+    db.add_all([user1, user2])
+    db.commit()
+
+    existing = (
+        db.query(DBTeamRegion)
+        .filter(
+            DBTeamRegion.team_id == test_team.id,
+            DBTeamRegion.region_id == test_region.id,
+        )
+        .first()
+    )
+    if not existing:
+        db.add(DBTeamRegion(team_id=test_team.id, region_id=test_region.id))
+        db.commit()
+
+    test_team.deleted_at = datetime.now(UTC)
+    db.commit()
+
+    mock_service = AsyncMock()
+    mock_service.create_team.side_effect = RuntimeError("boom")
+    mock_litellm_class.return_value = mock_service
+
+    result = await restore_soft_deleted_team(db, test_team)
+
+    assert result["litellm_warnings"] == [test_region.name]
+    mock_service.create_team.assert_called_once()
+    mock_service.create_user.assert_not_called()
+    mock_service.add_team_member.assert_not_called()
+
+
+# ── Orphan detection tests ────────────────────────────────────────────────────
+
+
+def test_orphaned_user_gets_403_on_auth_me(
+    client, db, test_team, team_admin_token, test_team_admin
+):
+    """
+    Given: A regular (non-admin) user whose team has been soft-deleted
+    When: They call GET /auth/me
+    Then: They receive 403 with a suspension message (not a confusing 404)
+    """
+    # team_admin_token belongs to test_team and is not is_admin
+    soft_delete_team_for_test(db, test_team)
+
+    response = client.get(
+        "/auth/me", headers={"Authorization": f"Bearer {team_admin_token}"}
+    )
+
+    assert response.status_code == 403
+    assert "suspended" in response.json()["detail"].lower()
+
+
+def test_admin_not_blocked_by_orphan_check(client, admin_token):
+    """
+    Given: A system admin (is_admin=True) with no team
+    When: They call GET /auth/me
+    Then: They receive 200 — admins bypass the orphan check
+    """
+    response = client.get(
+        "/auth/me", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    assert response.status_code == 200

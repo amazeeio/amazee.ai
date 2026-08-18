@@ -9,7 +9,17 @@ import email_validator
 
 from typing import Optional, List, Union
 
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, Form
+from fastapi import (
+    APIRouter,
+    Cookie,
+    Depends,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    status,
+)
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from urllib.parse import urlparse
@@ -19,6 +29,7 @@ from app.core.config import settings
 from app.core.dependencies import get_limit_service
 from app.core.roles import UserRole
 from app.core.security import (
+    assert_token_not_revoked,
     create_access_token,
     get_current_user_from_auth,
     get_password_hash,
@@ -61,7 +72,10 @@ from app.schemas.models import (
 
 from app.api.teams import register_team
 from app.api.users import _create_user_in_db, get_user_by_email
-from app.api.private_ai_keys import create_private_ai_key
+from app.core.email import normalize_email_for_lookup
+from app.services.disposable_domains import assert_email_domain_allowed
+from app.services.signup_velocity import enforce_signup_velocity
+from app.services.token_revocation import is_token_revoked, revoke_access_token
 
 auth_logger = logging.getLogger(__name__)
 
@@ -87,6 +101,16 @@ def get_cookie_domain():
     # Remove the first part (e.g., 'backend' or 'frontend')
     domain = ".".join(hostname.split(".")[1:])
     return domain
+
+
+def _bearer_token(authorization: Optional[str]) -> Optional[str]:
+    """Token out of an ``Authorization: Bearer <token>`` header, or None."""
+    if not isinstance(authorization, str):
+        return None
+    parts = authorization.split()
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1]
+    return None
 
 
 async def get_login_data(
@@ -145,6 +169,11 @@ def create_and_set_access_token(
 
     # Set cookie expiration based on user role
     # System administrators get 8 hours (28800 seconds), regular users get 30 minutes (1800 seconds)
+    # NOTE: this cookie lifetime is deliberately independent of the JWT lifetime
+    # (settings.ACCESS_TOKEN_EXPIRE_MINUTES, applied in create_access_token). The
+    # effective session ends when the *shorter* of the two expires, so adjust
+    # both together — raising ACCESS_TOKEN_EXPIRE_MINUTES alone won't lengthen a
+    # regular user's session (this cookie dies first).
     cookie_expiration = 28800 if user and user.is_admin else 1800
 
     # Prepare cookie settings
@@ -199,7 +228,10 @@ async def login(
         )
 
     auth_logger.info(f"Login attempt for user: {login_data.username}")
-    user = get_user_by_email(db, login_data.username)
+    # Collapse plus-tags (e.g. "user+p12@") to the canonical base email so
+    # login always resolves to the single identity for the human.
+    login_username = normalize_email_for_lookup(login_data.username)
+    user = get_user_by_email(db, login_username)
     if not user or not verify_password(login_data.password, user.hashed_password):
         auth_logger.warning(f"Failed login attempt for user: {login_data.username}")
         raise HTTPException(
@@ -212,7 +244,29 @@ async def login(
 
 
 @router.post("/logout")
-async def logout(response: Response):
+async def logout(
+    response: Response,
+    access_token: Optional[str] = Cookie(None, alias="access_token"),
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    """Log the caller out and stop the presented access token from working again.
+
+    The endpoint stays open to anonymous callers so a client can always clear its
+    cookie. It reports success either way and never says whether a token was real.
+    """
+    token = _bearer_token(authorization) or (
+        access_token if isinstance(access_token, str) else None
+    )
+    if token:
+        try:
+            revoke_access_token(db, token)
+        except Exception:
+            # The cookie must still be cleared, so a failed write cannot make
+            # logout look broken to the client. It is logged for follow-up.
+            auth_logger.exception("Failed to revoke access token during logout")
+            db.rollback()
+
     # Get cookie domain for logout
     cookie_domain = get_cookie_domain()
 
@@ -300,6 +354,13 @@ async def register(request: Request, user: UserCreate, db: Session = Depends(get
     After registration, you'll need to login to get an access token.
     """
     auth_logger.info(f"Registration attempt for user: {user.email}")
+    # Self-registration is anonymous: never trust role/team_id from the body,
+    # or a stranger could register straight into a victim's team or as an admin.
+    # Team membership and roles are assigned only via the authenticated flows.
+    user.role = None
+    user.team_id = None
+    # Normalize plus-tags so registrations collapse to the canonical identity.
+    user.email = normalize_email_for_lookup(user.email)
     # Check if user with this email exists
     db_user = get_user_by_email(db, user.email)
     if db_user:
@@ -307,6 +368,9 @@ async def register(request: Request, user: UserCreate, db: Session = Depends(get
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
         )
+
+    # New account: apply the per-IP signup velocity cap (self-registration is anonymous).
+    enforce_signup_velocity(request, db, email=user.email, endpoint="register")
 
     db_user = await _create_user_in_db(user, db)
     auth_logger.info(f"Successfully registered new user: {user.email}")
@@ -347,40 +411,94 @@ async def sign_in(
         )
 
     auth_logger.info(f"Sign-in attempt for user: {sign_in_data.username}")
+    # Collapse plus-tags to the canonical base email so OTP sign-in always
+    # resolves to the single identity for the human (Drupal enters "user+p12@").
+    sign_in_username = normalize_email_for_lookup(sign_in_data.username)
     # Verify the code using DynamoDB first
     dynamodb_service = DynamoDBService()
-    stored_code = dynamodb_service.read_validation_code(sign_in_data.username)
+    stored_code = dynamodb_service.read_validation_code(sign_in_username)
 
     if (
         not stored_code
         or stored_code.get("code").upper() != sign_in_data.verification_code.upper()
     ):
-        auth_logger.warning(
-            f"Invalid verification code for user: {sign_in_data.username}"
-        )
+        auth_logger.warning(f"Invalid verification code for user: {sign_in_username}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or verification code",
         )
 
     # Get user from database after verifying the code
-    user = get_user_by_email(db, sign_in_data.username)
+    user = get_user_by_email(db, sign_in_username)
 
     # If user doesn't exist, create a new user and team
     if not user:
-        auth_logger.info(f"Creating new user and team for: {sign_in_data.username}")
-        # First create the team
-        team_data = TeamCreate(
-            name=f"Team {sign_in_data.username}",
-            admin_email=sign_in_data.username,
-            phone="",  # Required by schema but not used for auto-created teams
-            billing_address="",  # Required by schema but not used for auto-created teams
-            budget_type=BudgetType.PERIODIC,
+        auth_logger.info(f"Creating new user and team for: {sign_in_username}")
+        # Only NEW-account creation is velocity-limited; existing-user code logins
+        # (the common case, incl. many users behind one corporate IP) are not.
+        enforce_signup_velocity(request, db, email=sign_in_username, endpoint="sign-in")
+        # Reuse a team orphaned by a user hard-delete: same admin_email, not
+        # soft-deleted. Without this, the unique admin_email on the leftover
+        # team makes re-registration fail forever ("Email already registered").
+        team = (
+            db.query(DBTeam)
+            .filter(
+                func.lower(DBTeam.admin_email) == sign_in_username,
+                DBTeam.deleted_at.is_(None),
+            )
+            .first()
         )
-        team = await register_team(team_data, db)
+        if team is None and "@" in sign_in_username:
+            # The orphaned team may store a plus-tagged admin_email
+            # (e.g. "user+p12@…") while sign_in_username is the stripped
+            # base form — match tagged variants too.
+            # Escape LIKE wildcards — '_' is common in email local parts.
+            local, domain = (
+                part.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                for part in sign_in_username.split("@", 1)
+            )
+            team = (
+                db.query(DBTeam)
+                .filter(
+                    DBTeam.admin_email.ilike(f"{local}+%@{domain}", escape="\\"),
+                    DBTeam.deleted_at.is_(None),
+                )
+                .order_by(DBTeam.id)
+                .first()
+            )
+        if team:
+            auth_logger.info(
+                f"Re-attaching {sign_in_username} to existing team {team.id} as admin"
+            )
+        else:
+            # Resolve the sign-up region — first active non-dedicated region
+            sign_up_region = (
+                db.query(DBRegion)
+                .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
+                .order_by(DBRegion.id)
+                .first()
+            )
+            if not sign_up_region:
+                auth_logger.error(
+                    "No active public region available for new team creation"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="No active public region available",
+                )
+            # First create the team
+            team_data = TeamCreate(
+                name=f"Team {sign_in_username}",
+                admin_email=sign_in_username,
+                phone="",  # Required by schema but not used for auto-created teams
+                billing_address="",  # Required by schema but not used for auto-created teams
+                budget_type=BudgetType.PERIODIC,
+                region_id=sign_up_region.id,
+            )
+            team = await register_team(team_data, db)
 
         user_data = UserCreate(
-            email=sign_in_data.username,
+            email=sign_in_username,
             password=None,
             team_id=team.id,
             role=UserRole.ADMIN,
@@ -391,7 +509,7 @@ async def sign_in(
             f"Successfully created new user and team for: {sign_in_data.username}"
         )
 
-    auth_logger.info(f"Successful sign-in for user: {sign_in_data.username}")
+    auth_logger.info(f"Successful sign-in for user: {sign_in_username}")
     return create_and_set_access_token(response, user.email, user)
 
 
@@ -405,8 +523,10 @@ def generate_validation_token(email: str) -> str:
     Returns:
         str: The generated validation token (8 characters, alphanumeric, uppercase)
     """
-    # Ensure email is lowercased for consistency
-    email = email.lower()
+    # Normalize plus-tags to the canonical base email so the code is stored
+    # under the same key regardless of which tag variant the user typed. This
+    # must match the read path in /auth/sign-in (which also normalizes).
+    email = normalize_email_for_lookup(email)
 
     # Generate an 8-character alphanumeric code in uppercase
     code = "".join(
@@ -431,8 +551,10 @@ def send_validation_code(email: str, db: Session) -> None:
     Raises:
         HTTPException: If email sending fails
     """
-    # Ensure email is lowercased for consistency
-    email = email.lower()
+    # Deliver the code to the SAME normalized address it is stored and validated
+    # under. Otherwise a "+tag" variant that normalizes to the victim could route
+    # a valid code to a different inbox and pre-hijack the canonical identity (M4).
+    email = normalize_email_for_lookup(email)
 
     # Generate and store validation code
     code = generate_validation_token(email)
@@ -509,6 +631,13 @@ async def validate_email(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid email format: {e}"
         )
+
+    # Block disposable / dynamic-DNS domains before we even send an OTP.
+    assert_email_domain_allowed(db, email)
+
+    # Cap OTP sends per IP: this endpoint triggers an email, so an unlimited
+    # loop from one client could be used to spam arbitrary addresses.
+    enforce_signup_velocity(request, db, email=email, endpoint="validate-email")
 
     send_validation_code(email, db)
     return {"message": "Validation code has been generated and sent"}
@@ -651,6 +780,9 @@ async def validate_jwt(
         payload = jwt.decode(
             token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
         )
+        # A revoked token must not be able to buy a fresh one, which would undo
+        # the logout that revoked it.
+        assert_token_not_revoked(db, payload)
         email: str = payload.get("sub")
         user = get_user_by_email(db, email)
         if not user:
@@ -676,6 +808,13 @@ async def validate_jwt(
                 if not email:
                     raise credentials_exception
 
+                # A revoked token gets no recovery email either. A token with no
+                # jti still does: it predates revocation, and this branch is how
+                # the holder of an old link gets a working one.
+                if is_token_revoked(db, payload.get("jti")):
+                    auth_logger.info("Refused to refresh a revoked expired token")
+                    raise credentials_exception
+
                 send_validation_url(email)
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -698,8 +837,11 @@ def send_validation_url(email: str) -> None:
     Raises:
         HTTPException: If email sending fails
     """
-    # Ensure email is lowercased for consistency
-    email = email.lower()
+    # Normalize plus-tags for the same reason send_validation_code does (M4):
+    # this email can come from a decoded (expired) JWT carrying a legacy +tag,
+    # so sign and deliver to the canonical address to avoid forking the identity
+    # or dispatching the link to a tagged inbox.
+    email = normalize_email_for_lookup(email)
 
     # Generate validation URL using the existing function
     validation_url = generate_pricing_url(email, validity_hours=1)
@@ -726,6 +868,7 @@ def send_validation_url(email: str) -> None:
 
 @router.post("/generate-trial-access", response_model=TrialAccessResponse)
 async def generate_trial_access(
+    request: Request,
     response: Response,
     db: Session = Depends(get_db),
     limit_service: LimitService = Depends(get_limit_service),
@@ -738,6 +881,10 @@ async def generate_trial_access(
     Returns the private AI key (which includes both LiteLLM token and VectorDB credentials),
     along with user and team information.
     """
+    # Unauthenticated free-key endpoint: cap per-IP request velocity (in addition
+    # to the global AI_TRIAL_MAX_USERS ceiling).
+    enforce_signup_velocity(request, db, endpoint="generate-trial-access")
+
     # Get default region by name and ensure it is active
     region = (
         db.query(DBRegion)
@@ -753,8 +900,17 @@ async def generate_trial_access(
             .first()
         )
 
-    # If no region is found, raise an error
+    # If no region is found, raise an error.
+    # Logged at error level because this fails EVERY trial signup, silently: the
+    # caller gets a 404 and nothing else records it. Renaming or deactivating
+    # the trial region is enough to cause it, and the only other symptom is
+    # signup volume dropping to zero.
     if not region:
+        auth_logger.error(
+            "AI_TRIAL_REGION=%r does not match an active region. "
+            "All trial signups are failing with 404.",
+            settings.AI_TRIAL_REGION,
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No region available for trial access: {settings.AI_TRIAL_REGION}",
@@ -772,18 +928,48 @@ async def generate_trial_access(
     trial_max_budget = settings.AI_TRIAL_MAX_BUDGET
 
     try:
-        # Find the AI trial team
+        # Find the AI trial team. Lock the row (FOR UPDATE) so the cap check and
+        # the user insert below are atomic: concurrent trial requests serialize
+        # on this row instead of both reading a stale count and overshooting the
+        # cap (TOCTOU). All trials share one team, so this serializes trial
+        # creation — acceptable given trial volume; correctness over throughput.
+        # ponytail: SQLite (tests) ignores FOR UPDATE, which is fine there.
         team = (
             db.query(DBTeam)
             .filter(
                 func.lower(DBTeam.admin_email) == settings.AI_TRIAL_TEAM_EMAIL.lower(),
                 DBTeam.is_active,
             )
+            .with_for_update()
             .first()
         )
 
         # Find the admin user of the team
         if team:
+            # Enforce a hard cap on trial users. The trial team's admin does not
+            # count against the cap. Without this the unauthenticated endpoint
+            # mints unlimited free AI keys (H3).
+            # Only active users count, so deactivating stale trial accounts
+            # reclaims capacity without raising AI_TRIAL_MAX_USERS.
+            # Assumes a SINGLE trial team row (keyed on AI_TRIAL_TEAM_EMAIL); a
+            # manually-created duplicate would split the count and double the cap.
+            trial_user_count = (
+                db.query(func.count(DBUser.id))
+                .filter(
+                    DBUser.team_id == team.id,
+                    # `role != 'admin'` alone drops NULL-role rows (SQL 3-valued
+                    # logic), which would let them escape the cap; include them.
+                    (DBUser.role != UserRole.ADMIN) | (DBUser.role.is_(None)),
+                    DBUser.is_active.is_(True),
+                )
+                .scalar()
+            )
+            if trial_user_count >= settings.AI_TRIAL_MAX_USERS:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Trial capacity reached. Please contact sales to continue.",
+                )
+
             admin_user = (
                 db.query(DBUser)
                 .filter(DBUser.team_id == team.id, DBUser.role == UserRole.ADMIN)
@@ -872,13 +1058,17 @@ async def generate_trial_access(
             user_role=UserRole.ADMIN,
         )
 
-        # Call create_private_ai_key as a regular function
-        private_ai_key = await create_private_ai_key(
+        # Call _create_private_ai_key directly, bypassing moad delegation
+        # (trial access always creates keys on this backend directly).
+        from app.api.private_ai_keys import _create_private_ai_key
+
+        private_ai_key = await _create_private_ai_key(
             private_ai_key=private_ai_key_create,
             current_user=admin_user,
             user_role=UserRole.ADMIN,
             db=db,
             limit_service=limit_service,
+            bypass_delegation=True,
         )
 
         # Get the Auth Bearer Token
@@ -894,15 +1084,48 @@ async def generate_trial_access(
         )
 
     except Exception as e:
+        # Clean up on ANY failure — including intentional HTTPExceptions raised
+        # after the trial user was committed (e.g. key creation failing). An
+        # orphaned trial user counts toward AI_TRIAL_MAX_USERS forever.
+        # Each step is guarded separately so a cleanup failure never masks the
+        # original error.
+        #
+        # The LiteLLM key goes FIRST. Deleting the user row first and failing
+        # here leaves a working key that nothing in our database points at:
+        # every cleanup path we have iterates key rows, so an orphan like that
+        # is invisible to all of them and stays live until its natural expiry.
+        # The user row only consumes trial capacity, which is a counter we can
+        # raise; a stranded key stays live until its natural expiry and is not
+        # recoverable by any automated means.
+        try:
+            if private_ai_key and private_ai_key.litellm_token:
+                await litellm_service.delete_key(private_ai_key.litellm_token)
+        except Exception as cleanup_error:
+            # Log the alias, never the token: this line goes to shared logs.
+            # The alias is what identifies the key in LiteLLM's own admin UI.
+            auth_logger.error(
+                f"Trial cleanup failed to delete LiteLLM key for "
+                f"{user.email if user else 'unknown user'}; it is now orphaned "
+                f"and no cleanup job can find it: {cleanup_error}"
+            )
+        try:
+            if user:
+                db.delete(user)
+                db.commit()
+        except Exception as cleanup_error:
+            db.rollback()
+            auth_logger.error(
+                f"Trial cleanup failed to delete user {user.email}; "
+                f"orphaned row still counts toward AI_TRIAL_MAX_USERS: {cleanup_error}"
+            )
+
+        if isinstance(e, HTTPException):
+            # Intentional HTTP errors (e.g. trial cap 429) must not be masked as 500.
+            raise
+
         auth_logger.error(f"Failed to create anonymous trial account: {e}")
         # Log which line of code or the full stack
         auth_logger.error(traceback.format_exc())
-        if user:
-            db.delete(user)
-        if private_ai_key:
-            await litellm_service.delete_key(private_ai_key.litellm_token)
-        db.commit()
-
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create anonymous trial account.",

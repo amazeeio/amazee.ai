@@ -1,7 +1,7 @@
 "use client";
 
 import { Loader2, X } from "lucide-react";
-import { useState, useEffect, useCallback } from "react";
+import { useState } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,9 +24,9 @@ export default function APITokensPage() {
   const queryClient = useQueryClient();
   const [newTokenName, setNewTokenName] = useState("");
   const [showNewToken, setShowNewToken] = useState<APIToken | null>(null);
-  const [tokens, setTokens] = useState<APIToken[]>([]);
 
-  const { isLoading: queryLoading } = useQuery({
+  // React Query is the single source of truth for the token list.
+  const { data: tokens = [], isLoading: queryLoading } = useQuery<APIToken[]>({
     queryKey: ["tokens"],
     queryFn: async () => {
       const response = await get("/auth/token");
@@ -81,48 +81,11 @@ export default function APITokensPage() {
     },
   });
 
-  const fetchTokens = useCallback(async () => {
-    try {
-      const response = await get("auth/token", { credentials: "include" });
-      const data = await response.json();
-      setTokens(data);
-    } catch (error) {
-      console.error("Error fetching tokens:", error);
-      toast({
-        title: "Error",
-        description: "Failed to fetch tokens",
-        variant: "destructive",
-      });
-    }
-  }, [toast, setTokens]);
-
   const handleCreateToken = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!newTokenName.trim()) return;
     createMutation.mutate(newTokenName);
   };
-
-  const handleDeleteToken = async (tokenId: string) => {
-    try {
-      await del("/auth/token/" + tokenId, { credentials: "include" });
-      setTokens(tokens.filter((token) => token.id !== tokenId));
-      toast({
-        title: "Success",
-        description: "Token deleted successfully",
-      });
-    } catch (error) {
-      console.error("Error deleting token:", error);
-      toast({
-        title: "Error",
-        description: "Failed to delete token",
-        variant: "destructive",
-      });
-    }
-  };
-
-  useEffect(() => {
-    void fetchTokens();
-  }, [fetchTokens]);
 
   if (queryLoading) {
     return (
@@ -218,7 +181,7 @@ export default function APITokensPage() {
                 <DeleteConfirmationDialog
                   title="Delete Token"
                   description="Are you sure you want to delete this token? This action cannot be undone."
-                  onConfirm={() => handleDeleteToken(token.id)}
+                  onConfirm={() => deleteMutation.mutate(token.id)}
                   isLoading={deleteMutation.isPending}
                 />
               </div>

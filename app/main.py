@@ -1,13 +1,18 @@
 import logging
 import os
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 from app.__version__ import __version__
 from app.api import (
+    access_groups,
+    admin_model_apply,
+    admin_models,
     audit,
     auth,
     billing,
     budgets,
+    internal,
     limits,
     pricing_tables,
     private_ai_keys,
@@ -15,8 +20,10 @@ from app.api import (
     public,
     regions,
     spend,
+    subscription,
     teams,
     users,
+    webhooks,
 )
 from app.core.config import settings
 from app.middleware.audit import AuditLogMiddleware
@@ -26,7 +33,10 @@ from app.middleware.prometheus import PrometheusMiddleware
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.docs import (
+    get_swagger_ui_html,
+    get_swagger_ui_oauth2_redirect_html,
+)
 from fastapi.openapi.utils import get_openapi
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -82,10 +92,11 @@ app = FastAPI(
     or you can provide a Bearer token in the Authorization header.
     """,
     version=__version__,
-    docs_url=None,  # Disable default /docs endpoint
+    docs_url=None,  # Disable default /docs endpoint; custom Swagger UI at /
     redoc_url=None,  # Disable default /redoc endpoint
+    # Public by design: the schema is the API's docs page (see PUBLIC_PATHS).
+    openapi_url="/openapi.json",
     root_path_in_servers=True,
-    server_options={"forwarded_allow_ips": "*"},
     openapi_tags=[
         {
             "name": "Authentication",
@@ -105,11 +116,35 @@ default_origins = [
     "http://localhost:3000",
     "http://localhost:3001",
     "http://localhost:8800",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3001",
+    "http://127.0.0.1:8800",
 ]
+
+
+def _normalize_origin(url: str) -> str:
+    parsed = urlparse(url.strip())
+    if not parsed.scheme or not parsed.netloc:
+        logger.warning(
+            "Skipping malformed origin (missing scheme/host): %r", url.strip()
+        )
+        return ""
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    return origin.rstrip("/")
+
+
 lagoon_routes = os.getenv("LAGOON_ROUTES", "").split(",")
+frontend_routes = os.getenv("FRONTEND_ROUTE", "").split(",")
 allowed_origins = default_origins + [
-    route.strip() for route in lagoon_routes if route.strip()
+    normalized
+    for route in lagoon_routes
+    if route.strip() and (normalized := _normalize_origin(route))
 ]
+for route in frontend_routes:
+    if route.strip():
+        normalized = _normalize_origin(route)
+        if normalized:
+            allowed_origins.append(normalized)
 
 # Add HTTPS redirect middleware first
 app.add_middleware(HTTPSRedirectMiddleware)
@@ -127,6 +162,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Total-Count"],
 )
 
 # Add trusted host middleware
@@ -165,6 +201,7 @@ async def get_version():
 
 
 # Include routers
+app.include_router(internal.router, prefix="/internal")
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(
     private_ai_keys.router, prefix="/private-ai-keys", tags=["private-ai-keys"]
@@ -176,6 +213,10 @@ app.include_router(public.protected_router, tags=["models"])
 app.include_router(audit.router, prefix="/audit", tags=["audit"])
 app.include_router(teams.router, prefix="/teams", tags=["teams"])
 app.include_router(billing.router, prefix="/billing", tags=["billing"])
+app.include_router(webhooks.router, prefix="/billing", tags=["webhooks"])
+app.include_router(
+    subscription.router, prefix="/billing/subscription", tags=["billing"]
+)
 app.include_router(products.router, prefix="/products", tags=["products"])
 app.include_router(
     pricing_tables.router, prefix="/pricing-tables", tags=["pricing-tables"]
@@ -183,6 +224,9 @@ app.include_router(
 app.include_router(limits.router, prefix="/limits", tags=["limits"])
 app.include_router(budgets.router, prefix="/budgets", tags=["budgets"])
 app.include_router(spend.router, prefix="/spend", tags=["spend"])
+app.include_router(admin_model_apply.router)
+app.include_router(admin_models.router)
+app.include_router(access_groups.router)
 
 
 @app.get("/", include_in_schema=False)
@@ -201,7 +245,7 @@ async def custom_swagger_ui_html():
 
 @app.get("/oauth2-redirect", include_in_schema=False)
 async def oauth2_redirect():
-    return get_swagger_ui_html(openapi_url="/openapi.json", title="OAuth2 Redirect")
+    return get_swagger_ui_oauth2_redirect_html()
 
 
 def custom_openapi():
@@ -256,17 +300,14 @@ def custom_openapi():
                     del operation["parameters"]
 
             # Remove security from non-protected endpoints
-            if (
-                path_name
-                in [
-                    "/auth/login",
-                    "/auth/register",
-                    "/health",
-                    "/auth/generate-trial-access",
-                    "/public/models",
-                    "/public/models/",
-                ]
-            ):
+            if path_name in [
+                "/auth/login",
+                "/auth/register",
+                "/health",
+                "/auth/generate-trial-access",
+                "/public/models",
+                "/public/models/",
+            ]:
                 if "security" in operation:
                     del operation["security"]
 

@@ -1,17 +1,25 @@
 import asyncio
 import logging
 import re
-from datetime import datetime, timedelta, UTC
+from datetime import date, datetime, timedelta, UTC
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
+from app.core.config import catalog_manages, settings
 from app.core.security import get_current_user_from_auth
 from app.db.database import get_db
-from app.db.models import DBRegion, DBTeamRegion, DBUser
+from app.db.models import (
+    DBModel,
+    DBModelAccessGroupModel,
+    DBModelAccessGroupRegion,
+    DBRegion,
+    DBTeamModelAccessGroup,
+    DBTeamRegion,
+    DBUser,
+)
 from app.schemas.models import (
     BedrockMissingModel,
     ProviderMissingModelsReport,
@@ -98,11 +106,58 @@ def _apply_profit_margin(price: float | None, margin: float) -> float | None:
     return price * (1 + margin)
 
 
-def _to_display_name(model_id: str) -> str:
-    words = re.split(r"[-_]+", model_id)
-    return " ".join(
-        word.upper() if word.isupper() else word.capitalize() for word in words if word
-    )
+# Words that must not be title-cased, because the vendor writes them
+# differently (acronyms, lowercase model families).
+_DISPLAY_WORD_OVERRIDES = {
+    "gpt": "GPT",
+    "deepseek": "DeepSeek",
+    "glm": "GLM",
+    "minimax": "MiniMax",
+    "o1": "o1",
+    "o3": "o3",
+    "o4": "o4",
+}
+
+
+def _display_word(word: str) -> str:
+    override = _DISPLAY_WORD_OVERRIDES.get(word.lower())
+    if override:
+        return override
+    return word if word.isupper() else word.capitalize()
+
+
+def _to_display_name(model_id: str, aliases: list[str] | None = None) -> str:
+    """Convert a model_id to a human-friendly display name.
+
+    If aliases contain a dotted version number (for example "claude-4.7"), use
+    that to produce "Claude 4.7" instead of "Claude 4 7".
+    """
+    # Build a mapping of hyphenated number sequences to dotted equivalents
+    # by inspecting aliases for dotted versions.
+    dot_replacements: dict[str, str] = {}
+    if aliases:
+        for alias in aliases:
+            # Find dotted number patterns like "4.7", "3.5", "1.5.2"
+            for m in re.finditer(r"\d+(?:\.\d+)+", alias):
+                dotted = m.group(0)
+                # The equivalent hyphenated form: "4.7" -> "4-7"
+                hyphenated = dotted.replace(".", "-")
+                dot_replacements[hyphenated] = dotted
+
+    # Replace hyphenated number sequences with dotted versions before splitting.
+    # Use word-boundary anchors so that e.g. "3-5" does not corrupt "123-5".
+    modified_id = model_id
+    for hyphenated, dotted in sorted(
+        dot_replacements.items(), key=lambda x: -len(x[0])
+    ):
+        modified_id = re.sub(
+            r"(?<![0-9])" + re.escape(hyphenated) + r"(?![0-9])",
+            dotted,
+            modified_id,
+        )
+
+    words = re.split(r"[-_]+", modified_id)
+    return " ".join(_display_word(word) for word in words if word)
 
 
 def _normalize_alias(alias: str) -> str:
@@ -148,26 +203,71 @@ def _extract_release_date(model_id: str, model_info: dict[str, Any]) -> str | No
     return None
 
 
-def _infer_manufacturer(model_id: str, item: dict[str, Any]) -> PublicModelManufacturer:
+_MANUFACTURER_RULES: list[dict[str, str | None]] = [
+    {"keyword": "claude", "name": "Anthropic", "website": "https://www.anthropic.com"},
+    {
+        "keyword": "gemini",
+        "name": "Google",
+        "website": "https://deepmind.google/models",
+    },
+    {"keyword": "gemma", "name": "Google", "website": "https://deepmind.google/models"},
+    {"keyword": "gpt", "name": "OpenAI", "website": "https://openai.com"},
+    {"keyword": "mistral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "pixtral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "mixtral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "ministral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "devstral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "magistral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "deepseek", "name": "DeepSeek", "website": "https://www.deepseek.com"},
+    {"keyword": "llama", "name": "Meta", "website": "https://ai.meta.com/llama"},
+    {"keyword": "kimi", "name": "Moonshot", "website": "https://www.moonshot.cn"},
+    {"keyword": "glm", "name": "Z.ai", "website": "https://z.ai"},
+    {"keyword": "minimax", "name": "MiniMax", "website": "https://www.minimax.io"},
+    {
+        "keyword": "qwen",
+        "name": "Alibaba",
+        "website": "https://www.alibabacloud.com/en/solutions/generative-ai/qwen",
+    },
+    {
+        "keyword": "titan",
+        "name": "Amazon",
+        "website": "https://aws.amazon.com/bedrock/titan",
+    },
+    # Provider-based fallbacks (must be last — match on provider string only)
+    {"keyword": "openai", "name": "OpenAI", "website": "https://openai.com"},
+    {
+        "keyword": "anthropic",
+        "name": "Anthropic",
+        "website": "https://www.anthropic.com",
+    },
+    {
+        "keyword": "google",
+        "name": "Google",
+        "website": "https://deepmind.google/models",
+    },
+    {"keyword": "meta", "name": "Meta", "website": "https://ai.meta.com/llama"},
+]
+
+
+def _infer_manufacturer(
+    model_id: str, item: dict[str, Any]
+) -> PublicModelManufacturer | None:
     model_info = item.get("model_info", {})
     provider = str(model_info.get("litellm_provider") or "").lower()
     normalized_model_id = model_id.lower()
 
-    if normalized_model_id.startswith("gpt-") or "openai" in provider:
-        name = "OpenAI"
-        website = "https://openai.com"
-    elif normalized_model_id.startswith("claude-") or "anthropic" in provider:
-        name = "Anthropic"
-        website = "https://www.anthropic.com"
-    elif normalized_model_id.startswith("gemini-") or "google" in provider:
-        name = "Google"
-        website = "https://deepmind.google/models"
-    elif normalized_model_id.startswith("llama-") or "meta" in provider:
-        name = "Meta"
-        website = "https://ai.meta.com/llama"
-    else:
-        name = "Unknown"
-        website = None
+    name: str | None = None
+    website: str | None = None
+
+    for rule in _MANUFACTURER_RULES:
+        keyword = str(rule["keyword"])
+        if keyword in normalized_model_id or keyword in provider:
+            name = rule["name"]
+            website = rule["website"]
+            break
+
+    if name is None:
+        return None
 
     version = (
         model_info.get("version")
@@ -261,8 +361,205 @@ async def _resolve_profit_margin(service: LiteLLMService, region_name: str) -> f
     return margin
 
 
+# ---------------------------------------------------------------------------
+# aliased_to resolution
+# ---------------------------------------------------------------------------
+#
+# Aliases come from two sources, merged in ``_fetch_region_model_group`` with
+# the first winning on conflict:
+#
+# 1. LiteLLM's real alias mechanism, ``router_settings.model_group_alias``
+#    (read via ``/router/settings``).  The model endpoints hide it: an alias is
+#    expanded into a ``/model/info`` entry identical to its target except for
+#    ``model_name``, so the mapping itself is only available from the router
+#    settings.
+# 2. Derived from the model list, for regions still running "fake aliases":
+#    an alias configured as a second model entry that happens to share the
+#    same ``litellm_params.model`` as the model it points at.  ``/model/info``,
+#    ``/model_group/info`` and ``/v1/models`` expose no field linking one
+#    entry to another (``base_model`` and ``team_public_model_name`` are null
+#    across every entry on DEV and PROD), so the link has to be derived from
+#    data LiteLLM does give us.  Delete this path once every region has
+#    migrated to real model_group_alias entries.
+#
+# Sharing a ``litellm_params.model`` is a fact, not a guess: those entries are
+# the same deployment.  Picking *which* member is the canonical one is the part
+# that needs a rule, applied in decreasing order of authority in
+# ``_resolve_canonical_model`` below.
+
+# Tokens that carry no model identity: provider routes, AWS region prefixes and
+# vendor names.  Dropped before comparing names so that our ``claude-4-6-sonnet``
+# still matches upstream ``bedrock/us.anthropic.claude-sonnet-4-6``.
+_ALIAS_NOISE_TOKENS = frozenset(
+    {
+        "ai",
+        "ai21",
+        "amazon",
+        "anthropic",
+        "au",
+        "apac",
+        "azure",
+        "bedrock",
+        "cohere",
+        "deepseek",
+        "eu",
+        "global",
+        "google",
+        "jp",
+        "luma",
+        "meta",
+        "mistral",
+        "moonshotai",
+        "nvidia",
+        "openai",
+        "qwen",
+        "stability",
+        "twelvelabs",
+        "us",
+        "vertex",
+        "writer",
+        "xai",
+    }
+)
+
+# Operators annotate aliases in the LiteLLM model metadata, e.g.
+# "Points to claude-4-5-haiku."  Only accepted when the captured name is a real
+# sibling in the same group, so vaguer variants ("Points to the latest Claude
+# model") are ignored rather than producing a dangling pointer.
+_POINTS_TO_PATTERN = re.compile(r"points to\s+([A-Za-z0-9_.:-]+)", re.IGNORECASE)
+
+
+def _model_identity_tokens(value: str) -> frozenset[str]:
+    """Reduce a model name or upstream id to the tokens that identify the model.
+
+    A set, not a string: our names and the provider's disagree on word order
+    (``claude-4-6-sonnet`` vs ``claude-sonnet-4-6``), so order must not matter.
+    """
+    lowered = value.lower()
+    lowered = re.sub(r"\b20\d{6}\b", "", lowered)  # release stamps: 20251001
+    lowered = re.sub(r"\bv\d+(:\d+)?\b", "", lowered)  # provider versions: v1:0
+    return frozenset(
+        token
+        for token in re.split(r"[^a-z0-9]+", lowered)
+        if token and token not in _ALIAS_NOISE_TOKENS
+    )
+
+
+def _extract_points_to(metadata: Any) -> str | None:
+    """Return the model name named by a "Points to <model>." annotation."""
+    if not isinstance(metadata, str):
+        return None
+    match = _POINTS_TO_PATTERN.search(metadata)
+    if not match:
+        return None
+    return match.group(1).rstrip(".").lower() or None
+
+
+def _resolve_canonical_model(
+    upstream_model: str, members: list[str], model_infos: dict[str, dict[str, Any]]
+) -> str | None:
+    """Pick the canonical model among *members*, all sharing *upstream_model*.
+
+    Returns ``None`` when no single member wins, so an ambiguous group reports
+    ``aliased_to: null`` everywhere rather than a wrong pointer.
+    """
+    by_lowered = {member.lower(): member for member in members}
+
+    # 1. An explicit ``model_info.aliased_to`` in the LiteLLM config wins.  Not
+    #    set anywhere today; supported so the config can become authoritative
+    #    later without touching this code.
+    for member in members:
+        declared = model_infos.get(member, {}).get("aliased_to")
+        if isinstance(declared, str) and (target := by_lowered.get(declared.lower())):
+            if target != member:
+                return target
+
+    # 2. An operator-authored "Points to <model>." annotation.
+    for member in members:
+        named = _extract_points_to(model_infos.get(member, {}).get("metadata"))
+        if named and (target := by_lowered.get(named)) and target != member:
+            return target
+
+    # 3. Fall back to name shape: the member whose identity tokens match the
+    #    upstream model id is the real one, aliases carry different names.
+    upstream_tokens = _model_identity_tokens(upstream_model)
+    matches = [m for m in members if _model_identity_tokens(m) == upstream_tokens]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _extract_model_group_alias(router_settings: Any) -> dict[str, str]:
+    """Return LiteLLM's configured ``model_group_alias`` map from /router/settings.
+
+    Values may be plain target names or ``{"model": ..., "hidden": ...}`` items
+    (LiteLLM's RouterModelGroupAliasItem); both normalize to ``alias -> target``.
+    """
+    if not isinstance(router_settings, dict):
+        return {}
+    fields = router_settings.get("fields")
+    if not isinstance(fields, list):
+        return {}
+    raw = next(
+        (
+            field.get("field_value")
+            for field in fields
+            if isinstance(field, dict)
+            and field.get("field_name") == "model_group_alias"
+        ),
+        None,
+    )
+    if not isinstance(raw, dict):
+        return {}
+    aliases: dict[str, str] = {}
+    for alias, target in raw.items():
+        if isinstance(target, dict):
+            target = target.get("model")
+        if isinstance(alias, str) and isinstance(target, str) and alias != target:
+            aliases[alias] = target
+    return aliases
+
+
+def _build_alias_map(items: list[dict[str, Any]]) -> dict[str, str]:
+    """Map each aliased model name in a region to the model name it points at.
+
+    Canonical models are absent from the result, so a missing key means
+    ``aliased_to: null``.
+    """
+    groups: dict[str, list[str]] = {}
+    model_infos: dict[str, dict[str, Any]] = {}
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        params = item.get("litellm_params")
+        upstream = params.get("model") if isinstance(params, dict) else None
+        model_info = item.get("model_info")
+        model_info = model_info if isinstance(model_info, dict) else {}
+        name = item.get("model_name") or model_info.get("key")
+        if not isinstance(upstream, str) or not upstream:
+            continue
+        if not isinstance(name, str) or not name:
+            continue
+        groups.setdefault(upstream, []).append(name)
+        model_infos[name] = model_info
+
+    alias_map: dict[str, str] = {}
+    for upstream, members in groups.items():
+        if len(members) < 2:
+            continue  # only deployment on this upstream model: it is canonical
+        canonical = _resolve_canonical_model(upstream, members, model_infos)
+        if canonical is None:
+            continue
+        for member in members:
+            if member != canonical:
+                alias_map[member] = canonical
+    return alias_map
+
+
 def _extract_model_summary(
-    item: dict[str, Any], profit_margin: float
+    item: dict[str, Any],
+    profit_margin: float,
+    alias_map: dict[str, str] | None = None,
+    eol_index: dict[str, str] | None = None,
 ) -> PublicModelSummary:
     model_info = item.get("model_info", {})
     model_id = item.get("model_name") or model_info.get("key") or "unknown"
@@ -284,18 +581,26 @@ def _extract_model_summary(
     cache_read_input_cost_per_token = _apply_profit_margin(
         _safe_float(model_info.get("cache_read_input_token_cost")), profit_margin
     )
+    supports_prompt_caching = bool(model_info.get("supports_prompt_caching"))
     capabilities = PublicModelCapabilities(
         supports_vision=bool(model_info.get("supports_vision")),
         supports_function_calling=bool(model_info.get("supports_function_calling")),
         supports_reasoning=bool(model_info.get("supports_reasoning")),
-        supports_prompt_caching=bool(model_info.get("supports_prompt_caching")),
+        supports_prompt_caching=supports_prompt_caching,
     )
 
+    aliases = _extract_aliases(item, model_id)
+    metadata_raw = model_info.get("metadata") or item.get("metadata")
+    eol_date, eol_source = _resolve_eol(item, metadata_raw, eol_index)
+
     return PublicModelSummary(
+        aliased_to=(alias_map or {}).get(model_id),
+        eol_date=eol_date,
+        eol_source=eol_source,
         model_id=model_id,
-        display_name=_to_display_name(model_id),
-        aliases=_extract_aliases(item, model_id),
-        metadata_raw=model_info.get("metadata") or item.get("metadata"),
+        display_name=_to_display_name(model_id, aliases),
+        aliases=aliases,
+        metadata_raw=metadata_raw,
         provider=_infer_provider(item),
         type=model_type,
         context_length=context_length,
@@ -310,13 +615,19 @@ def _extract_model_summary(
             output_cost_per_million_tokens=_per_million(output_cost_per_token),
             cache_creation_input_cost_per_million_tokens=_per_million(
                 cache_creation_input_cost_per_token
-            ),
+            )
+            if supports_prompt_caching
+            else None,
             cache_creation_input_cost_above_1hr_per_million_tokens=_per_million(
                 cache_creation_input_cost_above_1hr_per_token
-            ),
+            )
+            if supports_prompt_caching
+            else None,
             cache_read_input_cost_per_million_tokens=_per_million(
                 cache_read_input_cost_per_token
-            ),
+            )
+            if supports_prompt_caching
+            else None,
         ),
     )
 
@@ -354,6 +665,96 @@ def _filter_region_groups_by_alias(
             )
         )
     return filtered_region_groups
+
+
+def _filter_region_groups_by_access(
+    db: Session, region_groups: list[PublicRegionModels], user: DBUser | None
+) -> list[PublicRegionModels]:
+    """Access-group enforcement for the catalog: in a region with a default
+    access group, only models in the default group (plus the caller team's
+    opt-ins) are listed — unauthenticated callers see exactly the "available
+    to everyone" default set. Regions without a default are unfiltered
+    (legacy all-models). Admins always see everything.
+
+    A region the catalog does not manage is unfiltered too, even if a default
+    group was set on it by hand: `effective_team_group_slugs` refuses to
+    restrict those teams on LiteLLM, so filtering the listing would hide models
+    the caller can actually call — and would make the listing move whenever an
+    apply rewrites the (global, region-less) model->group memberships.
+
+    Query cost is fixed per request (at most three queries) regardless of how
+    many regions are enforced — this is a high-traffic endpoint.
+    """
+    if user is not None and user.is_admin:
+        return region_groups
+
+    enforced = {
+        r.name: r
+        for r in db.query(DBRegion)
+        .filter(DBRegion.default_access_group_id.isnot(None))
+        .all()
+        if catalog_manages(r.name)
+    }
+    if not enforced:
+        return region_groups
+
+    relevant = [enforced[g.region] for g in region_groups if g.region in enforced]
+    if not relevant:
+        return region_groups
+
+    # region_id -> allowed group ids: the region default plus the caller
+    # team's opt-in groups deployed to that region.
+    allowed_group_ids: dict[int, set[int]] = {
+        r.id: {r.default_access_group_id} for r in relevant
+    }
+    team_id = user.team_id if user else None
+    if team_id:
+        opt_ins = (
+            db.query(DBTeamModelAccessGroup.group_id, DBModelAccessGroupRegion.region_id)
+            .join(
+                DBModelAccessGroupRegion,
+                DBModelAccessGroupRegion.group_id == DBTeamModelAccessGroup.group_id,
+            )
+            .filter(
+                DBTeamModelAccessGroup.team_id == team_id,
+                DBModelAccessGroupRegion.region_id.in_(allowed_group_ids.keys()),
+            )
+            .all()
+        )
+        for group_id, region_id in opt_ins:
+            allowed_group_ids[region_id].add(group_id)
+
+    all_group_ids = set().union(*allowed_group_ids.values())
+    rows = (
+        db.query(DBModelAccessGroupModel.group_id, DBModel.model_id)
+        .join(DBModel, DBModel.id == DBModelAccessGroupModel.model_id)
+        .filter(
+            DBModelAccessGroupModel.group_id.in_(all_group_ids),
+            DBModel.deleted_at.is_(None),
+        )
+        .all()
+    )
+    names_by_group: dict[int, set[str]] = {}
+    for group_id, model_name in rows:
+        names_by_group.setdefault(group_id, set()).add(model_name)
+
+    filtered: list[PublicRegionModels] = []
+    for group in region_groups:
+        region = enforced.get(group.region)
+        if region is None:
+            filtered.append(group)
+            continue
+        allowed: set[str] = set().union(
+            *(names_by_group.get(gid, set()) for gid in allowed_group_ids[region.id])
+        )
+        filtered.append(
+            PublicRegionModels(
+                region=group.region,
+                status=group.status,
+                models=[m for m in group.models if m.model_id in allowed],
+            )
+        )
+    return filtered
 
 
 async def _resolve_optional_user(request: Request, db: Session) -> DBUser | None:
@@ -399,24 +800,45 @@ async def _resolve_optional_user(request: Request, db: Session) -> DBUser | None
         return None
 
 
+async def _fetch_router_aliases(service: LiteLLMService) -> dict[str, str]:
+    """Fetch the region's real model_group_alias map, or {} when unavailable.
+
+    Aliases are enrichment — a broken /router/settings must not mark the whole
+    region unavailable, so every failure degrades to an empty map.
+    """
+    try:
+        return _extract_model_group_alias(await service.get_router_settings())
+    except Exception:
+        return {}
+
+
 async def _fetch_region_model_group(
     service: LiteLLMService, region_name: str
 ) -> PublicRegionModels:
     async with _REGION_SEMAPHORE:
         try:
-            model_info = await asyncio.wait_for(
-                service.get_model_info(), timeout=_REGION_TIMEOUT
-            )
-            profit_margin = await asyncio.wait_for(
-                _resolve_profit_margin(service, region_name),
+            # The three LiteLLM calls are independent; fetch them concurrently
+            # under one deadline so a slow region costs one timeout, not three.
+            model_info, profit_margin, router_aliases = await asyncio.wait_for(
+                asyncio.gather(
+                    service.get_model_info(),
+                    _resolve_profit_margin(service, region_name),
+                    _fetch_router_aliases(service),
+                ),
                 timeout=_REGION_TIMEOUT,
             )
+            items = model_info.get("data", [])
+            # Both maps need the whole region: aliased_to compares models against
+            # each other, and the EOL index is shared by every model here.
+            # Real router aliases win over the derived fake-alias map.
+            alias_map = {**_build_alias_map(items), **router_aliases}
+            eol_index = await _get_bedrock_eol_index()
             return PublicRegionModels(
                 region=region_name,
                 status="ga",
                 models=[
-                    _extract_model_summary(item, profit_margin)
-                    for item in model_info.get("data", [])
+                    _extract_model_summary(item, profit_margin, alias_map, eol_index)
+                    for item in items
                 ],
             )
         except (httpx.RequestError, HTTPException, asyncio.TimeoutError) as exc:
@@ -589,6 +1011,7 @@ async def list_public_models(
     # Signal to CacheControlMiddleware whether response contains user-specific data.
     request.state._public_models_is_authenticated = user is not None
 
+    visible_groups = _filter_region_groups_by_access(db, visible_groups, user)
     return _filter_region_groups_by_alias(visible_groups, alias_filters)
 
 
@@ -628,6 +1051,9 @@ _bedrock_catalog_cache: dict[str, Any] = {
     "url": None,
     "expires_at": datetime.min.replace(tzinfo=UTC),
     "data": None,
+    # EOL dates derived from "data", cached with it so the derivation happens
+    # once per fetch rather than once per caller.  See _build_eol_index.
+    "eol_index": {},
 }
 
 
@@ -679,8 +1105,164 @@ async def _fetch_bedrock_catalog(url: str) -> list[dict[str, Any]]:
 
         _bedrock_catalog_cache["url"] = url
         _bedrock_catalog_cache["data"] = data
+        _bedrock_catalog_cache["eol_index"] = _build_eol_index(data)
         _bedrock_catalog_cache["expires_at"] = now + _BEDROCK_CATALOG_TTL
         return data
+
+
+# ---------------------------------------------------------------------------
+# eol_date resolution
+# ---------------------------------------------------------------------------
+#
+# Why this is fetched in-request and NOT by a cron job:
+#
+#   * The data is already here.  ``BEDROCK_MODELS_URL`` and
+#     ``_fetch_bedrock_catalog`` exist for /models/missing/aws, and the catalog
+#     is cached for _BEDROCK_CATALOG_TTL.  Reading EOL dates out of it costs one
+#     extra ~190KB GET per hour per pod, and only on a cache miss.
+#   * /public/models is itself cached for _CACHE_TTL and served with
+#     ``Cache-Control: public, max-age=3600``, so EOL dates refresh on the same
+#     schedule as the rest of the response.  A cron job would add a second,
+#     different refresh schedule for no gain.
+#   * A cron job would need a table, a migration and a .lagoon.yml entry, and it
+#     would put stale rows between us and the upstream truth.  EOL dates change
+#     a handful of times a year; that machinery buys nothing.
+#
+# The weekly Slack alert stays a cron (GitHub Actions) — it reads this endpoint,
+# so it now gets ``eol_date`` instead of regex-parsing prose out of
+# ``metadata_raw``.
+
+# Operator-authored annotation in the LiteLLM model metadata, e.g.
+# "...Good for simple tasks. (EOL: 2026-09-10)".  Kept in sync with the same
+# pattern in scripts/check_eol_models.py, which cannot import from app/ because
+# it is deliberately stdlib-only (app.core imports pydantic).  A test asserts
+# both parse the same string.
+_EOL_ANNOTATION_PATTERN = re.compile(r"\(EOL:\s*(\d{4}-\d{2}-\d{2})\)")
+
+# ``bedrock/us.anthropic.claude-...`` -> the catalog's ``anthropic.claude-...``.
+_BEDROCK_REGION_PREFIXES = ("us.", "eu.", "au.", "apac.", "global.", "jp.")
+
+
+def _parse_eol_annotation(metadata_raw: Any) -> str | None:
+    """Return the ISO date from an ``(EOL: YYYY-MM-DD)`` annotation, if present."""
+    if not isinstance(metadata_raw, str):
+        return None
+    match = _EOL_ANNOTATION_PATTERN.search(metadata_raw)
+    if not match:
+        return None
+    try:
+        return date.fromisoformat(match.group(1)).isoformat()
+    except ValueError:
+        return None
+
+
+def _bedrock_catalog_id(item: dict[str, Any]) -> str | None:
+    """Return the upstream Bedrock ``modelId`` for a LiteLLM entry, or None.
+
+    Returns None for non-Bedrock providers (``vertex_ai/...``, ``azure/...``),
+    which the Bedrock catalog cannot describe.
+    """
+    params = item.get("litellm_params")
+    candidate = params.get("model") if isinstance(params, dict) else None
+    if not isinstance(candidate, str) or not candidate:
+        return None
+    if candidate.startswith("bedrock/"):
+        candidate = candidate.split("/", 1)[1]
+    elif "/" in candidate:
+        return None
+    for prefix in _BEDROCK_REGION_PREFIXES:
+        if candidate.startswith(prefix):
+            candidate = candidate[len(prefix) :]
+            break
+    return candidate or None
+
+
+def _build_eol_index(catalog: list[dict[str, Any]]) -> dict[str, str]:
+    """Map Bedrock ``modelId`` -> ISO EOL date for every model that has one.
+
+    Two upstream fields carry the date and they agree wherever both are set, but
+    neither covers the other's models: prefer ``modelLifecycle.endOfLifeTime``
+    (already ISO), fall back to the human-formatted ``modelCard.modelEolDate``.
+    """
+    index: dict[str, str] = {}
+    for model in catalog:
+        if not isinstance(model, dict):
+            continue
+        model_id = model.get("modelId")
+        if not isinstance(model_id, str) or not model_id:
+            continue
+
+        lifecycle = model.get("modelLifecycle")
+        raw = (
+            (lifecycle or {}).get("endOfLifeTime")
+            if isinstance(lifecycle, dict)
+            else None
+        )
+        if isinstance(raw, str) and raw.strip():
+            try:
+                index[model_id] = date.fromisoformat(raw.strip()[:10]).isoformat()
+                continue
+            except ValueError:
+                logger.debug(
+                    "Unparseable modelLifecycle.endOfLifeTime %r for Bedrock model "
+                    "%s; trying modelCard.modelEolDate",
+                    raw,
+                    model_id,
+                )
+
+        card = model.get("modelCard")
+        raw = (card or {}).get("modelEolDate") if isinstance(card, dict) else None
+        if isinstance(raw, str) and raw.strip():
+            try:
+                index[model_id] = (
+                    datetime.strptime(raw.strip(), "%B %d, %Y").date().isoformat()
+                )
+            except ValueError:
+                logger.debug(
+                    "Unparseable modelEolDate %r for Bedrock model %s", raw, model_id
+                )
+    return index
+
+
+async def _get_bedrock_eol_index() -> dict[str, str]:
+    """EOL dates keyed by Bedrock ``modelId``; empty dict when unavailable.
+
+    The index is built by _fetch_bedrock_catalog under its own lock, so a cold
+    multi-region fan-out derives it once no matter how many regions ask for it.
+
+    Never raises: /public/models must not fail because the upstream catalog is
+    down, so a fetch error degrades to the operator-authored annotations only.
+    An empty ``BEDROCK_MODELS_URL`` disables the lookup entirely (used by tests
+    to stay off the network).
+    """
+    if not settings.BEDROCK_MODELS_URL:
+        return {}
+    try:
+        await _fetch_bedrock_catalog(settings.BEDROCK_MODELS_URL)
+    except (httpx.RequestError, HTTPException, asyncio.TimeoutError) as exc:
+        logger.warning(
+            "Bedrock catalog unavailable for /public/models EOL dates: %s", str(exc)
+        )
+        return {}
+    return _bedrock_catalog_cache["eol_index"] or {}
+
+
+def _resolve_eol(
+    item: dict[str, Any], metadata_raw: Any, eol_index: dict[str, str] | None
+) -> tuple[str | None, str | None]:
+    """Return ``(eol_date, eol_source)`` for one model.
+
+    An operator-authored annotation wins over the upstream catalog: we may retire
+    a model before AWS does, and that decision must not be overwritten.
+    """
+    annotated = _parse_eol_annotation(metadata_raw)
+    if annotated:
+        return annotated, "manual"
+
+    catalog_id = _bedrock_catalog_id(item)
+    if catalog_id and (upstream := (eol_index or {}).get(catalog_id)):
+        return upstream, "bedrock"
+    return None, None
 
 
 def _build_available_aws_models_by_group(
@@ -739,20 +1321,25 @@ def _normalize_bedrock_provider_id(
 
     normalized = provider_model_id.split("/", 1)[1]
     if normalized.startswith(provider_prefix):
-        normalized = normalized[len(provider_prefix):]
+        normalized = normalized[len(provider_prefix) :]
     return normalized
 
 
 async def _collect_region_bedrock_models(
     region: DBRegion,
-) -> tuple[str, dict[str, set[str]]]:
-    """Return ``(region_name, {region_group: {normalized_model_id, ...}})``.
+) -> tuple[str, dict[str, set[str]], dict[str, set[str]]]:
+    """Return ``(region_name, {group: {normalized_id, ...}}, {group: {all_matchable_ids, ...}})``.
+
+    The first dict contains only the canonical normalized model IDs (used for
+    counting deployed models).  The second dict adds aliases extracted from
+    LiteLLM model metadata (used for matching against upstream catalog IDs).
 
     Failures are logged and produce empty sets so a single broken region can't
     take down the whole report.  We deliberately do NOT short-circuit when a
     region returns zero models — that's a legitimate state.
     """
     configured: dict[str, set[str]] = {group: set() for group in _AWS_REGION_GROUPS}
+    matchable: dict[str, set[str]] = {group: set() for group in _AWS_REGION_GROUPS}
 
     service = LiteLLMService(
         api_url=region.litellm_api_url,
@@ -772,15 +1359,13 @@ async def _collect_region_bedrock_models(
             region.name,
             exc,
         )
-        return region.name, configured
+        return region.name, configured, matchable
 
     for item in model_info.get("data", []) or []:
         if not isinstance(item, dict):
             continue
         params = item.get("litellm_params") or {}
-        provider_model_id = (
-            params.get("model") if isinstance(params, dict) else None
-        )
+        provider_model_id = params.get("model") if isinstance(params, dict) else None
         if not isinstance(provider_model_id, str) or not provider_model_id:
             continue
 
@@ -798,8 +1383,19 @@ async def _collect_region_bedrock_models(
             # double-count and hide real gaps.
             if provider_model_id.startswith(f"bedrock/{details['provider_prefix']}"):
                 configured[group].add(normalized)
+                matchable[group].add(normalized)
+                # Also add all aliases (lowercased) so that models deployed
+                # under a short name (e.g. "qwen3-32b") are matched against
+                # their full upstream Bedrock model ID
+                # (e.g. "qwen.qwen3-32b-v1:0") which appears in the aliases.
+                model_info = item.get("model_info")
+                model_info_dict = model_info if isinstance(model_info, dict) else {}
+                model_name = item.get("model_name") or model_info_dict.get("key") or ""
+                if model_name:
+                    for alias in _extract_aliases(item, model_name):
+                        matchable[group].add(alias)
 
-    return region.name, configured
+    return region.name, configured, matchable
 
 
 async def _build_aws_missing_report(
@@ -825,6 +1421,9 @@ async def _build_aws_missing_report(
     configured_by_group: dict[str, set[str]] = {
         group: set() for group in _AWS_REGION_GROUPS
     }
+    matchable_by_group: dict[str, set[str]] = {
+        group: set() for group in _AWS_REGION_GROUPS
+    }
     contributing_regions_by_group: dict[str, set[str]] = {
         group: set() for group in _AWS_REGION_GROUPS
     }
@@ -833,17 +1432,25 @@ async def _build_aws_missing_report(
         per_region = await asyncio.gather(
             *(_collect_region_bedrock_models(region) for region in regions)
         )
-        for region_name, region_configured in per_region:
+        for region_name, region_configured, region_matchable in per_region:
             for group, ids in region_configured.items():
                 if ids:
                     configured_by_group[group].update(ids)
+                    matchable_by_group[group].update(region_matchable[group])
                     contributing_regions_by_group[group].add(region_name)
 
     region_groups: list[ProviderRegionMissingModels] = []
     for group, details in _AWS_REGION_GROUPS.items():
         available = available_by_group[group]
         configured_ids = configured_by_group[group]
-        missing_ids = sorted(set(available) - configured_ids)
+        matchable_ids = matchable_by_group[group]
+        # Compare case-insensitively: aliases in matchable_ids are lowercased
+        # by _extract_aliases/_normalize_alias, so lowercase the upstream keys
+        # when computing the set difference.
+        matchable_lower = {mid.lower() for mid in matchable_ids}
+        missing_ids = sorted(
+            mid for mid in available if mid.lower() not in matchable_lower
+        )
         missing_models = [
             BedrockMissingModel(**available[model_id]) for model_id in missing_ids
         ]
@@ -900,8 +1507,7 @@ async def list_missing_provider_models(
         raise HTTPException(
             status_code=404,
             detail=(
-                f"Unknown provider '{provider}'. "
-                f"Supported: {sorted(_KNOWN_PROVIDERS)}"
+                f"Unknown provider '{provider}'. Supported: {sorted(_KNOWN_PROVIDERS)}"
             ),
         )
 

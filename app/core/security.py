@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timedelta, UTC
 from typing import Optional
 from jose import JWTError, jwt
@@ -7,16 +8,19 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import logging
 
 from app.core.config import settings
+from app.core.email import normalize_email_for_lookup
 from app.db.database import get_db
-from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func, inspect as sa_inspect
 from app.db.models import DBUser, DBAPIToken
+from app.services.token_revocation import is_token_revoked
 from app.core.rbac import (
     require_system_admin,
     require_team_admin,
     require_key_creator_or_higher,
     require_sales_or_higher,
     require_private_ai_access,
+    require_private_ai_direct_access,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,17 +43,54 @@ def get_password_hash(password: str) -> str:
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """Create JWT access token."""
+    """Create JWT access token.
+
+    Every token gets a unique ``jti`` so logout can revoke this token alone,
+    without ending the user's other sessions. See app/services/token_revocation.py.
+    """
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.now(UTC) + expires_delta
     else:
-        expire = datetime.now(UTC) + timedelta(minutes=60)  # Default to 60 minutes
-    to_encode.update({"exp": expire})
+        expire = datetime.now(UTC) + timedelta(
+            minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
+        )
+    to_encode.update(
+        {
+            "exp": expire,
+            "iat": datetime.now(UTC),
+            "jti": to_encode.get("jti") or str(uuid.uuid4()),
+        }
+    )
     encoded_jwt = jwt.encode(
         to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM
     )
     return encoded_jwt
+
+
+def assert_token_not_revoked(db: Session, payload: dict) -> None:
+    """Raise 401 unless the token id is present and still allowed.
+
+    Every path that turns a decoded JWT into access must call this, including the
+    refresh in /auth/validate-jwt. Skipping it there would let a revoked token buy
+    a fresh one and undo the logout.
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    # A token with no jti cannot be revoked at logout, so it is not accepted.
+    # Only tokens signed before revocation existed lack one.
+    jti = payload.get("jti")
+    if not jti:
+        logger.info("Rejected access token without a jti claim")
+        raise credentials_exception
+
+    if is_token_revoked(db, jti):
+        logger.info("Rejected revoked access token jti=%s", jti)
+        raise credentials_exception
 
 
 async def get_current_user(
@@ -73,8 +114,18 @@ async def get_current_user(
     except JWTError:
         raise credentials_exception
 
-    email: str = payload.get("sub")
-    user = db.query(DBUser).filter(func.lower(DBUser.email) == email.lower()).first()
+    assert_token_not_revoked(db, payload)
+
+    raw_email: str = payload.get("sub")
+    # Normalize plus-tags so a token minted for "user+p12@" still resolves
+    # to the single canonical "user@" identity (see app/core/email.py).
+    email = normalize_email_for_lookup(raw_email) if raw_email else raw_email
+    user = (
+        db.query(DBUser)
+        .filter(func.lower(DBUser.email) == email.lower())
+        .options(joinedload(DBUser.team))
+        .first()
+    )
     if user is None:
         raise credentials_exception
     return user
@@ -91,13 +142,24 @@ async def get_current_user_from_auth(
     if request and hasattr(request.state, "user") and request.state.user is not None:
         # If we have a dict from middleware, load the full user object
         if isinstance(request.state.user, dict):
-            user = (
-                db.query(DBUser).filter(DBUser.id == request.state.user["id"]).first()
-            )
+            user = _get_user_with_team(db, request.state.user["id"])
             if user:
+                _check_user_team_not_suspended(user)
                 return user
         else:
-            return request.state.user
+            # The object may be detached from its original session (e.g. loaded
+            # by AuthMiddleware then committed/expired). Use SQLAlchemy inspect
+            # to read the PK from the identity map without touching the DB.
+            try:
+                identity = sa_inspect(request.state.user).identity
+                user_id = identity[0] if identity else None
+            except Exception:
+                user_id = None
+            if user_id is not None:
+                user = _get_user_with_team(db, user_id)
+                if user:
+                    _check_user_team_not_suspended(user)
+                    return user
 
     if not access_token and not authorization:
         raise HTTPException(
@@ -106,8 +168,16 @@ async def get_current_user_from_auth(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # FastAPI dependency defaults (Cookie/Header) may be passed when this
+    # function is called directly in tests; normalize non-string placeholders.
+    if not isinstance(access_token, str):
+        access_token = None
+    if not isinstance(authorization, str):
+        authorization = None
+
     # Try JWT token first
     token_to_try = access_token
+    used_authorization_header = authorization is not None
     if authorization:
         parts = authorization.split()
         if len(parts) != 2 or parts[0].lower() != "bearer":
@@ -117,14 +187,38 @@ async def get_current_user_from_auth(
             )
         token_to_try = parts[1]
 
+    if (
+        used_authorization_header
+        and settings.ENV_SUFFIX == "local"
+        and settings.LOCAL_BEARER_TOKEN
+        and token_to_try == settings.LOCAL_BEARER_TOKEN
+    ):
+        local_user = _get_local_bearer_user(db)
+        if local_user:
+            _check_user_team_not_suspended(local_user)
+            return local_user
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Local bearer token is configured but no active local user exists",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     # First try API token validation since it's simpler
     try:
-        db_token = db.query(DBAPIToken).filter(DBAPIToken.token == token_to_try).first()
+        db_token = (
+            db.query(DBAPIToken)
+            .filter(DBAPIToken.token == token_to_try)
+            .options(joinedload(DBAPIToken.owner).joinedload(DBUser.team))
+            .first()
+        )
         if db_token:
             # Update last used timestamp
             db_token.last_used_at = datetime.now(UTC)
+            _check_user_team_not_suspended(db_token.owner)
             db.commit()
             return db_token.owner
+    except HTTPException:
+        raise
     except Exception:
         pass
 
@@ -135,13 +229,74 @@ async def get_current_user_from_auth(
         )
         user = await get_current_user(credentials=credentials, db=db)
         if user:
+            _check_user_team_not_suspended(user)
             return user
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+
+def _check_user_team_not_suspended(user: DBUser) -> None:
+    """Raise 403 if the user's team has been soft-deleted.
+
+    System admins are excluded from this check so they retain access to the
+    admin interface even when their own team is soft-deleted.
+    """
+    if (
+        not user.is_admin
+        and user.team_id is not None
+        and user.team is not None
+        and user.team.deleted_at is not None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your organization has been suspended. Please contact support.",
+        )
+
+
+def _get_user_with_team(db: Session, user_id: int) -> Optional[DBUser]:
+    return (
+        db.query(DBUser)
+        .filter(DBUser.id == user_id)
+        .options(joinedload(DBUser.team))
+        .first()
+    )
+
+
+def _get_local_bearer_user(db: Session) -> Optional[DBUser]:
+    if settings.LOCAL_BEARER_USER_EMAIL:
+        preferred_user = (
+            db.query(DBUser)
+            .filter(
+                func.lower(DBUser.email) == settings.LOCAL_BEARER_USER_EMAIL.lower(),
+                DBUser.is_active.is_(True),
+            )
+            .options(joinedload(DBUser.team))
+            .first()
+        )
+        if preferred_user:
+            return preferred_user
+
+    admin_user = (
+        db.query(DBUser)
+        .filter(DBUser.is_admin.is_(True), DBUser.is_active.is_(True))
+        .options(joinedload(DBUser.team))
+        .first()
+    )
+    if admin_user:
+        return admin_user
+
+    return (
+        db.query(DBUser)
+        .filter(DBUser.is_active.is_(True))
+        .options(joinedload(DBUser.team))
+        .first()
+    )
 
 
 async def get_role_min_system_admin(
@@ -189,6 +344,18 @@ async def get_private_ai_access(
 ):
     """Require access to private AI operations - allows system users or team key creators."""
     dependency = require_private_ai_access()
+    return dependency.check_access(current_user)
+
+
+async def get_private_ai_direct_access(
+    current_user: DBUser = Depends(get_current_user_from_auth),
+):
+    """Require access to endpoints that mint LiteLLM keys directly (no moad delegation).
+
+    Blocks teamless non-admin users so they cannot mint uncapped paid keys via
+    /token or /vector-db; system admins bypass the team check.
+    """
+    dependency = require_private_ai_direct_access()
     return dependency.check_access(current_user)
 
 

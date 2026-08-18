@@ -59,5 +59,8 @@ CLAUDE.md
 # review.nvim
 .review
 
-tests/test_limits_e2e_local.py
 .pi
+scripts/local
+
+# Local ollama model store (contains an auto-generated ssh keypair)
+ollama_data/

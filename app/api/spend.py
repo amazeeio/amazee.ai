@@ -1,24 +1,36 @@
 import logging
-import asyncio
-import re
 from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import aliased
 
 from app.core.config import settings
 from app.core.limit_service import DEFAULT_MAX_SPEND, LimitService
 from app.core.litellm_user_sync import team_role_for_litellm
 from app.core.roles import UserRole
-from app.core.team_service import get_team_region_litellm_keys
+from app.core.rbac import enforce_declared_team_scope
+from app.core.periodic_budget_ledger_service import compute_active_topup_remaining
+from app.core.pool_budget_service import (
+    pool_available_budget_for_team_region as shared_pool_available_budget_for_team_region,
+    pool_team_budget_duration_for_enforcement as shared_pool_team_budget_duration_for_enforcement,
+    pool_team_has_ever_purchased,
+)
 from app.core.security import (
     get_current_user_from_auth,
     get_private_ai_access,
     get_role_min_team_admin,
 )
+from app.core.spend_period_service import (
+    compute_period_start,
+    resolve_team_period_window,
+)
 from app.db.database import get_db
 from app.db.models import (
+    DBPeriodicPayment,
+    DBPeriodicBudgetLedgerEntry,
     DBPoolPurchase,
     DBPrivateAIKey,
     DBRegion,
@@ -31,14 +43,23 @@ from app.db.models import (
 from app.schemas.limits import OwnerType, ResourceType
 from app.api.users import invalidate_user_spend_cache
 from app.schemas.models import (
+    BudgetType,
+    DailyActivityModelBreakdown,
+    KeyDailyActivityResponse,
+    KeyDailyActivityRow,
+    KeyLastUsedResponse,
     PrivateAIKeySpend,
     SpendBudgetUpdateRequest,
     SpendBudgetUpdateResponse,
     SpendKeyItem,
     TeamSpendHistoryKeyItem,
+    TeamPeriodicTransactionItem,
     TeamSpendHistoryPeriodItem,
     TeamSpendHistoryResponse,
     TeamSpendResponse,
+    PeriodicTeamBudgetView,
+    TeamDailyActivityResponse,
+    UserDailyActivityResponse,
     UserSpendResponse,
 )
 from app.services.litellm import LiteLLMService
@@ -48,51 +69,10 @@ logger = logging.getLogger(__name__)
 MONTHLY_BUDGET_DURATION = "1mo"
 
 
-def _compute_period_start(
-    budget_reset_at: datetime | None, budget_duration: str | None
-) -> datetime | None:
-    """
-    Derive the start of the current budget period from LiteLLM's
-    ``budget_reset_at`` (end-of-period) and ``budget_duration``.
-
-    LiteLLM sets ``budget_reset_at`` to the moment the budget will auto-reset.
-    For ``"Nd"`` durations the reset is rolling N days after the last update;
-    for ``"1mo"`` / ``"30d"`` it snaps to the 1st of the next calendar month.
-
-    We parse the duration string and subtract from ``budget_reset_at`` to get
-    a best-effort calendar ``period_start``.  Returns ``None`` when either
-    input is missing or the duration cannot be parsed.
-    """
-    if budget_reset_at is None or not budget_duration:
-        return None
-
-    # Handle "1mo" / "30d" — both snap to 1st of next calendar month
-    # so the period start is always the 1st of the current month.
-    if budget_duration in ("1mo", "30d"):
-        # budget_reset_at is midnight on the 1st of next month.
-        # If reset is on 1st, the period that just ended started last month.
-        if budget_reset_at.day == 1:
-            if budget_reset_at.month == 1:
-                return budget_reset_at.replace(
-                    year=budget_reset_at.year - 1, month=12, day=1
-                )
-            return budget_reset_at.replace(month=budget_reset_at.month - 1, day=1)
-        return budget_reset_at.replace(day=1)
-
-    match = re.fullmatch(r"(\d+)([dhms])", budget_duration)
-    if not match:
-        return None
-    value = int(match.group(1))
-    unit = match.group(2)
-    if unit == "d":
-        return budget_reset_at - timedelta(days=value)
-    if unit == "h":
-        return budget_reset_at - timedelta(hours=value)
-    if unit == "m":
-        return budget_reset_at - timedelta(minutes=value)
-    if unit == "s":
-        return budget_reset_at - timedelta(seconds=value)
-    return None
+# Period-window maths lives in spend_period_service so the budget-threshold
+# alert engine derives the same window as this API. Kept under the original
+# private name because callers (and tests) already import it from here.
+_compute_period_start = compute_period_start
 
 
 @router.get(
@@ -101,13 +81,20 @@ def _compute_period_start(
     summary="Get historical team spend by region",
     description=(
         "Returns historical spend periods from the API database for a team in a "
-        "region, including per-key spend for each period."
+        "region, including per-key spend for each period. For PERIODIC teams, "
+        "response also includes region-scoped `periodic_transactions` entries "
+        "covering Stripe renewals and top-up purchases linked to that region."
     ),
-    response_description="Team historical spend periods with per-key breakdown.",
+    response_description=(
+        "Team historical spend periods with per-key breakdown, plus periodic "
+        "transaction history for PERIODIC and POOL teams."
+    ),
 )
 async def get_team_spend_history(
     region_id: int,
     team_id: int,
+    period_limit: int = Query(default=200, ge=1, le=1000),
+    tx_limit: int = Query(default=200, ge=1, le=1000),
     current_user: DBUser = Depends(get_current_user_from_auth),
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
@@ -130,6 +117,7 @@ async def get_team_spend_history(
             DBTeamSpendPeriod.region_id == region_id,
         )
         .order_by(DBTeamSpendPeriod.period_end.desc(), DBTeamSpendPeriod.id.desc())
+        .limit(period_limit)
         .all()
     )
 
@@ -167,6 +155,9 @@ async def get_team_spend_history(
                 total_prompt_tokens=period.total_prompt_tokens,
                 total_completion_tokens=period.total_completion_tokens,
                 total_tokens=period.total_tokens,
+                subscription_remaining_cents=period.subscription_remaining_cents,
+                topup_remaining_cents=period.topup_remaining_cents,
+                desired_remaining_cents=period.desired_remaining_cents,
                 source=period.source,
                 stripe_event_id=period.stripe_event_id,
                 stripe_invoice_id=period.stripe_invoice_id,
@@ -175,12 +166,58 @@ async def get_team_spend_history(
             )
         )
 
+    periodic_transactions: list[TeamPeriodicTransactionItem] = []
+    if team.budget_type in (BudgetType.PERIODIC, BudgetType.POOL):
+        latest_ledger = aliased(DBPeriodicBudgetLedgerEntry)
+        latest_payment_ids_subq = (
+            db.query(
+                latest_ledger.source_payment_id.label("source_payment_id"),
+                func.max(latest_ledger.id).label("latest_ledger_id"),
+            )
+            .filter(
+                latest_ledger.region_id == region_id,
+                latest_ledger.team_id == team_id,
+                latest_ledger.source_payment_id.isnot(None),
+            )
+            .group_by(latest_ledger.source_payment_id)
+            .subquery()
+        )
+        periodic_rows = (
+            db.query(DBPeriodicPayment)
+            .join(
+                latest_payment_ids_subq,
+                latest_payment_ids_subq.c.source_payment_id == DBPeriodicPayment.id,
+            )
+            .filter(DBPeriodicPayment.team_id == team_id)
+            .order_by(
+                DBPeriodicPayment.payment_date.desc(),
+                DBPeriodicPayment.id.desc(),
+            )
+            .limit(tx_limit)
+            .all()
+        )
+        periodic_transactions = [
+            TeamPeriodicTransactionItem(
+                id=row.id,
+                payment_type=row.payment_type,
+                amount_cents=row.amount_cents,
+                currency=row.currency,
+                stripe_payment_id=row.stripe_payment_id,
+                payment_date=row.payment_date,
+                status=row.status,
+                sync_status=row.sync_status,
+                source="periodic_payments",
+            )
+            for row in periodic_rows
+        ]
+
     return TeamSpendHistoryResponse(
         region_id=region_id,
         region_name=region.name,
         team_id=team_id,
         team_name=team.name,
         periods=period_items,
+        periodic_transactions=periodic_transactions,
     )
 
 
@@ -199,6 +236,102 @@ def _extract_token_usage(data: dict) -> tuple[int | None, int | None, int | None
         _to_int_or_none(data.get("completion_tokens")),
         _to_int_or_none(data.get("total_tokens")),
     )
+
+
+def _daily_metric_fields(metrics: dict) -> dict:
+    """Extract the shared per-day metric fields from a LiteLLM ``metrics`` block.
+
+    Returns kwargs common to both the flat daily row and each per-model
+    breakdown entry, coercing missing/null values to 0 (0.0 for spend). Note
+    ``request_count`` maps from LiteLLM's ``api_requests``.
+    """
+    spend_val = metrics.get("spend")
+
+    def _int(key: str) -> int:
+        val = metrics.get(key)
+        return val if val is not None else 0
+
+    return {
+        "spend": spend_val if spend_val is not None else 0.0,
+        "prompt_tokens": _int("prompt_tokens"),
+        "completion_tokens": _int("completion_tokens"),
+        "total_tokens": _int("total_tokens"),
+        "cache_read_input_tokens": _int("cache_read_input_tokens"),
+        "cache_creation_input_tokens": _int("cache_creation_input_tokens"),
+        "request_count": _int("api_requests"),
+    }
+
+
+def _row_model_breakdown(row: dict) -> list[DailyActivityModelBreakdown]:
+    """Build the per-model breakdown for one raw LiteLLM daily row.
+
+    Reads ``breakdown.models`` (a dict keyed by model name) and returns a list
+    ordered by descending spend. Returns an empty list when LiteLLM reports no
+    model breakdown for the day.
+    """
+    models = ((row.get("breakdown") or {}).get("models")) or {}
+    breakdown = [
+        DailyActivityModelBreakdown(
+            model=name, **_daily_metric_fields(entry.get("metrics") or {})
+        )
+        for name, entry in models.items()
+    ]
+    breakdown.sort(key=lambda b: b.spend, reverse=True)
+    return breakdown
+
+
+def _rows_to_daily_activity(
+    rows: list[dict], include_breakdown: bool = False
+) -> list[KeyDailyActivityRow]:
+    """Map raw LiteLLM daily-activity rows to daily-activity response rows.
+
+    Each raw row carries ``date`` and a ``metrics`` block; rows without a date
+    are skipped and the result is ordered ascending by date. LiteLLM's
+    ``breakdown`` block (per model/provider/key) is dropped by default to keep
+    the response flat; when ``include_breakdown`` is set, the per-model slice is
+    attached to each row's ``breakdown`` field.
+    """
+    activity: list[KeyDailyActivityRow] = []
+    for row in rows:
+        if not row.get("date"):
+            continue
+        metrics = row.get("metrics") or {}
+        activity.append(
+            KeyDailyActivityRow(
+                date=row["date"],
+                breakdown=_row_model_breakdown(row) if include_breakdown else None,
+                **_daily_metric_fields(metrics),
+            )
+        )
+    activity.sort(key=lambda r: r.date)
+    return activity
+
+
+# Default look-back window (in days) used when a daily-activity request omits
+# start_date and/or end_date.
+DEFAULT_DAILY_ACTIVITY_WINDOW_DAYS = 30
+
+
+def _resolve_daily_activity_range(
+    start_date: date | None, end_date: date | None
+) -> tuple[date, date]:
+    """Fill in defaults for an optional daily-activity date range and validate it.
+
+    When ``end_date`` is omitted it defaults to today (UTC); when ``start_date``
+    is omitted it defaults to ``end_date`` minus
+    ``DEFAULT_DAILY_ACTIVITY_WINDOW_DAYS`` days, giving a rolling 30-day window.
+    Raises 400 if the resolved ``start_date`` is after ``end_date``.
+    """
+    if end_date is None:
+        end_date = datetime.now(UTC).date()
+    if start_date is None:
+        start_date = end_date - timedelta(days=DEFAULT_DAILY_ACTIVITY_WINDOW_DAYS)
+    if start_date > end_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="start_date must be on or before end_date",
+        )
+    return start_date, end_date
 
 
 def _sum_optional_token_values(
@@ -237,7 +370,7 @@ def _effective_team_budget_duration(
     if max_budget is None:
         return None
     if team.requires_pool_purchase_gate:
-        return f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+        return f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
     return MONTHLY_BUDGET_DURATION
 
 
@@ -248,13 +381,15 @@ def _current_month_anchor() -> date:
 
 def _compute_pool_monthly_effective_budget(
     purchased_total: float,
-    month_start_spend: float,
+    period_baseline_spend: float,
     monthly_cap: float,
 ) -> float:
     # LiteLLM max_budget is an absolute ceiling in the active 365d window.
-    # To allow exactly `monthly_cap` during this month, shift by month_start_spend.
+    # To allow exactly `monthly_cap` during this month, shift by prior-period
+    # snapshot baseline (not current live spend).
     return round(
-        min(float(purchased_total), float(month_start_spend) + float(monthly_cap)), 4
+        float(period_baseline_spend) + min(float(purchased_total), float(monthly_cap)),
+        4,
     )
 
 
@@ -262,6 +397,24 @@ def _get_region_or_404(db: Session, region_id: int) -> DBRegion:
     region = (
         db.query(DBRegion)
         .filter(DBRegion.id == region_id, DBRegion.is_active.is_(True))
+        .first()
+    )
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
+    return region
+
+
+def _lock_region_or_404(db: Session, region_id: int) -> DBRegion:
+    """Load an active region and hold a row lock on it for this transaction.
+
+    The purchase path takes the same lock and clears key gates in LiteLLM before
+    it commits its purchase row, so a reader that does not contend on this row
+    can observe "never purchased" for a team that is already funded.
+    """
+    region = (
+        db.query(DBRegion)
+        .filter(DBRegion.id == region_id, DBRegion.is_active.is_(True))
+        .with_for_update()
         .first()
     )
     if not region:
@@ -378,10 +531,38 @@ def _pool_purchased_budget_for_team_region(
     return round(float(total_purchased_cents) / 100.0, 4)
 
 
+def _pool_available_budget_for_team_region(
+    db: Session, team_id: int, region_id: int
+) -> float:
+    return shared_pool_available_budget_for_team_region(db, team_id, region_id)
+
+
+def _pool_previous_period_spend_baseline(
+    db: Session, team_id: int, region_id: int
+) -> float:
+    """
+    Snapshot baseline used for POOL max_budget projection when caps are changed
+    mid-period. This is the latest captured period spend total.
+    """
+    row = (
+        db.query(DBTeamSpendPeriod.total_spend)
+        .filter(
+            DBTeamSpendPeriod.team_id == team_id,
+            DBTeamSpendPeriod.region_id == region_id,
+            DBTeamSpendPeriod.budget_type == BudgetType.POOL,
+        )
+        .order_by(DBTeamSpendPeriod.period_end.desc(), DBTeamSpendPeriod.id.desc())
+        .first()
+    )
+    if row is None or row[0] is None:
+        return 0.0
+    return round(float(row[0]), 4)
+
+
 def _is_no_purchase_pool_team(team: DBTeam | None, db: Session, region_id: int) -> bool:
     if team is None or not team.requires_pool_purchase_gate:
         return False
-    return _pool_purchased_budget_for_team_region(db, team.id, region_id) <= 0
+    return _pool_available_budget_for_team_region(db, team.id, region_id) <= 0
 
 
 def _get_spend_cap_max_budget(
@@ -427,87 +608,10 @@ def _get_key_spend_cap_map(
     return {int(key_id): float(max_budget) for key_id, max_budget in rows}
 
 
-def _pool_budget_duration_from_last_purchase(
+def _pool_team_budget_duration_for_enforcement(
     db: Session, team_id: int, region_id: int
 ) -> str:
-    latest_purchase_at = (
-        db.query(func.max(DBPoolPurchase.purchased_at))
-        .filter(
-            DBPoolPurchase.team_id == team_id, DBPoolPurchase.region_id == region_id
-        )
-        .scalar()
-    )
-    if latest_purchase_at is None:
-        return f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
-    if latest_purchase_at.tzinfo is None:
-        latest_purchase = latest_purchase_at.replace(tzinfo=UTC)
-    else:
-        latest_purchase = latest_purchase_at
-    days_since_last_purchase = (datetime.now(UTC) - latest_purchase).days
-    days_left = max(0, settings.POOL_BUDGET_EXPIRATION_DAYS - days_since_last_purchase)
-    return f"{days_left}d"
-
-
-async def _enforce_pool_no_purchase_key_lock(
-    db: Session,
-    team: DBTeam | None,
-    region: DBRegion,
-    service: LiteLLMService,
-    key_id: int | None = None,
-    user_id: int | None = None,
-    purchased_budget: float | None = None,
-) -> bool:
-    """
-    For prepaid-pool teams with no purchased budget in a region, hard-lock
-    keys by setting max_budget=0 in LiteLLM to avoid the team budget zero-edge.
-    """
-    if team is None or not team.requires_pool_purchase_gate:
-        return False
-    if purchased_budget is None:
-        purchased_budget = _pool_purchased_budget_for_team_region(
-            db, team.id, region.id
-        )
-    if purchased_budget > 0:
-        return False
-    region_keys = get_team_region_litellm_keys(
-        db,
-        team_id=team.id,
-        region_id=region.id,
-        key_id=key_id,
-        user_id=user_id,
-    )
-    if not region_keys:
-        return False
-
-    semaphore = asyncio.Semaphore(10)
-
-    async def _lock_key(key: DBPrivateAIKey) -> str | None:
-        try:
-            async with semaphore:
-                await service.update_key_budget(
-                    litellm_token=key.litellm_token,
-                    budget_duration=MONTHLY_BUDGET_DURATION,
-                    max_budget=0.0,
-                    clear_max_budget=False,
-                )
-            return None
-        except Exception as exc:
-            return f"Key {key.id}: {str(exc)}"
-
-    errors = [
-        error
-        for error in await asyncio.gather(*[_lock_key(key) for key in region_keys])
-        if error is not None
-    ]
-    if errors:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=(
-                "Failed to enforce no-purchase key lock in LiteLLM: "
-                + "; ".join(errors)
-            ),
-        )
-    return True
+    return shared_pool_team_budget_duration_for_enforcement(db, team_id, region_id)
 
 
 def _upsert_spend_cap(
@@ -662,7 +766,12 @@ def _find_db_key_id_for_litellm_key(
     summary="Get team spend by region",
     description=(
         "Returns aggregated spend for a team in a region, including per-key spend, "
-        "token usage fields, and effective budget totals."
+        "token usage fields, and effective budget totals. "
+        "For each key in `keys[]`, `max_budget` is the DB key spend cap only and "
+        "returns `null` when no key-level cap exists. "
+        "Also returns period-scoped fields (`period_spend`, `period_budget`). "
+        "`periodic_budget` is structured for PERIODIC teams and a numeric current-cycle "
+        "subscription amount for POOL teams with active subscription (otherwise null)."
     ),
     response_description="Team spend summary and per-key breakdown.",
 )
@@ -689,6 +798,7 @@ async def get_team_spend(
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
     items: list[SpendKeyItem] = []
     total_budget = 0.0
+    period_budget: float | None = None
     total_prompt_tokens = None
     total_completion_tokens = None
     total_tokens = None
@@ -809,22 +919,21 @@ async def get_team_spend(
     )
     if configured_team_cap is not None and team.requires_pool_purchase_gate:
         total_budget = round(configured_team_cap, 4)
-    elif is_periodic and litellm_fetch_ok and items:
-        # For PERIODIC teams, team_info["max_budget"] is the compounded value
-        # (accumulated_spend + monthly_cap). Derive the actual monthly cap from
-        # the per-key max_budget which is always set to the product cap.
-        # Only apply when we got data from LiteLLM directly (not the DB fallback).
-        key_budgets = [k.max_budget for k in items if k.max_budget is not None]
-        if key_budgets:
-            total_budget = round(max(key_budgets), 4)
     key_cap_map = _get_key_spend_cap_map(
         db,
         region_id=region_id,
         key_ids=[item.key_id for item in items if item.key_id is not None],
     )
     for item in items:
-        if item.key_id is not None and item.key_id in key_cap_map:
-            item.max_budget = round(key_cap_map[item.key_id], 4)
+        item.max_budget = (
+            round(key_cap_map[item.key_id], 4)
+            if item.key_id is not None and item.key_id in key_cap_map
+            else None
+        )
+
+    # Current period spend should reflect this period only (sum of per-key spends).
+    period_spend = round(sum(float(item.spend or 0.0) for item in items), 4)
+    periodic_budget_view = None
 
     # Compute period_start for each key from budget_reset_at + budget_duration.
     team_budget_duration = None
@@ -842,6 +951,136 @@ async def get_team_spend(
         team_budget_reset_at, team_budget_duration
     )
 
+    # For subscription-managed POOL teams, expose cycle window semantics from
+    # Amazee DB ledger truth instead of LiteLLM counters.
+    if team.budget_type == BudgetType.POOL:
+        pool_window = resolve_team_period_window(db, team, region_id)
+        team_budget_duration = pool_window.budget_duration
+        team_budget_reset_at = pool_window.period_end
+        team_period_start = pool_window.period_start
+        active_subscription = pool_window.active_subscription
+        if active_subscription is not None:
+            # For POOL teams, expose only current-cycle subscription amount.
+            sub_cycle_budget_cents = int(active_subscription.amount_cents or 0)
+            periodic_budget_view = round(sub_cycle_budget_cents / 100.0, 4)
+
+    if team.budget_type != BudgetType.POOL:
+        periodic_budget_view = None
+    now = datetime.now(UTC)
+    sub_remaining_cents = 0
+    # Use ledger-driven periodic status semantics for user-facing budget numbers.
+    sub_rows = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team_id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            (
+                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                | (DBPeriodicBudgetLedgerEntry.expires_at > now)
+            ),
+        )
+        .all()
+    )
+    for row in sub_rows:
+        sub_remaining_cents += max(0, row.amount_cents - row.consumed_cents)
+    topup_remaining_cents = compute_active_topup_remaining(
+        db, team_id=team_id, region_id=region_id
+    )
+    purchased_cents = sub_remaining_cents + topup_remaining_cents
+    purchased_dollars = purchased_cents / 100.0
+
+    if is_periodic:
+        # For PERIODIC teams, report the clean current-cycle budget from ledger + topups,
+        # independent of LiteLLM's accumulated max_budget.
+        total_budget = round(purchased_dollars, 4)
+        period_budget = total_budget
+        # live_remaining = purchased - total_spend
+        #
+        # INVARIANT: This formula is correct ONLY because consumed_cents
+        # is incremented at cycle-close (by allocate_period_spend_fifo)
+        # while LiteLLM's total_spend is simultaneously reset on the same
+        # call. The two therefore never reflect the same dollars at the
+        # same time. If mid-cycle allocation is ever introduced, this will
+        # silently double-count that spend.
+        live_remaining_dollars = max(0.0, purchased_dollars - float(total_spend or 0.0))
+        live_remaining_cents = int(round(live_remaining_dollars * 100))
+        periodic_budget_view = PeriodicTeamBudgetView(
+            purchased_budget_cents=purchased_cents,
+            purchased_budget=round(purchased_dollars, 4),
+            remaining_budget_cents=live_remaining_cents,
+            remaining_budget=round(live_remaining_dollars, 4),
+            configured_max_budget_cents=int(round(total_budget * 100)),
+            configured_max_budget=round(total_budget, 4),
+        )
+    elif team.budget_type == BudgetType.POOL:
+        # For subscription-managed POOL teams, expose a clean period budget from
+        # ledger balances (subscription + top-up), not LiteLLM projection ceilings.
+        period_budget = round(purchased_dollars, 4)
+
+    if period_budget is None:
+        period_budget = total_budget
+
+    # POOL key window display semantics:
+    # - uncapped keys: same as team window
+    # - capped keys: 31d windows; follow cycle when active subscription exists,
+    #   otherwise anchor to last deactivation or team creation.
+    if team.budget_type == BudgetType.POOL:
+        now = datetime.now(UTC)
+        active_subscription_for_pool = (
+            db.query(DBPeriodicBudgetLedgerEntry)
+            .filter(
+                DBPeriodicBudgetLedgerEntry.team_id == team.id,
+                DBPeriodicBudgetLedgerEntry.region_id == region_id,
+                DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+                DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+                DBPeriodicBudgetLedgerEntry.effective_period_start.isnot(None),
+                DBPeriodicBudgetLedgerEntry.effective_period_end.isnot(None),
+                DBPeriodicBudgetLedgerEntry.effective_period_end > now,
+            )
+            .order_by(
+                DBPeriodicBudgetLedgerEntry.effective_period_end.desc(),
+                DBPeriodicBudgetLedgerEntry.id.desc(),
+            )
+            .first()
+        )
+        last_deactivation = (
+            db.query(DBPeriodicPayment.payment_date)
+            .filter(
+                DBPeriodicPayment.team_id == team.id,
+                DBPeriodicPayment.payment_type == "deactivation",
+                DBPeriodicPayment.status == "completed",
+            )
+            .order_by(DBPeriodicPayment.payment_date.desc())
+            .first()
+        )
+        capped_anchor = (
+            (last_deactivation[0] if last_deactivation else None)
+            or team.created_at
+            or now
+        )
+        if capped_anchor.tzinfo is None:
+            capped_anchor = capped_anchor.replace(tzinfo=UTC)
+        for item in items:
+            if item.max_budget is None:
+                item.budget_duration = team_budget_duration
+                item.budget_reset_at = team_budget_reset_at
+                item.period_start = team_period_start
+            else:
+                if active_subscription_for_pool is not None:
+                    item.budget_duration = "31d"
+                    item.budget_reset_at = (
+                        active_subscription_for_pool.effective_period_end
+                    )
+                    item.period_start = (
+                        active_subscription_for_pool.effective_period_start
+                    )
+                else:
+                    item.budget_duration = "31d"
+                    item.period_start = capped_anchor
+                    item.budget_reset_at = capped_anchor + timedelta(days=31)
+
     return TeamSpendResponse(
         region_id=region_id,
         region_name=region.name,
@@ -849,12 +1088,15 @@ async def get_team_spend(
         team_name=team.name,
         total_spend=total_spend,
         total_budget=total_budget,
+        period_spend=period_spend,
+        period_budget=period_budget,
         total_prompt_tokens=total_prompt_tokens,
         total_completion_tokens=total_completion_tokens,
         total_tokens=total_tokens,
         budget_duration=team_budget_duration,
         budget_reset_at=team_budget_reset_at,
         period_start=team_period_start,
+        periodic_budget=periodic_budget_view,
         key_count=len(items),
         keys=items,
     )
@@ -866,7 +1108,8 @@ async def get_team_spend(
     summary="Get user spend by region",
     description=(
         "Returns aggregated spend for a user in a region, including per-key spend "
-        "and token usage fields."
+        "and token usage fields. For each key in `keys[]`, `max_budget` is the DB "
+        "key spend cap only and returns `null` when no key-level cap exists."
     ),
     response_description="User spend summary and per-key breakdown.",
 )
@@ -957,23 +1200,17 @@ async def get_user_spend(
             total_tokens,
         ) = _sum_optional_token_values(items)
 
-    member_cap = _get_spend_cap_max_budget(
-        db,
-        scope="team_member",
-        region_id=region_id,
-        team_id=target_user.team_id,
-        user_id=user_id,
-    )
     key_cap_map = _get_key_spend_cap_map(
         db,
         region_id=region_id,
         key_ids=[item.key_id for item in items if item.key_id is not None],
     )
     for item in items:
-        if item.key_id is not None and item.key_id in key_cap_map:
-            item.max_budget = round(key_cap_map[item.key_id], 4)
-        elif member_cap is not None:
-            item.max_budget = round(member_cap, 4)
+        item.max_budget = (
+            round(key_cap_map[item.key_id], 4)
+            if item.key_id is not None and item.key_id in key_cap_map
+            else None
+        )
         item.period_start = _compute_period_start(
             item.budget_reset_at, item.budget_duration
         )
@@ -998,13 +1235,16 @@ async def get_user_spend(
     response_model=PrivateAIKeySpend,
     summary="Get key spend by region",
     description=(
-        "Returns spend and budget metadata for a specific key in the specified region."
+        "Returns spend and budget metadata for a specific key in the specified region. "
+        "In this endpoint, `max_budget` is the DB key spend cap only (Amazee AI source "
+        "of truth) and returns `null` when no key-level cap exists."
     ),
     response_description="Key spend record with budget metadata and token usage.",
 )
 async def get_key_spend_alias(
     region_id: int,
     key_id: int,
+    team_id: int | None = None,
     current_user: DBUser = Depends(get_current_user_from_auth),
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
@@ -1016,6 +1256,10 @@ async def get_key_spend_alias(
         raise HTTPException(
             status_code=404, detail="Private AI Key not found in region"
         )
+
+    # Defence-in-depth scope gate (issue #600): enforce declared team scope
+    # even for system-admin callers before applying role-based access.
+    enforce_declared_team_scope(key, team_id, db)
 
     # Reuse authorization semantics from private-ai-keys endpoints.
     if current_user.is_admin:
@@ -1040,17 +1284,27 @@ async def get_key_spend_alias(
     try:
         data = await service.get_key_info(key.litellm_token)
         info = data.get("info", {})
-        configured_key_cap = _get_spend_cap_max_budget(
-            db,
-            scope="key",
-            region_id=region_id,
-            team_id=key.team_id,
-            user_id=key.owner_id,
-            key_id=key.id,
+        configured_key_cap_row = (
+            db.query(DBSpendCap.max_budget)
+            .filter(
+                DBSpendCap.scope == "key",
+                DBSpendCap.region_id == region_id,
+                DBSpendCap.team_id == key.team_id,
+                DBSpendCap.user_id == key.owner_id,
+                DBSpendCap.key_id == key.id,
+            )
+            .first()
         )
-        if configured_key_cap is not None:
-            info = dict(info)
-            info["max_budget"] = round(configured_key_cap, 4)
+        configured_key_cap = (
+            float(configured_key_cap_row[0])
+            if configured_key_cap_row and configured_key_cap_row[0] is not None
+            else None
+        )
+        info = dict(info)
+        info["max_budget"] = (
+            round(configured_key_cap, 4) if configured_key_cap is not None else None
+        )
+
         budget_reset_at = (
             datetime.fromisoformat(info["budget_reset_at"])
             if info.get("budget_reset_at")
@@ -1059,6 +1313,68 @@ async def get_key_spend_alias(
         period_start = _compute_period_start(
             budget_reset_at, info.get("budget_duration")
         )
+
+        # For POOL teams, keys expose team/cycle aligned window semantics:
+        # - active subscription => 31d cycle window
+        # - no active subscription => uncapped key follows team 365d window,
+        #   capped key follows 31d window anchored to deactivation or team creation.
+        team_for_key = (
+            db.query(DBTeam)
+            .filter(DBTeam.id == key.team_id, DBTeam.deleted_at.is_(None))
+            .first()
+            if key.team_id is not None
+            else None
+        )
+        if team_for_key is not None and team_for_key.budget_type == BudgetType.POOL:
+            now = datetime.now(UTC)
+            active_subscription = (
+                db.query(DBPeriodicBudgetLedgerEntry)
+                .filter(
+                    DBPeriodicBudgetLedgerEntry.team_id == team_for_key.id,
+                    DBPeriodicBudgetLedgerEntry.region_id == region_id,
+                    DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+                    DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+                    DBPeriodicBudgetLedgerEntry.effective_period_start.isnot(None),
+                    DBPeriodicBudgetLedgerEntry.effective_period_end.isnot(None),
+                    DBPeriodicBudgetLedgerEntry.effective_period_end > now,
+                )
+                .order_by(
+                    DBPeriodicBudgetLedgerEntry.effective_period_end.desc(),
+                    DBPeriodicBudgetLedgerEntry.id.desc(),
+                )
+                .first()
+            )
+            if active_subscription is not None:
+                info["budget_duration"] = "31d"
+                budget_reset_at = active_subscription.effective_period_end
+                period_start = active_subscription.effective_period_start
+            else:
+                if configured_key_cap is None:
+                    duration_days = settings.POOL_PURCHASE_EXPIRY_DAYS
+                    info["budget_duration"] = f"{duration_days}d"
+                    anchor = team_for_key.created_at or now
+                else:
+                    duration_days = 31
+                    info["budget_duration"] = "31d"
+                    last_deactivation = (
+                        db.query(DBPeriodicPayment.payment_date)
+                        .filter(
+                            DBPeriodicPayment.team_id == team_for_key.id,
+                            DBPeriodicPayment.payment_type == "deactivation",
+                            DBPeriodicPayment.status == "completed",
+                        )
+                        .order_by(DBPeriodicPayment.payment_date.desc())
+                        .first()
+                    )
+                    anchor = (
+                        (last_deactivation[0] if last_deactivation else None)
+                        or team_for_key.created_at
+                        or now
+                    )
+                if anchor.tzinfo is None:
+                    anchor = anchor.replace(tzinfo=UTC)
+                period_start = anchor
+                budget_reset_at = anchor + timedelta(days=duration_days)
         return PrivateAIKeySpend.model_validate(
             {
                 "spend": info.get("spend", 0.0),
@@ -1074,6 +1390,326 @@ async def get_key_spend_alias(
         )
 
 
+@router.get(
+    "/{region_id}/key/{key_id}/last-used",
+    response_model=KeyLastUsedResponse,
+    summary="Get key last-used time by region",
+    description=(
+        "Returns the timestamp a specific key was last used in the given region, "
+        "derived from LiteLLM spend logs (the most recent request time). "
+        "`last_used_at` is null when the key has never been used."
+    ),
+    response_description="Last-used timestamp for the key.",
+)
+async def get_key_last_used(
+    region_id: int,
+    key_id: int,
+    team_id: int | None = None,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
+    if not key:
+        raise HTTPException(status_code=404, detail="Private AI Key not found")
+    if key.region_id != region_id:
+        raise HTTPException(
+            status_code=404, detail="Private AI Key not found in region"
+        )
+
+    # Defence-in-depth scope gate (issue #600).
+    enforce_declared_team_scope(key, team_id, db)
+
+    # Reuse authorization semantics from get_key_spend_alias.
+    if current_user.is_admin:
+        pass
+    elif user_role in [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR, UserRole.READ_ONLY]:
+        if key.team_id is not None:
+            if key.team_id != current_user.team_id:
+                raise HTTPException(status_code=404, detail="Private AI Key not found")
+        else:
+            owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
+            if not owner or owner.team_id != current_user.team_id:
+                raise HTTPException(status_code=404, detail="Private AI Key not found")
+    else:
+        if key.owner_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Private AI Key not found")
+
+    region = _get_region_or_404(db, region_id)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+
+    if not key.litellm_token:
+        return KeyLastUsedResponse(
+            region_id=region_id,
+            key_id=key_id,
+            last_used_at=None,
+        )
+
+    last_used_at = await service.get_key_last_used(key.litellm_token)
+
+    return KeyLastUsedResponse(
+        region_id=region_id,
+        key_id=key_id,
+        last_used_at=last_used_at,
+    )
+
+
+@router.get(
+    "/{region_id}/key/{key_id}/daily-activity",
+    response_model=KeyDailyActivityResponse,
+    response_model_exclude_none=True,
+    summary="Get key daily activity by region",
+    description=(
+        "Returns per-day usage (spend, tokens and request count) for a specific "
+        "key in the specified region across the requested date range. "
+        "start_date and end_date are optional and default to the last 30 days "
+        "(end_date defaults to today UTC, start_date to 30 days earlier). Proxies "
+        "LiteLLM's `/user/daily/activity`, filtered to this key. Days with no "
+        "usage are omitted from the response."
+    ),
+    response_description="Per-day usage rows for the key, ordered by date.",
+)
+async def get_key_daily_activity(
+    region_id: int,
+    key_id: int,
+    start_date: date | None = Query(
+        None,
+        description=(
+            "Start date (inclusive), formatted YYYY-MM-DD. "
+            "Defaults to 30 days before end_date when omitted."
+        ),
+    ),
+    end_date: date | None = Query(
+        None,
+        description=(
+            "End date (inclusive), formatted YYYY-MM-DD. "
+            "Defaults to today (UTC) when omitted."
+        ),
+    ),
+    include_breakdown: bool = Query(
+        False,
+        description=(
+            "When true, include a per-model breakdown on each daily row. "
+            "Defaults to false, leaving the flat response unchanged."
+        ),
+    ),
+    team_id: int | None = Query(
+        None,
+        description=(
+            "When provided, the key must belong to this team or the request "
+            "404s — a defence-in-depth scope check (issue #600) applied even "
+            "to system-admin callers."
+        ),
+    ),
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    start_date, end_date = _resolve_daily_activity_range(start_date, end_date)
+
+    key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
+    if not key:
+        raise HTTPException(status_code=404, detail="Private AI Key not found")
+    if key.region_id != region_id:
+        raise HTTPException(
+            status_code=404, detail="Private AI Key not found in region"
+        )
+
+    # Defence-in-depth scope gate (issue #600).
+    enforce_declared_team_scope(key, team_id, db)
+
+    # Reuse authorization semantics from get_key_spend_alias.
+    if current_user.is_admin:
+        pass
+    elif user_role in [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR, UserRole.READ_ONLY]:
+        if key.team_id is not None:
+            if key.team_id != current_user.team_id:
+                raise HTTPException(status_code=404, detail="Private AI Key not found")
+        else:
+            owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
+            if not owner or owner.team_id != current_user.team_id:
+                raise HTTPException(status_code=404, detail="Private AI Key not found")
+    else:
+        if key.owner_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Private AI Key not found")
+
+    region = _get_region_or_404(db, region_id)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+
+    rows = await service.get_daily_activity(
+        litellm_token=key.litellm_token,
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+    )
+
+    return KeyDailyActivityResponse(
+        region_id=region_id,
+        key_id=key_id,
+        start_date=start_date,
+        end_date=end_date,
+        activity=_rows_to_daily_activity(rows, include_breakdown=include_breakdown),
+    )
+
+
+@router.get(
+    "/{region_id}/user/{user_id}/daily-activity",
+    response_model=UserDailyActivityResponse,
+    response_model_exclude_none=True,
+    summary="Get user daily activity by region",
+    description=(
+        "Returns per-day usage (spend, tokens and request count) aggregated "
+        "across all of a user's keys in the specified region across the "
+        "requested date range. start_date and end_date are optional and default "
+        "to the last 30 days (end_date defaults to today UTC, start_date to 30 "
+        "days earlier). Proxies LiteLLM's `/user/daily/activity`, "
+        "filtered to this user. Days with no usage are omitted.\n\n"
+        "Values come from LiteLLM's pre-aggregated daily-spend tables (whole "
+        "UTC days) and are independent of billing-cycle spend resets, so they "
+        "do NOT reconcile with the cycle-reset spend/budget figures returned by "
+        "the other spend endpoints. The current UTC day may under-report until "
+        "LiteLLM's next batch flush."
+    ),
+    response_description="Per-day usage rows for the user, ordered by date.",
+)
+async def get_user_daily_activity(
+    region_id: int,
+    user_id: int,
+    start_date: date | None = Query(
+        None,
+        description=(
+            "Start date (inclusive), formatted YYYY-MM-DD. "
+            "Defaults to 30 days before end_date when omitted."
+        ),
+    ),
+    end_date: date | None = Query(
+        None,
+        description=(
+            "End date (inclusive), formatted YYYY-MM-DD. "
+            "Defaults to today (UTC) when omitted."
+        ),
+    ),
+    include_breakdown: bool = Query(
+        False,
+        description=(
+            "When true, include a per-model breakdown on each daily row. "
+            "Defaults to false, leaving the flat response unchanged."
+        ),
+    ),
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    start_date, end_date = _resolve_daily_activity_range(start_date, end_date)
+
+    target_user = db.query(DBUser).filter(DBUser.id == user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    _assert_user_access(current_user, user_role, target_user)
+
+    region = _get_region_or_404(db, region_id)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+
+    rows = await service.get_user_daily_activity(
+        user_id=str(user_id),
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+    )
+
+    return UserDailyActivityResponse(
+        region_id=region_id,
+        user_id=user_id,
+        start_date=start_date,
+        end_date=end_date,
+        activity=_rows_to_daily_activity(rows, include_breakdown=include_breakdown),
+    )
+
+
+@router.get(
+    "/{region_id}/team/{team_id}/daily-activity",
+    response_model=TeamDailyActivityResponse,
+    response_model_exclude_none=True,
+    summary="Get team daily activity by region",
+    description=(
+        "Returns per-day usage (spend, tokens and request count) aggregated "
+        "across all of a team's keys in the specified region across the "
+        "requested date range. start_date and end_date are optional and default "
+        "to the last 30 days (end_date defaults to today UTC, start_date to 30 "
+        "days earlier). Proxies LiteLLM's `/team/daily/activity`, "
+        "filtered to this team. Days with no usage are omitted.\n\n"
+        "Values come from LiteLLM's pre-aggregated daily-spend tables (whole "
+        "UTC days) and are independent of billing-cycle spend resets, so they "
+        "do NOT reconcile with the cycle-reset spend/budget figures returned by "
+        "the other spend endpoints. The current UTC day may under-report until "
+        "LiteLLM's next batch flush."
+    ),
+    response_description="Per-day usage rows for the team, ordered by date.",
+)
+async def get_team_daily_activity(
+    region_id: int,
+    team_id: int,
+    start_date: date | None = Query(
+        None,
+        description=(
+            "Start date (inclusive), formatted YYYY-MM-DD. "
+            "Defaults to 30 days before end_date when omitted."
+        ),
+    ),
+    end_date: date | None = Query(
+        None,
+        description=(
+            "End date (inclusive), formatted YYYY-MM-DD. "
+            "Defaults to today (UTC) when omitted."
+        ),
+    ),
+    include_breakdown: bool = Query(
+        False,
+        description=(
+            "When true, include a per-model breakdown on each daily row. "
+            "Defaults to false, leaving the flat response unchanged."
+        ),
+    ),
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    start_date, end_date = _resolve_daily_activity_range(start_date, end_date)
+
+    team = (
+        db.query(DBTeam)
+        .filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None))
+        .first()
+    )
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    _assert_team_access(current_user, user_role, team_id)
+
+    region = _get_region_or_404(db, region_id)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+    lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+
+    rows = await service.get_team_daily_activity(
+        team_id=lite_team_id,
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+    )
+
+    return TeamDailyActivityResponse(
+        region_id=region_id,
+        team_id=team_id,
+        start_date=start_date,
+        end_date=end_date,
+        activity=_rows_to_daily_activity(rows, include_breakdown=include_breakdown),
+    )
+
+
 @router.put(
     "/{region_id}/team/{team_id}/budget",
     response_model=SpendBudgetUpdateResponse,
@@ -1083,7 +1719,8 @@ async def get_key_spend_alias(
         "budget controls are being finalized.\n\n"
         "Request body accepts only `max_budget`.\n"
         "`budget_duration` is computed server-side and returned in the response:\n"
-        "- PERIODIC teams: monthly (`1mo`)\n"
+        "- PERIODIC teams: manual team budget updates are rejected; use subscription "
+        "renewal and periodic top-up purchase flows.\n"
         "- POOL teams: purchase-window duration for enforcement while storing "
         "monthly-cap semantics in local spend caps."
     ),
@@ -1115,8 +1752,32 @@ async def update_team_budget(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
-    if team.requires_pool_purchase_gate and body.max_budget is not None:
-        effective_duration = _pool_budget_duration_from_last_purchase(
+    if team.budget_type == BudgetType.PERIODIC and body.max_budget is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Manual team budget updates are not allowed for periodic teams. "
+                "Use subscription renewal and periodic top-up purchase flows."
+            ),
+        )
+    # A non-purchase-gated POOL team skips the purchase clamp below, so a team
+    # admin could set an arbitrary max_budget with no payment — or clear the cap
+    # by sending a null max_budget. Block all non-admin budget writes for this
+    # team type (gated POOL teams remain clamped to purchased budget).
+    if (
+        team.budget_type == BudgetType.POOL
+        and not team.requires_pool_purchase_gate
+        and not current_user.is_admin
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Only system administrators can set the budget for "
+                "non-purchase-gated pool teams."
+            ),
+        )
+    if team.requires_pool_purchase_gate:
+        effective_duration = _pool_team_budget_duration_for_enforcement(
             db=db, team_id=team_id, region_id=region_id
         )
     else:
@@ -1124,18 +1785,20 @@ async def update_team_budget(
     effective_max_budget = body.max_budget
     month_anchor = None
     month_start_spend = None
-    purchased_total: float | None = None
+    available_total: float | None = None
 
-    if team.requires_pool_purchase_gate and body.max_budget is not None:
-        purchased_total = _pool_purchased_budget_for_team_region(db, team_id, region_id)
-        team_info_resp = await service.get_team_info(lite_team_id)
-        team_info = team_info_resp.get("team_info", team_info_resp)
-        month_start_spend = round(float(team_info.get("spend", 0.0) or 0.0), 4)
+    if team.requires_pool_purchase_gate:
+        available_total = _pool_available_budget_for_team_region(db, team_id, region_id)
+        month_start_spend = _pool_previous_period_spend_baseline(db, team_id, region_id)
         month_anchor = _current_month_anchor()
+        # A null max_budget must NOT clear the LiteLLM cap for purchase-gated
+        # teams — that would grant unlimited usage. Clamp to the purchased total.
         effective_max_budget = _compute_pool_monthly_effective_budget(
-            purchased_total=purchased_total,
-            month_start_spend=month_start_spend,
-            monthly_cap=body.max_budget,
+            purchased_total=available_total,
+            period_baseline_spend=month_start_spend,
+            monthly_cap=(
+                body.max_budget if body.max_budget is not None else available_total
+            ),
         )
 
     await service.update_team_budget(
@@ -1143,19 +1806,6 @@ async def update_team_budget(
         max_budget=effective_max_budget,
         budget_duration=effective_duration,
     )
-    if (
-        body.max_budget is not None
-        and team.requires_pool_purchase_gate
-        and purchased_total is not None
-        and purchased_total <= 0
-    ):
-        await _enforce_pool_no_purchase_key_lock(
-            db,
-            team,
-            region,
-            service,
-            purchased_budget=purchased_total,
-        )
     _upsert_spend_cap(
         db,
         scope="team",
@@ -1255,7 +1905,6 @@ async def update_team_member_budget(
         max_budget_in_team=body.max_budget,
         budget_duration=effective_duration,
     )
-    await _enforce_pool_no_purchase_key_lock(db, team, region, service, user_id=user_id)
     _upsert_spend_cap(
         db,
         scope="team_member",
@@ -1330,15 +1979,11 @@ async def clear_team_budget(
     _assert_team_region_association(db, region, team_id)
 
     if team.requires_pool_purchase_gate:
-        total_purchased_cents = (
-            db.query(func.sum(DBPoolPurchase.amount_cents))
-            .filter(
-                DBPoolPurchase.team_id == team_id, DBPoolPurchase.region_id == region_id
-            )
-            .scalar()
-            or 0
+        available_total = _pool_available_budget_for_team_region(db, team_id, region_id)
+        period_baseline_spend = _pool_previous_period_spend_baseline(
+            db, team_id, region_id
         )
-        max_budget_to_restore = round(float(total_purchased_cents) / 100.0, 4)
+        max_budget_to_restore = round(period_baseline_spend + available_total, 4)
     else:
         limit_service = LimitService(db)
         try:
@@ -1360,7 +2005,7 @@ async def clear_team_budget(
     )
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
     if team.requires_pool_purchase_gate and max_budget_to_restore is not None:
-        budget_duration = _pool_budget_duration_from_last_purchase(
+        budget_duration = _pool_team_budget_duration_for_enforcement(
             db=db, team_id=team_id, region_id=region_id
         )
     else:
@@ -1490,6 +2135,7 @@ async def update_key_budget(
     region_id: int,
     key_id: int,
     body: SpendBudgetUpdateRequest,
+    team_id: int | None = None,
     current_user: DBUser = Depends(get_current_user_from_auth),
     role: str = Depends(get_role_min_team_admin),
     db: Session = Depends(get_db),
@@ -1499,6 +2145,9 @@ async def update_key_budget(
         raise HTTPException(
             status_code=404, detail="Private AI Key not found in region"
         )
+    # Defence-in-depth scope gate (issue #600): enforce declared team scope
+    # before the budget write, even for system-admin callers.
+    enforce_declared_team_scope(key, team_id, db)
     owner = None
     team_for_budget_check = None
     if key.team_id is not None:
@@ -1524,36 +2173,52 @@ async def update_key_budget(
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
+    # Key cap windows for POOL teams are 31d (not calendar-month 1mo).
+    # Cap amount changes should not re-anchor/reset duration once set.
     effective_duration = _effective_monthly_budget_duration(body.max_budget)
-    # For purchase-gated POOL teams with no purchases, skip the initial key
-    # budget update (which would be immediately overridden) to avoid a brief
-    # unlocked window. The lock call below will hard-set max_budget=0 directly.
-    purchased_budget: float | None = None
-    skip_initial_update = False
+    configured_key_cap_existing = _get_spend_cap_max_budget(
+        db,
+        scope="key",
+        region_id=region_id,
+        team_id=key.team_id,
+        user_id=key.owner_id,
+        key_id=key_id,
+    )
     if (
         team_for_budget_check is not None
-        and team_for_budget_check.requires_pool_purchase_gate
-        and body.max_budget is not None
+        and team_for_budget_check.budget_type == BudgetType.POOL
     ):
-        purchased_budget = _pool_purchased_budget_for_team_region(
-            db, team_for_budget_check.id, region_id
-        )
-        skip_initial_update = purchased_budget <= 0
-    if not skip_initial_update:
-        await service.update_key_budget(
-            litellm_token=key.litellm_token,
-            budget_duration=effective_duration,
-            max_budget=body.max_budget,
-            clear_max_budget=body.max_budget is None,
-        )
-    lock_applied = await _enforce_pool_no_purchase_key_lock(
-        db,
-        team_for_budget_check,
-        region,
-        service,
-        key_id=key.id,
-        purchased_budget=purchased_budget,
+        if body.max_budget is None:
+            effective_duration = None
+        elif configured_key_cap_existing is None:
+            effective_duration = "31d"
+        else:
+            # Preserve existing key duration anchor when only cap value changes.
+            effective_duration = None
+
+    await service.update_key_budget(
+        litellm_token=key.litellm_token,
+        budget_duration=effective_duration,
+        max_budget=body.max_budget,
+        clear_max_budget=body.max_budget is None,
     )
+    existing_key_cap_row = (
+        db.query(DBSpendCap)
+        .filter(
+            DBSpendCap.scope == "key",
+            DBSpendCap.region_id == region_id,
+            DBSpendCap.team_id == key.team_id,
+            DBSpendCap.user_id == key.owner_id,
+            DBSpendCap.key_id == key_id,
+        )
+        .first()
+    )
+    cap_duration_to_store = (
+        effective_duration
+        if effective_duration is not None
+        else (existing_key_cap_row.budget_duration if existing_key_cap_row else None)
+    )
+
     _upsert_spend_cap(
         db,
         scope="key",
@@ -1562,7 +2227,7 @@ async def update_key_budget(
         user_id=key.owner_id,
         key_id=key_id,
         max_budget=body.max_budget,
-        budget_duration=effective_duration,
+        budget_duration=cap_duration_to_store,
     )
     _invalidate_key_related_user_spend_cache(db, key)
     configured_key_cap = _get_spend_cap_max_budget(
@@ -1590,12 +2255,7 @@ async def update_key_budget(
             else info.get("max_budget")
         ),
         budget_duration=info.get("budget_duration"),
-        note=(
-            "If key has team_id, team/team-member budgets may take precedence during enforcement. "
-            "No-purchase prepaid-pool teams keep keys hard-locked at max_budget=0 while preserving configured caps for post-purchase restore."
-            if lock_applied
-            else "If key has team_id, team/team-member budgets may take precedence during enforcement."
-        ),
+        note="If key has team_id, team/team-member budgets may take precedence during enforcement.",
     )
 
 
@@ -1605,7 +2265,10 @@ async def update_key_budget(
     summary="Clear key budget override",
     description=(
         "Clears key max_budget and budget_duration by setting both to null "
-        "in LiteLLM. Removes the spend cap and budget reset window from the key."
+        "in LiteLLM. Removes the spend cap and budget reset window from the key. "
+        "Exception: for a purchase-gated pool team with no purchase yet, the key "
+        "keeps a zero max_budget so it still cannot serve requests; the first "
+        "purchase clears it."
     ),
     response_description="Key budget clear result with max_budget=null and budget_duration=null.",
     openapi_extra={
@@ -1634,6 +2297,7 @@ async def update_key_budget(
 async def clear_key_budget(
     region_id: int,
     key_id: int,
+    team_id: int | None = None,
     current_user: DBUser = Depends(get_current_user_from_auth),
     role: str = Depends(get_role_min_team_admin),
     db: Session = Depends(get_db),
@@ -1643,6 +2307,8 @@ async def clear_key_budget(
         raise HTTPException(
             status_code=404, detail="Private AI Key not found in region"
         )
+    # Defence-in-depth scope gate (issue #600).
+    enforce_declared_team_scope(key, team_id, db)
     if key.team_id is not None:
         _assert_team_budget_write_access(current_user, role, key.team_id)
     else:
@@ -1655,13 +2321,57 @@ async def clear_key_budget(
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
-    await service.update_key_budget(
-        litellm_token=key.litellm_token,
-        budget_duration=None,
-        max_budget=None,
-        clear_max_budget=True,
-        clear_budget_duration=True,
+
+    # A gated pool team that has never purchased keeps its keys at a zero
+    # max_budget, which is the only thing stopping inference: LiteLLM denies a
+    # key at spend >= max_budget but a team only at spend > max_budget, so a
+    # cleared key would pass its first request against the team's $0 budget.
+    # Re-apply the gate instead of clearing. The first purchase clears it, and
+    # from then on this endpoint behaves normally.
+    # Resolve the team the same way key creation does: the key's own team, or
+    # the owner's team for a user-scoped key. Reading only key.team_id would
+    # miss a user key whose owner sits in a gated team.
+    gate_team_id = key.team_id
+    if gate_team_id is None and key.owner_id is not None:
+        gate_team_id = (
+            db.query(DBUser.team_id).filter(DBUser.id == key.owner_id).scalar()
+        )
+    gate_team = (
+        db.query(DBTeam).filter(DBTeam.id == gate_team_id).first()
+        if gate_team_id is not None
+        else None
     )
+
+    gate_key = False
+    if gate_team is not None and gate_team.requires_pool_purchase_gate:
+        # Serialise against a concurrent first purchase. That path clears key
+        # gates in LiteLLM before committing its purchase row, so an unlocked
+        # check can still read "never purchased" and re-gate a key the purchase
+        # just funded, leaving it unable to serve requests. Taking the same
+        # region lock means whichever runs first wins: a purchase in flight
+        # blocks this until it commits, and a clear in flight makes the purchase
+        # wait and then clear the gate itself.
+        _lock_region_or_404(db, region_id)
+        gate_key = not pool_team_has_ever_purchased(db, gate_team_id, region_id)
+
+    if gate_key:
+        await service.update_key_budget(
+            litellm_token=key.litellm_token,
+            budget_duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
+            max_budget=0.0,
+            clear_max_budget=False,
+        )
+    else:
+        await service.update_key_budget(
+            litellm_token=key.litellm_token,
+            budget_duration=None,
+            max_budget=None,
+            clear_max_budget=True,
+            clear_budget_duration=True,
+        )
+
+    # The cap row is dropped either way, so the first purchase resolves the key
+    # to the team budget rather than resurrecting a cap the caller removed.
     _delete_spend_cap(
         db,
         scope="key",
@@ -1684,5 +2394,10 @@ async def clear_key_budget(
         key_id=key_id,
         max_budget=info.get("max_budget"),
         budget_duration=info.get("budget_duration"),
-        note="Cleared key max_budget and budget_duration overrides.",
+        note=(
+            "Team has not purchased yet: key kept at a zero max_budget so it "
+            "cannot serve requests. The first purchase clears it."
+            if gate_key
+            else "Cleared key max_budget and budget_duration overrides."
+        ),
     )

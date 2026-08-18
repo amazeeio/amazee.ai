@@ -14,7 +14,7 @@ def mock_auth_deps():
     """Fixture that bundles all auth dependency mocks."""
     with (
         patch(
-            "app.api.auth.create_private_ai_key", new_callable=AsyncMock
+            "app.api.private_ai_keys._create_private_ai_key", new_callable=AsyncMock
         ) as mock_create_key,
         patch(
             "app.api.auth.register_team", new_callable=AsyncMock
@@ -62,17 +62,17 @@ async def test_generate_trial_access(mock_auth_deps, db: Session):
     mock_region.label = "Test Region"
 
     def get_mock_query(model):
+        # `is`, not `==`: the trial-cap count query passes a SQLAlchemy
+        # expression here, and `==` on it builds a (failing) SQL comparison.
         mock_query = Mock()
-        if model == DBRegion:
+        if model is DBRegion:
             mock_query.filter.return_value.first.return_value = mock_region
-        elif model == DBTeam:
-            mock_query.filter.return_value.first.return_value = (
-                None  # Force create team
-            )
-        elif model == DBUser:
-            mock_query.filter.return_value.first.return_value = None
+        elif model is DBTeam:
+            # Force create team; the endpoint locks the row FOR UPDATE
+            mock_query.filter.return_value.with_for_update.return_value.first.return_value = None
         else:
             mock_query.filter.return_value.first.return_value = None
+            mock_query.filter.return_value.scalar.return_value = 0
         return mock_query
 
     mock_db.query.side_effect = get_mock_query
@@ -104,6 +104,7 @@ async def test_generate_trial_access(mock_auth_deps, db: Session):
     mock_user.is_active = True
     mock_user.role = "admin"
     mock_user.team_id = 12
+    mock_user.receive_marketing_updates = False
     mock_auth_deps["create_user"].return_value = mock_user
 
     mock_team = Mock(spec=DBTeam)
@@ -129,7 +130,9 @@ async def test_generate_trial_access(mock_auth_deps, db: Session):
     # Mock Response object
     mock_response = Mock(spec=Response)
 
-    result = await generate_trial_access(mock_response, mock_db, mock_limit_service)
+    result = await generate_trial_access(
+        Mock(), mock_response, mock_db, mock_limit_service
+    )
 
     assert result.user.id == 1
     assert result.team_id == 12
@@ -137,9 +140,20 @@ async def test_generate_trial_access(mock_auth_deps, db: Session):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "key_error,expected_status",
+    [
+        (Exception("Key creation failed"), 500),
+        # HTTPExceptions keep their status code AND still clean up the
+        # already-committed trial user (orphans consume trial capacity).
+        (HTTPException(status_code=503, detail="LiteLLM unavailable"), 503),
+    ],
+)
 async def test_generate_trial_access_cleanup_on_key_creation_failure(
     mock_auth_deps,
     db: Session,
+    key_error,
+    expected_status,
 ):
     """
     Given create_private_ai_key fails
@@ -156,15 +170,17 @@ async def test_generate_trial_access_cleanup_on_key_creation_failure(
     mock_region.litellm_api_key = "test"
 
     def get_mock_query(model):
+        # `is`, not `==`: the trial-cap count query passes a SQLAlchemy
+        # expression here, and `==` on it builds a (failing) SQL comparison.
         q = Mock()
-        if model == DBRegion:
+        if model is DBRegion:
             q.filter.return_value.first.return_value = mock_region
-        elif model == DBTeam:
-            q.filter.return_value.first.return_value = None  # Force create team
-        elif model == DBUser:
-            q.filter.return_value.first.return_value = None
+        elif model is DBTeam:
+            # Force create team; the endpoint locks the row FOR UPDATE
+            q.filter.return_value.with_for_update.return_value.first.return_value = None
         else:
             q.filter.return_value.first.return_value = None
+            q.filter.return_value.scalar.return_value = 0
         return q
 
     mock_db.query.side_effect = get_mock_query
@@ -172,6 +188,7 @@ async def test_generate_trial_access_cleanup_on_key_creation_failure(
     mock_user = Mock(spec=DBUser)
     mock_user.id = 1
     mock_user.email = "trial-user@example.com"
+    mock_user.receive_marketing_updates = False
     mock_auth_deps["create_user"].return_value = mock_user
 
     mock_team = Mock(spec=DBTeam)
@@ -180,7 +197,7 @@ async def test_generate_trial_access_cleanup_on_key_creation_failure(
     mock_auth_deps["register_team"].return_value = mock_team
 
     # Simulate failure
-    mock_auth_deps["create_key"].side_effect = Exception("Key creation failed")
+    mock_auth_deps["create_key"].side_effect = key_error
 
     # Mock LimitService
     mock_limit_service = Mock(spec=LimitService)
@@ -204,8 +221,59 @@ async def test_generate_trial_access_cleanup_on_key_creation_failure(
     mock_response = Mock(spec=Response)
 
     with pytest.raises(HTTPException) as exc_info:
-        await generate_trial_access(mock_response, mock_db, mock_limit_service)
+        await generate_trial_access(Mock(), mock_response, mock_db, mock_limit_service)
 
-    assert exc_info.value.status_code == 500
+    assert exc_info.value.status_code == expected_status
 
     assert mock_db.delete.call_count >= 1
+
+
+@patch("app.db.postgres.PostgresManager.create_database")
+@patch("httpx.AsyncClient")
+def test_trial_key_cannot_read_its_own_litellm_team(
+    mock_client_class, mock_create_db, client, db, test_region
+):
+    """Full provisioning path.
+
+    Every anonymous trial shares one team, and LiteLLM treats a key's team_id as
+    team membership — so an unscoped trial key can GET /team/info and read every
+    other trial's owner, spend and budget. The trial key must therefore be minted
+    with LiteLLM's inference-only route group.
+    """
+    mock_create_db.return_value = {
+        "database_name": "db_trial",
+        "database_host": "pghost",
+        "database_username": "user_trial",
+        "database_password": "pw",
+    }
+
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"key": "sk-trial-test-key"}
+    mock_response.raise_for_status.return_value = None
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    with patch("app.core.config.settings.AI_TRIAL_REGION", test_region.name):
+        response = client.post("/auth/generate-trial-access", json={})
+
+    assert response.status_code == 200, response.text
+
+    key_generate_calls = [
+        call
+        for call in mock_client.post.call_args_list
+        if str(call.args[0]).endswith("/key/generate")
+    ]
+    assert len(key_generate_calls) == 1
+    # Spelled out rather than compared against INFERENCE_ONLY_ROUTES: the
+    # constant builds the request, so comparing to it would accept any route
+    # added to it later, including a management route. /model/info is required
+    # because the Drupal module lists models through it and llm_api_routes does
+    # not cover it; anything beyond these two must fail this test.
+    assert key_generate_calls[0].kwargs["json"]["allowed_routes"] == [
+        "llm_api_routes",
+        "/model/info",
+    ]

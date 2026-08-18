@@ -11,6 +11,7 @@ declare module "react" {
     "pricing-table-id"?: string;
     "publishable-key"?: string;
     "customer-session-client-secret"?: string;
+    "client-reference-id"?: string;
   }
 }
 
@@ -32,10 +33,22 @@ interface PricingTable {
   updated_at: string;
 }
 
+interface TeamRegion {
+  id: number;
+  name: string;
+  label?: string | null;
+}
+
+interface TeamDetails {
+  id: number;
+  allowed_regions: TeamRegion[];
+}
+
 export default function PricingPage() {
   const { user } = useAuth();
   const [clientSecret, setClientSecret] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [selectedRegionId, setSelectedRegionId] = useState<number | null>(null);
 
   // Fetch pricing table data
   const {
@@ -49,6 +62,22 @@ export default function PricingPage() {
       return response.json();
     },
   });
+
+  const { data: teamDetails } = useQuery<TeamDetails>({
+    queryKey: ["team-details", user?.team_id],
+    queryFn: async () => {
+      const response = await get(`/teams/${user?.team_id}`);
+      return response.json();
+    },
+    enabled: !!user?.team_id,
+  });
+
+  useEffect(() => {
+    const firstRegionId = teamDetails?.allowed_regions?.[0]?.id;
+    if (!selectedRegionId && firstRegionId) {
+      setSelectedRegionId(firstRegionId);
+    }
+  }, [teamDetails?.allowed_regions, selectedRegionId]);
 
   useEffect(() => {
     const fetchSessionToken = async () => {
@@ -99,6 +128,12 @@ export default function PricingPage() {
     );
   }
 
+  const regions = teamDetails?.allowed_regions ?? [];
+  const clientReferenceId =
+    user?.team_id && selectedRegionId
+      ? `${user.team_id}-${selectedRegionId}`
+      : null;
+
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
@@ -114,12 +149,35 @@ export default function PricingPage() {
         src="https://js.stripe.com/v3/pricing-table.js"
         strategy="afterInteractive"
       />
-      {clientSecret && pricingTable && (
+      {regions.length > 1 && (
+        <div className="max-w-md">
+          <label
+            htmlFor="region-select"
+            className="block text-sm font-medium text-gray-700 mb-1"
+          >
+            Region
+          </label>
+          <select
+            id="region-select"
+            value={selectedRegionId ?? ""}
+            onChange={(e) => setSelectedRegionId(Number(e.target.value))}
+            className="w-full border border-gray-300 rounded-md px-3 py-2"
+          >
+            {regions.map((region) => (
+              <option key={region.id} value={region.id}>
+                {region.label || region.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+      {clientSecret && pricingTable && clientReferenceId && (
         // @ts-expect-error - Stripe pricing table is a custom element
         <stripe-pricing-table
           pricing-table-id={pricingTable.pricing_table_id}
           publishable-key={pricingTable.stripe_publishable_key}
           customer-session-client-secret={clientSecret}
+          client-reference-id={clientReferenceId}
         />
       )}
     </div>

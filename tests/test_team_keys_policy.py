@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 @patch("httpx.AsyncClient")
@@ -165,18 +165,20 @@ def test_create_vector_db_force_user_keys_enabled(
     assert data["team_id"] is None
 
 
-def test_create_team_with_force_user_keys(client, admin_token):
+def test_create_team_with_force_user_keys(client, admin_token, test_region):
     """Test registering a new team with force_user_keys enabled"""
-    response = client.post(
-        "/teams/",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "name": "Force User Keys Team",
-            "admin_email": "force@example.com",
-            "force_user_keys": True,
-            "budget_type": "pool",
-        },
-    )
+    with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock):
+        response = client.post(
+            "/teams/",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "name": "Force User Keys Team",
+                "admin_email": "force@example.com",
+                "force_user_keys": True,
+                "budget_type": "pool",
+                "region_id": test_region.id,
+            },
+        )
     assert response.status_code == 201
     data = response.json()
     assert data["force_user_keys"] is True

@@ -84,7 +84,7 @@ async def run(dry_run: bool) -> int:
                 try:
                     await service.update_budget(
                         litellm_token=key.litellm_token,
-                        budget_duration=f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
+                        budget_duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
                         budget_amount=None,
                         include_max_budget=True,
                     )

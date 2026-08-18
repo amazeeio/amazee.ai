@@ -15,9 +15,39 @@ environments:
         schedule: "0 4 * * *"
         command: python scripts/trigger_sync_pool_budgets_job.py
         service: backend
-      - name: sync-pool-monthly-caps
-        schedule: "5 0 1 * *"
-        command: python scripts/trigger_sync_pool_monthly_caps_job.py
+      - name: monitor-trial-users
+        schedule: "0 5 1 * *"
+        command: python scripts/trigger_trial_recon_job.py
+        service: backend
+      - name: reap-trial-keys
+        schedule: "0 1 * * *"
+        command: python scripts/trigger_trial_reaper_job.py
+        service: backend
+      - name: refresh-disposable-domains
+        schedule: "0 2 * * *"
+        command: python scripts/trigger_refresh_disposable_domains_job.py
+        service: backend
+      - name: prune-signup-events
+        schedule: "30 2 * * *"
+        command: python scripts/trigger_prune_signup_events_job.py
+        service: backend
+      - name: prune-revoked-tokens
+        schedule: "45 2 * * *"
+        command: python scripts/trigger_prune_revoked_tokens_job.py
+        service: backend
+      # Frequent on purpose: a 90% warning is worthless if it lands an hour after
+      # the key stopped working. The sweep is 2 LiteLLM calls per region and
+      # scales with active entities, not key count, so 5 minutes is affordable.
+      - name: monitor-budget-thresholds
+        schedule: "*/5 * * * *"
+        command: python scripts/trigger_budget_alerts_job.py
+        service: backend
+      # 'synced' only means a sync once succeeded — proxies drift (admin UI
+      # deletions, DB restores, cluster rollouts). Two LiteLLM calls per
+      # region when nothing drifted, so 5 minutes is affordable.
+      - name: reconcile-model-sync
+        schedule: "*/5 * * * *"
+        command: python scripts/trigger_model_reconcile_job.py
         service: backend
     routes:
       - backend:
@@ -46,9 +76,36 @@ environments:
         schedule: "0 4 * * *"
         command: python scripts/trigger_sync_pool_budgets_job.py
         service: backend
-      - name: sync-pool-monthly-caps
-        schedule: "5 0 1 * *"
-        command: python scripts/trigger_sync_pool_monthly_caps_job.py
+      - name: monitor-trial-users
+        schedule: "0 5 1 * *"
+        command: python scripts/trigger_trial_recon_job.py
+        service: backend
+      - name: reap-trial-keys
+        schedule: "0 1 * * *"
+        command: python scripts/trigger_trial_reaper_job.py
+        service: backend
+      - name: refresh-disposable-domains
+        schedule: "0 2 * * *"
+        command: python scripts/trigger_refresh_disposable_domains_job.py
+        service: backend
+      - name: prune-signup-events
+        schedule: "30 2 * * *"
+        command: python scripts/trigger_prune_signup_events_job.py
+        service: backend
+      - name: prune-revoked-tokens
+        schedule: "45 2 * * *"
+        command: python scripts/trigger_prune_revoked_tokens_job.py
+        service: backend
+      - name: monitor-budget-thresholds
+        schedule: "*/5 * * * *"
+        command: python scripts/trigger_budget_alerts_job.py
+        service: backend
+      # 'synced' only means a sync once succeeded — proxies drift (admin UI
+      # deletions, DB restores, cluster rollouts). Two LiteLLM calls per
+      # region when nothing drifted, so 5 minutes is affordable.
+      - name: reconcile-model-sync
+        schedule: "*/5 * * * *"
+        command: python scripts/trigger_model_reconcile_job.py
         service: backend
 
 tasks:

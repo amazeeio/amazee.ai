@@ -1,6 +1,11 @@
 from unittest.mock import patch, Mock, AsyncMock
+
+import pytest
+
 from app.db.models import (
     DBPrivateAIKey,
+    DBPeriodicBudgetLedgerEntry,
+    DBPoolPurchase,
     DBTeam,
     DBUser,
     DBProduct,
@@ -11,50 +16,117 @@ from datetime import datetime, UTC
 from app.core.security import get_password_hash
 from httpx import HTTPStatusError
 from fastapi import status, HTTPException
+from app.core.config import settings
 from app.core.limit_service import (
     DEFAULT_MAX_SPEND,
     DEFAULT_RPM_PER_KEY,
 )
 
 
+@patch("app.api.private_ai_keys.settings")
 @patch("httpx.AsyncClient")
 def test_create_private_ai_key(
     mock_client_class,
-    client,
-    test_token,
+    mock_settings,
+    drupal_client,
+    drupal_test_token,
     test_region,
     test_user,
-    mock_httpx_post_client,
+    db,
 ):
-    """Test creating a private AI key in a specific region"""
-    # Use the httpx POST client fixture
-    mock_client_class.return_value = mock_httpx_post_client
+    """Test that a DEFAULT user's key creation is delegated to moad.
 
-    response = client.post(
+    The moad call is mocked. A matching DBPrivateAIKey is pre-inserted to
+    simulate moad calling back via POST /internal/provision-key.
+    """
+    mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+    mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+
+    litellm_token = "test-private-key-123"
+
+    # Simulate the key that moad would create via /internal/provision-key
+    pre_created_key = DBPrivateAIKey(
+        name="Test AI Key",
+        litellm_token=litellm_token,
+        litellm_api_url="http://test-llm",
+        database_name="test-db",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        region_id=test_region.id,
+        team_id=None,
+        owner_id=None,
+    )
+    db.add(pre_created_key)
+    db.commit()
+    db.refresh(pre_created_key)
+
+    # Mock the httpx call to moad returning credentials
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "llm": {"apiUrl": "http://test-llm", "token": litellm_token},
+        "vectorDb": {
+            "host": "test-host",
+            "database": "test-db",
+            "username": "test-user",
+            "password": "test-pass",
+        },
+    }
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    response = drupal_client.post(
         "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {test_token}"},
+        headers={"Authorization": f"Bearer {drupal_test_token}"},
         json={"region_id": test_region.id, "name": "Test AI Key"},
     )
 
     assert response.status_code == 200
     data = response.json()
-    assert data["region"] == test_region.name
-    assert data["region_label"] == test_region.label
-    assert data["litellm_token"] == "test-private-key-123"
-    assert data["owner_id"] == test_user.id
-    assert data["id"] != -1
+    assert data["litellm_token"] == litellm_token
+    assert data["id"] == pre_created_key.id
+
+    # Verify moad was called with the correct payload
+    call_kwargs = mock_client.post.call_args
+    assert "/api/external/provision-key" in call_kwargs[0][0]
+    assert call_kwargs[1]["json"]["email"] == test_user.email
+    assert call_kwargs[1]["json"]["appName"] == "Test AI Key"
+    assert call_kwargs[1]["json"]["regionId"] == test_region.id
 
 
-def test_create_private_ai_key_invalid_region(client, test_token):
-    """Test creating a private AI key with an invalid region ID"""
-    response = client.post(
+@patch("app.api.private_ai_keys.settings")
+@patch("httpx.AsyncClient")
+def test_create_private_ai_key_invalid_region(
+    mock_client_class, mock_settings, drupal_client, drupal_test_token, test_user, db
+):
+    """Test that a Drupal user gets 404 when moad reports region not found."""
+    mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+    mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+
+    mock_response = Mock()
+    mock_response.status_code = 404
+    mock_response.text = '{"error": "Region not found"}'
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    response = drupal_client.post(
         "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {test_token}"},
+        headers={"Authorization": f"Bearer {drupal_test_token}"},
         json={"region_id": 99999, "name": "Test Invalid Region Key"},
     )
 
     assert response.status_code == 404
-    assert "Region not found or inactive" in response.json()["detail"]
+    # Verify the 404 came from moad, not from a local DB lookup
+    mock_client.post.assert_called_once()
+    call_url = mock_client.post.call_args[0][0]
+    assert "provision-key" in call_url
 
 
 def test_list_private_ai_keys(client, test_token, test_region, db, test_user):
@@ -451,8 +523,9 @@ def test_create_private_ai_key_for_user_in_other_team(
         },
     )
 
-    assert response.status_code == 404
-    assert "Owner user not found" in response.json()["detail"]
+    # Cross-team owner assignment is rejected up front as 403 (H1 fix)
+    assert response.status_code == 403
+    assert "Not authorized to perform this action" in response.json()["detail"]
 
 
 def test_create_private_ai_key_for_nonexistent_team(client, admin_token, test_region):
@@ -625,7 +698,7 @@ def test_view_spend_as_read_only_user(
     assert data["expires"] == "2024-12-31T23:59:59Z"
     assert data["created_at"] == "2024-01-01T00:00:00Z"
     assert data["updated_at"] == "2024-01-02T00:00:00Z"
-    assert data["max_budget"] == 100.0
+    assert data["max_budget"] is None
     assert data["budget_duration"] == "monthly"
     assert data["budget_reset_at"] == "2024-02-01T00:00:00Z"
 
@@ -953,11 +1026,67 @@ def test_view_spend_with_extra_fields(
     assert data["expires"] == "2024-12-31T23:59:59Z"
     assert data["created_at"] == "2024-01-01T00:00:00Z"
     assert data["updated_at"] == "2024-01-02T00:00:00Z"
-    assert data["max_budget"] == 100.0
+    assert data["max_budget"] is None
     assert data["budget_duration"] == "monthly"
     assert data["budget_reset_at"] == "2024-02-01T00:00:00Z"
 
     # Clean up the test key
+    db.delete(test_key)
+    db.commit()
+
+
+@patch("httpx.AsyncClient")
+def test_view_spend_uses_db_key_spend_cap_max_budget(
+    mock_client_class,
+    client,
+    team_read_only_token,
+    test_region,
+    db,
+    test_team_read_only,
+    mock_httpx_get_client,
+):
+    """Key max_budget on /private-ai-keys/{id}/spend comes from DB spend_caps."""
+    mock_client_class.return_value = mock_httpx_get_client
+
+    test_key = DBPrivateAIKey(
+        database_name="test-db-spend-cap",
+        name="Test Key with Spend Cap",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="test-token-spend-cap",
+        litellm_api_url="https://test-litellm.com",
+        owner_id=test_team_read_only.id,
+        team_id=test_team_read_only.team_id,
+        region_id=test_region.id,
+    )
+    db.add(test_key)
+    db.commit()
+    db.refresh(test_key)
+
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_key.team_id,
+            user_id=test_key.owner_id,
+            key_id=test_key.id,
+            max_budget=42.0,
+            budget_duration="1mo",
+        )
+    )
+    db.commit()
+
+    response = client.get(
+        f"/private-ai-keys/{test_key.id}/spend",
+        headers={"Authorization": f"Bearer {team_read_only_token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["max_budget"] == 42.0
+
+    db.query(DBSpendCap).filter(DBSpendCap.key_id == test_key.id).delete()
     db.delete(test_key)
     db.commit()
 
@@ -1249,13 +1378,14 @@ def test_update_budget_duration_as_team_admin(
     data = response.json()
     assert data["budget_duration"] == "monthly"
 
-    # Verify that the LiteLLM API was called with the correct parameters
+    # The word form is canonicalised before it reaches LiteLLM, so the key does
+    # not end up carrying a duration our period maths cannot parse.
     mock_httpx_combined_client.post.assert_called_with(
         f"{test_region.litellm_api_url}/key/update",
         headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
         json={
             "key": test_key.litellm_token,
-            "budget_duration": "monthly",
+            "budget_duration": "30d",
             "duration": "365d",
         },
     )
@@ -1366,8 +1496,27 @@ def test_create_llm_token_for_pool_team_skips_per_key_limits(
     test_team,
     mock_httpx_post_client,
 ):
-    """POOL teams should only get key expiry, without per-key budget/rate limits."""
+    """Gated POOL teams skip per-key budget/rate limits (apply_limits=False).
+    With a prior purchase the key must not be blocked."""
     test_team.budget_type = "pool"
+    test_team.require_purchase_for_requests = True
+    db.commit()
+    # Seed a purchase so the key is not blocked.
+    from app.db.models import DBPeriodicBudgetLedgerEntry
+    from datetime import UTC, datetime
+
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            amount_cents=1000,
+            consumed_cents=0,
+            is_active=True,
+            purchased_at=datetime.now(UTC),
+            expires_at=None,
+        )
+    )
     db.commit()
 
     mock_client_class.return_value = mock_httpx_post_client
@@ -1399,6 +1548,332 @@ def test_create_llm_token_for_pool_team_skips_per_key_limits(
     assert "budget_duration" not in call_args["json"]
     assert "max_budget" not in call_args["json"]
     assert "rpm_limit" not in call_args["json"]
+    assert "blocked" not in call_args["json"]
+
+
+@patch("httpx.AsyncClient")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_create_llm_token_for_pool_team_with_purchase_does_not_block_key(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_post_client,
+):
+    """Key created after a top-up purchase must NOT be blocked.
+
+    pool_available_budget_for_team_region reads from DBPeriodicBudgetLedgerEntry
+    (topup entries), not raw DBPoolPurchase rows directly. Both rows are created
+    by purchase_periodic_topup in production, so the test must seed both.
+    """
+    test_team.budget_type = "pool"
+    now = datetime.now(UTC)
+    db.add(
+        DBPoolPurchase(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            amount_cents=1000,
+            currency="usd",
+            purchased_at=now,
+            stripe_payment_id="pi_pool_existing_purchase",
+            created_at=now,
+        )
+    )
+    # The ledger entry is what pool_available_budget_for_team_region reads.
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            amount_cents=1000,
+            consumed_cents=0,
+            is_active=True,
+            purchased_at=now,
+            expires_at=None,
+        )
+    )
+    db.commit()
+
+    mock_client_class.return_value = mock_httpx_post_client
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Pool Team Key With Budget",
+            "team_id": test_team.id,
+        },
+    )
+
+    assert response.status_code == 200
+
+    key_generate_calls = [
+        call
+        for call in mock_httpx_post_client.post.call_args_list
+        if str(call.args[0]).endswith("/key/generate")
+        and call.kwargs.get("json", {})
+        .get("metadata", {})
+        .get("amazeeai_private_ai_key_name")
+        == "Pool Team Key With Budget"
+    ]
+    assert len(key_generate_calls) == 1
+    assert "blocked" not in key_generate_calls[0].kwargs["json"]
+
+
+@patch("httpx.AsyncClient")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_create_llm_token_for_pool_team_with_subscription_cycle_does_not_block_key(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_post_client,
+):
+    """Key created after a subscription cycle (no DBPoolPurchase) must NOT be blocked.
+
+    Subscription budget lives in DBPeriodicBudgetLedgerEntry with entry_type='subscription'.
+    pool_available_budget_for_team_region includes it, so the key must come out unblocked.
+    """
+    test_team.budget_type = "pool"
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="subscription",
+            amount_cents=1000,
+            consumed_cents=0,
+            is_active=True,
+            purchased_at=datetime.now(UTC),
+            expires_at=None,
+        )
+    )
+    db.commit()
+
+    mock_client_class.return_value = mock_httpx_post_client
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Pool Team Key After Cycle",
+            "team_id": test_team.id,
+        },
+    )
+
+    assert response.status_code == 200
+
+    key_generate_calls = [
+        call
+        for call in mock_httpx_post_client.post.call_args_list
+        if str(call.args[0]).endswith("/key/generate")
+        and call.kwargs.get("json", {})
+        .get("metadata", {})
+        .get("amazeeai_private_ai_key_name")
+        == "Pool Team Key After Cycle"
+    ]
+    assert len(key_generate_calls) == 1
+    assert "blocked" not in key_generate_calls[0].kwargs["json"]
+
+
+@patch("httpx.AsyncClient")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_create_llm_token_for_non_gated_pool_team_is_never_blocked(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_post_client,
+):
+    """Non-gated POOL teams (require_purchase_for_requests=False) must never
+    produce a blocked key regardless of budget state.
+    """
+    test_team.budget_type = "pool"
+    test_team.require_purchase_for_requests = False  # not gated
+    db.commit()
+
+    mock_client_class.return_value = mock_httpx_post_client
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Non-Gated Pool Key",
+            "team_id": test_team.id,
+        },
+    )
+
+    assert response.status_code == 200
+
+    key_generate_calls = [
+        call
+        for call in mock_httpx_post_client.post.call_args_list
+        if str(call.args[0]).endswith("/key/generate")
+        and call.kwargs.get("json", {})
+        .get("metadata", {})
+        .get("amazeeai_private_ai_key_name")
+        == "Non-Gated Pool Key"
+    ]
+    assert len(key_generate_calls) == 1
+    assert "blocked" not in key_generate_calls[0].kwargs["json"]
+
+
+@patch("httpx.AsyncClient")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_create_llm_token_for_gated_pool_team_without_purchase_uses_zero_budget(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_post_client,
+):
+    """A gated POOL team with no purchase gets a zero-budget key, not a blocked
+    one. LiteLLM then rejects inference with a budget error the user can act on,
+    instead of an auth error pointing at an admin-only unblock.
+    """
+    test_team.budget_type = "pool"
+    test_team.require_purchase_for_requests = True
+    db.commit()
+
+    mock_client_class.return_value = mock_httpx_post_client
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Gated Pool Key",
+            "team_id": test_team.id,
+        },
+    )
+
+    assert response.status_code == 200
+
+    key_generate_calls = [
+        call
+        for call in mock_httpx_post_client.post.call_args_list
+        if str(call.args[0]).endswith("/key/generate")
+        and call.kwargs.get("json", {})
+        .get("metadata", {})
+        .get("amazeeai_private_ai_key_name")
+        == "Gated Pool Key"
+    ]
+    assert len(key_generate_calls) == 1
+    assert "blocked" not in key_generate_calls[0].kwargs["json"]
+
+    key_update_calls = [
+        call
+        for call in mock_httpx_post_client.post.call_args_list
+        if str(call.args[0]).endswith("/key/update")
+    ]
+    assert len(key_update_calls) == 1
+    update_payload = key_update_calls[0].kwargs["json"]
+    assert update_payload["max_budget"] == 0.0
+    assert update_payload["budget_duration"] == (
+        f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
+    )
+    assert "blocked" not in update_payload
+
+
+def _key_generate_payload(mock_client, key_name):
+    calls = [
+        call
+        for call in mock_client.post.call_args_list
+        if str(call.args[0]).endswith("/key/generate")
+        and call.kwargs.get("json", {})
+        .get("metadata", {})
+        .get("amazeeai_private_ai_key_name")
+        == key_name
+    ]
+    assert len(calls) == 1
+    return calls[0].kwargs["json"]
+
+
+@patch("httpx.AsyncClient")
+def test_create_llm_token_for_trial_team_is_inference_only(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_post_client,
+):
+    """All anonymous trials share one team, and LiteLLM lets any key in a team
+    read that team (/team/info exposes every sibling key's owner, spend and
+    budget). Trial keys must therefore be scoped to inference routes."""
+    test_team.admin_email = settings.AI_TRIAL_TEAM_EMAIL
+    db.commit()
+
+    mock_client_class.return_value = mock_httpx_post_client
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Trial Key",
+            "team_id": test_team.id,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = _key_generate_payload(mock_httpx_post_client, "Trial Key")
+    # Literal list, not INFERENCE_ONLY_ROUTES: the constant builds the request,
+    # so comparing to it would silently accept any route added to it later.
+    assert payload["allowed_routes"] == ["llm_api_routes", "/model/info"]
+
+
+@pytest.mark.parametrize(
+    "admin_email",
+    [
+        "customer-team-admin@example.com",
+        # A plus-tag of the trial address is a DIFFERENT team (that's how the
+        # trial team is looked up), so it must not inherit the restriction.
+        settings.AI_TRIAL_TEAM_EMAIL.replace("@", "+customer@"),
+    ],
+)
+@patch("httpx.AsyncClient")
+def test_create_llm_token_for_customer_team_is_unrestricted(
+    mock_client_class,
+    admin_email,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_post_client,
+):
+    """Members of a real team are colleagues — the trial restriction must not
+    leak into normal team keys."""
+    test_team.admin_email = admin_email
+    db.commit()
+
+    mock_client_class.return_value = mock_httpx_post_client
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Customer Key",
+            "team_id": test_team.id,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = _key_generate_payload(mock_httpx_post_client, "Customer Key")
+    assert "allowed_routes" not in payload
 
 
 def test_create_vector_db_as_system_admin(client, admin_token, test_region):
@@ -2321,7 +2796,7 @@ def test_create_private_ai_key_cleanup_on_vector_db_failure(
     mock_create_db,
     mock_client_class,
     client,
-    test_token,
+    admin_token,
     test_region,
     mock_httpx_post_client,
 ):
@@ -2338,7 +2813,7 @@ def test_create_private_ai_key_cleanup_on_vector_db_failure(
 
     response = client.post(
         "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {test_token}"},
+        headers={"Authorization": f"Bearer {admin_token}"},
         json={"region_id": test_region.id, "name": "Test AI Key"},
     )
 
@@ -2361,7 +2836,7 @@ def test_create_private_ai_key_cleanup_on_vector_db_failure(
 
     # Verify no key was stored in the database
     stored_keys = client.get(
-        "/private-ai-keys/", headers={"Authorization": f"Bearer {test_token}"}
+        "/private-ai-keys/", headers={"Authorization": f"Bearer {admin_token}"}
     ).json()
     assert len([k for k in stored_keys if k["name"] == "Test AI Key"]) == 0
 
@@ -2376,7 +2851,7 @@ def test_create_private_ai_key_cleanup_on_db_storage_failure(
     mock_create_db,
     mock_client_class,
     client,
-    test_token,
+    admin_token,
     test_region,
     mock_httpx_post_client,
 ):
@@ -2404,7 +2879,7 @@ def test_create_private_ai_key_cleanup_on_db_storage_failure(
 
     response = client.post(
         "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {test_token}"},
+        headers={"Authorization": f"Bearer {admin_token}"},
         json={"region_id": test_region.id, "name": "Test AI Key"},
     )
 
@@ -2418,12 +2893,13 @@ def test_create_private_ai_key_cleanup_on_db_storage_failure(
     assert cleanup_call[0][0] == f"{test_region.litellm_api_url}/key/delete"
     assert cleanup_call[1]["json"]["keys"] == ["test-private-key-123"]
 
-    # Verify vector database was cleaned up
-    mock_delete_db.assert_called_once_with("test_db_123")
+    # Verify vector database AND its role were cleaned up — a leftover role
+    # keeps valid credentials on the shared cluster.
+    mock_delete_db.assert_called_once_with("test_db_123", "test_user")
 
     # Verify no key was stored in the database
     stored_keys = client.get(
-        "/private-ai-keys/", headers={"Authorization": f"Bearer {test_token}"}
+        "/private-ai-keys/", headers={"Authorization": f"Bearer {admin_token}"}
     ).json()
     assert len([k for k in stored_keys if k["name"] == "Test AI Key"]) == 0
 
@@ -2434,7 +2910,7 @@ def test_create_private_ai_key_cleanup_failure_handling(
     mock_create_db,
     mock_client_class,
     client,
-    test_token,
+    admin_token,
     test_region,
     mock_httpx_post_client,
 ):
@@ -2465,7 +2941,7 @@ def test_create_private_ai_key_cleanup_failure_handling(
 
     response = client.post(
         "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {test_token}"},
+        headers={"Authorization": f"Bearer {admin_token}"},
         json={"region_id": test_region.id, "name": "Test AI Key"},
     )
 
@@ -2484,7 +2960,7 @@ def test_create_private_ai_key_http_exception_preservation(
     mock_create_db,
     mock_client_class,
     client,
-    test_token,
+    admin_token,
     test_region,
     mock_httpx_post_client,
 ):
@@ -2503,7 +2979,7 @@ def test_create_private_ai_key_http_exception_preservation(
 
     response = client.post(
         "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {test_token}"},
+        headers={"Authorization": f"Bearer {admin_token}"},
         json={"region_id": test_region.id, "name": "Test AI Key"},
     )
 
@@ -2941,3 +3417,260 @@ def test_list_private_ai_keys_by_region_user_filter_ignored_for_non_admin(
     returned_db_names = {key["database_name"] for key in data}
     assert "region-non-admin-user-own-db" in returned_db_names
     assert "region-non-admin-other-db" not in returned_db_names
+
+
+def test_list_private_ai_keys_by_region_show_all(
+    client, admin_token, test_token, test_region, test_user, db
+):
+    """show_all=true in the region endpoint returns every key for admins and is
+    ignored for non-admins"""
+    user_key = DBPrivateAIKey(
+        database_name="region-show-all-user-db",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="region-show-all-user-token",
+        owner_id=test_user.id,
+        region_id=test_region.id,
+    )
+    db.add(user_key)
+    db.commit()
+
+    # Admin without show_all: safe default, other users' keys are absent
+    response = client.get(
+        f"/private-ai-keys/region/{test_region.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert "region-show-all-user-db" not in {
+        k["database_name"] for k in response.json()
+    }
+
+    # Admin with show_all=true sees every key in the region
+    response = client.get(
+        f"/private-ai-keys/region/{test_region.id}?show_all=true",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert "region-show-all-user-db" in {k["database_name"] for k in response.json()}
+
+    # Non-admin with show_all=true still only sees their own keys
+    response = client.get(
+        f"/private-ai-keys/region/{test_region.id}?show_all=true",
+        headers={"Authorization": f"Bearer {test_token}"},
+    )
+    assert response.status_code == 200
+    assert all(k["owner_id"] == test_user.id for k in response.json())
+
+
+def test_list_private_ai_keys_show_all(
+    client, admin_token, test_token, test_region, test_user, test_admin, db
+):
+    """show_all=true returns every key for admins and is ignored for non-admins"""
+    user_key = DBPrivateAIKey(
+        database_name="show-all-user-db",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="show-all-user-token",
+        owner_id=test_user.id,
+        region_id=test_region.id,
+    )
+    db.add(user_key)
+    db.commit()
+
+    # Admin without show_all: safe default, other users' keys are absent
+    response = client.get(
+        "/private-ai-keys/", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200
+    assert "show-all-user-db" not in {k["database_name"] for k in response.json()}
+
+    # Admin with show_all=true sees every key
+    response = client.get(
+        "/private-ai-keys/?show_all=true",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert "show-all-user-db" in {k["database_name"] for k in response.json()}
+
+    # Non-admin with show_all=true still only sees their own keys
+    response = client.get(
+        "/private-ai-keys/?show_all=true",
+        headers={"Authorization": f"Bearer {test_token}"},
+    )
+    assert response.status_code == 200
+    assert all(k["owner_id"] == test_user.id for k in response.json())
+
+
+# ---------------------------------------------------------------------------
+# Issue #600 — declared `team_id` scope (defence in depth) on key-by-id
+# endpoints. A caller authenticating with a shared system-admin token (the moad
+# BFF) must declare the team it is acting for; the key must belong to that team
+# or the request 404s, even for system admins. Backward compatible: omitting
+# team_id preserves prior behaviour.
+# ---------------------------------------------------------------------------
+
+
+def _make_scope_key(db, region, *, team_id=None, owner_id=None, name="scope-key"):
+    key = DBPrivateAIKey(
+        database_name=f"db-{name}",
+        name=name,
+        database_host="h",
+        database_username="u",
+        database_password="p",
+        litellm_token=f"token-{name}",
+        litellm_api_url="https://test-litellm.com",
+        team_id=team_id,
+        owner_id=owner_id,
+        region_id=region.id,
+    )
+    db.add(key)
+    db.commit()
+    db.refresh(key)
+    return key
+
+
+@patch("httpx.AsyncClient")
+def test_get_private_ai_key_matching_team_id_allows(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_get_client,
+):
+    """Declared team_id matching the key's team is allowed (issue #600)."""
+    db.refresh(test_team)
+    key = _make_scope_key(db, test_region, team_id=test_team.id, name="get-match")
+    mock_client_class.return_value = mock_httpx_get_client
+
+    response = client.get(
+        f"/private-ai-keys/{key.id}?team_id={test_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["id"] == key.id
+
+    db.delete(key)
+    db.commit()
+
+
+@patch("httpx.AsyncClient")
+def test_get_private_ai_key_wrong_team_id_is_404(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_get_client,
+):
+    """A system-admin caller declaring a mismatched team_id is denied — the
+    cross-tenant IDOR defence. 404 matches a missing key and LiteLLM is never
+    contacted."""
+    db.refresh(test_team)
+    key = _make_scope_key(db, test_region, team_id=test_team.id, name="get-wrong")
+    mock_client_class.return_value = mock_httpx_get_client
+
+    response = client.get(
+        f"/private-ai-keys/{key.id}?team_id={test_team.id + 999}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 404
+    assert "Private AI Key not found" in response.json()["detail"]
+    mock_httpx_get_client.get.assert_not_called()
+
+    db.delete(key)
+    db.commit()
+
+
+@patch("httpx.AsyncClient")
+def test_get_private_ai_key_user_owned_scoped_by_owner_team(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    test_team_user,
+    mock_httpx_get_client,
+):
+    """User-owned keys (team_id NULL) resolve scope via the owner's team: a
+    matching declared team_id is allowed, a mismatch is denied."""
+    db.refresh(test_team)
+    db.refresh(test_team_user)
+    key = _make_scope_key(
+        db, test_region, owner_id=test_team_user.id, name="get-user-owned"
+    )
+    mock_client_class.return_value = mock_httpx_get_client
+
+    allowed = client.get(
+        f"/private-ai-keys/{key.id}?team_id={test_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert allowed.status_code == 200
+
+    denied = client.get(
+        f"/private-ai-keys/{key.id}?team_id={test_team.id + 999}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert denied.status_code == 404
+
+    db.delete(key)
+    db.commit()
+
+
+@patch("httpx.AsyncClient")
+def test_get_private_ai_key_without_team_id_is_unrestricted(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_get_client,
+):
+    """Backward compatibility: omitting team_id keeps the prior admin behaviour."""
+    db.refresh(test_team)
+    key = _make_scope_key(db, test_region, team_id=test_team.id, name="get-no-scope")
+    mock_client_class.return_value = mock_httpx_get_client
+
+    response = client.get(
+        f"/private-ai-keys/{key.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+
+    db.delete(key)
+    db.commit()
+
+
+@patch("httpx.AsyncClient")
+def test_delete_private_ai_key_wrong_team_id_is_404_and_persists(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_get_client,
+):
+    """Cross-team delete is blocked and the victim key is left intact (issue #600)."""
+    db.refresh(test_team)
+    key = _make_scope_key(db, test_region, team_id=test_team.id, name="del-wrong")
+    key_id = key.id
+    mock_client_class.return_value = mock_httpx_get_client
+
+    response = client.delete(
+        f"/private-ai-keys/{key_id}?team_id={test_team.id + 999}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 404
+
+    survivor = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
+    assert survivor is not None
+
+    db.delete(survivor)
+    db.commit()

@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, Query, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import Optional
-from datetime import datetime
-from sqlalchemy import distinct, cast, String
+from datetime import datetime, UTC
+from sqlalchemy import distinct, or_
 from app.db.database import get_db
 from app.api.auth import get_current_user_from_auth
 from app.schemas.models import (
@@ -18,6 +18,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["audit"])
 
 
+def _as_naive_utc(dt: datetime) -> datetime:
+    # DBAuditLog.timestamp is stored as naive UTC; normalize tz-aware
+    # query params so comparisons don't depend on the server timezone.
+    return dt.astimezone(UTC).replace(tzinfo=None) if dt.tzinfo else dt
+
+
+# Renders as (details ->> 'status_code') on PostgreSQL; must match the
+# expression index ix_audit_logs_status_code.
+_status_code_expr = DBAuditLog.details["status_code"].as_string()
+
+
 @router.get("/logs", response_model=PaginatedAuditLogResponse)
 async def get_audit_logs(
     db: Session = Depends(get_db),
@@ -31,11 +42,13 @@ async def get_audit_logs(
     from_date: Optional[datetime] = None,
     to_date: Optional[datetime] = None,
     status_code: Optional[str] = None,
+    referer: Optional[str] = None,
 ):
     """
     Retrieve audit logs with optional filtering.
     Only accessible by admin users.
     event_type, resource_type, and status_code can be comma-separated lists for multiple values.
+    referer matches as a substring against both the referer and origin columns.
     """
     if not current_user.is_admin:
         logger.warning(
@@ -47,8 +60,13 @@ async def get_audit_logs(
         )
 
     try:
-        # Use the correct model
-        query = db.query(DBAuditLog).outerjoin(DBUser, DBAuditLog.user_id == DBUser.id)
+        query = db.query(DBAuditLog)
+        # Only join users when filtering by email; an unconditional join
+        # makes the count() below scan far more than it needs to.
+        if user_email:
+            query = query.join(DBUser, DBAuditLog.user_id == DBUser.id).filter(
+                DBUser.email.ilike(f"%{user_email}%")
+            )
 
         if event_type:
             event_types = [et.strip() for et in event_type.split(",")]
@@ -58,24 +76,38 @@ async def get_audit_logs(
             query = query.filter(DBAuditLog.resource_type.in_(resource_types))
         if user_id:
             query = query.filter(DBAuditLog.user_id == user_id)
-        if user_email:
-            query = query.filter(DBUser.email.ilike(f"%{user_email}%"))
         if from_date:
-            query = query.filter(DBAuditLog.timestamp >= from_date)
+            query = query.filter(DBAuditLog.timestamp >= _as_naive_utc(from_date))
         if to_date:
-            query = query.filter(DBAuditLog.timestamp <= to_date)
+            query = query.filter(DBAuditLog.timestamp <= _as_naive_utc(to_date))
         if status_code:
             status_codes = [sc.strip() for sc in status_code.split(",")]
+            query = query.filter(_status_code_expr.in_(status_codes))
+        if referer:
+            # Escape LIKE wildcards so a literal % or _ in the search term
+            # doesn't act as a match-all pattern.
+            escaped = (
+                referer.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            # ponytail: seq scan; add a pg_trgm index if audit table growth makes this slow
             query = query.filter(
-                cast(DBAuditLog.details["status_code"], String).in_(status_codes)
+                or_(
+                    DBAuditLog.referer.ilike(f"%{escaped}%", escape="\\"),
+                    DBAuditLog.origin.ilike(f"%{escaped}%", escape="\\"),
+                )
             )
 
         # Get total count
         total = query.count()
 
-        # Execute the query with pagination
+        # Execute the query with pagination; eager-load user to avoid a
+        # lazy-load query per row when building the response.
         results = (
-            query.order_by(DBAuditLog.timestamp.desc()).offset(skip).limit(limit).all()
+            query.options(joinedload(DBAuditLog.user))
+            .order_by(DBAuditLog.timestamp.desc())
+            .offset(skip)
+            .limit(limit)
+            .all()
         )
 
         response_data = [
@@ -92,6 +124,8 @@ async def get_audit_logs(
                 ip_address=log.ip_address,
                 user_agent=log.user_agent,
                 request_source=log.request_source,
+                referer=log.referer,
+                origin=log.origin,
             )
             for log in results
         ]
@@ -144,11 +178,9 @@ async def get_audit_logs_metadata(
         # Get distinct status codes from the details JSON field
         status_codes = [
             sc[0]
-            for sc in db.query(
-                distinct(cast(DBAuditLog.details["status_code"], String))
-            )
-            .filter(cast(DBAuditLog.details["status_code"], String).isnot(None))
-            .filter(cast(DBAuditLog.details["status_code"], String) != "")
+            for sc in db.query(distinct(_status_code_expr))
+            .filter(_status_code_expr.isnot(None))
+            .filter(_status_code_expr != "")
             .all()
         ]
 
