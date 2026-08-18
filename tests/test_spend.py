@@ -3337,7 +3337,7 @@ def test_key_spend_includes_period_start(
 def test_pool_key_with_cap_shows_period_fields(
     mock_get_team_info, client, admin_token, test_team, test_region, db
 ):
-    """POOL capped keys use 31d window semantics.
+    """A capped POOL key with a real LiteLLM reset schedule is trusted as-is.
     Team window remains POOL baseline (365d) when no active subscription."""
     test_team.budget_type = BudgetType.POOL
     test_team.require_purchase_for_requests = True
@@ -3392,11 +3392,14 @@ def test_pool_key_with_cap_shows_period_fields(
     data = response.json()
     # Team shows POOL no-subscription baseline window.
     assert data["budget_duration"] == "365d"
-    # Key with cap uses 31d window semantics.
+    # The key's own real LiteLLM reset schedule ("1mo", resetting 2026-06-01)
+    # is trusted as-is, not relabelled to a fixed "31d" - doing so without a
+    # real 31-day cycle behind it would make period_start describe a window
+    # LiteLLM isn't actually enforcing.
     k = data["keys"][0]
-    assert k["budget_duration"] == "31d"
-    assert k["budget_reset_at"] is not None
-    assert k["period_start"] is not None
+    assert k["budget_duration"] == "1mo"
+    assert k["budget_reset_at"] == "2026-06-01T00:00:00Z"
+    assert k["period_start"] == "2026-05-01T00:00:00Z"
 
 
 # ---------------------------------------------------------------------------
