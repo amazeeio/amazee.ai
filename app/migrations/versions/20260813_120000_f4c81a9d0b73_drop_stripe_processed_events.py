@@ -1,7 +1,7 @@
 """drop stripe_processed_events
 
 Revision ID: f4c81a9d0b73
-Revises: e8f9a0b1c2d3
+Revises: f9a0b1c2d3e4
 Create Date: 2026-08-13 12:00:00.000000
 """
 
@@ -11,7 +11,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "f4c81a9d0b73"
-down_revision = "e8f9a0b1c2d3"
+down_revision = "f9a0b1c2d3e4"
 branch_labels = None
 depends_on = None
 
