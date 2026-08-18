@@ -1078,15 +1078,16 @@ async def get_team_spend(
                         active_subscription_for_pool.effective_period_start
                     )
                 elif item.budget_reset_at is not None:
-                    # A capped POOL key always displays under 31d window
-                    # semantics, but trust LiteLLM's own budget_reset_at
-                    # (set above from litellm_key) instead of the
-                    # anchor-based estimate below, which drifts into the
-                    # past once more than one cycle has elapsed since the
-                    # anchor. period_start is recomputed from it so the two
-                    # fields keep describing the same window.
-                    item.budget_duration = "31d"
-                    item.period_start = item.budget_reset_at - timedelta(days=31)
+                    # LiteLLM already has a real, live reset schedule on this
+                    # key (budget_reset_at/period_start/budget_duration all
+                    # set above from litellm_key) - trust it completely
+                    # instead of the anchor-based estimate below, which
+                    # drifts into the past once more than one cycle has
+                    # elapsed since the anchor. Relabelling budget_duration
+                    # to a fixed "31d" here would make period_start describe
+                    # a different window than the one LiteLLM actually
+                    # enforces whenever the real duration isn't already 31d.
+                    pass
                 else:
                     item.budget_duration = "31d"
                     item.period_start = (
@@ -1361,17 +1362,17 @@ async def get_key_spend_alias(
                 info["budget_duration"] = "31d"
                 budget_reset_at = active_subscription.effective_period_end
                 period_start = active_subscription.effective_period_start
-            elif configured_key_cap is not None and budget_reset_at is not None:
-                # A capped POOL key always displays under 31d window
-                # semantics, but trust LiteLLM's own budget_reset_at instead
-                # of the anchor-based estimate below, which drifts into the
-                # past once more than one cycle has elapsed since the anchor.
-                # period_start is recomputed from it so the two fields keep
-                # describing the same window; the original (possibly
-                # differently-timed) LiteLLM duration is display-only above
-                # and is not the window POOL enforces.
-                info["budget_duration"] = "31d"
-                period_start = budget_reset_at - timedelta(days=31)
+            elif budget_reset_at is not None:
+                # LiteLLM already has a real, live reset schedule on this key
+                # (budget_reset_at/period_start/budget_duration all set above
+                # from `info`) - trust it completely instead of the
+                # anchor-based estimate below, which drifts into the past
+                # once more than one cycle has elapsed since the anchor.
+                # Relabelling budget_duration to a fixed "31d" here would
+                # make period_start describe a different window than the one
+                # LiteLLM actually enforces whenever the real duration isn't
+                # already 31d.
+                pass
             else:
                 if configured_key_cap is None:
                     duration_days = settings.POOL_PURCHASE_EXPIRY_DAYS
