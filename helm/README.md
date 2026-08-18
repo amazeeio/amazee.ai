@@ -210,7 +210,6 @@ helm install amazee-ai . -n amazee-ai --create-namespace \
 | `backend.image.pullPolicy` | Backend image pull policy | `IfNotPresent` |
 | `backend.database.url` | Database connection URL (auto-generated if empty) | `""` |
 | `backend.secretKey` | JWT signing secret (`AMAZEEAI_JWT_SECRET`). **Required**, no default. | `""` |
-| `backend.stripeSecretKey` | Stripe secret key | `sk_test_your_stripe_secret_key` |
 | `backend.awsAccessKeyId` | AWS access key ID | `your_aws_access_key` |
 | `backend.awsSecretAccessKey` | AWS secret access key | `your_aws_secret_key` |
 | `backend.enableMetrics` | Enable metrics collection | `true` |
@@ -232,7 +231,6 @@ helm install amazee-ai . -n amazee-ai --create-namespace \
 | `frontend.image.tag` | Frontend image tag | `dev` |
 | `frontend.image.pullPolicy` | Frontend image pull policy | `IfNotPresent` |
 | `frontend.apiUrl` | Backend API URL (auto-generated if empty) | `""` |
-| `frontend.stripePublishableKey` | Stripe publishable key | `pk_test_your_stripe_publishable_key` |
 | `frontend.passwordlessSignIn` | Enable passwordless sign-in | `true` |
 | `frontend.resources.requests.memory` | Frontend memory request | `512Mi` |
 | `frontend.resources.requests.cpu` | Frontend CPU request | `250m` |
@@ -256,7 +254,6 @@ helm install amazee-ai . -n amazee-ai --create-namespace \
 The frontend requires the following environment variables:
 
 - `NEXT_PUBLIC_API_URL`: Backend API URL
-- `STRIPE_PUBLISHABLE_KEY`: Stripe publishable key
 - `PASSWORDLESS_SIGN_IN`: Passwordless authentication configuration
 
 ### Backend Configuration

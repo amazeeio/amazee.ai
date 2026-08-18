@@ -35,7 +35,6 @@ IMPORTANT: Before using this deployment, make sure to:
 1. Update the values.yaml file with your actual configuration:
    - Database configuration (internal or external PostgreSQL)
    - AWS credentials
-   - Stripe API keys
    - SES configuration
    - Domain names for ingress
 
