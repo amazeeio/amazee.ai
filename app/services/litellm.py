@@ -38,6 +38,10 @@ LIST_KEYS_PAGE_CONCURRENCY = max(1, int(os.getenv("LIST_KEYS_PAGE_CONCURRENCY", 
 # It exposes the region's model catalogue only, not other keys.
 INFERENCE_ONLY_ROUTES = ["llm_api_routes", "/model/info"]
 
+# Timeout for regional LiteLLM model calls, which may run inside a BackgroundTask
+# with no retry — a hung proxy must not park the task on 'pending' forever.
+MODEL_HTTP_TIMEOUT = 30.0
+
 
 def hash_litellm_token(litellm_token: str) -> str:
     """Hash a LiteLLM key the way LiteLLM stores it internally.
@@ -954,6 +958,114 @@ class LiteLLMService:
                 detail=f"Failed to get LiteLLM router settings: {error_msg}",
             )
 
+    async def set_model_group_aliases(self, alias_map: dict[str, str]) -> None:
+        """Replace the proxy's router-level alias map (model_group_alias).
+
+        POST /config/update persists router_settings in LiteLLM's DB config
+        row, so this survives restarts. The map is one router-wide dict —
+        callers must always send the region's FULL desired map, not a delta.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=MODEL_HTTP_TIMEOUT) as client:
+                response = await client.post(
+                    f"{self.api_url}/config/update",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json={"router_settings": {"model_group_alias": alias_map}},
+                )
+                response.raise_for_status()
+                logger.info(f"Updated model_group_alias to {alias_map} in LiteLLM")
+        except httpx.HTTPStatusError as e:
+            _, error_msg, _ = self._parse_http_error(e)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update LiteLLM model_group_alias: {error_msg}",
+            )
+
+    async def list_access_groups(self) -> list[dict]:
+        """List the proxy's access-group entities (GET /v1/access_group) —
+        the registry the LiteLLM admin UI shows, distinct from the legacy
+        per-model model_info.access_groups tags."""
+        try:
+            async with httpx.AsyncClient(timeout=MODEL_HTTP_TIMEOUT) as client:
+                response = await client.get(
+                    f"{self.api_url}/v1/access_group",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                )
+                response.raise_for_status()
+                data = response.json()
+                return data if isinstance(data, list) else []
+        except httpx.HTTPStatusError as e:
+            _, error_msg, _ = self._parse_http_error(e)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to list LiteLLM access groups: {error_msg}",
+            )
+
+    async def create_access_group(
+        self, name: str, model_names: list[str], description: Optional[str] = None
+    ) -> dict:
+        """Create an access-group entity (POST /v1/access_group)."""
+        try:
+            async with httpx.AsyncClient(timeout=MODEL_HTTP_TIMEOUT) as client:
+                response = await client.post(
+                    f"{self.api_url}/v1/access_group",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json={
+                        "access_group_name": name,
+                        "access_model_names": model_names,
+                        "description": description,
+                    },
+                )
+                response.raise_for_status()
+                logger.info(f"Created access group '{name}' with {len(model_names)} models in LiteLLM")
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            _, error_msg, _ = self._parse_http_error(e)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to create LiteLLM access group: {error_msg}",
+            )
+
+    async def update_access_group(
+        self, access_group_id: str, model_names: list[str]
+    ) -> dict:
+        """Update an access-group entity's member models (PUT
+        /v1/access_group/{id}). Only the model list is sent, so team/key
+        assignments made on the proxy are left untouched."""
+        try:
+            async with httpx.AsyncClient(timeout=MODEL_HTTP_TIMEOUT) as client:
+                response = await client.put(
+                    f"{self.api_url}/v1/access_group/{access_group_id}",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json={"access_model_names": model_names},
+                )
+                response.raise_for_status()
+                logger.info(f"Updated access group {access_group_id} to {len(model_names)} models in LiteLLM")
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            _, error_msg, _ = self._parse_http_error(e)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update LiteLLM access group: {error_msg}",
+            )
+
+    async def delete_access_group(self, access_group_id: str) -> None:
+        """Delete an access-group entity (DELETE /v1/access_group/{id})."""
+        try:
+            async with httpx.AsyncClient(timeout=MODEL_HTTP_TIMEOUT) as client:
+                response = await client.delete(
+                    f"{self.api_url}/v1/access_group/{access_group_id}",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                )
+                response.raise_for_status()
+                logger.info(f"Deleted access group {access_group_id} in LiteLLM")
+        except httpx.HTTPStatusError as e:
+            _, error_msg, _ = self._parse_http_error(e)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to delete LiteLLM access group: {error_msg}",
+            )
+
     async def get_cost_margin_config(self) -> dict:
         """Get LiteLLM provider margin configuration."""
         try:
@@ -1007,12 +1119,16 @@ class LiteLLMService:
         budget_duration: Optional[str] = None,
         team_id: Optional[str] = None,
         team_alias: Optional[str] = None,
+        models: Optional[list[str]] = None,
     ):
         """Create a LiteLLM team. Treat existing team as success.
 
         Args:
             max_budget: Budget limit. None means no team-level budget gate.
                         0.0 blocks all requests (used for POOL teams).
+            models: Access-group slugs the team may use (LiteLLM's `models`
+                    field accepts access-group names). None = no restriction
+                    (all proxy models).
         """
         try:
             request_data = {}
@@ -1024,6 +1140,8 @@ class LiteLLMService:
                 request_data["team_alias"] = team_alias
             if budget_duration:
                 request_data["budget_duration"] = budget_duration
+            if models is not None:
+                request_data["models"] = models
 
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -1092,6 +1210,28 @@ class LiteLLMService:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to update LiteLLM team budget: {error_msg}",
+            )
+
+    async def update_team_models(self, team_id: str, models: list[str]) -> None:
+        """Set a LiteLLM team's `models` list (access-group slugs).
+
+        An empty list clears the restriction (LiteLLM treats [] as
+        all-proxy-models) — used when a region's enforcement is turned off.
+        """
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/team/update",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json={"team_id": team_id, "models": models},
+                )
+                response.raise_for_status()
+                logger.info(f"Updated team {team_id} models to {models} in LiteLLM")
+        except httpx.HTTPStatusError as e:
+            _, error_msg, _ = self._parse_http_error(e)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update LiteLLM team models: {error_msg}",
             )
 
     async def get_team_model_aliases(self, team_id: str) -> dict[str, str]:
@@ -1410,3 +1550,153 @@ class LiteLLMService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to remove LiteLLM team member: {error_msg}",
             )
+
+    async def add_model(
+        self,
+        model_id: str,
+        litellm_params: dict,
+        access_groups: Optional[list[str]] = None,
+    ) -> dict:
+        """
+        Register a new model in LiteLLM.
+        Sends POST /model/new.
+        """
+        # Copy so we never mutate the caller's dict (it may back DBModel.litellm_params).
+        payload = {
+            "model_name": model_id,
+            "litellm_params": dict(litellm_params or {}),
+        }
+        if access_groups is not None:
+            payload["model_info"] = {"access_groups": access_groups}
+        if "model" not in payload["litellm_params"]:
+            payload["litellm_params"]["model"] = model_id
+
+        try:
+            async with httpx.AsyncClient(timeout=MODEL_HTTP_TIMEOUT) as client:
+                response = await client.post(
+                    f"{self.api_url}/model/new",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json=payload,
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            status_code, error_msg, _ = self._parse_http_error(e)
+            # Preserve 4xx (e.g. 409 already-exists) so callers can detect it.
+            if not 400 <= status_code < 500:
+                status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            logger.error("Failed to add model %s to LiteLLM: %s", model_id, error_msg)
+            raise HTTPException(
+                status_code=status_code,
+                detail=f"Failed to add LiteLLM model: {error_msg}",
+            )
+
+    async def get_model_deployment_ids(self, model_id: str) -> list[str]:
+        """
+        Resolve the LiteLLM deployment id(s) for a public model_name.
+        /model/update and /model/delete key on model_info.id, not model_name,
+        and /model/new allows duplicate model_names — so callers must resolve
+        ids first to upsert/delete correctly.
+        """
+        info = await self.get_model_info()
+        entries = info.get("data") or []
+        if not isinstance(entries, list):
+            return []
+        return [
+            entry["model_info"]["id"]
+            for entry in entries
+            if isinstance(entry, dict)
+            and entry.get("model_name") == model_id
+            and isinstance(entry.get("model_info"), dict)
+            and entry["model_info"].get("id")
+        ]
+
+    async def update_model(
+        self,
+        model_id: str,
+        litellm_params: dict,
+        deployment_ids: Optional[list[str]] = None,
+        access_groups: Optional[list[str]] = None,
+    ) -> dict:
+        """
+        Update an existing model in LiteLLM.
+        Sends POST /model/update per deployment id (LiteLLM identifies the
+        deployment by model_info.id; model_name alone is not accepted).
+        access_groups=[] clears the tags; None leaves them untouched.
+        """
+        if deployment_ids is None:
+            deployment_ids = await self.get_model_deployment_ids(model_id)
+        if not deployment_ids:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"LiteLLM model '{model_id}' not registered; cannot update.",
+            )
+
+        # Copy so we never mutate the caller's dict (it may back DBModel.litellm_params).
+        params = dict(litellm_params or {})
+        if "model" not in params:
+            params["model"] = model_id
+
+        result = {}
+        try:
+            async with httpx.AsyncClient(timeout=MODEL_HTTP_TIMEOUT) as client:
+                for dep_id in deployment_ids:
+                    model_info: dict = {"id": dep_id}
+                    if access_groups is not None:
+                        model_info["access_groups"] = access_groups
+                    response = await client.post(
+                        f"{self.api_url}/model/update",
+                        headers={"Authorization": f"Bearer {self.master_key}"},
+                        json={
+                            "model_name": model_id,
+                            "litellm_params": params,
+                            "model_info": model_info,
+                        },
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+            return result
+        except httpx.HTTPStatusError as e:
+            _, error_msg, _ = self._parse_http_error(e)
+            logger.error("Failed to update model %s in LiteLLM: %s", model_id, error_msg)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update LiteLLM model: {error_msg}",
+            )
+
+    async def delete_model(self, model_id: str, deployment_ids: Optional[list[str]] = None) -> None:
+        """
+        Delete/deregister a model in LiteLLM.
+        Sends POST /model/delete per deployment id ({"id": ...} — LiteLLM does
+        not accept model_name here). Absent deployments are treated as success.
+        """
+        if deployment_ids is None:
+            deployment_ids = await self.get_model_deployment_ids(model_id)
+        if not deployment_ids:
+            logger.info("LiteLLM model %s already absent; continuing", model_id)
+            return
+
+        try:
+            async with httpx.AsyncClient(timeout=MODEL_HTTP_TIMEOUT) as client:
+                for dep_id in deployment_ids:
+                    response = await client.post(
+                        f"{self.api_url}/model/delete",
+                        headers={"Authorization": f"Bearer {self.master_key}"},
+                        json={"id": dep_id},
+                    )
+                    if response.status_code >= 400 and self._is_idempotent_litellm_error(
+                        response.status_code,
+                        response.text,
+                        ["not found", "does not exist", "already deleted", "not registered"],
+                    ):
+                        logger.info("LiteLLM model %s (id=%s) already absent; continuing", model_id, dep_id)
+                        continue
+                    response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            _, error_msg, _ = self._parse_http_error(e)
+            logger.error("Failed to delete model %s from LiteLLM: %s", model_id, error_msg)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to delete LiteLLM model: {error_msg}",
+            )
+
