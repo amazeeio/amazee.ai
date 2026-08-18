@@ -64,11 +64,6 @@ spec:
                 configMapKeyRef:
                   name: {{ include "backend.fullname" . }}-config
                   key: SES_SENDER_EMAIL
-            - name: STRIPE_SECRET_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "backend.fullname" . }}-secret
-                  key: stripe-secret-key
             - name: ENABLE_LIMITS
               valueFrom:
                 configMapKeyRef:

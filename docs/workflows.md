@@ -82,20 +82,22 @@ amazee.ai supports managing dedicated vector databases for RAG (Retrieval-Augmen
 
 ## 4. Billing & Subscriptions
 
-amaee.ai integrates with **Stripe** for automated billing and subscription management.
+MOAD owns checkout. It holds the Stripe keys, receives the Stripe webhooks, and
+calls the endpoints below with a plain amount plus a reference string. This
+backend makes no Stripe API calls and needs no Stripe credentials.
 
-### 3.1 Stripe Integration
-*   **Customer Portal**: `POST /teams/{team_id}/portal`
-    *   Generates a secure link to the Stripe Customer Portal where users can manage payment methods and view invoices.
-*   **Pricing Tables**: `GET /teams/{team_id}/pricing-table-session`
-    *   Provides a client secret for the frontend to render Stripe Pricing Tables.
+### 4.1 Subscription Lifecycle
+*   **Renewals**: `POST /billing/subscription/cycle`, called by MOAD when Stripe reports a paid invoice.
+    *   Resets the team's period budget to `budget_cents`. Idempotent on `transaction_id`.
+*   **Cancellation**: `POST /billing/subscription/deactivate`, called by MOAD when the Stripe subscription ends.
+    *   Idempotent on `transaction_id`.
+*   **Top-ups**: `POST /budgets/region/{region_id}/teams/{team_id}/purchase` and `.../purchase/periodic`.
 
-### 3.2 Subscription Lifecycle
-*   **Manual Assignment**: `POST /teams/{team_id}/subscriptions` (Admin only).
-    *   Admins can manually link a team to a Stripe Product ID. The product is applied to the team, and its budget synced, in the same request.
-*   **Renewals**: `POST /billing/subscription/cycle`, called by MOAD when Stripe reports a paid invoice. MOAD owns the Stripe webhook.
-*   **Removal**: `DELETE /teams/{team_id}/subscription/{product_id}`
-    *   Cancels the Stripe subscription and removes the local association.
+### 4.2 Products
+`products` and `team_products` hold per-team entitlement limits (user count, keys
+per user, budget and RPM caps). `LimitService` reads them and falls back to the
+system defaults for a team with no product. The product id is still a Stripe
+product id for historical reasons; nothing reads it from Stripe.
 
 ---
 

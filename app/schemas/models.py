@@ -1039,52 +1039,6 @@ class SignInData(BaseModel):
     verification_code: str
 
 
-class CheckoutSessionCreate(BaseModel):
-    price_lookup_token: str
-
-
-class PricingTableSession(BaseModel):
-    client_secret: str
-    model_config = ConfigDict(from_attributes=True)
-
-
-class PricingTableCreate(BaseModel):
-    pricing_table_id: str
-    table_type: Literal["standard", "always_free", "gpt"] = "standard"
-    stripe_publishable_key: Optional[str] = (
-        None  # Optional on create, defaults to system config
-    )
-    model_config = ConfigDict(from_attributes=True)
-
-
-class PricingTableResponse(BaseModel):
-    pricing_table_id: str
-    stripe_publishable_key: str  # Always included in response
-    updated_at: datetime
-    model_config = ConfigDict(from_attributes=True)
-
-
-class PricingTablesResponse(BaseModel):
-    tables: Dict[str, PricingTableResponse | None]
-    model_config = ConfigDict(from_attributes=True)
-
-
-class SubscriptionCreate(BaseModel):
-    product_id: str  # Stripe product ID
-    model_config = ConfigDict(from_attributes=True)
-
-
-class SubscriptionResponse(BaseModel):
-    subscription_id: str
-    product_id: str
-    team_id: int
-    created_at: datetime
-    # Above zero means the product is attached but its budget did not reach
-    # LiteLLM. The error text stays in the server log.
-    sync_error_count: int = 0
-    model_config = ConfigDict(from_attributes=True)
-
-
 class PortalRequest(BaseModel):
     return_url: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)

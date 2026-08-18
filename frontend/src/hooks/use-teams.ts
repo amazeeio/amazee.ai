@@ -153,87 +153,6 @@ export function useTeams(
     },
   });
 
-  const subscribeToProductMutation = useMutation({
-    mutationFn: async ({
-      teamId,
-      productId,
-    }: {
-      teamId: string | number;
-      productId: string;
-    }) => {
-      const response = await post(`/billing/teams/${teamId}/subscriptions`, {
-        product_id: productId,
-      });
-      return response.json();
-    },
-    onSuccess: (data, variables) => {
-      queryClient.invalidateQueries({ queryKey: ["teams"] });
-      queryClient.invalidateQueries({
-        queryKey: ["team", variables.teamId.toString()],
-      });
-      queryClient.invalidateQueries({
-        queryKey: ["team-products", variables.teamId.toString()],
-      });
-      // The product is attached even when the budget did not reach LiteLLM.
-      // Say so, so nobody reads a green toast as a complete subscription.
-      if (data?.sync_error_count > 0) {
-        toast({
-          title: "Subscribed with sync errors",
-          description:
-            "The product is attached, but the budget did not sync. Check the backend logs.",
-          variant: "destructive",
-        });
-        return;
-      }
-      toast({
-        title: "Success",
-        description: "Subscribed to product successfully",
-      });
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
-
-  const cancelSubscriptionMutation = useMutation({
-    mutationFn: async ({
-      teamId,
-      productId,
-    }: {
-      teamId: string | number;
-      productId: string;
-    }) => {
-      const response = await del(
-        `/billing/teams/${teamId}/subscription/${productId}`,
-      );
-      return response.json();
-    },
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ["teams"] });
-      queryClient.invalidateQueries({
-        queryKey: ["team", variables.teamId.toString()],
-      });
-      queryClient.invalidateQueries({
-        queryKey: ["team-products", variables.teamId.toString()],
-      });
-      toast({
-        title: "Success",
-        description: "Subscription canceled successfully",
-      });
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
-
   const addUserToTeamMutation = useMutation({
     mutationFn: async ({
       userId,
@@ -325,10 +244,6 @@ export function useTeams(
     isExtendingTrial: extendTrialMutation.isPending,
     mergeTeams: mergeTeamsMutation.mutate,
     isMerging: mergeTeamsMutation.isPending,
-    subscribeToProduct: subscribeToProductMutation.mutate,
-    isSubscribing: subscribeToProductMutation.isPending,
-    cancelSubscription: cancelSubscriptionMutation.mutate,
-    isCancelingSubscription: cancelSubscriptionMutation.isPending,
     addUserToTeam: addUserToTeamMutation.mutate,
     isAddingUser: addUserToTeamMutation.isPending,
     removeUserFromTeam: removeUserFromTeamMutation.mutate,
