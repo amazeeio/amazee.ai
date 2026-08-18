@@ -1,11 +1,11 @@
 name: Package and Publish Helm Charts
 
-# Pushes and pull requests only lint/template the charts. Publishing happens
-# exactly once per release: the release-please workflow calls this one with
-# publish=true when the vX.Y.Z GitHub Release is created. (A
-# `release: published` trigger would never fire for releases created with the
-# default GITHUB_TOKEN, and publishing on branch pushes would double-publish
-# the same chart version.)
+# Pushes and pull requests only lint and template the charts. Publishing happens
+# exactly once per release: the Release workflow calls this one with publish=true
+# and the release branch as `ref`, which is where the bumped chart versions live.
+# (A `release: published` trigger would never fire for releases created with the
+# default GITHUB_TOKEN, and publishing on branch pushes would double-publish the
+# same chart version.)
 on:
   push:
     branches: [ main, dev ]
@@ -24,6 +24,11 @@ on:
         type: boolean
         required: false
         default: false
+      ref:
+        description: 'Ref to package from. Blank uses the calling workflow ref, which for a release is the wrong one: the bumped chart versions live on the release branch.'
+        type: string
+        required: false
+        default: ''
   workflow_dispatch:
     inputs:
       publish:
@@ -51,6 +56,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           fetch-depth: 0
 
       - name: Set up Helm
@@ -116,6 +122,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
