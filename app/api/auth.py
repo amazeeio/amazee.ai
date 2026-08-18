@@ -9,7 +9,17 @@ import email_validator
 
 from typing import Optional, List, Union
 
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, Form
+from fastapi import (
+    APIRouter,
+    Cookie,
+    Depends,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    status,
+)
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from urllib.parse import urlparse
@@ -19,6 +29,7 @@ from app.core.config import settings
 from app.core.dependencies import get_limit_service
 from app.core.roles import UserRole
 from app.core.security import (
+    assert_token_not_revoked,
     create_access_token,
     get_current_user_from_auth,
     get_password_hash,
@@ -64,6 +75,7 @@ from app.api.users import _create_user_in_db, get_user_by_email
 from app.core.email import normalize_email_for_lookup
 from app.services.disposable_domains import assert_email_domain_allowed
 from app.services.signup_velocity import enforce_signup_velocity
+from app.services.token_revocation import is_token_revoked, revoke_access_token
 
 auth_logger = logging.getLogger(__name__)
 
@@ -89,6 +101,16 @@ def get_cookie_domain():
     # Remove the first part (e.g., 'backend' or 'frontend')
     domain = ".".join(hostname.split(".")[1:])
     return domain
+
+
+def _bearer_token(authorization: Optional[str]) -> Optional[str]:
+    """Token out of an ``Authorization: Bearer <token>`` header, or None."""
+    if not isinstance(authorization, str):
+        return None
+    parts = authorization.split()
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1]
+    return None
 
 
 async def get_login_data(
@@ -222,7 +244,29 @@ async def login(
 
 
 @router.post("/logout")
-async def logout(response: Response):
+async def logout(
+    response: Response,
+    access_token: Optional[str] = Cookie(None, alias="access_token"),
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    """Log the caller out and stop the presented access token from working again.
+
+    The endpoint stays open to anonymous callers so a client can always clear its
+    cookie. It reports success either way and never says whether a token was real.
+    """
+    token = _bearer_token(authorization) or (
+        access_token if isinstance(access_token, str) else None
+    )
+    if token:
+        try:
+            revoke_access_token(db, token)
+        except Exception:
+            # The cookie must still be cleared, so a failed write cannot make
+            # logout look broken to the client. It is logged for follow-up.
+            auth_logger.exception("Failed to revoke access token during logout")
+            db.rollback()
+
     # Get cookie domain for logout
     cookie_domain = get_cookie_domain()
 
@@ -736,6 +780,9 @@ async def validate_jwt(
         payload = jwt.decode(
             token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
         )
+        # A revoked token must not be able to buy a fresh one, which would undo
+        # the logout that revoked it.
+        assert_token_not_revoked(db, payload)
         email: str = payload.get("sub")
         user = get_user_by_email(db, email)
         if not user:
@@ -759,6 +806,13 @@ async def validate_jwt(
                 email = payload.get("sub")
 
                 if not email:
+                    raise credentials_exception
+
+                # A revoked token gets no recovery email either. A token with no
+                # jti still does: it predates revocation, and this branch is how
+                # the holder of an old link gets a working one.
+                if is_token_revoked(db, payload.get("jti")):
+                    auth_logger.info("Refused to refresh a revoked expired token")
                     raise credentials_exception
 
                 send_validation_url(email)
