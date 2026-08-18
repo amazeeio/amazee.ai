@@ -28,6 +28,7 @@ import { Team } from "@/types/team";
 import { get, del } from "@/utils/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { CreateRegionDialog } from "./_components/create-region-dialog";
+import { DefaultAccessGroupCell } from "./_components/default-access-group-cell";
 import { EditRegionDialog } from "./_components/edit-region-dialog";
 import { ManageRegionTeamsDialog } from "./_components/manage-region-teams-dialog";
 
@@ -232,6 +233,7 @@ export default function RegionsPage() {
                   <TableHead>LiteLLM URL</TableHead>
                   <TableHead>Type</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Default Access Group</TableHead>
                   <TableHead>Teams</TableHead>
                   <TableHead>Actions</TableHead>
                 </TableRow>
@@ -251,13 +253,23 @@ export default function RegionsPage() {
                       </TableCell>
                       <TableCell>{region.litellm_api_url}</TableCell>
                       <TableCell>
-                        <Badge
-                          variant={
-                            region.is_dedicated ? "default" : "secondary"
-                          }
-                        >
-                          {region.is_dedicated ? "Dedicated" : "Shared"}
-                        </Badge>
+                        <div className="flex flex-col gap-1 items-start">
+                          <Badge
+                            variant={
+                              region.is_dedicated ? "default" : "secondary"
+                            }
+                          >
+                            {region.is_dedicated ? "Dedicated" : "Shared"}
+                          </Badge>
+                          {region.regional_area && (
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] font-mono"
+                            >
+                              {region.regional_area}
+                            </Badge>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell>
                         <span
@@ -269,6 +281,9 @@ export default function RegionsPage() {
                         >
                           {region.is_active ? "Active" : "Inactive"}
                         </span>
+                      </TableCell>
+                      <TableCell>
+                        <DefaultAccessGroupCell region={region} />
                       </TableCell>
                       <TableCell>
                         {region.is_dedicated ? (
@@ -299,7 +314,7 @@ export default function RegionsPage() {
                     </TableRow>
                     <TableRow>
                       <TableCell
-                        colSpan={9}
+                        colSpan={10}
                         className="pt-0 text-xs text-muted-foreground"
                       >
                         {region.description}

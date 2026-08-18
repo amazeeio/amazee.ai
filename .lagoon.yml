@@ -38,6 +38,13 @@ environments:
         schedule: "*/5 * * * *"
         command: python scripts/trigger_budget_alerts_job.py
         service: backend
+      # 'synced' only means a sync once succeeded — proxies drift (admin UI
+      # deletions, DB restores, cluster rollouts). Two LiteLLM calls per
+      # region when nothing drifted, so 5 minutes is affordable.
+      - name: reconcile-model-sync
+        schedule: "*/5 * * * *"
+        command: python scripts/trigger_model_reconcile_job.py
+        service: backend
     routes:
       - backend:
         - api.amazee.ai:
@@ -84,6 +91,13 @@ environments:
       - name: monitor-budget-thresholds
         schedule: "*/5 * * * *"
         command: python scripts/trigger_budget_alerts_job.py
+        service: backend
+      # 'synced' only means a sync once succeeded — proxies drift (admin UI
+      # deletions, DB restores, cluster rollouts). Two LiteLLM calls per
+      # region when nothing drifted, so 5 minutes is affordable.
+      - name: reconcile-model-sync
+        schedule: "*/5 * * * *"
+        command: python scripts/trigger_model_reconcile_job.py
         service: backend
 
 tasks:

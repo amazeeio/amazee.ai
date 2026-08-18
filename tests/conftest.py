@@ -21,7 +21,7 @@ os.environ["ENABLE_SIGNUP_VELOCITY_LIMIT"] = "false"
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from app.main import app
 from app.db.database import get_db
@@ -40,21 +40,45 @@ DATABASE_URL = os.getenv(
 engine = create_engine(DATABASE_URL)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+# Hashing at production cost (~250ms/hash) ran thousands of times per suite via
+# the user/token fixtures; 4 is bcrypt's minimum and plenty for tests.
+from app.core.security import pwd_context  # noqa: E402
 
-@pytest.fixture
-def db():
-    # Create the test database and tables
+pwd_context.update(bcrypt__rounds=4)
+
+
+@pytest.fixture(scope="session")
+def _schema():
+    """Create the schema once per test session.
+
+    Per-test isolation comes from the TRUNCATE in the db fixture (~30ms),
+    not a full drop/create of every table per test (~1s×2), which used to
+    dominate CI runtime. The enum drop mirrors the old fixture: drop_all
+    doesn't remove custom types, and create_all would collide with it.
+    """
+    with engine.connect() as conn:
+        conn.execute(text("DROP TYPE IF EXISTS budget_type_enum CASCADE"))
+        conn.commit()
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
 
-    # Create a new session for the test
+
+_ALL_TABLES = ", ".join(f'"{t.name}"' for t in Base.metadata.sorted_tables)
+
+
+@pytest.fixture
+def db(_schema):
+    # Truncate on setup (not teardown) so rows leaked outside the fixture's
+    # session — e.g. via the app's own SessionLocal — can't poison this test.
+    with engine.connect() as conn:
+        conn.execute(text(f"TRUNCATE {_ALL_TABLES} RESTART IDENTITY CASCADE"))
+        conn.commit()
+
     db = TestingSessionLocal()
     try:
         yield db
     finally:
         db.close()
-        # Clean up after test
-        Base.metadata.drop_all(bind=engine)
 
 
 @pytest.fixture
