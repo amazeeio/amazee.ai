@@ -116,6 +116,13 @@ class Settings(BaseSettings):
     SIGNUP_EVENTS_RETENTION_DAYS: int = int(
         os.getenv("SIGNUP_EVENTS_RETENTION_DAYS", "7")
     )
+    # --- Access token revocation (logout) ---
+    # How long a revoked_tokens row is kept after the token's own expiry. The row
+    # stops mattering once the token expires; the extra days only cover clock skew
+    # and leave a short audit trail.
+    REVOKED_TOKENS_RETENTION_DAYS: int = int(
+        os.getenv("REVOKED_TOKENS_RETENTION_DAYS", "2")
+    )
     # --- Budget threshold alerts (AI-448) ---
     # Off by default: enabling it starts sending webhooks to a third party, so it
     # must be an explicit per-environment decision.
