@@ -1110,6 +1110,10 @@ async def generate_trial_access(
             )
         try:
             if user:
+                # The MANUAL budget row set above has no foreign key to the
+                # user; left behind, it would pin a future user with the same
+                # id to the trial budget cap.
+                limit_service.delete_limits(OwnerType.USER, user.id, commit=False)
                 db.delete(user)
                 db.commit()
         except Exception as cleanup_error:

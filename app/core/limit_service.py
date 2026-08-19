@@ -1045,10 +1045,7 @@ class LimitService:
 
         # First try the new service, and short circuit if it works
         try:
-            # Before trying to increment, validate and correct the current count if needed
-            self._validate_and_correct_team_user_count(team_id)
-            limit = self.increment_resource(OwnerType.TEAM, team_id, ResourceType.USER)
-            if not limit:
+            if not self._correct_and_take_team_user_seat(team_id):
                 limit_check_route_counter.labels(
                     function="check_team_user_limit", route="limit_service_at_capacity"
                 ).inc()
@@ -1565,16 +1562,32 @@ class LimitService:
             limit.updated_at = datetime.now(UTC)
             self.db.commit()
 
-    def _validate_and_correct_team_user_count(self, team_id: int) -> None:
+    def _correct_and_take_team_user_seat(self, team_id: int) -> bool:
         """
-        Align the stored team member count with the real number of members.
+        Align the stored member count with the real members, then take one seat.
 
-        The counter only moves by one increment per created member, so a member
-        that leaves through a path which forgets to decrement would keep the
-        team locked out of its own quota for good.
+        The counter is a cache of ``COUNT(*)`` over the members, like the key
+        counters: nothing decrements it, so it is re-derived here before every
+        check. A member that left through any path is picked up on the next
+        check instead of blocking the team for good. This applies to MANUAL
+        rows too: a hand-set current_value does not survive the next check, so
+        freeze a team by lowering max_value, not by raising current_value.
+
+        Correction and increment run in one transaction with the limit row
+        locked, so two checks cannot lose each other's update. The count still
+        cannot see a member whose inserting transaction has not committed, so
+        two concurrent additions can both pass at the last seat; closing that
+        would need the seat and the member row in the same transaction.
 
         Args:
-            team_id: ID of the team to validate
+            team_id: ID of the team
+
+        Returns:
+            True if a seat was taken, False if the team is at capacity
+
+        Raises:
+            LimitNotFoundError: If the team has no member limit row
+            ValueError: If the limit row is not a Control Plane COUNT
         """
         limit = (
             self.db.query(DBLimitedResource)
@@ -1585,11 +1598,19 @@ class LimitService:
                     DBLimitedResource.resource == ResourceType.USER,
                 )
             )
+            .with_for_update()
             .first()
         )
 
         if not limit:
-            return  # No limit exists, will be created by the fallback logic
+            raise LimitNotFoundError(
+                f"No limit found for {OwnerType.TEAM} {team_id} resource {ResourceType.USER}"
+            )
+
+        if limit.limit_type == LimitType.DATA_PLANE:
+            raise ValueError("Cannot increment/decrement Data Plane resources")
+        if limit.unit != UnitType.COUNT:
+            raise ValueError("Only COUNT type resources can be incremented/decremented")
 
         actual_count = self.db.execute(
             select(func.count()).select_from(DBUser).where(DBUser.team_id == team_id)
@@ -1600,8 +1621,17 @@ class LimitService:
                 f"Correcting team user count for team {team_id}: {limit.current_value} -> {actual_count}"
             )
             limit.current_value = actual_count
-            limit.updated_at = datetime.now(UTC)
+
+        limit.updated_at = datetime.now(UTC)
+
+        if limit.current_value >= limit.max_value:
+            # Keep the correction even when the check fails
             self.db.commit()
+            return False
+
+        limit.current_value += 1
+        self.db.commit()
+        return True
 
     def _validate_and_correct_user_key_count(self, user_id: int) -> None:
         """

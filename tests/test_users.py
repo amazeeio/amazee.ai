@@ -1547,14 +1547,15 @@ def test_delete_user_with_member_budget_and_alert_state(
 
 
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
-def test_delete_team_member_releases_user_seat(client, admin_token, db, test_team):
+def test_delete_team_member_frees_the_seat(client, admin_token, db, test_team):
     """
     GIVEN: A team at its member limit, counted by the limit service
     WHEN: One member is deleted
-    THEN: The counter drops by one and a replacement member can be created
+    THEN: A replacement member can be created
 
-    The counter only ever went up before this fix, so a team at its cap stayed
-    blocked for good.
+    The counter is a cache of the real member count and is re-derived on the
+    next check. Before this fix nothing ever brought it back down, so a team
+    at its cap stayed blocked for good.
     """
     members = [
         DBUser(email=f"seat{i}@example.com", team_id=test_team.id, role="read_only")
@@ -1583,17 +1584,6 @@ def test_delete_team_member_releases_user_seat(client, admin_token, db, test_tea
     assert response.status_code == 200
 
     db.expire_all()
-    limit = (
-        db.query(DBLimitedResource)
-        .filter(
-            DBLimitedResource.owner_type == OwnerType.TEAM,
-            DBLimitedResource.owner_id == test_team.id,
-            DBLimitedResource.resource == ResourceType.USER,
-        )
-        .first()
-    )
-    assert limit.current_value == 1.0
-
     # The user's own rows go with them, so the next user with this id starts clean
     assert (
         db.query(DBLimitedResource)
@@ -1616,13 +1606,26 @@ def test_delete_team_member_releases_user_seat(client, admin_token, db, test_tea
     )
     assert response.status_code == 201
 
+    # The recount saw one remaining member and the new member took a seat
+    db.expire_all()
+    limit = (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == test_team.id,
+            DBLimitedResource.resource == ResourceType.USER,
+        )
+        .first()
+    )
+    assert limit.current_value == 2.0
+
 
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
-def test_remove_user_from_team_releases_user_seat(client, admin_token, db, test_team):
+def test_remove_user_from_team_frees_the_seat(client, admin_token, db, test_team):
     """
     GIVEN: A team at its member limit, counted by the limit service
     WHEN: A member is removed from the team
-    THEN: The counter drops by one
+    THEN: A new member can be created in their place
     """
     member = DBUser(
         email="leaving-member@example.com", team_id=test_team.id, role="read_only"
@@ -1649,17 +1652,16 @@ def test_remove_user_from_team_releases_user_seat(client, admin_token, db, test_
         )
     assert response.status_code == 200
 
-    db.expire_all()
-    limit = (
-        db.query(DBLimitedResource)
-        .filter(
-            DBLimitedResource.owner_type == OwnerType.TEAM,
-            DBLimitedResource.owner_id == test_team.id,
-            DBLimitedResource.resource == ResourceType.USER,
-        )
-        .first()
+    response = client.post(
+        "/users/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "email": "replacement-member@example.com",
+            "password": "newpassword",
+            "team_id": test_team.id,
+        },
     )
-    assert limit.current_value == 0.0
+    assert response.status_code == 201
 
 
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
