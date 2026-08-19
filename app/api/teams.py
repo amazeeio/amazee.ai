@@ -123,6 +123,12 @@ async def register_team(
     # team is created (the sign-in auto-provision path creates a team first).
     assert_email_domain_allowed(db, team.admin_email)
 
+    # A non-admin caller may only register a team they administer themselves;
+    # only privileged callers may set an arbitrary admin_email. This keeps the
+    # sign-in auto-provision path working (a user creating their own team).
+    if not current_user.is_admin:
+        team.admin_email = current_user.email
+
     # Validate region — must be active and non-dedicated
     region = (
         db.query(DBRegion)
