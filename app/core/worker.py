@@ -1847,12 +1847,15 @@ class RegionKeyStateCache:
             taken_at, snapshot = cached
             if now - taken_at < self._ttl_seconds:
                 return snapshot
-            region_key_snapshot_refresh_total.labels(region_name=region.name).inc()
-            logger.info(
-                "Bulk key snapshot for region %s is older than %.0fs, re-listing",
-                region.name,
-                self._ttl_seconds,
-            )
+            # TTL 0 means caching is off: every get re-lists by design, so it
+            # is not a refresh event worth a counter tick or a log line each.
+            if self._ttl_seconds > 0:
+                region_key_snapshot_refresh_total.labels(region_name=region.name).inc()
+                logger.info(
+                    "Bulk key snapshot for region %s is older than %.0fs, re-listing",
+                    region.name,
+                    self._ttl_seconds,
+                )
 
         snapshot: Dict[str, dict] = {}
         try:
@@ -1877,6 +1880,9 @@ class RegionKeyStateCache:
                 str(e),
             )
             snapshot = {}
+            # The gauge must not keep the last good count while the region is
+            # on the per-key fallback.
+            region_key_snapshot_keys.labels(region_name=region.name).set(0)
 
         # Stamp after the call, not before: a slow listing must not spend its
         # own duration out of the TTL it is about to start.
@@ -1972,9 +1978,9 @@ async def reconcile_team_keys(
         expire_keys: Whether to expire keys (set duration to 0)
         renewal_period_days: Optional renewal period in days. If provided, will check for and update keys renewed within the last hour.
         max_budget_amount: Optional maximum budget amount. If provided, will update the budget amount for the keys.
-        key_state_cache: Shared per-run snapshot cache. Callers reconciling more
-            than one team must pass a single instance so each region is listed
-            once per run; when omitted a private cache is used.
+        key_state_cache: Shared snapshot cache. Callers reconciling more than
+            one team must pass a single instance so each region is listed once
+            per TTL window; when omitted a private cache is used.
 
     Returns:
         float: Total spend across all keys for the team
@@ -2645,7 +2651,8 @@ async def monitor_teams(db: Session):
 
         logger.info(f"Found {len(teams)} teams to track")
         limit_service = LimitService(db)
-        # Shared across every team so each region is bulk-listed once per run
+        # Shared across every team so each region is bulk-listed once per TTL
+        # window instead of once per team
         key_state_cache = RegionKeyStateCache()
         for team in teams:
             try:
