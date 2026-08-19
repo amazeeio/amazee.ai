@@ -1053,7 +1053,13 @@ async def merge_teams(
                 except Exception as e:
                     logger.error(f"Failed to update LiteLLM key {key.id}: {str(e)}")
 
-        # Delete source team
+        # Delete source team. Its limit rows must go with it, same as in
+        # delete_team: owner_id has no foreign key, so they would outlive the
+        # team and give a later team with the same id a used-up counter.
+        # The target team takes the members without a cap check: the merge is
+        # a system-admin operation, and its member counter is re-derived from
+        # the real members on the next member addition.
+        LimitService(db).delete_limits(OwnerType.TEAM, source_team.id, commit=False)
         db.delete(source_team)
         db.commit()
 

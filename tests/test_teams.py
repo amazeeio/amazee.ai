@@ -2521,3 +2521,72 @@ def test_delete_team_removes_its_limit_rows(client, admin_token, db, test_team):
         .count()
         == 1
     )
+
+
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
+def test_merge_teams_removes_source_team_limit_rows(mock_post, client, admin_token, db):
+    """
+    GIVEN: A source team with limit rows
+    WHEN: The source team is merged into a target team
+    THEN: The source team's limit rows are deleted with it
+
+    Merging deletes the source team, so leaving the rows behind orphans them
+    the same way delete_team used to.
+    """
+    source_team = DBTeam(
+        name="Merge Source Team",
+        admin_email="merge-source@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    target_team = DBTeam(
+        name="Merge Target Team",
+        admin_email="merge-target@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    db.add_all([source_team, target_team])
+    db.commit()
+    source_team_id = source_team.id
+
+    db.add(
+        DBLimitedResource(
+            limit_type=LimitType.CONTROL_PLANE,
+            resource=ResourceType.USER,
+            unit=UnitType.COUNT,
+            max_value=5.0,
+            current_value=2.0,
+            owner_type=OwnerType.TEAM,
+            owner_id=source_team_id,
+            limited_by=LimitSource.DEFAULT,
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.raise_for_status.return_value = None
+
+    response = client.post(
+        f"/teams/{target_team.id}/merge",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "source_team_id": source_team_id,
+            "conflict_resolution_strategy": "delete",
+        },
+    )
+    assert response.status_code == 200
+
+    db.expire_all()
+    assert db.query(DBTeam).filter(DBTeam.id == source_team_id).first() is None
+    assert (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == source_team_id,
+        )
+        .count()
+        == 0
+    )

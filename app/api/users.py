@@ -16,10 +16,10 @@ from app.core.litellm_user_sync import (
     sync_remove_user_from_team,
     sync_update_user_team_role,
 )
-from app.core.limit_service import LimitNotFoundError, LimitService
+from app.core.limit_service import LimitService
 from app.db.database import get_db
 from app.core.dependencies import get_limit_service
-from app.schemas.limits import OwnerType, ResourceType
+from app.schemas.limits import OwnerType
 from app.schemas.models import (
     User,
     AdminUserUpdate,
@@ -844,10 +844,6 @@ async def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
     # user-creation choke point (covers create_user, sign-in auto-provision, trial).
     assert_email_domain_allowed(db, user.email)
 
-    limit_service = get_limit_service(db)
-    if settings.ENABLE_LIMITS and user.team_id is not None:
-        limit_service.check_team_user_limit(user.team_id)
-
     # Validate role if provided
     if user.role and user.role not in UserRole.get_all_roles():
         raise HTTPException(
@@ -862,6 +858,12 @@ async def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="system_admin role cannot be assigned via user creation.",
         )
+
+    # Take the seat only after every validation that can reject the request,
+    # so a rejected request does not hold a seat until the next recount.
+    limit_service = get_limit_service(db)
+    if settings.ENABLE_LIMITS and user.team_id is not None:
+        limit_service.check_team_user_limit(user.team_id)
 
     # Default to the lowest permissions for a user in a team
     if user.role is None and user.team_id is not None:
@@ -1047,18 +1049,6 @@ async def update_user(
     return db_user
 
 
-def release_team_user_seat(db: Session, team_id: int) -> None:
-    """
-    Give one member seat back to a team when a member leaves, is deleted, or never got in.
-
-    A team that never reached the limit service has no counter to release.
-    """
-    try:
-        LimitService(db).decrement_resource(OwnerType.TEAM, team_id, ResourceType.USER)
-    except LimitNotFoundError:
-        logger.info(f"Team {team_id} has no user limit to release")
-
-
 @router.post(
     "/{user_id}/add-to-team",
     response_model=User,
@@ -1115,8 +1105,6 @@ async def add_user_to_team(
         db.refresh(db_user)
     except Exception:
         db.rollback()
-        if settings.ENABLE_LIMITS:
-            release_team_user_seat(db, team_operation.team_id)
         raise
 
     try:
@@ -1126,8 +1114,6 @@ async def add_user_to_team(
             db_user.team_id = None
             db.commit()
             db.refresh(db_user)
-            if settings.ENABLE_LIMITS:
-                release_team_user_seat(db, team_operation.team_id)
         except Exception:
             db.rollback()
             logger.exception(
@@ -1217,11 +1203,8 @@ async def remove_user_from_team(
             )
         raise
 
-    # The counter went up when this member was created, so give the seat back.
-    # Done after the removal is final, so a failed removal keeps the seat taken.
-    if settings.ENABLE_LIMITS:
-        release_team_user_seat(db, previous_team_id)
-
+    # No counter update here: the member counter is re-derived from the real
+    # members on the next check, so the freed seat is picked up there.
     return db_user
 
 
@@ -1263,10 +1246,6 @@ async def delete_user(
     except Exception:
         db.rollback()
         raise
-
-    # The counter went up when this member was created, so give the seat back.
-    if settings.ENABLE_LIMITS and team_id is not None:
-        release_team_user_seat(db, team_id)
 
     try:
         await sync_delete_user_across_regions(db=db, db_user=db_user, team_id=team_id)
