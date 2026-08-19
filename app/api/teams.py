@@ -36,6 +36,7 @@ from app.db.models import (
     DBTeamRegion,
     DBUser,
 )
+from app.schemas.limits import OwnerType
 from app.schemas.models import (
     BudgetType,
     SalesProduct,
@@ -449,6 +450,10 @@ async def delete_team(team_id: int, db: Session = Depends(get_db)):
     db.query(DBBudgetAlertState).filter(DBBudgetAlertState.team_id == team_id).delete(
         synchronize_session=False
     )
+
+    # Limit rows point at the team by id with no foreign key, so they would stay
+    # behind for good and give a later team with the same id a used-up counter.
+    LimitService(db).delete_limits(OwnerType.TEAM, team_id, commit=False)
 
     # Delete the team
     db.delete(db_team)
