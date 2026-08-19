@@ -6,6 +6,7 @@ from app.core.limit_service import LimitService, setup_default_limits
 from app.core.security import get_password_hash
 from app.db.models import (
     DBBudgetAlertState,
+    DBLimitedResource,
     DBPrivateAIKey,
     DBProduct,
     DBRegion,
@@ -16,7 +17,7 @@ from app.db.models import (
     DBUser,
 )
 from app.main import app
-from app.schemas.limits import LimitSource, OwnerType, ResourceType
+from app.schemas.limits import LimitSource, LimitType, OwnerType, ResourceType, UnitType
 from app.schemas.models import BudgetType
 from fastapi.testclient import TestClient
 from tests.conftest import soft_delete_team_for_test
@@ -2431,6 +2432,161 @@ def test_delete_team_with_budget_rows(client, admin_token, db, test_team, test_r
     assert (
         db.query(DBBudgetAlertState)
         .filter(DBBudgetAlertState.team_id == team_id)
+        .count()
+        == 0
+    )
+
+
+def test_delete_team_removes_its_limit_rows(client, admin_token, db, test_team):
+    """
+    GIVEN: A team with limit rows and a member with limit rows of their own
+    WHEN: The team is deleted
+    THEN: A 200 is returned, the team rows are gone and the member rows stay
+
+    owner_id carries no foreign key, so the team rows outlived the team and a
+    later team with the same id inherited a used-up counter.
+    """
+    member = DBUser(email="team-limit-member@example.com", team_id=test_team.id)
+    db.add(member)
+    db.commit()
+    db.refresh(member)
+    member_id = member.id
+
+    db.add_all(
+        [
+            DBLimitedResource(
+                limit_type=LimitType.CONTROL_PLANE,
+                resource=ResourceType.USER,
+                unit=UnitType.COUNT,
+                max_value=5.0,
+                current_value=1.0,
+                owner_type=OwnerType.TEAM,
+                owner_id=test_team.id,
+                limited_by=LimitSource.DEFAULT,
+                created_at=datetime.now(UTC),
+            ),
+            DBLimitedResource(
+                limit_type=LimitType.DATA_PLANE,
+                resource=ResourceType.BUDGET,
+                unit=UnitType.DOLLAR,
+                max_value=50.0,
+                current_value=None,
+                owner_type=OwnerType.TEAM,
+                owner_id=test_team.id,
+                limited_by=LimitSource.DEFAULT,
+                created_at=datetime.now(UTC),
+            ),
+            DBLimitedResource(
+                limit_type=LimitType.CONTROL_PLANE,
+                resource=ResourceType.USER_KEY,
+                unit=UnitType.COUNT,
+                max_value=2.0,
+                current_value=0.0,
+                owner_type=OwnerType.USER,
+                owner_id=member_id,
+                limited_by=LimitSource.DEFAULT,
+                created_at=datetime.now(UTC),
+            ),
+        ]
+    )
+    db.commit()
+    team_id = test_team.id
+
+    with patch(
+        "app.api.teams.LiteLLMService.update_team_budget", new_callable=AsyncMock
+    ):
+        response = client.delete(
+            f"/teams/{team_id}", headers={"Authorization": f"Bearer {admin_token}"}
+        )
+    assert response.status_code == 200
+
+    db.expire_all()
+    assert db.query(DBTeam).filter(DBTeam.id == team_id).first() is None
+    assert (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == team_id,
+        )
+        .count()
+        == 0
+    )
+    # The member survives the team, so their own limits must survive with them
+    assert (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.USER,
+            DBLimitedResource.owner_id == member_id,
+        )
+        .count()
+        == 1
+    )
+
+
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
+def test_merge_teams_removes_source_team_limit_rows(mock_post, client, admin_token, db):
+    """
+    GIVEN: A source team with limit rows
+    WHEN: The source team is merged into a target team
+    THEN: The source team's limit rows are deleted with it
+
+    Merging deletes the source team, so leaving the rows behind orphans them
+    the same way delete_team used to.
+    """
+    source_team = DBTeam(
+        name="Merge Source Team",
+        admin_email="merge-source@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    target_team = DBTeam(
+        name="Merge Target Team",
+        admin_email="merge-target@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    db.add_all([source_team, target_team])
+    db.commit()
+    source_team_id = source_team.id
+
+    db.add(
+        DBLimitedResource(
+            limit_type=LimitType.CONTROL_PLANE,
+            resource=ResourceType.USER,
+            unit=UnitType.COUNT,
+            max_value=5.0,
+            current_value=2.0,
+            owner_type=OwnerType.TEAM,
+            owner_id=source_team_id,
+            limited_by=LimitSource.DEFAULT,
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.raise_for_status.return_value = None
+
+    response = client.post(
+        f"/teams/{target_team.id}/merge",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "source_team_id": source_team_id,
+            "conflict_resolution_strategy": "delete",
+        },
+    )
+    assert response.status_code == 200
+
+    db.expire_all()
+    assert db.query(DBTeam).filter(DBTeam.id == source_team_id).first() is None
+    assert (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == source_team_id,
+        )
         .count()
         == 0
     )

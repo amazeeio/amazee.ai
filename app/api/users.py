@@ -19,6 +19,7 @@ from app.core.litellm_user_sync import (
 from app.core.limit_service import LimitService
 from app.db.database import get_db
 from app.core.dependencies import get_limit_service
+from app.schemas.limits import OwnerType
 from app.schemas.models import (
     User,
     AdminUserUpdate,
@@ -843,10 +844,6 @@ async def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
     # user-creation choke point (covers create_user, sign-in auto-provision, trial).
     assert_email_domain_allowed(db, user.email)
 
-    limit_service = get_limit_service(db)
-    if settings.ENABLE_LIMITS and user.team_id is not None:
-        limit_service.check_team_user_limit(user.team_id)
-
     # Validate role if provided
     if user.role and user.role not in UserRole.get_all_roles():
         raise HTTPException(
@@ -861,6 +858,12 @@ async def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="system_admin role cannot be assigned via user creation.",
         )
+
+    # Take the seat only after every validation that can reject the request,
+    # so a rejected request does not hold a seat until the next recount.
+    limit_service = get_limit_service(db)
+    if settings.ENABLE_LIMITS and user.team_id is not None:
+        limit_service.check_team_user_limit(user.team_id)
 
     # Default to the lowest permissions for a user in a team
     if user.role is None and user.team_id is not None:
@@ -1090,6 +1093,11 @@ async def add_user_to_team(
     if not db_team:
         raise HTTPException(status_code=404, detail="Team not found")
 
+    # This is the second door into a team, next to creating a member outright,
+    # so it has to take a seat as well. Without it a team can pass its cap.
+    if settings.ENABLE_LIMITS:
+        get_limit_service(db).check_team_user_limit(team_operation.team_id)
+
     # Add user to team
     db_user.team_id = team_operation.team_id
     try:
@@ -1194,6 +1202,9 @@ async def remove_user_from_team(
                 db_user.id,
             )
         raise
+
+    # No counter update here: the member counter is re-derived from the real
+    # members on the next check, so the freed seat is picked up there.
     return db_user
 
 
@@ -1224,6 +1235,10 @@ async def delete_user(
     db.query(DBBudgetAlertState).filter(DBBudgetAlertState.user_id == user_id).delete(
         synchronize_session=False
     )
+
+    # The user's own limit rows have no foreign key to the user, so they would
+    # stay behind and give the next user with this id a used-up counter.
+    LimitService(db).delete_limits(OwnerType.USER, user_id, commit=False)
 
     db.delete(db_user)
     try:
