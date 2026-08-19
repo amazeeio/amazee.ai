@@ -334,6 +334,46 @@ class LimitService:
 
         return True
 
+    def delete_limits(
+        self, owner_type: OwnerType, owner_id: int, commit: bool = True
+    ) -> int:
+        """
+        Delete every limit row of one team or user.
+
+        Call this when the owner itself is deleted. ``owner_id`` is a plain
+        column with no foreign key, so the rows outlive the owner and the next
+        owner with the same id would start with a used-up counter.
+
+        Args:
+            owner_type: OwnerType enum, team or user
+            owner_id: ID of the owner
+            commit: Set False to let the caller commit with the rest of its work
+
+        Returns:
+            Number of rows deleted
+
+        Raises:
+            ValueError: If asked to delete the system defaults
+        """
+        if owner_type == OwnerType.SYSTEM:
+            raise ValueError("System limits cannot be deleted")
+
+        deleted = (
+            self.db.query(DBLimitedResource)
+            .filter(
+                and_(
+                    DBLimitedResource.owner_type == owner_type,
+                    DBLimitedResource.owner_id == owner_id,
+                )
+            )
+            .delete(synchronize_session=False)
+        )
+
+        if commit:
+            self.db.commit()
+
+        return deleted
+
     def _verify_control_plane_count(
         self, owner_type: OwnerType, owner_id: int, resource: ResourceType
     ) -> DBLimitedResource:
@@ -1005,6 +1045,8 @@ class LimitService:
 
         # First try the new service, and short circuit if it works
         try:
+            # Before trying to increment, validate and correct the current count if needed
+            self._validate_and_correct_team_user_count(team_id)
             limit = self.increment_resource(OwnerType.TEAM, team_id, ResourceType.USER)
             if not limit:
                 limit_check_route_counter.labels(
@@ -1518,6 +1560,44 @@ class LimitService:
         if limit.current_value != actual_count:
             logger.info(
                 f"Correcting service key count for team {team_id}: {limit.current_value} -> {actual_count}"
+            )
+            limit.current_value = actual_count
+            limit.updated_at = datetime.now(UTC)
+            self.db.commit()
+
+    def _validate_and_correct_team_user_count(self, team_id: int) -> None:
+        """
+        Align the stored team member count with the real number of members.
+
+        The counter only moves by one increment per created member, so a member
+        that leaves through a path which forgets to decrement would keep the
+        team locked out of its own quota for good.
+
+        Args:
+            team_id: ID of the team to validate
+        """
+        limit = (
+            self.db.query(DBLimitedResource)
+            .filter(
+                and_(
+                    DBLimitedResource.owner_type == OwnerType.TEAM,
+                    DBLimitedResource.owner_id == team_id,
+                    DBLimitedResource.resource == ResourceType.USER,
+                )
+            )
+            .first()
+        )
+
+        if not limit:
+            return  # No limit exists, will be created by the fallback logic
+
+        actual_count = self.db.execute(
+            select(func.count()).select_from(DBUser).where(DBUser.team_id == team_id)
+        ).scalar()
+
+        if limit.current_value != actual_count:
+            logger.info(
+                f"Correcting team user count for team {team_id}: {limit.current_value} -> {actual_count}"
             )
             limit.current_value = actual_count
             limit.updated_at = datetime.now(UTC)

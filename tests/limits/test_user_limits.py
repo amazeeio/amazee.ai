@@ -266,6 +266,22 @@ def test_check_team_user_limit_with_limit_service_at_capacity(db, test_team):
     WHEN: Checking team user limits
     THEN: The limit service is used first and raises an exception
     """
+    # The stored count is corrected against the real members before the check,
+    # so the team needs as many members as the cap it sits at.
+    for i in range(3):
+        db.add(
+            DBUser(
+                email=f"at-capacity{i}@example.com",
+                hashed_password="hashed_password",
+                is_active=True,
+                is_admin=False,
+                role="read_only",
+                team_id=test_team.id,
+                created_at=datetime.now(UTC),
+            )
+        )
+    db.commit()
+
     # Set up a limit in the new service at capacity
     limit_service = LimitService(db)
     limit_service.set_limit(

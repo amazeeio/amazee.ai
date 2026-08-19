@@ -16,9 +16,10 @@ from app.core.litellm_user_sync import (
     sync_remove_user_from_team,
     sync_update_user_team_role,
 )
-from app.core.limit_service import LimitService
+from app.core.limit_service import LimitNotFoundError, LimitService
 from app.db.database import get_db
 from app.core.dependencies import get_limit_service
+from app.schemas.limits import OwnerType, ResourceType
 from app.schemas.models import (
     User,
     AdminUserUpdate,
@@ -1116,6 +1117,18 @@ async def add_user_to_team(
     return db_user
 
 
+def release_team_user_seat(db: Session, team_id: int) -> None:
+    """
+    Give one member seat back to a team after a member leaves or is deleted.
+
+    A team that never reached the limit service has no counter to release.
+    """
+    try:
+        LimitService(db).decrement_resource(OwnerType.TEAM, team_id, ResourceType.USER)
+    except LimitNotFoundError:
+        logger.info(f"Team {team_id} has no user limit to release")
+
+
 @router.post(
     "/{user_id}/remove-from-team",
     response_model=User,
@@ -1194,6 +1207,12 @@ async def remove_user_from_team(
                 db_user.id,
             )
         raise
+
+    # The counter went up when this member was created, so give the seat back.
+    # Done after the removal is final, so a failed removal keeps the seat taken.
+    if settings.ENABLE_LIMITS:
+        release_team_user_seat(db, previous_team_id)
+
     return db_user
 
 
@@ -1225,12 +1244,20 @@ async def delete_user(
         synchronize_session=False
     )
 
+    # The user's own limit rows have no foreign key to the user, so they would
+    # stay behind and give the next user with this id a used-up counter.
+    LimitService(db).delete_limits(OwnerType.USER, user_id, commit=False)
+
     db.delete(db_user)
     try:
         db.commit()
     except Exception:
         db.rollback()
         raise
+
+    # The counter went up when this member was created, so give the seat back.
+    if settings.ENABLE_LIMITS and team_id is not None:
+        release_team_user_seat(db, team_id)
 
     try:
         await sync_delete_user_across_regions(db=db, db_user=db_user, team_id=team_id)

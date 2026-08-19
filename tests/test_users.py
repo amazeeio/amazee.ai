@@ -1544,3 +1544,119 @@ def test_delete_user_with_member_budget_and_alert_state(
         .count()
         == 0
     )
+
+
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_delete_team_member_releases_user_seat(client, admin_token, db, test_team):
+    """
+    GIVEN: A team at its member limit, counted by the limit service
+    WHEN: One member is deleted
+    THEN: The counter drops by one and a replacement member can be created
+
+    The counter only ever went up before this fix, so a team at its cap stayed
+    blocked for good.
+    """
+    members = [
+        DBUser(email=f"seat{i}@example.com", team_id=test_team.id, role="read_only")
+        for i in range(2)
+    ]
+    db.add_all(members)
+    db.commit()
+    db.refresh(members[0])
+    doomed_member_id = members[0].id
+
+    LimitService(db).set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.USER,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=2.0,
+        current_value=2.0,
+        limited_by=LimitSource.DEFAULT,
+    )
+
+    response = client.delete(
+        f"/users/{doomed_member_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+
+    db.expire_all()
+    limit = (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == test_team.id,
+            DBLimitedResource.resource == ResourceType.USER,
+        )
+        .first()
+    )
+    assert limit.current_value == 1.0
+
+    # The user's own rows go with them, so the next user with this id starts clean
+    assert (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.USER,
+            DBLimitedResource.owner_id == doomed_member_id,
+        )
+        .count()
+        == 0
+    )
+
+    response = client.post(
+        "/users/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "email": "replacement@example.com",
+            "password": "newpassword",
+            "team_id": test_team.id,
+        },
+    )
+    assert response.status_code == 201
+
+
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_remove_user_from_team_releases_user_seat(client, admin_token, db, test_team):
+    """
+    GIVEN: A team at its member limit, counted by the limit service
+    WHEN: A member is removed from the team
+    THEN: The counter drops by one
+    """
+    member = DBUser(
+        email="leaving-member@example.com", team_id=test_team.id, role="read_only"
+    )
+    db.add(member)
+    db.commit()
+    db.refresh(member)
+
+    LimitService(db).set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.USER,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=1.0,
+        current_value=1.0,
+        limited_by=LimitSource.DEFAULT,
+    )
+
+    with patch("app.api.users.sync_remove_user_from_team", new_callable=AsyncMock):
+        response = client.post(
+            f"/users/{member.id}/remove-from-team",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    assert response.status_code == 200
+
+    db.expire_all()
+    limit = (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == test_team.id,
+            DBLimitedResource.resource == ResourceType.USER,
+        )
+        .first()
+    )
+    assert limit.current_value == 0.0
