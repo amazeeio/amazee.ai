@@ -30,7 +30,7 @@ from app.middleware.audit import AuditLogMiddleware
 from app.middleware.auth import AuthMiddleware
 from app.middleware.caching import CacheControlMiddleware
 from app.middleware.prometheus import PrometheusMiddleware
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.openapi.docs import (
@@ -38,6 +38,14 @@ from fastapi.openapi.docs import (
     get_swagger_ui_oauth2_redirect_html,
 )
 from fastapi.openapi.utils import get_openapi
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
+from copy import deepcopy
+from jose import jwt
+from sqlalchemy.orm import Session
+from app.db.database import get_db
+from app.api.users import get_user_by_email
+from app.core.security import assert_token_not_revoked
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -95,7 +103,7 @@ app = FastAPI(
     docs_url=None,  # Disable default /docs endpoint; custom Swagger UI at /
     redoc_url=None,  # Disable default /redoc endpoint
     # Public by design: the schema is the API's docs page (see PUBLIC_PATHS).
-    openapi_url="/openapi.json",
+    openapi_url=None,  # served per caller by scoped_openapi() below
     root_path_in_servers=True,
     openapi_tags=[
         {
@@ -316,3 +324,104 @@ def custom_openapi():
 
 
 app.openapi = custom_openapi
+
+
+# ── Caller-scoped OpenAPI visibility ─────────────────────────────────────────
+# `custom_openapi()` builds the full schema; the /openapi.json route below
+# returns only the operations the caller is entitled to see:
+#   - anonymous callers     -> operations requiring no authentication
+#   - authenticated users   -> the above plus operations requiring authentication
+#   - system administrators -> the full schema
+# Authenticating (session cookie or bearer token) progressively reveals more of
+# the schema. Each operation's tier is derived from its own route dependencies,
+# so the mapping stays in sync as endpoints are added. This governs schema
+# VISIBILITY only; each endpoint still enforces its own authorization.
+
+_TIER_RANK = {"public": 0, "user": 1, "admin": 2}
+_HTTP_METHODS = {"get", "post", "put", "patch", "delete", "options", "head"}
+# Dependencies that mark an operation as system-admin only.
+_ADMIN_DEPENDENCIES = {"get_role_min_system_admin", "require_system_admin"}
+
+
+def _route_tier(route: APIRoute) -> str:
+    """Classify a route as public / user / admin from its auth dependencies."""
+    names: set[str] = set()
+
+    def _walk(dep) -> None:
+        if dep is None:
+            return
+        call = getattr(dep, "call", None)
+        if call is not None:
+            names.add(getattr(call, "__name__", ""))
+        for sub in getattr(dep, "dependencies", None) or []:
+            _walk(sub)
+
+    _walk(getattr(route, "dependant", None))
+
+    if names & _ADMIN_DEPENDENCIES:
+        return "admin"
+    authish = any(
+        ("current_user" in name)
+        or ("role_min" in name)
+        or name.startswith("require_")
+        or ("key_creator" in name)
+        for name in names
+    )
+    return "user" if authish else "public"
+
+
+# (method, path) -> tier, built once from the fully-wired app.
+_OPENAPI_TIERS: dict[tuple[str, str], str] = {}
+for _route in app.routes:
+    if isinstance(_route, APIRoute):
+        _tier = _route_tier(_route)
+        for _method in _route.methods:
+            _OPENAPI_TIERS[(_method.upper(), _route.path)] = _tier
+
+
+def _caller_tier(request: Request, db: Session) -> str:
+    """Best-effort caller tier from the bearer token or session cookie."""
+    token = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1]
+    if not token:
+        token = request.cookies.get("access_token")
+    if not token:
+        return "public"
+    try:
+        payload = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+        )
+        assert_token_not_revoked(db, payload)
+        email = payload.get("sub")
+        user = get_user_by_email(db, email) if email else None
+    except Exception:
+        return "public"
+    if not user:
+        return "public"
+    return "admin" if getattr(user, "is_admin", False) else "user"
+
+
+@app.get("/openapi.json", include_in_schema=False)
+async def scoped_openapi(request: Request, db: Session = Depends(get_db)):
+    full = app.openapi()
+    rank = _TIER_RANK[_caller_tier(request, db)]
+    schema = deepcopy(full)
+
+    kept_paths: dict = {}
+    for path, item in schema.get("paths", {}).items():
+        kept_ops: dict = {}
+        has_operation = False
+        for key, value in item.items():
+            if key.lower() in _HTTP_METHODS:
+                op_tier = _OPENAPI_TIERS.get((key.upper(), path), "user")
+                if _TIER_RANK[op_tier] <= rank:
+                    kept_ops[key] = value
+                    has_operation = True
+            else:
+                kept_ops[key] = value  # keep shared keys (parameters, etc.)
+        if has_operation:
+            kept_paths[path] = kept_ops
+    schema["paths"] = kept_paths
+    return JSONResponse(schema)
