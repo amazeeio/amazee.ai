@@ -183,7 +183,7 @@ def create_and_set_access_token(
         "httponly": True,
         "max_age": cookie_expiration,
         "expires": cookie_expiration,
-        "samesite": "none",
+        "samesite": "lax",
         "secure": True,
         "path": "/",
     }
@@ -275,7 +275,7 @@ async def logout(
         "key": "access_token",
         "path": "/",
         "secure": True,
-        "samesite": "none",
+        "samesite": "lax",
     }
 
     # Only set domain if we got one from LAGOON_ROUTES
