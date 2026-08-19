@@ -1047,6 +1047,18 @@ async def update_user(
     return db_user
 
 
+def release_team_user_seat(db: Session, team_id: int) -> None:
+    """
+    Give one member seat back to a team when a member leaves, is deleted, or never got in.
+
+    A team that never reached the limit service has no counter to release.
+    """
+    try:
+        LimitService(db).decrement_resource(OwnerType.TEAM, team_id, ResourceType.USER)
+    except LimitNotFoundError:
+        logger.info(f"Team {team_id} has no user limit to release")
+
+
 @router.post(
     "/{user_id}/add-to-team",
     response_model=User,
@@ -1091,6 +1103,11 @@ async def add_user_to_team(
     if not db_team:
         raise HTTPException(status_code=404, detail="Team not found")
 
+    # This is the second door into a team, next to creating a member outright,
+    # so it has to take a seat as well. Without it a team can pass its cap.
+    if settings.ENABLE_LIMITS:
+        get_limit_service(db).check_team_user_limit(team_operation.team_id)
+
     # Add user to team
     db_user.team_id = team_operation.team_id
     try:
@@ -1098,6 +1115,8 @@ async def add_user_to_team(
         db.refresh(db_user)
     except Exception:
         db.rollback()
+        if settings.ENABLE_LIMITS:
+            release_team_user_seat(db, team_operation.team_id)
         raise
 
     try:
@@ -1107,6 +1126,8 @@ async def add_user_to_team(
             db_user.team_id = None
             db.commit()
             db.refresh(db_user)
+            if settings.ENABLE_LIMITS:
+                release_team_user_seat(db, team_operation.team_id)
         except Exception:
             db.rollback()
             logger.exception(
@@ -1115,18 +1136,6 @@ async def add_user_to_team(
             )
         raise
     return db_user
-
-
-def release_team_user_seat(db: Session, team_id: int) -> None:
-    """
-    Give one member seat back to a team after a member leaves or is deleted.
-
-    A team that never reached the limit service has no counter to release.
-    """
-    try:
-        LimitService(db).decrement_resource(OwnerType.TEAM, team_id, ResourceType.USER)
-    except LimitNotFoundError:
-        logger.info(f"Team {team_id} has no user limit to release")
 
 
 @router.post(
