@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from sqlalchemy.orm import Session
@@ -129,6 +130,12 @@ region_key_snapshot_keys = Gauge(
     ["region_name"],
 )
 
+region_key_snapshot_refresh_total = Counter(
+    "region_key_snapshot_refresh_total",
+    "Total number of bulk /key/list snapshots re-listed because they aged past the TTL",
+    ["region_name"],
+)
+
 key_state_fallback_total = Counter(
     "key_state_fallback_total",
     "Total number of keys that fell back to a per-key /key/info lookup",
@@ -150,6 +157,13 @@ KEY_WRITE_CONCURRENCY = max(1, int(os.getenv("KEY_WRITE_CONCURRENCY", "10")))
 # the region has been read; when the bulk snapshot is unavailable each read
 # costs a round-trip, so that wait grows with the region's key count.
 KEY_WRITE_BATCH = max(1, int(os.getenv("KEY_WRITE_BATCH", "500")))
+
+# How long a region's bulk key snapshot stays usable. Spend is read as of the
+# snapshot, so this caps how stale that read can be no matter how long the run
+# takes. Set to 0 to re-list on every team.
+REGION_SNAPSHOT_TTL_SECONDS = max(
+    0.0, float(os.getenv("REGION_SNAPSHOT_TTL_SECONDS", "600"))
+)
 
 # Retention metrics
 team_retention_warning_sent_total = Counter(
@@ -1794,25 +1808,51 @@ async def apply_product_for_team(
 
 
 class RegionKeyStateCache:
-    """Per-run cache of bulk ``/key/list`` snapshots, keyed by region id.
+    """Cache of bulk ``/key/list`` snapshots, keyed by region id.
 
     ``monitor_teams`` reconciles ~1.1k teams that share a handful of regions, so
-    the snapshot must be fetched once per region per run and reused across every
-    team in it. Fetching per team would re-paginate the same region up to 1.1k
-    times and be far worse than the per-key loop it replaces.
+    the snapshot must be fetched once per region and reused across every team in
+    it. Fetching per team would re-paginate the same region up to 1.1k times and
+    be far worse than the per-key loop it replaces.
 
-    A failed snapshot is cached as an empty mapping so one broken region is
-    retried once per run, not once per team.
+    Spend is read as of the snapshot, so a region is re-listed once its snapshot
+    is older than ``ttl_seconds``. That bounds staleness by wall-clock time
+    instead of by however long the run happens to take.
+
+    A failed snapshot is cached as an empty mapping, so a broken region falls
+    back to per-key lookups and is retried once per TTL window, not once per
+    team.
     """
 
-    def __init__(self) -> None:
-        self._snapshots: Dict[int, Dict[str, dict]] = {}
+    def __init__(
+        self,
+        ttl_seconds: Optional[float] = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        # (taken_at, snapshot) per region.
+        self._snapshots: Dict[int, tuple[float, Dict[str, dict]]] = {}
+        self._ttl_seconds = (
+            REGION_SNAPSHOT_TTL_SECONDS
+            if ttl_seconds is None
+            else max(0.0, ttl_seconds)
+        )
+        self._clock = clock
 
     async def get(
         self, region: DBRegion, litellm_service: LiteLLMService
     ) -> Dict[str, dict]:
-        if region.id in self._snapshots:
-            return self._snapshots[region.id]
+        now = self._clock()
+        cached = self._snapshots.get(region.id)
+        if cached is not None:
+            taken_at, snapshot = cached
+            if now - taken_at < self._ttl_seconds:
+                return snapshot
+            region_key_snapshot_refresh_total.labels(region_name=region.name).inc()
+            logger.info(
+                "Bulk key snapshot for region %s is older than %.0fs, re-listing",
+                region.name,
+                self._ttl_seconds,
+            )
 
         snapshot: Dict[str, dict] = {}
         try:
@@ -1838,7 +1878,9 @@ class RegionKeyStateCache:
             )
             snapshot = {}
 
-        self._snapshots[region.id] = snapshot
+        # Stamp after the call, not before: a slow listing must not spend its
+        # own duration out of the TTL it is about to start.
+        self._snapshots[region.id] = (self._clock(), snapshot)
         return snapshot
 
 
