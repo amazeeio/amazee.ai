@@ -163,7 +163,9 @@ class DBUser(Base):
     receive_marketing_updates = Column(
         Boolean, default=False, nullable=False, server_default=text("false")
     )
-    team_id = Column(Integer, ForeignKey("teams.id", name="fk_user_team"))
+    # Indexed: the member-limit check counts a team's users on every member
+    # addition.
+    team_id = Column(Integer, ForeignKey("teams.id", name="fk_user_team"), index=True)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     team = relationship("DBTeam", back_populates="users")
