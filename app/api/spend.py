@@ -25,6 +25,7 @@ from app.core.security import (
 )
 from app.core.spend_period_service import (
     compute_period_start,
+    current_cycle_start,
     resolve_team_period_window,
 )
 from app.db.database import get_db
@@ -1076,10 +1077,23 @@ async def get_team_spend(
                     item.period_start = (
                         active_subscription_for_pool.effective_period_start
                     )
+                elif item.budget_reset_at is not None:
+                    # LiteLLM already has a real, live reset schedule on this
+                    # key (budget_reset_at/period_start/budget_duration all
+                    # set above from litellm_key) - trust it completely
+                    # instead of the anchor-based estimate below, which
+                    # drifts into the past once more than one cycle has
+                    # elapsed since the anchor. Relabelling budget_duration
+                    # to a fixed "31d" here would make period_start describe
+                    # a different window than the one LiteLLM actually
+                    # enforces whenever the real duration isn't already 31d.
+                    pass
                 else:
                     item.budget_duration = "31d"
-                    item.period_start = capped_anchor
-                    item.budget_reset_at = capped_anchor + timedelta(days=31)
+                    item.period_start = (
+                        current_cycle_start("31d", capped_anchor, now) or capped_anchor
+                    )
+                    item.budget_reset_at = item.period_start + timedelta(days=31)
 
     return TeamSpendResponse(
         region_id=region_id,
@@ -1348,6 +1362,17 @@ async def get_key_spend_alias(
                 info["budget_duration"] = "31d"
                 budget_reset_at = active_subscription.effective_period_end
                 period_start = active_subscription.effective_period_start
+            elif budget_reset_at is not None:
+                # LiteLLM already has a real, live reset schedule on this key
+                # (budget_reset_at/period_start/budget_duration all set above
+                # from `info`) - trust it completely instead of the
+                # anchor-based estimate below, which drifts into the past
+                # once more than one cycle has elapsed since the anchor.
+                # Relabelling budget_duration to a fixed "31d" here would
+                # make period_start describe a different window than the one
+                # LiteLLM actually enforces whenever the real duration isn't
+                # already 31d.
+                pass
             else:
                 if configured_key_cap is None:
                     duration_days = settings.POOL_PURCHASE_EXPIRY_DAYS
@@ -1373,8 +1398,14 @@ async def get_key_spend_alias(
                     )
                 if anchor.tzinfo is None:
                     anchor = anchor.replace(tzinfo=UTC)
-                period_start = anchor
-                budget_reset_at = anchor + timedelta(days=duration_days)
+                # Roll the anchor forward to the cycle containing now, instead
+                # of a single anchor + duration_days window: once more than one
+                # cycle has elapsed since the anchor, a fixed single window
+                # lands in the past and makes a live cap look expired.
+                period_start = (
+                    current_cycle_start(f"{duration_days}d", anchor, now) or anchor
+                )
+                budget_reset_at = period_start + timedelta(days=duration_days)
         return PrivateAIKeySpend.model_validate(
             {
                 "spend": info.get("spend", 0.0),
