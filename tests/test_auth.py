@@ -926,7 +926,9 @@ def test_validate_jwt_cookie_expiration_regular_user(client, test_user, test_tok
     When the user validates their JWT token
     Then the cookie should expire in 30 minutes (1800 seconds)
     """
-    response = client.get(f"/auth/validate-jwt?token={test_token}")
+    response = client.get(
+        "/auth/validate-jwt", headers={"Authorization": f"Bearer {test_token}"}
+    )
     assert response.status_code == 200
 
     # Check that the cookie is set with 30-minute expiration
@@ -944,7 +946,9 @@ def test_validate_jwt_cookie_expiration_system_admin(client, test_admin, admin_t
     When the system admin validates their JWT token
     Then the cookie should expire in 8 hours (28800 seconds)
     """
-    response = client.get(f"/auth/validate-jwt?token={admin_token}")
+    response = client.get(
+        "/auth/validate-jwt", headers={"Authorization": f"Bearer {admin_token}"}
+    )
     assert response.status_code == 200
 
     # Check that the cookie is set with 8-hour expiration
