@@ -19,6 +19,7 @@ from app.db.models import (
 from app.main import app
 from app.schemas.limits import LimitSource, LimitType, OwnerType, ResourceType, UnitType
 from app.schemas.models import BudgetType
+from app.services.disposable_domains import refresh_disposable_domains
 from fastapi.testclient import TestClient
 from tests.conftest import soft_delete_team_for_test
 
@@ -2590,3 +2591,122 @@ def test_merge_teams_removes_source_team_limit_rows(mock_post, client, admin_tok
         .count()
         == 0
     )
+
+
+def test_register_team_non_admin_admin_email_is_forced_to_caller(
+    client, test_token, test_user, test_region
+):
+    """A non-admin caller cannot name someone else as the team admin."""
+    with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock):
+        response = client.post(
+            "/teams/",
+            json={
+                "name": "Self Service Team",
+                "admin_email": "victim@example.com",
+                "phone": "1234567890",
+                "billing_address": "123 Test St, Test City, 12345",
+                "region_id": test_region.id,
+            },
+            headers={"Authorization": f"Bearer {test_token}"},
+        )
+    assert response.status_code == 201, response.text
+    assert response.json()["admin_email"] == test_user.email
+
+
+def test_register_team_admin_may_set_other_admin_email(
+    client, admin_token, test_region
+):
+    """A system admin may still register a team for another admin_email."""
+    with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock):
+        response = client.post(
+            "/teams/",
+            json={
+                "name": "Delegated Team",
+                "admin_email": "delegated@example.com",
+                "phone": "1234567890",
+                "billing_address": "123 Test St, Test City, 12345",
+                "region_id": test_region.id,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    assert response.status_code == 201, response.text
+    assert response.json()["admin_email"] == "delegated@example.com"
+
+
+def test_register_team_domain_check_uses_effective_email(
+    client, test_token, test_user, test_region, db
+):
+    """The blocklist check runs on the stored email, not the discarded body value."""
+    refresh_disposable_domains(db)
+
+    with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock):
+        response = client.post(
+            "/teams/",
+            json={
+                "name": "Effective Email Team",
+                "admin_email": "throwaway@dynv6.net",
+                "phone": "1234567890",
+                "billing_address": "123 Test St, Test City, 12345",
+                "region_id": test_region.id,
+            },
+            headers={"Authorization": f"Bearer {test_token}"},
+        )
+    assert response.status_code == 201, response.text
+    assert response.json()["admin_email"] == test_user.email
+
+
+def test_update_team_admin_email_is_admin_only(
+    client, team_admin_token, test_team, test_team_admin
+):
+    """A team admin cannot move admin_email onto someone else's address."""
+    response = client.put(
+        f"/teams/{test_team.id}",
+        json={"admin_email": "victim@example.com"},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 403
+    assert "admin_email" in response.json()["detail"]
+
+
+def test_update_team_admin_email_resent_unchanged_is_allowed(
+    client, team_admin_token, test_team, test_team_admin, db
+):
+    """A GET-then-PUT round-trip that re-sends the current email is a no-op."""
+    response = client.put(
+        f"/teams/{test_team.id}",
+        json={
+            "name": "Renamed Team",
+            "admin_email": test_team.admin_email.upper(),
+        },
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "Renamed Team"
+
+
+def test_update_team_admin_email_allowed_for_system_admin(
+    client, admin_token, test_team
+):
+    """A system admin may still reassign the team admin."""
+    response = client.put(
+        f"/teams/{test_team.id}",
+        json={"admin_email": "newadmin@example.com"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["admin_email"] == "newadmin@example.com"
+
+
+def test_update_team_admin_email_blocks_disposable_domain(
+    client, admin_token, test_team, db
+):
+    """The blocklist also gates a changed admin_email on update."""
+    refresh_disposable_domains(db)
+
+    response = client.put(
+        f"/teams/{test_team.id}",
+        json={"admin_email": "throwaway@dynv6.net"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == "Invalid email domain."
