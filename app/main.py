@@ -10,11 +10,9 @@ from app.api import (
     admin_models,
     audit,
     auth,
-    billing,
     budgets,
     internal,
     limits,
-    pricing_tables,
     private_ai_keys,
     products,
     public,
@@ -23,7 +21,6 @@ from app.api import (
     subscription,
     teams,
     users,
-    webhooks,
 )
 from app.core.config import settings
 from app.middleware.audit import AuditLogMiddleware
@@ -221,15 +218,10 @@ app.include_router(public.router, prefix="/public", tags=["public"])
 app.include_router(public.protected_router, tags=["models"])
 app.include_router(audit.router, prefix="/audit", tags=["audit"])
 app.include_router(teams.router, prefix="/teams", tags=["teams"])
-app.include_router(billing.router, prefix="/billing", tags=["billing"])
-app.include_router(webhooks.router, prefix="/billing", tags=["webhooks"])
 app.include_router(
     subscription.router, prefix="/billing/subscription", tags=["billing"]
 )
 app.include_router(products.router, prefix="/products", tags=["products"])
-app.include_router(
-    pricing_tables.router, prefix="/pricing-tables", tags=["pricing-tables"]
-)
 app.include_router(limits.router, prefix="/limits", tags=["limits"])
 app.include_router(budgets.router, prefix="/budgets", tags=["budgets"])
 app.include_router(spend.router, prefix="/spend", tags=["spend"])

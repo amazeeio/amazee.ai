@@ -17,22 +17,17 @@ import {
 import { TableActionButtons } from "@/components/ui/table-action-buttons";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
-import { PricingTables } from "@/types/pricing-table";
 import { Product } from "@/types/product";
 import { get, del } from "@/utils/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { CreateProductDialog } from "./_components/create-product-dialog";
 import { EditProductDialog } from "./_components/edit-product-dialog";
-import { PricingTableDialog } from "./_components/pricing-table-dialog";
-import { PricingTablesList } from "./_components/pricing-tables-list";
 
 export default function ProductsPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
-  const [isPricingTableDialogOpen, setIsPricingTableDialogOpen] =
-    useState(false);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
 
   // Queries
@@ -45,16 +40,6 @@ export default function ProductsPage() {
       return response.json();
     },
   });
-
-  // Pricing Table Query
-  const { data: pricingTables, isLoading: isLoadingPricingTables } =
-    useQuery<PricingTables>({
-      queryKey: ["pricing-tables"],
-      queryFn: async () => {
-        const response = await get("/pricing-tables/list");
-        return response.json();
-      },
-    });
 
   // System Limits Query
   const { data: systemLimits = [], isLoading: isLoadingSystemLimits } =
@@ -102,7 +87,7 @@ export default function ProductsPage() {
     changePageSize,
   } = useTablePagination(products, 10);
 
-  if (isLoadingProducts || isLoadingPricingTables || isLoadingSystemLimits) {
+  if (isLoadingProducts || isLoadingSystemLimits) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <Loader2 className="h-8 w-8 animate-spin" />
@@ -123,7 +108,6 @@ export default function ProductsPage() {
       <Tabs defaultValue="products" className="space-y-4">
         <TabsList>
           <TabsTrigger value="products">Products</TabsTrigger>
-          <TabsTrigger value="pricing-tables">Pricing Tables</TabsTrigger>
           <TabsTrigger value="system-limits">System Limits</TabsTrigger>
         </TabsList>
 
@@ -207,17 +191,6 @@ export default function ProductsPage() {
             onPageChange={goToPage}
             onPageSizeChange={changePageSize}
           />
-        </TabsContent>
-
-        <TabsContent value="pricing-tables" className="space-y-4">
-          <div className="flex justify-between items-center">
-            <h2 className="text-xl font-semibold">Pricing Tables</h2>
-            <PricingTableDialog
-              open={isPricingTableDialogOpen}
-              onOpenChange={setIsPricingTableDialogOpen}
-            />
-          </div>
-          <PricingTablesList pricingTables={pricingTables} />
         </TabsContent>
 
         <TabsContent value="system-limits" className="space-y-4">

@@ -6,7 +6,6 @@ export const handlers = [
     return HttpResponse.json({
       NEXT_PUBLIC_API_URL: "http://localhost:8800",
       PASSWORDLESS_SIGN_IN: false,
-      STRIPE_PUBLISHABLE_KEY: "",
     });
   }),
 

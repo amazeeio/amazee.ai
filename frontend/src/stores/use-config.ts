@@ -10,7 +10,6 @@ let inFlightLoad: Promise<Config | null> | null = null;
 export interface Config {
   NEXT_PUBLIC_API_URL: string;
   PASSWORDLESS_SIGN_IN: boolean;
-  STRIPE_PUBLISHABLE_KEY: string;
 }
 
 interface ConfigState {
@@ -69,7 +68,6 @@ export const useConfig = create<ConfigState>((set, get) => ({
           NEXT_PUBLIC_API_URL:
             process.env.NEXT_PUBLIC_API_URL || "http://localhost:8800",
           PASSWORDLESS_SIGN_IN: process.env.PASSWORDLESS_SIGN_IN === "true",
-          STRIPE_PUBLISHABLE_KEY: process.env.STRIPE_PUBLISHABLE_KEY || "",
         };
         set({
           config: fallback,
