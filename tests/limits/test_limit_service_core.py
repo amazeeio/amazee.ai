@@ -1,6 +1,6 @@
 import pytest
 from datetime import datetime, UTC
-from app.db.models import DBLimitedResource
+from app.db.models import DBLimitedResource, DBUser
 from app.core.limit_service import LimitService
 from app.schemas.limits import LimitType, ResourceType, UnitType, OwnerType, LimitSource
 
@@ -211,6 +211,119 @@ def test_decrement_resource_dp_limit_raises_exception(db, test_team):
         limit_service.decrement_resource(
             OwnerType.TEAM, test_team.id, ResourceType.BUDGET
         )
+
+
+def test_delete_limits_removes_only_that_owner(db, test_team, test_team_user):
+    """
+    Given: Limit rows for a team and for one of its members
+    When: Calling delete_limits(owner_type="team", owner_id=team_id)
+    Then: Only the team rows are deleted and the member rows stay
+    """
+    team_user_limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.USER,
+        unit=UnitType.COUNT,
+        max_value=5.0,
+        current_value=3.0,
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.DEFAULT,
+        created_at=datetime.now(UTC),
+    )
+    team_budget_limit = DBLimitedResource(
+        limit_type=LimitType.DATA_PLANE,
+        resource=ResourceType.BUDGET,
+        unit=UnitType.DOLLAR,
+        max_value=50.0,
+        current_value=None,
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.DEFAULT,
+        created_at=datetime.now(UTC),
+    )
+    member_limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.USER_KEY,
+        unit=UnitType.COUNT,
+        max_value=2.0,
+        current_value=1.0,
+        owner_type=OwnerType.USER,
+        owner_id=test_team_user.id,
+        limited_by=LimitSource.DEFAULT,
+        created_at=datetime.now(UTC),
+    )
+    db.add_all([team_user_limit, team_budget_limit, member_limit])
+    db.commit()
+
+    deleted = LimitService(db).delete_limits(OwnerType.TEAM, test_team.id)
+
+    assert deleted == 2
+    assert (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == test_team.id,
+        )
+        .count()
+        == 0
+    )
+    assert (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.USER,
+            DBLimitedResource.owner_id == test_team_user.id,
+        )
+        .count()
+        == 1
+    )
+
+
+def test_delete_limits_refuses_system_limits(db):
+    """
+    Given: The system default limits
+    When: Calling delete_limits(owner_type="system", owner_id=0)
+    Then: Should raise ValueError, the defaults belong to no deletable owner
+    """
+    with pytest.raises(ValueError, match="System limits cannot be deleted"):
+        LimitService(db).delete_limits(OwnerType.SYSTEM, 0)
+
+
+def test_check_team_user_limit_corrects_stale_count(db, test_team):
+    """
+    Given: A team counter left at capacity while the team has one member
+    When: Calling check_team_user_limit(team_id)
+    Then: The counter is corrected to the real member count and the check passes
+    """
+    db.add(
+        DBUser(
+            email="only-member@example.com",
+            hashed_password="hashed_password",
+            is_active=True,
+            is_admin=False,
+            role="read_only",
+            team_id=test_team.id,
+            created_at=datetime.now(UTC),
+        )
+    )
+    limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.USER,
+        unit=UnitType.COUNT,
+        max_value=3.0,
+        current_value=3.0,
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.DEFAULT,
+        created_at=datetime.now(UTC),
+    )
+    db.add(limit)
+    db.commit()
+
+    LimitService(db).check_team_user_limit(test_team.id)
+
+    db.refresh(limit)
+    # One real member, plus the seat taken by this check
+    assert limit.current_value == 2.0
 
 
 def test_overwrite_limit_manual_can_override_anything(db, test_team):

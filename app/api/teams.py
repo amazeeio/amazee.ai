@@ -36,6 +36,7 @@ from app.db.models import (
     DBTeamRegion,
     DBUser,
 )
+from app.schemas.limits import OwnerType
 from app.schemas.models import (
     BudgetType,
     SalesProduct,
@@ -61,6 +62,22 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["teams"])
 
 
+def _field_value_unchanged(team: DBTeam, field: str, new_value) -> bool:
+    """Is the submitted value the same as what the team already stores?
+
+    Emails are compared case-insensitively: the schema lowercases the incoming
+    address, so a stored mixed-case admin_email would otherwise look changed.
+    """
+    current = getattr(team, field)
+    if (
+        field == "admin_email"
+        and isinstance(current, str)
+        and isinstance(new_value, str)
+    ):
+        return current.lower() == new_value.lower()
+    return current == new_value
+
+
 def _create_default_limits_for_team(team: DBTeam, db: Session) -> None:
     """
     Create default limits for a newly created team.
@@ -81,7 +98,9 @@ def _create_default_limits_for_team(team: DBTeam, db: Session) -> None:
             # Don't fail team creation if limit creation fails
 
 
-async def _create_litellm_team_for_region(db: Session, team: DBTeam, region: DBRegion) -> None:
+async def _create_litellm_team_for_region(
+    db: Session, team: DBTeam, region: DBRegion
+) -> None:
     """
     Create a region-scoped LiteLLM team for the given team in the given region.
 
@@ -113,13 +132,24 @@ async def _create_litellm_team_for_region(db: Session, team: DBTeam, region: DBR
 async def register_team(
     team: TeamCreate,
     db: Session = Depends(get_db),
-    current_user: DBUser = Depends(get_current_user_from_auth),
+    current_user: Optional[DBUser] = Depends(get_current_user_from_auth),
 ):
     """
     Register a new team. Requires authentication.
+
+    A non-admin caller always becomes the team admin: `admin_email` from the
+    request body is ignored. Only system admins may name another admin.
+    Internal callers (sign-in auto-provision, anonymous trial) pass
+    `current_user=None` and set `admin_email` themselves.
     """
+    # A non-admin caller may only register a team they administer themselves;
+    # only privileged callers may set an arbitrary admin_email.
+    if current_user is not None and not current_user.is_admin:
+        team.admin_email = current_user.email
+
     # Defense-in-depth: block disposable / dynamic-DNS admin emails before any
     # team is created (the sign-in auto-provision path creates a team first).
+    # Runs after the override, so it checks the email that is actually stored.
     assert_email_domain_allowed(db, team.admin_email)
 
     # Validate region — must be active and non-dedicated
@@ -352,6 +382,9 @@ async def update_team(
     # these would bypass the pool-purchase gate (require_purchase_for_requests),
     # remove an imposed key policy (force_user_keys), or change region
     # visibility / dedicated status (hide_public_regions drives is_dedicated).
+    # admin_email is admin-only for a different reason: sign-in re-attaches a
+    # first-time user to the team that already carries their address, so this
+    # field decides team membership rather than being a free-text contact.
     admin_only_fields = {
         "is_always_free",
         "budget_type",
@@ -359,6 +392,7 @@ async def update_team(
         "is_active",
         "force_user_keys",
         "hide_public_regions",
+        "admin_email",
     }
     if not current_user.is_admin:
         # Only block an actual CHANGE to an admin-only field. A GET-then-PUT
@@ -367,7 +401,7 @@ async def update_team(
         forbidden = {
             field
             for field in admin_only_fields & update_data.keys()
-            if getattr(db_team, field) != update_data[field]
+            if not _field_value_unchanged(db_team, field, update_data[field])
         }
         if forbidden:
             raise HTTPException(
@@ -376,6 +410,29 @@ async def update_team(
                     "Only system administrators can modify: "
                     + ", ".join(sorted(forbidden))
                 ),
+            )
+
+    # Same gates as team creation, but only when the value changes.
+    if "admin_email" in update_data and not _field_value_unchanged(
+        db_team, "admin_email", update_data["admin_email"]
+    ):
+        assert_email_domain_allowed(db, update_data["admin_email"])
+        # The DB unique index is case-sensitive, so a case variant would slip
+        # past it and leave two teams that sign-in could both re-attach to.
+        # Soft-deleted teams still hold the address, so they count as taken.
+        clash = (
+            db.query(DBTeam)
+            .filter(
+                func.lower(DBTeam.admin_email)
+                == func.lower(update_data["admin_email"]),
+                DBTeam.id != db_team.id,
+            )
+            .first()
+        )
+        if clash:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered",
             )
 
     # Update team fields
@@ -449,6 +506,10 @@ async def delete_team(team_id: int, db: Session = Depends(get_db)):
     db.query(DBBudgetAlertState).filter(DBBudgetAlertState.team_id == team_id).delete(
         synchronize_session=False
     )
+
+    # Limit rows point at the team by id with no foreign key, so they would stay
+    # behind for good and give a later team with the same id a used-up counter.
+    LimitService(db).delete_limits(OwnerType.TEAM, team_id, commit=False)
 
     # Delete the team
     db.delete(db_team)
@@ -1048,7 +1109,13 @@ async def merge_teams(
                 except Exception as e:
                     logger.error(f"Failed to update LiteLLM key {key.id}: {str(e)}")
 
-        # Delete source team
+        # Delete source team. Its limit rows must go with it, same as in
+        # delete_team: owner_id has no foreign key, so they would outlive the
+        # team and give a later team with the same id a used-up counter.
+        # The target team takes the members without a cap check: the merge is
+        # a system-admin operation, and its member counter is re-derived from
+        # the real members on the next member addition.
+        LimitService(db).delete_limits(OwnerType.TEAM, source_team.id, commit=False)
         db.delete(source_team)
         db.commit()
 

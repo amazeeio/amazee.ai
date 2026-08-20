@@ -1462,6 +1462,11 @@ def _pin_user_to_key_team(
 
     Idempotent: no-op when the user is already on the key's team. Skipped
     for keys without a team (team_id is None) since there is nothing to pin.
+
+    The pin is exempt from check_team_user_limit on purpose: moad already
+    created the key under the target team, and rejecting the pin here would
+    strand a live key the user can never see. Both teams' member counters are
+    re-derived from the real members on their next member addition.
     """
     if db_key.team_id is None or current_user.team_id == db_key.team_id:
         return

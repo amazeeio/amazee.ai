@@ -1544,3 +1544,208 @@ def test_delete_user_with_member_budget_and_alert_state(
         .count()
         == 0
     )
+
+
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_delete_team_member_frees_the_seat(client, admin_token, db, test_team):
+    """
+    GIVEN: A team at its member limit, counted by the limit service
+    WHEN: One member is deleted
+    THEN: A replacement member can be created
+
+    The counter is a cache of the real member count and is re-derived on the
+    next check. Before this fix nothing ever brought it back down, so a team
+    at its cap stayed blocked for good.
+    """
+    members = [
+        DBUser(email=f"seat{i}@example.com", team_id=test_team.id, role="read_only")
+        for i in range(2)
+    ]
+    db.add_all(members)
+    db.commit()
+    db.refresh(members[0])
+    doomed_member_id = members[0].id
+
+    LimitService(db).set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.USER,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=2.0,
+        current_value=2.0,
+        limited_by=LimitSource.DEFAULT,
+    )
+
+    response = client.delete(
+        f"/users/{doomed_member_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+
+    db.expire_all()
+    # The user's own rows go with them, so the next user with this id starts clean
+    assert (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.USER,
+            DBLimitedResource.owner_id == doomed_member_id,
+        )
+        .count()
+        == 0
+    )
+
+    response = client.post(
+        "/users/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "email": "replacement@example.com",
+            "password": "newpassword",
+            "team_id": test_team.id,
+        },
+    )
+    assert response.status_code == 201
+
+    # The recount saw one remaining member and the new member took a seat
+    db.expire_all()
+    limit = (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == test_team.id,
+            DBLimitedResource.resource == ResourceType.USER,
+        )
+        .first()
+    )
+    assert limit.current_value == 2.0
+
+
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_remove_user_from_team_frees_the_seat(client, admin_token, db, test_team):
+    """
+    GIVEN: A team at its member limit, counted by the limit service
+    WHEN: A member is removed from the team
+    THEN: A new member can be created in their place
+    """
+    member = DBUser(
+        email="leaving-member@example.com", team_id=test_team.id, role="read_only"
+    )
+    db.add(member)
+    db.commit()
+    db.refresh(member)
+
+    LimitService(db).set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.USER,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=1.0,
+        current_value=1.0,
+        limited_by=LimitSource.DEFAULT,
+    )
+
+    with patch("app.api.users.sync_remove_user_from_team", new_callable=AsyncMock):
+        response = client.post(
+            f"/users/{member.id}/remove-from-team",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    assert response.status_code == 200
+
+    response = client.post(
+        "/users/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "email": "replacement-member@example.com",
+            "password": "newpassword",
+            "team_id": test_team.id,
+        },
+    )
+    assert response.status_code == 201
+
+
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_add_user_to_team_takes_a_seat(client, admin_token, db, test_team):
+    """
+    GIVEN: A team with one free member seat
+    WHEN: An existing team-less user is added to the team
+    THEN: A 200 is returned and the counter goes up
+
+    Adding a member this way used to leave the counter untouched, so the team
+    could pass its cap.
+    """
+    joiner = DBUser(email="joiner@example.com", role="read_only")
+    db.add(joiner)
+    db.commit()
+    db.refresh(joiner)
+
+    LimitService(db).set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.USER,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=1.0,
+        current_value=0.0,
+        limited_by=LimitSource.DEFAULT,
+    )
+
+    with patch("app.api.users.sync_add_user_to_team", new_callable=AsyncMock):
+        response = client.post(
+            f"/users/{joiner.id}/add-to-team",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"team_id": test_team.id},
+        )
+    assert response.status_code == 200
+
+    db.expire_all()
+    limit = (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == test_team.id,
+            DBLimitedResource.resource == ResourceType.USER,
+        )
+        .first()
+    )
+    assert limit.current_value == 1.0
+
+
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_add_user_to_team_rejected_at_capacity(client, admin_token, db, test_team):
+    """
+    GIVEN: A team at its member limit
+    WHEN: An existing team-less user is added to the team
+    THEN: A 402 is returned and the user stays out of the team
+    """
+    member = DBUser(
+        email="sitting-member@example.com", team_id=test_team.id, role="read_only"
+    )
+    joiner = DBUser(email="late-joiner@example.com", role="read_only")
+    db.add_all([member, joiner])
+    db.commit()
+    db.refresh(joiner)
+
+    LimitService(db).set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.USER,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=1.0,
+        current_value=1.0,
+        limited_by=LimitSource.DEFAULT,
+    )
+
+    with patch("app.api.users.sync_add_user_to_team", new_callable=AsyncMock):
+        response = client.post(
+            f"/users/{joiner.id}/add-to-team",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"team_id": test_team.id},
+        )
+    assert response.status_code == 402
+    assert "maximum user limit" in response.json()["detail"]
+
+    db.expire_all()
+    db.refresh(joiner)
+    assert joiner.team_id is None

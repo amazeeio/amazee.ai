@@ -334,6 +334,46 @@ class LimitService:
 
         return True
 
+    def delete_limits(
+        self, owner_type: OwnerType, owner_id: int, commit: bool = True
+    ) -> int:
+        """
+        Delete every limit row of one team or user.
+
+        Call this when the owner itself is deleted. ``owner_id`` is a plain
+        column with no foreign key, so the rows outlive the owner and the next
+        owner with the same id would start with a used-up counter.
+
+        Args:
+            owner_type: OwnerType enum, team or user
+            owner_id: ID of the owner
+            commit: Set False to let the caller commit with the rest of its work
+
+        Returns:
+            Number of rows deleted
+
+        Raises:
+            ValueError: If asked to delete the system defaults
+        """
+        if owner_type == OwnerType.SYSTEM:
+            raise ValueError("System limits cannot be deleted")
+
+        deleted = (
+            self.db.query(DBLimitedResource)
+            .filter(
+                and_(
+                    DBLimitedResource.owner_type == owner_type,
+                    DBLimitedResource.owner_id == owner_id,
+                )
+            )
+            .delete(synchronize_session=False)
+        )
+
+        if commit:
+            self.db.commit()
+
+        return deleted
+
     def _verify_control_plane_count(
         self, owner_type: OwnerType, owner_id: int, resource: ResourceType
     ) -> DBLimitedResource:
@@ -1005,8 +1045,7 @@ class LimitService:
 
         # First try the new service, and short circuit if it works
         try:
-            limit = self.increment_resource(OwnerType.TEAM, team_id, ResourceType.USER)
-            if not limit:
+            if not self._correct_and_take_team_user_seat(team_id):
                 limit_check_route_counter.labels(
                     function="check_team_user_limit", route="limit_service_at_capacity"
                 ).inc()
@@ -1522,6 +1561,77 @@ class LimitService:
             limit.current_value = actual_count
             limit.updated_at = datetime.now(UTC)
             self.db.commit()
+
+    def _correct_and_take_team_user_seat(self, team_id: int) -> bool:
+        """
+        Align the stored member count with the real members, then take one seat.
+
+        The counter is a cache of ``COUNT(*)`` over the members, like the key
+        counters: nothing decrements it, so it is re-derived here before every
+        check. A member that left through any path is picked up on the next
+        check instead of blocking the team for good. This applies to MANUAL
+        rows too: a hand-set current_value does not survive the next check, so
+        freeze a team by lowering max_value, not by raising current_value.
+
+        Correction and increment run in one transaction with the limit row
+        locked, so two checks cannot lose each other's update. The count still
+        cannot see a member whose inserting transaction has not committed, so
+        two concurrent additions can both pass at the last seat; closing that
+        would need the seat and the member row in the same transaction.
+
+        Args:
+            team_id: ID of the team
+
+        Returns:
+            True if a seat was taken, False if the team is at capacity
+
+        Raises:
+            LimitNotFoundError: If the team has no member limit row
+            ValueError: If the limit row is not a Control Plane COUNT
+        """
+        limit = (
+            self.db.query(DBLimitedResource)
+            .filter(
+                and_(
+                    DBLimitedResource.owner_type == OwnerType.TEAM,
+                    DBLimitedResource.owner_id == team_id,
+                    DBLimitedResource.resource == ResourceType.USER,
+                )
+            )
+            .with_for_update()
+            .first()
+        )
+
+        if not limit:
+            raise LimitNotFoundError(
+                f"No limit found for {OwnerType.TEAM} {team_id} resource {ResourceType.USER}"
+            )
+
+        if limit.limit_type == LimitType.DATA_PLANE:
+            raise ValueError("Cannot increment/decrement Data Plane resources")
+        if limit.unit != UnitType.COUNT:
+            raise ValueError("Only COUNT type resources can be incremented/decremented")
+
+        actual_count = self.db.execute(
+            select(func.count()).select_from(DBUser).where(DBUser.team_id == team_id)
+        ).scalar()
+
+        if limit.current_value != actual_count:
+            logger.info(
+                f"Correcting team user count for team {team_id}: {limit.current_value} -> {actual_count}"
+            )
+            limit.current_value = actual_count
+
+        limit.updated_at = datetime.now(UTC)
+
+        if limit.current_value >= limit.max_value:
+            # Keep the correction even when the check fails
+            self.db.commit()
+            return False
+
+        limit.current_value += 1
+        self.db.commit()
+        return True
 
     def _validate_and_correct_user_key_count(self, user_id: int) -> None:
         """
