@@ -958,3 +958,47 @@ def test_validate_jwt_cookie_expiration_system_admin(client, test_admin, admin_t
     # Check the Set-Cookie header for max-age
     set_cookie_header = response.headers.get("set-cookie", "")
     assert "Max-Age=28800" in set_cookie_header or "max-age=28800" in set_cookie_header
+
+
+def test_login_cookie_attributes(client, test_user):
+    """
+    Given a user logging in
+    When the access_token cookie is issued
+    Then it carries Secure, HttpOnly and SameSite=Lax
+
+    SameSite=None was previously set, which attaches the cookie in third-party
+    contexts and removes the browser's default CSRF protection.
+    """
+    response = client.post(
+        "/auth/login", data={"username": test_user.email, "password": "testpassword"}
+    )
+    assert response.status_code == 200
+
+    # Starlette writes the attribute value in lower case; browsers do not care.
+    set_cookie_header = response.headers.get("set-cookie", "").lower()
+    assert "access_token=" in set_cookie_header
+    assert "samesite=lax" in set_cookie_header
+    assert "secure" in set_cookie_header
+    assert "httponly" in set_cookie_header
+
+
+def test_logout_clearing_cookie_matches_login_attributes(client, test_user, test_token):
+    """
+    Given a logged-in user
+    When the user logs out
+    Then the cleared cookie repeats the login attributes
+
+    A browser matches the clearing cookie on name, path and domain, so the
+    attributes do not decide removal — but keeping the two calls identical
+    stops a later divergence from going unnoticed.
+    """
+    response = client.post(
+        "/auth/logout", headers={"Authorization": f"Bearer {test_token}"}
+    )
+    assert response.status_code == 200
+
+    set_cookie_header = response.headers.get("set-cookie", "").lower()
+    assert "access_token=" in set_cookie_header
+    assert "samesite=lax" in set_cookie_header
+    assert "secure" in set_cookie_header
+    assert "httponly" in set_cookie_header
