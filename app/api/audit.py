@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends, Query, HTTPException, status
 from sqlalchemy.orm import Session, joinedload
 from typing import Optional
 from datetime import datetime, UTC
-from sqlalchemy import distinct, or_
+from sqlalchemy import distinct, or_, cast, String
+from sqlalchemy.exc import DBAPIError
 from app.db.database import get_db
 from app.api.auth import get_current_user_from_auth
 from app.schemas.models import (
@@ -11,6 +12,7 @@ from app.schemas.models import (
     AuditLogMetadata,
 )
 from app.db.models import DBAuditLog, DBUser
+import json
 import logging
 
 logger = logging.getLogger(__name__)
@@ -27,6 +29,38 @@ def _as_naive_utc(dt: datetime) -> datetime:
 # Renders as (details ->> 'status_code') on PostgreSQL; must match the
 # expression index ix_audit_logs_status_code.
 _status_code_expr = DBAuditLog.details["status_code"].as_string()
+
+
+def _status_code_by_id_without_json_decode(db: Session) -> dict[int, str | None]:
+    """Fallback for ``_status_code_expr``: {audit_log.id: status_code}.
+
+    A historical row can carry a null-byte unicode escape sequence inside a
+    details string (e.g. a path-traversal probe payload). Postgres accepts
+    that into a `json` column at write time (it only validates the text, it
+    does not decode it), but `->>` decodes the string and rejects the null
+    byte - failing the whole query, not just the offending row. Casting to
+    text instead of extracting a field never asks Postgres to decode the
+    escape (a json->text cast returns the stored text unchanged), so it
+    can't fail; the decoding happens in Python instead, where a null byte is
+    just another character - unlike a text-based substring replace, this
+    can't corrupt an unrelated, legitimately escaped backslash elsewhere in
+    the same row. New rows never carry this escape - see
+    app/middleware/audit.py:_strip_null_bytes - so this is only needed for
+    rows written before that fix.
+    """
+    result: dict[int, str | None] = {}
+    for row_id, raw in db.query(DBAuditLog.id, cast(DBAuditLog.details, String)).all():
+        code = None
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, dict):
+                value = parsed.get("status_code")
+                code = None if value is None else str(value)
+        result[row_id] = code
+    return result
 
 
 @router.get("/logs", response_model=PaginatedAuditLogResponse)
@@ -80,9 +114,6 @@ async def get_audit_logs(
             query = query.filter(DBAuditLog.timestamp >= _as_naive_utc(from_date))
         if to_date:
             query = query.filter(DBAuditLog.timestamp <= _as_naive_utc(to_date))
-        if status_code:
-            status_codes = [sc.strip() for sc in status_code.split(",")]
-            query = query.filter(_status_code_expr.in_(status_codes))
         if referer:
             # Escape LIKE wildcards so a literal % or _ in the search term
             # doesn't act as a match-all pattern.
@@ -97,18 +128,50 @@ async def get_audit_logs(
                 )
             )
 
-        # Get total count
-        total = query.count()
-
-        # Execute the query with pagination; eager-load user to avoid a
-        # lazy-load query per row when building the response.
-        results = (
-            query.options(joinedload(DBAuditLog.user))
-            .order_by(DBAuditLog.timestamp.desc())
-            .offset(skip)
-            .limit(limit)
-            .all()
+        status_codes = (
+            [sc.strip() for sc in status_code.split(",")] if status_code else None
         )
+        filtered_query = (
+            query.filter(_status_code_expr.in_(status_codes))
+            if status_codes
+            else query
+        )
+
+        try:
+            total = filtered_query.count()
+            # Execute the query with pagination; eager-load user to avoid a
+            # lazy-load query per row when building the response.
+            results = (
+                filtered_query.options(joinedload(DBAuditLog.user))
+                .order_by(DBAuditLog.timestamp.desc())
+                .offset(skip)
+                .limit(limit)
+                .all()
+            )
+        except DBAPIError:
+            if not status_codes:
+                raise
+            # A historical row's details can't be decoded by the `->>` in
+            # _status_code_expr (see _status_code_by_id_without_json_decode);
+            # fall back to an id-based filter that never asks Postgres to
+            # decode it. The transaction is aborted after the failed query
+            # and must be rolled back before it can run another one.
+            db.rollback()
+            wanted = set(status_codes)
+            matching_ids = [
+                row_id
+                for row_id, code in _status_code_by_id_without_json_decode(db).items()
+                if code in wanted
+            ]
+            filtered_query = query.filter(DBAuditLog.id.in_(matching_ids))
+            total = filtered_query.count()
+            results = (
+                filtered_query.options(joinedload(DBAuditLog.user))
+                .order_by(DBAuditLog.timestamp.desc())
+                .offset(skip)
+                .limit(limit)
+                .all()
+            )
 
         response_data = [
             AuditLogResponse(
@@ -176,13 +239,27 @@ async def get_audit_logs_metadata(
         ]
 
         # Get distinct status codes from the details JSON field
-        status_codes = [
-            sc[0]
-            for sc in db.query(distinct(_status_code_expr))
-            .filter(_status_code_expr.isnot(None))
-            .filter(_status_code_expr != "")
-            .all()
-        ]
+        try:
+            status_codes = [
+                sc[0]
+                for sc in db.query(distinct(_status_code_expr))
+                .filter(_status_code_expr.isnot(None))
+                .filter(_status_code_expr != "")
+                .all()
+            ]
+        except DBAPIError:
+            # A historical row's details can't be decoded by the `->>` in
+            # _status_code_expr (see _status_code_by_id_without_json_decode).
+            # The transaction is aborted after the failed query and must be
+            # rolled back before it can run another one.
+            db.rollback()
+            status_codes = sorted(
+                {
+                    code
+                    for code in _status_code_by_id_without_json_decode(db).values()
+                    if code
+                }
+            )
 
         return {
             "event_types": sorted(event_types),
