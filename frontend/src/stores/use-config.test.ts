@@ -12,7 +12,6 @@ describe("useConfig store", () => {
     process.env = { ...originalEnv };
     delete process.env.NEXT_PUBLIC_API_URL;
     delete process.env.PASSWORDLESS_SIGN_IN;
-    delete process.env.STRIPE_PUBLISHABLE_KEY;
 
     // Reset MSW handlers
     server.resetHandlers();
@@ -22,7 +21,6 @@ describe("useConfig store", () => {
       config: {
         NEXT_PUBLIC_API_URL: "http://localhost:8800",
         PASSWORDLESS_SIGN_IN: false,
-        STRIPE_PUBLISHABLE_KEY: "",
       },
       loading: false,
       error: null,
@@ -41,7 +39,6 @@ describe("useConfig store", () => {
     expect(state.config).toEqual({
       NEXT_PUBLIC_API_URL: "http://localhost:8800",
       PASSWORDLESS_SIGN_IN: false,
-      STRIPE_PUBLISHABLE_KEY: "",
     });
     expect(state.loading).toBe(false);
     expect(state.error).toBe(null);
@@ -50,7 +47,6 @@ describe("useConfig store", () => {
   it("should use environment variables for fallback config", () => {
     process.env.NEXT_PUBLIC_API_URL = "http://test-api.com";
     process.env.PASSWORDLESS_SIGN_IN = "true";
-    process.env.STRIPE_PUBLISHABLE_KEY = "pk_test_123";
 
     // Reset the store to use the new environment variables
     useConfig.setState({
@@ -58,7 +54,6 @@ describe("useConfig store", () => {
         NEXT_PUBLIC_API_URL:
           process.env.NEXT_PUBLIC_API_URL || "http://localhost:8800",
         PASSWORDLESS_SIGN_IN: process.env.PASSWORDLESS_SIGN_IN === "true",
-        STRIPE_PUBLISHABLE_KEY: process.env.STRIPE_PUBLISHABLE_KEY || "",
       },
       loading: false,
       error: null,
@@ -67,14 +62,12 @@ describe("useConfig store", () => {
     const state = useConfig.getState();
     expect(state.getApiUrl()).toBe("http://test-api.com");
     expect(state.config?.PASSWORDLESS_SIGN_IN).toBe(true);
-    expect(state.config?.STRIPE_PUBLISHABLE_KEY).toBe("pk_test_123");
   });
 
   it("should load config successfully", async () => {
     const mockConfig = {
       NEXT_PUBLIC_API_URL: "http://api.example.com",
       PASSWORDLESS_SIGN_IN: true,
-      STRIPE_PUBLISHABLE_KEY: "pk_test_456",
     };
 
     // Mock the config API endpoint
@@ -106,7 +99,6 @@ describe("useConfig store", () => {
     expect(state.config).toEqual({
       NEXT_PUBLIC_API_URL: "http://localhost:8800",
       PASSWORDLESS_SIGN_IN: false,
-      STRIPE_PUBLISHABLE_KEY: "",
     });
     expect(state.loading).toBe(false);
     expect(state.error).toBe("Failed to fetch");
@@ -126,7 +118,6 @@ describe("useConfig store", () => {
     expect(state.config).toEqual({
       NEXT_PUBLIC_API_URL: "http://localhost:8800",
       PASSWORDLESS_SIGN_IN: false,
-      STRIPE_PUBLISHABLE_KEY: "",
     });
     expect(state.loading).toBe(false);
     expect(state.error).toBe("Failed to load configuration");
@@ -144,7 +135,6 @@ describe("useConfig store", () => {
         return HttpResponse.json({
           NEXT_PUBLIC_API_URL: "http://api.example.com",
           PASSWORDLESS_SIGN_IN: false,
-          STRIPE_PUBLISHABLE_KEY: "",
         });
       }),
     );
@@ -168,7 +158,6 @@ describe("useConfig store", () => {
     const mockConfig = {
       NEXT_PUBLIC_API_URL: "http://custom-api.com",
       PASSWORDLESS_SIGN_IN: false,
-      STRIPE_PUBLISHABLE_KEY: "",
     };
 
     useConfig.getState().setConfig(mockConfig);
@@ -186,7 +175,6 @@ describe("useConfig store", () => {
     const newConfig = {
       NEXT_PUBLIC_API_URL: "http://new-api.com",
       PASSWORDLESS_SIGN_IN: true,
-      STRIPE_PUBLISHABLE_KEY: "pk_new_123",
     };
 
     useConfig.getState().setConfig(newConfig);

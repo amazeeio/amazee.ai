@@ -86,11 +86,6 @@ const navigation = [
         href: "/team-admin/private-ai-keys",
         icon: <Key size={16} />,
       },
-      {
-        name: "Pricing",
-        href: "/team-admin/pricing",
-        icon: <Package size={16} />,
-      },
     ],
   },
 ];

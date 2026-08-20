@@ -46,7 +46,6 @@ interface TeamExpansionRowProps {
   onEdit: (team: Team) => void;
   onAddUser: (teamId: string) => void;
   onCreateUser: (teamId: string) => void;
-  onSubscribe: (teamId: string) => void;
 }
 
 export function TeamExpansionRow({
@@ -57,7 +56,6 @@ export function TeamExpansionRow({
   onEdit,
   onAddUser,
   onCreateUser,
-  onSubscribe,
 }: TeamExpansionRowProps) {
   const {
     removeUserFromTeam,
@@ -68,8 +66,6 @@ export function TeamExpansionRow({
     isRestoring,
     deleteTeam,
     isDeleting,
-    cancelSubscription,
-    isCancelingSubscription,
     resetLimits,
     isResettingLimits,
   } = useTeams(false, { enabled: false });
@@ -370,12 +366,6 @@ export function TeamExpansionRow({
                               </Button>
                               <Button
                                 variant="outline"
-                                onClick={() => onSubscribe(expandedTeam.id)}
-                              >
-                                Subscribe to Product
-                              </Button>
-                              <Button
-                                variant="outline"
                                 onClick={() => extendTrial(expandedTeam.id)}
                                 disabled={isExtendingTrial}
                               >
@@ -513,9 +503,6 @@ export function TeamExpansionRow({
                                 <TableHead>Storage (GiB)</TableHead>
                                 <TableHead>Renewal (Days)</TableHead>
                                 <TableHead>Status</TableHead>
-                                <TableHead className="text-right">
-                                  Actions
-                                </TableHead>
                               </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -553,21 +540,6 @@ export function TeamExpansionRow({
                                     >
                                       {product.active ? "Active" : "Inactive"}
                                     </Badge>
-                                  </TableCell>
-                                  <TableCell className="text-right">
-                                    <DeleteConfirmationDialog
-                                      title="Cancel Subscription"
-                                      description={`Are you sure you want to cancel the subscription to "${product.name}"? This action cannot be undone and will immediately remove access to this product.`}
-                                      triggerText="Cancel"
-                                      onConfirm={() =>
-                                        cancelSubscription({
-                                          teamId: expandedTeam.id,
-                                          productId: product.id,
-                                        })
-                                      }
-                                      isLoading={isCancelingSubscription}
-                                      size="sm"
-                                    />
                                   </TableCell>
                                 </TableRow>
                               ))}
