@@ -2671,13 +2671,18 @@ def test_update_team_admin_email_is_admin_only(
 def test_update_team_admin_email_resent_unchanged_is_allowed(
     client, team_admin_token, test_team, test_team_admin, db
 ):
-    """A GET-then-PUT round-trip that re-sends the current email is a no-op."""
+    """A GET-then-PUT round-trip that re-sends the current email is a no-op.
+
+    The stored address is mixed case while the schema lowercases the incoming
+    one, so only a case-insensitive compare keeps this a no-op.
+    """
+    stored = test_team.admin_email
+    test_team.admin_email = stored.upper()
+    db.commit()
+
     response = client.put(
         f"/teams/{test_team.id}",
-        json={
-            "name": "Renamed Team",
-            "admin_email": test_team.admin_email.upper(),
-        },
+        json={"name": "Renamed Team", "admin_email": stored},
         headers={"Authorization": f"Bearer {team_admin_token}"},
     )
     assert response.status_code == 200, response.text
@@ -2710,3 +2715,37 @@ def test_update_team_admin_email_blocks_disposable_domain(
     )
     assert response.status_code == 422, response.text
     assert response.json()["detail"] == "Invalid email domain."
+
+
+def test_update_team_admin_email_rejects_a_case_variant_duplicate(
+    client, admin_token, test_team, test_region, db
+):
+    """The DB unique index is case-sensitive, so the check must not be."""
+    other = DBTeam(
+        name="Other Team",
+        admin_email="taken@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        region_id=test_region.id,
+    )
+    db.add(other)
+    db.commit()
+
+    response = client.put(
+        f"/teams/{test_team.id}",
+        json={"admin_email": "TAKEN@example.com"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "Email already registered"
+
+
+def test_update_team_admin_email_ignores_its_own_row(client, admin_token, test_team):
+    """The uniqueness check must not treat the team's own address as taken."""
+    response = client.put(
+        f"/teams/{test_team.id}",
+        json={"admin_email": "moved@example.com"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["admin_email"] == "moved@example.com"
