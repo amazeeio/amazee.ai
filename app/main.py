@@ -41,11 +41,9 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from copy import deepcopy
-from jose import jwt
 from sqlalchemy.orm import Session
 from app.db.database import get_db
-from app.api.users import get_user_by_email
-from app.core.security import assert_token_not_revoked
+from app.core.security import get_current_user_from_auth
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -332,10 +330,11 @@ app.openapi = custom_openapi
 #   - anonymous callers     -> operations requiring no authentication
 #   - authenticated users   -> the above plus operations requiring authentication
 #   - system administrators -> the full schema
-# Authenticating (session cookie or bearer token) progressively reveals more of
-# the schema. Each operation's tier is derived from its own route dependencies,
-# so the mapping stays in sync as endpoints are added. This governs schema
-# VISIBILITY only; each endpoint still enforces its own authorization.
+# Authenticating (session cookie, JWT or API token) progressively reveals more
+# of the schema. Each operation's tier is derived from its own route
+# dependencies, so the mapping stays in sync as endpoints are added. This
+# governs schema VISIBILITY only; each endpoint still enforces its own
+# authorization.
 
 _TIER_RANK = {"public": 0, "user": 1, "admin": 2}
 _HTTP_METHODS = {"get", "post", "put", "patch", "delete", "options", "head"}
@@ -343,8 +342,8 @@ _HTTP_METHODS = {"get", "post", "put", "patch", "delete", "options", "head"}
 _ADMIN_DEPENDENCIES = {"get_role_min_system_admin", "require_system_admin"}
 
 
-def _route_tier(route: APIRoute) -> str:
-    """Classify a route as public / user / admin from its auth dependencies."""
+def _operation_tier(dependant) -> str:
+    """Classify an operation as public / user / admin from its dependencies."""
     names: set[str] = set()
 
     def _walk(dep) -> None:
@@ -356,7 +355,7 @@ def _route_tier(route: APIRoute) -> str:
         for sub in getattr(dep, "dependencies", None) or []:
             _walk(sub)
 
-    _walk(getattr(route, "dependant", None))
+    _walk(dependant)
 
     if names & _ADMIN_DEPENDENCIES:
         return "admin"
@@ -370,43 +369,79 @@ def _route_tier(route: APIRoute) -> str:
     return "user" if authish else "public"
 
 
-# (method, path) -> tier, built once from the fully-wired app.
-_OPENAPI_TIERS: dict[tuple[str, str], str] = {}
-for _route in app.routes:
-    if isinstance(_route, APIRoute):
-        _tier = _route_tier(_route)
-        for _method in _route.methods:
-            _OPENAPI_TIERS[(_method.upper(), _route.path)] = _tier
+def _iter_operations(routes):
+    """Yield one object per API operation, with its dependencies attached.
+
+    Routes added with include_router are not flattened into app.routes; the
+    app holds a router wrapper that resolves its operations on demand. Both
+    shapes expose operation_id / unique_id / dependant, which is all the
+    tiering needs.
+    """
+    for route in routes:
+        if isinstance(route, APIRoute):
+            yield route
+            continue
+        candidates = getattr(route, "effective_candidates", None)
+        if callable(candidates):
+            yield from candidates()
 
 
-def _caller_tier(request: Request, db: Session) -> str:
-    """Best-effort caller tier from the bearer token or session cookie."""
-    token = None
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header.split(" ", 1)[1]
-    if not token:
-        token = request.cookies.get("access_token")
-    if not token:
+def _operation_id(operation) -> str:
+    """The key the OpenAPI document uses for this operation."""
+    return getattr(operation, "operation_id", None) or getattr(
+        operation, "unique_id", ""
+    )
+
+
+# operationId -> tier, built once from the fully-wired app. operationId is the
+# key because it is the one identifier shared by the route object and the
+# generated document; matching on paths breaks on converter suffixes.
+_OPENAPI_TIERS: dict[str, str] = {
+    _operation_id(_operation): _operation_tier(getattr(_operation, "dependant", None))
+    for _operation in _iter_operations(app.routes)
+}
+
+
+async def _caller_tier(request: Request, db: Session) -> str:
+    """Best-effort caller tier from the credentials on the request.
+
+    Resolution is delegated to the normal auth dependency so that JWTs, API
+    tokens and the local bearer token are all recognised. Anything that does
+    not resolve to a user is treated as anonymous.
+    """
+    authorization = request.headers.get("Authorization")
+    access_token = request.cookies.get("access_token")
+    if not authorization and not access_token:
         return "public"
     try:
-        payload = jwt.decode(
-            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+        user = await get_current_user_from_auth(
+            access_token=access_token,
+            authorization=authorization,
+            db=db,
+            request=request,
         )
-        assert_token_not_revoked(db, payload)
-        email = payload.get("sub")
-        user = get_user_by_email(db, email) if email else None
     except Exception:
         return "public"
-    if not user:
+    if user is None:
         return "public"
-    return "admin" if getattr(user, "is_admin", False) else "user"
+    return "admin" if user.is_admin else "user"
 
 
-@app.get("/openapi.json", include_in_schema=False)
-async def scoped_openapi(request: Request, db: Session = Depends(get_db)):
-    full = app.openapi()
-    rank = _TIER_RANK[_caller_tier(request, db)]
+def _collect_refs(node, found: set[str]) -> None:
+    """Gather every component schema name reachable from a schema fragment."""
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/components/schemas/"):
+            found.add(ref.rsplit("/", 1)[1])
+        for value in node.values():
+            _collect_refs(value, found)
+    elif isinstance(node, list):
+        for value in node:
+            _collect_refs(value, found)
+
+
+def _scope_schema(full: dict, rank: int) -> dict:
+    """Return a copy of the schema holding only what this rank may see."""
     schema = deepcopy(full)
 
     kept_paths: dict = {}
@@ -415,7 +450,9 @@ async def scoped_openapi(request: Request, db: Session = Depends(get_db)):
         has_operation = False
         for key, value in item.items():
             if key.lower() in _HTTP_METHODS:
-                op_tier = _OPENAPI_TIERS.get((key.upper(), path), "user")
+                # An operation missing from the map is treated as admin-only,
+                # so a gap makes the document smaller, never wider.
+                op_tier = _OPENAPI_TIERS.get(value.get("operationId", ""), "admin")
                 if _TIER_RANK[op_tier] <= rank:
                     kept_ops[key] = value
                     has_operation = True
@@ -424,4 +461,42 @@ async def scoped_openapi(request: Request, db: Session = Depends(get_db)):
         if has_operation:
             kept_paths[path] = kept_ops
     schema["paths"] = kept_paths
-    return JSONResponse(schema)
+
+    # Drop the request/response models that only the hidden operations used;
+    # their field names would otherwise still describe the hidden endpoints.
+    components = schema.get("components", {})
+    all_schemas = components.get("schemas") or {}
+    if all_schemas:
+        reachable: set[str] = set()
+        _collect_refs(kept_paths, reachable)
+        # A kept model may reference further models, so follow the chain.
+        pending = list(reachable)
+        while pending:
+            name = pending.pop()
+            nested: set[str] = set()
+            _collect_refs(all_schemas.get(name, {}), nested)
+            for new_name in nested - reachable:
+                reachable.add(new_name)
+                pending.append(new_name)
+        components["schemas"] = {
+            name: model for name, model in all_schemas.items() if name in reachable
+        }
+
+    # Keep only the tag descriptions that still label a visible operation.
+    if schema.get("tags"):
+        used_tags = {
+            tag
+            for item in kept_paths.values()
+            for key, operation in item.items()
+            if key.lower() in _HTTP_METHODS
+            for tag in operation.get("tags", [])
+        }
+        schema["tags"] = [tag for tag in schema["tags"] if tag.get("name") in used_tags]
+
+    return schema
+
+
+@app.get("/openapi.json", include_in_schema=False)
+async def scoped_openapi(request: Request, db: Session = Depends(get_db)):
+    rank = _TIER_RANK[await _caller_tier(request, db)]
+    return JSONResponse(_scope_schema(app.openapi(), rank))
