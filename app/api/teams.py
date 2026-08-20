@@ -412,11 +412,28 @@ async def update_team(
                 ),
             )
 
-    # Same blocklist gate as team creation, but only when the value changes.
+    # Same gates as team creation, but only when the value changes.
     if "admin_email" in update_data and not _field_value_unchanged(
         db_team, "admin_email", update_data["admin_email"]
     ):
         assert_email_domain_allowed(db, update_data["admin_email"])
+        # The DB unique index is case-sensitive, so a case variant would slip
+        # past it and leave two teams that sign-in could both re-attach to.
+        # Soft-deleted teams still hold the address, so they count as taken.
+        clash = (
+            db.query(DBTeam)
+            .filter(
+                func.lower(DBTeam.admin_email)
+                == func.lower(update_data["admin_email"]),
+                DBTeam.id != db_team.id,
+            )
+            .first()
+        )
+        if clash:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered",
+            )
 
     # Update team fields
     for key, value in update_data.items():
