@@ -495,7 +495,7 @@ async def sign_in(
                 budget_type=BudgetType.PERIODIC,
                 region_id=sign_up_region.id,
             )
-            team = await register_team(team_data, db)
+            team = await register_team(team_data, db, current_user=None)
 
         user_data = UserCreate(
             email=sign_in_username,
@@ -991,7 +991,7 @@ async def generate_trial_access(
                 is_active=True,
                 budget_type=BudgetType.PERIODIC,
             )
-            team = await register_team(team_data, db)
+            team = await register_team(team_data, db, current_user=None)
             # Ensure team has limit set
             team_limit = limit_service.set_limit(
                 owner_type=OwnerType.TEAM,
