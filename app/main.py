@@ -43,6 +43,7 @@ from fastapi.routing import APIRoute
 from copy import deepcopy
 from sqlalchemy.orm import Session
 from app.db.database import get_db
+from app.core.roles import UserRole
 from app.core.security import get_current_user_from_auth
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -192,8 +193,10 @@ instrumentator = Instrumentator(
 # Add default metrics
 instrumentator.add(metrics.default())
 
-# Instrument the app
-instrumentator.instrument(app).expose(app)
+# Instrument the app. /metrics stays out of the OpenAPI document: it is an
+# operational endpoint gated by PROMETHEUS_API_KEY in AuthMiddleware, not part
+# of the API surface, and it carries no route dependency to classify it by.
+instrumentator.instrument(app).expose(app, include_in_schema=False)
 
 
 @app.get("/health")
@@ -339,12 +342,24 @@ app.openapi = custom_openapi
 _TIER_RANK = {"public": 0, "user": 1, "admin": 2}
 _HTTP_METHODS = {"get", "post", "put", "patch", "delete", "options", "head"}
 # Dependencies that mark an operation as system-admin only.
-_ADMIN_DEPENDENCIES = {"get_role_min_system_admin", "require_system_admin"}
+_ADMIN_DEPENDENCIES = {
+    "get_role_min_system_admin",
+    "require_system_admin",
+    "check_sales_or_higher",
+}
+# System roles that only privileged staff hold. An RBAC dependency limited to
+# these is admin tier even when its callable carries no name to match on.
+_ADMIN_ROLES = {UserRole.SYSTEM_ADMIN, UserRole.SALES}
 
 
 def _operation_tier(dependant) -> str:
     """Classify an operation as public / user / admin from its dependencies."""
     names: set[str] = set()
+
+    # An RBAC dependency used as an instance (Depends(require_system_admin()))
+    # has no __name__, so the name patterns below would read it as public.
+    # Classify those by the roles they allow instead.
+    role_tiers: set[str] = set()
 
     def _walk(dep) -> None:
         if dep is None:
@@ -352,13 +367,18 @@ def _operation_tier(dependant) -> str:
         call = getattr(dep, "call", None)
         if call is not None:
             names.add(getattr(call, "__name__", ""))
+            allowed = getattr(call, "allowed_roles", None)
+            if allowed:
+                role_tiers.add("admin" if set(allowed) <= _ADMIN_ROLES else "user")
         for sub in getattr(dep, "dependencies", None) or []:
             _walk(sub)
 
     _walk(dependant)
 
-    if names & _ADMIN_DEPENDENCIES:
+    if "admin" in role_tiers or names & _ADMIN_DEPENDENCIES:
         return "admin"
+    if role_tiers:
+        return "user"
     authish = any(
         ("current_user" in name)
         or ("role_min" in name)

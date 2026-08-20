@@ -5,7 +5,13 @@ users additionally get the authenticated ones, and system admins get everything.
 This is visibility only — every endpoint still enforces its own authorization.
 """
 
-from app.main import _OPENAPI_TIERS, _TIER_RANK, _scope_schema, app
+import os
+import subprocess
+import sys
+
+from app.core.rbac import require_private_ai_access, require_system_admin
+from app.core.roles import UserRole
+from app.main import _OPENAPI_TIERS, _TIER_RANK, _operation_tier, _scope_schema, app
 
 ADMIN_ONLY_PATH = "/regions/admin"
 USER_PATH = "/auth/me"
@@ -162,3 +168,65 @@ def test_invalid_credentials_fall_back_to_the_public_schema(client):
     )
     assert response.status_code == 200
     assert USER_PATH not in response.json()["paths"]
+
+
+def test_sales_endpoints_are_admin_tier():
+    """The sales role is privileged staff, not an ordinary user."""
+    full = app.openapi()
+    sales_op = full["paths"]["/teams/sales/list-teams"]["get"]
+    assert _OPENAPI_TIERS[sales_op["operationId"]] == "admin"
+
+
+def test_metrics_is_not_in_the_document():
+    """/metrics is an operational endpoint, gated separately from the API.
+
+    It is only registered when ENABLE_METRICS is on, which is the deployed
+    setting but not the test one, so the app is imported in a subprocess with
+    metrics enabled. Otherwise this passes without proving anything.
+    """
+    code = (
+        "from app.main import app\n"
+        "paths = app.openapi()['paths']\n"
+        "assert any(r.path == '/metrics' for r in app.routes), 'metrics not wired'\n"
+        "assert '/metrics' not in paths, sorted(paths)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        env={**os.environ, "ENABLE_METRICS": "true"},
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+class _FakeDependant:
+    def __init__(self, call=None, dependencies=None):
+        self.call = call
+        self.dependencies = dependencies or []
+
+
+def test_unnamed_rbac_dependency_is_not_treated_as_public():
+    """An RBAC dependency used as an instance carries no __name__ to match on."""
+    admin_instance = require_system_admin()
+    assert not hasattr(admin_instance, "__name__")
+
+    assert (
+        _operation_tier(_FakeDependant(dependencies=[_FakeDependant(admin_instance)]))
+        == "admin"
+    )
+    assert (
+        _operation_tier(
+            _FakeDependant(dependencies=[_FakeDependant(require_private_ai_access())])
+        )
+        == "user"
+    )
+
+
+def test_sales_only_rbac_dependency_is_admin_tier():
+    from app.core.rbac import RBACDependency
+
+    sales_only = RBACDependency([UserRole.SALES])
+    assert _operation_tier(
+        _FakeDependant(dependencies=[_FakeDependant(sales_only)])
+    ) == ("admin")
