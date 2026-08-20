@@ -886,6 +886,156 @@ def test_get_team_spend_uses_configured_caps_for_no_purchase_pool_team(
     assert data["keys"][0]["max_budget"] == 11.0
 
 
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_key_spend_alias_trusts_litellm_reset_over_derived_anchor(
+    mock_get_key_info, client, admin_token, test_team, test_region, db
+):
+    """
+    Given: A POOL team with no active subscription, created 180 days ago, and
+        a capped key whose LiteLLM-managed budget_reset_at is a few weeks out
+    When: A client requests key spend
+    Then: The real LiteLLM budget_reset_at is returned. The old anchor-based
+        derivation (team.created_at + 31d) would instead land ~5 months in
+        the past, making a live cap look expired (issue #685)
+    """
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    test_team.created_at = datetime.now(UTC) - timedelta(days=180)
+    db.add(test_team)
+    db.commit()
+    (
+        db.query(DBPoolPurchase)
+        .filter(
+            DBPoolPurchase.team_id == test_team.id,
+            DBPoolPurchase.region_id == test_region.id,
+        )
+        .delete()
+    )
+    db.commit()
+
+    key = DBPrivateAIKey(
+        name="pool-litellm-reset-key",
+        litellm_token="pool-litellm-reset-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            key_id=key.id,
+            max_budget=500.0,
+            budget_duration="31d",
+        )
+    )
+    db.commit()
+
+    litellm_reset_at = (datetime.now(UTC) + timedelta(days=18)).replace(microsecond=0)
+    mock_get_key_info.return_value = {
+        "info": {
+            "spend": 0.1,
+            "expires": "2026-12-31T23:59:59Z",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-02T00:00:00Z",
+            "max_budget": 0.0,
+            "budget_duration": "31d",
+            "budget_reset_at": litellm_reset_at.isoformat().replace("+00:00", "Z"),
+        }
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    returned_reset_at = datetime.fromisoformat(
+        data["budget_reset_at"].replace("Z", "+00:00")
+    )
+    assert returned_reset_at == litellm_reset_at
+    assert returned_reset_at > datetime.now(UTC)
+
+
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_team_spend_key_list_trusts_litellm_reset_over_derived_anchor(
+    mock_get_team_info, client, admin_token, test_team, test_region, db
+):
+    """
+    Given: A POOL team with no active subscription, created 180 days ago, and
+        a capped key whose LiteLLM-managed budget_reset_at is a few weeks out
+    When: A client requests the team's key list
+    Then: The key's real LiteLLM budget_reset_at is returned, not the
+        anchor-derived one that the same fix in the single-key endpoint
+        addresses (issue #685)
+    """
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    test_team.created_at = datetime.now(UTC) - timedelta(days=180)
+    db.add(test_team)
+    db.commit()
+    (
+        db.query(DBPoolPurchase)
+        .filter(
+            DBPoolPurchase.team_id == test_team.id,
+            DBPoolPurchase.region_id == test_region.id,
+        )
+        .delete()
+    )
+    db.commit()
+
+    key = DBPrivateAIKey(
+        name="team-litellm-reset-key",
+        litellm_token="team-litellm-reset-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            key_id=key.id,
+            max_budget=500.0,
+            budget_duration="31d",
+        )
+    )
+    db.commit()
+
+    litellm_reset_at = (datetime.now(UTC) + timedelta(days=18)).replace(microsecond=0)
+    mock_get_team_info.return_value = {
+        "team_info": {"spend": 0.0, "max_budget": 0.0},
+        "keys": [
+            {
+                "metadata": {"amazeeai_private_ai_key_name": key.name},
+                "spend": 0.0,
+                "max_budget": 0.0,
+                "user_id": None,
+                "budget_duration": "31d",
+                "budget_reset_at": litellm_reset_at.isoformat().replace(
+                    "+00:00", "Z"
+                ),
+            }
+        ],
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    returned_reset_at = datetime.fromisoformat(
+        data["keys"][0]["budget_reset_at"].replace("Z", "+00:00")
+    )
+    assert returned_reset_at == litellm_reset_at
+    assert returned_reset_at > datetime.now(UTC)
+
+
 @patch("app.api.spend.LiteLLMService.get_user_info", new_callable=AsyncMock)
 def test_get_user_spend_exposes_only_db_key_cap_for_no_purchase_pool_team(
     mock_get_user_info, client, admin_token, test_team, test_region, db
@@ -3187,7 +3337,7 @@ def test_key_spend_includes_period_start(
 def test_pool_key_with_cap_shows_period_fields(
     mock_get_team_info, client, admin_token, test_team, test_region, db
 ):
-    """POOL capped keys use 31d window semantics.
+    """A capped POOL key with a real LiteLLM reset schedule is trusted as-is.
     Team window remains POOL baseline (365d) when no active subscription."""
     test_team.budget_type = BudgetType.POOL
     test_team.require_purchase_for_requests = True
@@ -3242,11 +3392,14 @@ def test_pool_key_with_cap_shows_period_fields(
     data = response.json()
     # Team shows POOL no-subscription baseline window.
     assert data["budget_duration"] == "365d"
-    # Key with cap uses 31d window semantics.
+    # The key's own real LiteLLM reset schedule ("1mo", resetting 2026-06-01)
+    # is trusted as-is, not relabelled to a fixed "31d" - doing so without a
+    # real 31-day cycle behind it would make period_start describe a window
+    # LiteLLM isn't actually enforcing.
     k = data["keys"][0]
-    assert k["budget_duration"] == "31d"
-    assert k["budget_reset_at"] is not None
-    assert k["period_start"] is not None
+    assert k["budget_duration"] == "1mo"
+    assert k["budget_reset_at"] == "2026-06-01T00:00:00Z"
+    assert k["period_start"] == "2026-05-01T00:00:00Z"
 
 
 # ---------------------------------------------------------------------------

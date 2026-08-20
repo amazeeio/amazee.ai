@@ -35,6 +35,25 @@ def sanitize_referer(value: str | None) -> str | None:
     return value[:MAX_HEADER_URL_LENGTH]
 
 
+def _strip_null_bytes(value):
+    """Remove literal NUL characters from strings, recursively through dicts/lists.
+
+    A NUL byte survives into a string from things like a path-traversal probe
+    (``.../etc/passwd\\x00``). Postgres accepts it into a ``json`` column at
+    write time (the column stores validated text, not decoded bytes), but any
+    later read that extracts a field back out has to decode the string and
+    then rejects it, taking down every query that touches the row. Stripping
+    it before storage keeps the column readable.
+    """
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {k: _strip_null_bytes(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_strip_null_bytes(v) for v in value]
+    return value
+
+
 class AuditLogMiddleware(BaseHTTPMiddleware):
     def __init__(self, app):
         super().__init__(app)
@@ -89,11 +108,13 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                 resource_type=resource_type,
                 resource_id=str(resource_id) if resource_id else None,
                 action=f"{request.method} {request.url.path}",
-                details={
-                    "path": request.url.path,
-                    "query_params": dict(request.query_params),
-                    "status_code": response.status_code,
-                },
+                details=_strip_null_bytes(
+                    {
+                        "path": request.url.path,
+                        "query_params": dict(request.query_params),
+                        "status_code": response.status_code,
+                    }
+                ),
                 ip_address=request.client.host if request.client else None,
                 user_agent=request.headers.get("user-agent"),
                 request_source=request_source,

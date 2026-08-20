@@ -2832,6 +2832,108 @@ async def test_region_key_state_cache_rejects_non_dict(test_region):
     assert result == {}
 
 
+class FakeClock:
+    """Hand-advanced monotonic clock, so TTL tests need no sleeping."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.mark.asyncio
+async def test_region_key_state_cache_reuses_within_ttl(test_region):
+    """A snapshot younger than the TTL is reused, not re-listed."""
+    service = AsyncMock()
+    service.list_all_keys.return_value = {"hash-1": {"spend": 1.0}}
+    clock = FakeClock()
+
+    cache = RegionKeyStateCache(ttl_seconds=600, clock=clock)
+    await cache.get(test_region, service)
+    clock.advance(599)
+    await cache.get(test_region, service)
+
+    assert service.list_all_keys.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_region_key_state_cache_relists_after_ttl(test_region):
+    """Past the TTL the region is listed again, so spend cannot go stale silently."""
+    service = AsyncMock()
+    service.list_all_keys.side_effect = [
+        {"hash-1": {"spend": 1.0}},
+        {"hash-1": {"spend": 7.0}},
+    ]
+    clock = FakeClock()
+
+    cache = RegionKeyStateCache(ttl_seconds=600, clock=clock)
+    first = await cache.get(test_region, service)
+    clock.advance(601)
+    second = await cache.get(test_region, service)
+
+    assert first == {"hash-1": {"spend": 1.0}}
+    assert second == {"hash-1": {"spend": 7.0}}
+    assert service.list_all_keys.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_region_key_state_cache_ttl_starts_after_the_listing(test_region):
+    """The TTL is stamped when the listing returns, not when it was requested."""
+    clock = FakeClock()
+
+    async def slow_list():
+        clock.advance(500)
+        return {"hash-1": {"spend": 1.0}}
+
+    service = AsyncMock()
+    service.list_all_keys.side_effect = slow_list
+
+    cache = RegionKeyStateCache(ttl_seconds=600, clock=clock)
+    await cache.get(test_region, service)
+    clock.advance(599)
+    await cache.get(test_region, service)
+
+    assert service.list_all_keys.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_region_key_state_cache_retries_failure_after_ttl(test_region):
+    """A broken region is retried once per TTL window, not once per team."""
+    service = AsyncMock()
+    service.list_all_keys.side_effect = [
+        Exception("litellm down"),
+        {"hash-1": {"spend": 1.0}},
+    ]
+    clock = FakeClock()
+
+    cache = RegionKeyStateCache(ttl_seconds=600, clock=clock)
+    assert await cache.get(test_region, service) == {}
+    clock.advance(599)
+    assert await cache.get(test_region, service) == {}
+    assert service.list_all_keys.call_count == 1
+
+    clock.advance(2)
+    assert await cache.get(test_region, service) == {"hash-1": {"spend": 1.0}}
+    assert service.list_all_keys.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_region_key_state_cache_zero_ttl_always_relists(test_region):
+    """A zero TTL turns the cache off, for an operator who needs every read fresh."""
+    service = AsyncMock()
+    service.list_all_keys.return_value = {"hash-1": {"spend": 1.0}}
+
+    cache = RegionKeyStateCache(ttl_seconds=0, clock=FakeClock())
+    await cache.get(test_region, service)
+    await cache.get(test_region, service)
+
+    assert service.list_all_keys.call_count == 2
+
+
 @pytest.mark.asyncio
 async def test_resolve_key_state_prefers_snapshot(test_region):
     """A key present in the snapshot must not trigger a /key/info call."""

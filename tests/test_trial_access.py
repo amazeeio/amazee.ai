@@ -5,6 +5,7 @@ from unittest.mock import Mock, AsyncMock, patch
 from app.api.auth import generate_trial_access
 from app.core.limit_service import LimitService
 from app.db.models import DBUser, DBTeam, DBPrivateAIKey, DBRegion
+from app.schemas.limits import OwnerType
 from app.schemas.models import Token
 from fastapi import Response
 
@@ -226,6 +227,11 @@ async def test_generate_trial_access_cleanup_on_key_creation_failure(
     assert exc_info.value.status_code == expected_status
 
     assert mock_db.delete.call_count >= 1
+    # The MANUAL budget row must go with the user, or it pins a future user
+    # with the same id to the trial budget cap
+    mock_limit_service.delete_limits.assert_called_once_with(
+        OwnerType.USER, mock_user.id, commit=False
+    )
 
 
 @patch("app.db.postgres.PostgresManager.create_database")
