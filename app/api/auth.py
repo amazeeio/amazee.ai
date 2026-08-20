@@ -274,6 +274,7 @@ async def logout(
     delete_settings = {
         "key": "access_token",
         "path": "/",
+        "httponly": True,
         "secure": True,
         "samesite": "lax",
     }

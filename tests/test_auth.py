@@ -984,8 +984,9 @@ def test_logout_clearing_cookie_matches_login_attributes(client, test_user, test
     When the user logs out
     Then the cleared cookie repeats the login attributes
 
-    A browser drops a Set-Cookie that does not match the original cookie's
-    SameSite, so a mismatch here would leave the session cookie in place.
+    A browser matches the clearing cookie on name, path and domain, so the
+    attributes do not decide removal — but keeping the two calls identical
+    stops a later divergence from going unnoticed.
     """
     response = client.post(
         "/auth/logout", headers={"Authorization": f"Bearer {test_token}"}
@@ -996,3 +997,4 @@ def test_logout_clearing_cookie_matches_login_attributes(client, test_user, test
     assert "access_token=" in set_cookie_header
     assert "samesite=lax" in set_cookie_header
     assert "secure" in set_cookie_header
+    assert "httponly" in set_cookie_header
