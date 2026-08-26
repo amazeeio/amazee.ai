@@ -72,9 +72,6 @@ class Settings(BaseSettings):
     # so a first run against a large backlog is spread over several nights
     # rather than held open for hours.
     AI_TRIAL_REAP_BATCH_SIZE: int = int(os.getenv("AI_TRIAL_REAP_BATCH_SIZE", "500"))
-    STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "sk_test_string")
-    STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "pk_test_string")
-    WEBHOOK_SIG: str = os.getenv("WEBHOOK_SIG", "whsec_test_1234567890")
     HUBSPOT_TOKEN: str = os.getenv("HUBSPOT_TOKEN", "")
     HUBSPOT_MARKETING_UPDATES_PROPERTY: str = os.getenv(
         "HUBSPOT_MARKETING_UPDATES_PROPERTY", "receive_marketing_updates"
@@ -115,6 +112,13 @@ class Settings(BaseSettings):
     # removed by the daily prune cron so the table can't grow without bound.
     SIGNUP_EVENTS_RETENTION_DAYS: int = int(
         os.getenv("SIGNUP_EVENTS_RETENTION_DAYS", "7")
+    )
+    # --- Access token revocation (logout) ---
+    # How long a revoked_tokens row is kept after the token's own expiry. The row
+    # stops mattering once the token expires; the extra days only cover clock skew
+    # and leave a short audit trail.
+    REVOKED_TOKENS_RETENTION_DAYS: int = int(
+        os.getenv("REVOKED_TOKENS_RETENTION_DAYS", "2")
     )
     # --- Budget threshold alerts (AI-448) ---
     # Off by default: enabling it starts sending webhooks to a third party, so it

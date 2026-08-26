@@ -163,7 +163,9 @@ class DBUser(Base):
     receive_marketing_updates = Column(
         Boolean, default=False, nullable=False, server_default=text("false")
     )
-    team_id = Column(Integer, ForeignKey("teams.id", name="fk_user_team"))
+    # Indexed: the member-limit check counts a team's users on every member
+    # addition.
+    team_id = Column(Integer, ForeignKey("teams.id", name="fk_user_team"), index=True)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     team = relationship("DBTeam", back_populates="users")
@@ -314,24 +316,6 @@ class DBPoolPurchase(Base):
 
     team = relationship("DBTeam")
     region = relationship("DBRegion")
-
-
-class DBStripeProcessedEvent(Base):
-    """Pre-processing claim row for Stripe webhook idempotency.
-
-    Inserted before dispatching background processing. If a duplicate
-    webhook arrives, the UniqueViolation on stripe_event_id signals that
-    the event is already being handled.
-    """
-
-    __tablename__ = "stripe_processed_events"
-
-    id = Column(Integer, primary_key=True, index=True)
-    stripe_event_id = Column(String, unique=True, nullable=False, index=True)
-    event_type = Column(String, nullable=False)
-    created_at = Column(
-        DateTime(timezone=True), default=func.now(), nullable=False, index=True
-    )
 
 
 class DBPeriodicPayment(Base):
@@ -754,6 +738,30 @@ class DBSignupEvent(Base):
     email = Column(String, nullable=True)
     endpoint = Column(String, nullable=True)
     created_at = Column(
+        DateTime(timezone=True), default=func.now(), nullable=False, index=True
+    )
+
+
+class DBRevokedToken(Base):
+    """Denylist of access-token ids (``jti``) that must no longer authenticate.
+
+    The access token is a self-contained JWT, so a signed token stays valid until
+    it expires and the server holds no session it could drop. Logout writes the
+    token id here, and every JWT auth path rejects an id it finds. Rows are pruned
+    once the token has expired, because after that the token fails on its own.
+
+    ``user_id`` is a plain integer on purpose. A foreign key would block the
+    hard-delete job while a denylist row still points at the user.
+    """
+
+    __tablename__ = "revoked_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    jti = Column(String, unique=True, nullable=False, index=True)
+    user_id = Column(Integer, nullable=True, index=True)
+    # Expiry of the revoked token, copied from its ``exp`` claim.
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    revoked_at = Column(
         DateTime(timezone=True), default=func.now(), nullable=False, index=True
     )
 

@@ -9,7 +9,6 @@ image:
 
 # Application configuration
 apiUrl: ""  # Will be auto-generated using release name and backend service
-stripePublishableKey: "pk_test_your_stripe_publishable_key"
 passwordlessSignIn: "true"
 
 resources:
