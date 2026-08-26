@@ -13,32 +13,14 @@ export interface User {
   role: string | null;
 }
 
-export interface PricingTable {
-  pricing_table_id: string;
-  updated_at: string;
-}
-
-export interface PricingTableSession {
-  client_secret: string;
-}
-
-export interface StripeFormProps {
-  pricingTableId: string;
-  publishableKey: string;
-  clientSecret: string;
-}
-
 interface Config {
   NEXT_PUBLIC_API_URL: string;
   PASSWORDLESS_SIGN_IN: boolean;
-  STRIPE_PUBLISHABLE_KEY: string;
 }
 
 interface UpgradeState {
   // State
   user: User | null;
-  pricingTable: PricingTable | null;
-  clientSecret: string | null;
   error: string | null;
   loading: boolean;
   isValidatingToken: boolean;
@@ -46,8 +28,6 @@ interface UpgradeState {
 
   // Actions
   setUser: (user: User | null) => void;
-  setPricingTable: (table: PricingTable | null) => void;
-  setClientSecret: (secret: string | null) => void;
   setError: (error: string | null) => void;
   setLoading: (loading: boolean) => void;
   setIsValidatingToken: (validating: boolean) => void;
@@ -56,13 +36,10 @@ interface UpgradeState {
   // Complex actions
   loadConfig: () => Promise<void>;
   validateToken: (token: string) => Promise<void>;
-  fetchPricingTable: (token: string) => Promise<void>;
-  fetchClientSecret: (token: string, teamId: number) => Promise<void>;
   initializeUpgrade: (token: string) => Promise<void>;
   reset: () => void;
 
   // Computed properties
-  getStripeFormProps: () => StripeFormProps | null;
   isReady: () => boolean;
   isConfigLoading: () => boolean;
 }
@@ -70,8 +47,6 @@ interface UpgradeState {
 export const useUpgrade = create<UpgradeState>((set, get) => ({
   // Initial state
   user: null,
-  pricingTable: null,
-  clientSecret: null,
   error: null,
   loading: false,
   isValidatingToken: false,
@@ -79,8 +54,6 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
 
   // Simple setters
   setUser: (user) => set({ user }),
-  setPricingTable: (pricingTable) => set({ pricingTable }),
-  setClientSecret: (clientSecret) => set({ clientSecret }),
   setError: (error) => set({ error }),
   setLoading: (loading) => set({ loading }),
   setIsValidatingToken: (isValidatingToken) => set({ isValidatingToken }),
@@ -96,7 +69,8 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
 
       if (config) {
         const currentError = get().error;
-        const shouldClearError = !currentError || currentError.includes("configuration");
+        const shouldClearError =
+          !currentError || currentError.includes("configuration");
         set({
           config,
           ...(shouldClearError ? { error: null } : {}),
@@ -130,7 +104,8 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
     try {
       set({ isValidatingToken: true, error: null });
 
-      // Validate the JWT token using the validate-jwt endpoint
+      // This is the sign-in step, not just a check: the backend sets the
+      // access_token cookie on a valid token.
       const response = await getWithToken("/auth/validate-jwt", token);
 
       if (!response.ok) {
@@ -151,66 +126,15 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
     }
   },
 
-  fetchPricingTable: async (token: string) => {
-    const { user } = get();
-    if (!token || !user) return;
-
-    try {
-      set({ loading: true, error: null });
-      const response = await getWithToken("/pricing-tables", token);
-      const pricingTable = await response.json();
-      set({ pricingTable, loading: false });
-    } catch (err) {
-      console.error("Error fetching pricing table:", err);
-      set({
-        error: "Failed to load pricing table. Please try again later.",
-        loading: false,
-      });
-    }
-  },
-
-  fetchClientSecret: async (token: string, teamId: number) => {
-    if (!token || !teamId) return;
-
-    try {
-      set({ loading: true, error: null });
-      const response = await getWithToken(
-        `/billing/teams/${teamId}/pricing-table-session`,
-        token,
-      );
-      const data: PricingTableSession = await response.json();
-      set({ clientSecret: data.client_secret, loading: false });
-    } catch (err) {
-      console.error("Error fetching pricing table session:", err);
-      set({
-        error: "Failed to load pricing table session. Please try again later.",
-        loading: false,
-      });
-    }
-  },
-
   initializeUpgrade: async (token: string) => {
-    const { loadConfig, validateToken, fetchPricingTable, fetchClientSecret } =
-      get();
+    const { loadConfig, validateToken } = get();
 
-    // First load config and validate token in parallel
     await Promise.all([loadConfig(), validateToken(token)]);
-
-    const { user, error, config } = get();
-    if (error || !user || !config) return;
-
-    // Then fetch pricing table and client secret in parallel
-    await Promise.all([
-      fetchPricingTable(token),
-      user.team_id ? fetchClientSecret(token, user.team_id) : Promise.resolve(),
-    ]);
   },
 
   reset: () =>
     set({
       user: null,
-      pricingTable: null,
-      clientSecret: null,
       error: null,
       loading: false,
       isValidatingToken: false,
@@ -218,39 +142,9 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
     }),
 
   // Computed properties
-  getStripeFormProps: () => {
-    const { pricingTable, clientSecret, config } = get();
-
-    if (!pricingTable || !clientSecret || !config?.STRIPE_PUBLISHABLE_KEY) {
-      return null;
-    }
-
-    return {
-      pricingTableId: pricingTable.pricing_table_id,
-      publishableKey: config.STRIPE_PUBLISHABLE_KEY,
-      clientSecret,
-    };
-  },
-
   isReady: () => {
-    const {
-      user,
-      pricingTable,
-      clientSecret,
-      config,
-      error,
-      loading,
-      isValidatingToken,
-    } = get();
-    return !!(
-      user &&
-      pricingTable &&
-      clientSecret &&
-      config &&
-      !error &&
-      !loading &&
-      !isValidatingToken
-    );
+    const { user, config, error, loading, isValidatingToken } = get();
+    return !!(user && config && !error && !loading && !isValidatingToken);
   },
 
   isConfigLoading: () => {

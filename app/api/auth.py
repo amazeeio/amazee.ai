@@ -9,7 +9,17 @@ import email_validator
 
 from typing import Optional, List, Union
 
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, Form
+from fastapi import (
+    APIRouter,
+    Cookie,
+    Depends,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    status,
+)
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from urllib.parse import urlparse
@@ -19,6 +29,7 @@ from app.core.config import settings
 from app.core.dependencies import get_limit_service
 from app.core.roles import UserRole
 from app.core.security import (
+    assert_token_not_revoked,
     create_access_token,
     get_current_user_from_auth,
     get_password_hash,
@@ -64,6 +75,7 @@ from app.api.users import _create_user_in_db, get_user_by_email
 from app.core.email import normalize_email_for_lookup
 from app.services.disposable_domains import assert_email_domain_allowed
 from app.services.signup_velocity import enforce_signup_velocity
+from app.services.token_revocation import is_token_revoked, revoke_access_token
 
 auth_logger = logging.getLogger(__name__)
 
@@ -89,6 +101,16 @@ def get_cookie_domain():
     # Remove the first part (e.g., 'backend' or 'frontend')
     domain = ".".join(hostname.split(".")[1:])
     return domain
+
+
+def _bearer_token(authorization: Optional[str]) -> Optional[str]:
+    """Token out of an ``Authorization: Bearer <token>`` header, or None."""
+    if not isinstance(authorization, str):
+        return None
+    parts = authorization.split()
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1]
+    return None
 
 
 async def get_login_data(
@@ -161,7 +183,7 @@ def create_and_set_access_token(
         "httponly": True,
         "max_age": cookie_expiration,
         "expires": cookie_expiration,
-        "samesite": "none",
+        "samesite": "lax",
         "secure": True,
         "path": "/",
     }
@@ -222,7 +244,29 @@ async def login(
 
 
 @router.post("/logout")
-async def logout(response: Response):
+async def logout(
+    response: Response,
+    access_token: Optional[str] = Cookie(None, alias="access_token"),
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    """Log the caller out and stop the presented access token from working again.
+
+    The endpoint stays open to anonymous callers so a client can always clear its
+    cookie. It reports success either way and never says whether a token was real.
+    """
+    token = _bearer_token(authorization) or (
+        access_token if isinstance(access_token, str) else None
+    )
+    if token:
+        try:
+            revoke_access_token(db, token)
+        except Exception:
+            # The cookie must still be cleared, so a failed write cannot make
+            # logout look broken to the client. It is logged for follow-up.
+            auth_logger.exception("Failed to revoke access token during logout")
+            db.rollback()
+
     # Get cookie domain for logout
     cookie_domain = get_cookie_domain()
 
@@ -230,8 +274,9 @@ async def logout(response: Response):
     delete_settings = {
         "key": "access_token",
         "path": "/",
+        "httponly": True,
         "secure": True,
-        "samesite": "none",
+        "samesite": "lax",
     }
 
     # Only set domain if we got one from LAGOON_ROUTES
@@ -451,7 +496,7 @@ async def sign_in(
                 budget_type=BudgetType.PERIODIC,
                 region_id=sign_up_region.id,
             )
-            team = await register_team(team_data, db)
+            team = await register_team(team_data, db, current_user=None)
 
         user_data = UserCreate(
             email=sign_in_username,
@@ -704,15 +749,12 @@ async def delete_token(
 async def validate_jwt(
     request: Request,
     response: Response,
-    token: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     """
     Validate a JWT token and either refresh it or send a new validation URL.
 
-    The token can be provided either:
-    - As a query parameter: ?token=your_token
-    - In the Authorization header: Bearer your_token
+    The token must be provided in the Authorization header: Bearer your_token
 
     Returns:
     - If token is valid: A new access token with cookies set
@@ -724,18 +766,20 @@ async def validate_jwt(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    # Get token from Authorization header if not provided as parameter
-    if not token:
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
-            raise credentials_exception
-        token = auth_header.split(" ")[1]
+    # Token is read only from the Authorization header.
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise credentials_exception
+    token = auth_header.split(" ")[1]
 
     try:
         # Try to validate the token
         payload = jwt.decode(
             token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
         )
+        # A revoked token must not be able to buy a fresh one, which would undo
+        # the logout that revoked it.
+        assert_token_not_revoked(db, payload)
         email: str = payload.get("sub")
         user = get_user_by_email(db, email)
         if not user:
@@ -759,6 +803,13 @@ async def validate_jwt(
                 email = payload.get("sub")
 
                 if not email:
+                    raise credentials_exception
+
+                # A revoked token gets no recovery email either. A token with no
+                # jti still does: it predates revocation, and this branch is how
+                # the holder of an old link gets a working one.
+                if is_token_revoked(db, payload.get("jti")):
+                    auth_logger.info("Refused to refresh a revoked expired token")
                     raise credentials_exception
 
                 send_validation_url(email)
@@ -937,7 +988,7 @@ async def generate_trial_access(
                 is_active=True,
                 budget_type=BudgetType.PERIODIC,
             )
-            team = await register_team(team_data, db)
+            team = await register_team(team_data, db, current_user=None)
             # Ensure team has limit set
             team_limit = limit_service.set_limit(
                 owner_type=OwnerType.TEAM,
@@ -1056,6 +1107,10 @@ async def generate_trial_access(
             )
         try:
             if user:
+                # The MANUAL budget row set above has no foreign key to the
+                # user; left behind, it would pin a future user with the same
+                # id to the trial budget cap.
+                limit_service.delete_limits(OwnerType.USER, user.id, commit=False)
                 db.delete(user)
                 db.commit()
         except Exception as cleanup_error:

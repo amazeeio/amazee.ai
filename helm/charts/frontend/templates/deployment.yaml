@@ -34,11 +34,6 @@ spec:
                 configMapKeyRef:
                   name: {{ include "frontend.fullname" . }}-config
                   key: NEXT_PUBLIC_API_URL
-            - name: STRIPE_PUBLISHABLE_KEY
-              valueFrom:
-                configMapKeyRef:
-                  name: {{ include "frontend.fullname" . }}-config
-                  key: STRIPE_PUBLISHABLE_KEY
             - name: PASSWORDLESS_SIGN_IN
               valueFrom:
                 configMapKeyRef:

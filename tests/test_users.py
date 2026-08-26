@@ -776,6 +776,162 @@ def test_get_user_spend_includes_team_member_region_max_budget(
 
 
 @patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_get_user_spend_reports_member_cap_in_region_without_keys(
+    mock_get_team_info, client, admin_token, db
+):
+    """A cap set before the member has a key must still be readable.
+
+    Region inclusion is otherwise gated on key existence, which made a
+    successful cap write unreadable until the member created a key.
+    """
+    team = DBTeam(
+        name="Capless Team",
+        admin_email="capless-team@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    region_with_cap = DBRegion(
+        name="region-cap",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="http://litellm.cap",
+        litellm_api_key="kc",
+        is_active=True,
+        is_dedicated=False,
+    )
+    region_without_cap = DBRegion(
+        name="region-nocap",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="http://litellm.nocap",
+        litellm_api_key="kn",
+        is_active=True,
+        is_dedicated=False,
+    )
+    user = DBUser(
+        email="dave+1@example.com",
+        hashed_password=get_password_hash("pw"),
+        is_active=True,
+        is_admin=False,
+        team=team,
+    )
+    db.add_all([team, region_with_cap, region_without_cap, user])
+    db.commit()
+    db.refresh(team)
+    db.refresh(region_with_cap)
+    db.refresh(region_without_cap)
+    db.refresh(user)
+    db.add_all(
+        [
+            DBTeamRegion(team_id=team.id, region_id=region_with_cap.id),
+            DBTeamRegion(team_id=team.id, region_id=region_without_cap.id),
+        ]
+    )
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=region_with_cap.id,
+            team_id=team.id,
+            user_id=user.id,
+            max_budget=10.0,
+            budget_duration="1mo",
+        )
+    )
+    db.commit()
+
+    # The team exists in LiteLLM (it is created with the region association),
+    # it just has no keys for this member yet.
+    mock_get_team_info.return_value = {"keys": []}
+
+    response = client.get(
+        "/users/spend?email=dave@example.com",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    regions = data["teams"][0]["regions"]
+    # Only the cap-bearing region is reported: a keyless region without a cap
+    # stays omitted.
+    assert len(regions) == 1
+    assert regions[0]["region_name"] == "region-cap"
+    assert regions[0]["max_budget"] == 10.0
+    assert regions[0]["spend"] == 0.0
+    assert regions[0]["status"] == "ok"
+    assert mock_get_team_info.await_count == 1
+
+
+@patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_get_user_spend_reports_member_cap_when_litellm_team_missing(
+    mock_get_team_info, client, admin_token, db
+):
+    """A 404 from LiteLLM drops the region — unless a cap is configured."""
+    team = DBTeam(
+        name="Missing Team",
+        admin_email="missing-team@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    region = DBRegion(
+        name="region-missing",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="http://litellm.missing",
+        litellm_api_key="km",
+        is_active=True,
+        is_dedicated=False,
+    )
+    user = DBUser(
+        email="erin+1@example.com",
+        hashed_password=get_password_hash("pw"),
+        is_active=True,
+        is_admin=False,
+        team=team,
+    )
+    db.add_all([team, region, user])
+    db.commit()
+    db.refresh(team)
+    db.refresh(region)
+    db.refresh(user)
+    db.add(DBTeamRegion(team_id=team.id, region_id=region.id))
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=region.id,
+            team_id=team.id,
+            user_id=user.id,
+            max_budget=25.0,
+            budget_duration="1mo",
+        )
+    )
+    db.commit()
+
+    mock_get_team_info.side_effect = HTTPException(
+        status_code=500,
+        detail="Failed to get LiteLLM team info: Status 404: team not found",
+    )
+
+    response = client.get(
+        "/users/spend?email=erin@example.com",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    regions = data["teams"][0]["regions"]
+    assert len(regions) == 1
+    assert regions[0]["max_budget"] == 25.0
+    assert regions[0]["spend"] == 0.0
+    assert regions[0]["status"] == "ok"
+
+
+@patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
 def test_get_user_spend_unavailable_region_not_cached(
     mock_get_team_info, client, admin_token, db
 ):
@@ -1544,3 +1700,208 @@ def test_delete_user_with_member_budget_and_alert_state(
         .count()
         == 0
     )
+
+
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_delete_team_member_frees_the_seat(client, admin_token, db, test_team):
+    """
+    GIVEN: A team at its member limit, counted by the limit service
+    WHEN: One member is deleted
+    THEN: A replacement member can be created
+
+    The counter is a cache of the real member count and is re-derived on the
+    next check. Before this fix nothing ever brought it back down, so a team
+    at its cap stayed blocked for good.
+    """
+    members = [
+        DBUser(email=f"seat{i}@example.com", team_id=test_team.id, role="read_only")
+        for i in range(2)
+    ]
+    db.add_all(members)
+    db.commit()
+    db.refresh(members[0])
+    doomed_member_id = members[0].id
+
+    LimitService(db).set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.USER,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=2.0,
+        current_value=2.0,
+        limited_by=LimitSource.DEFAULT,
+    )
+
+    response = client.delete(
+        f"/users/{doomed_member_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+
+    db.expire_all()
+    # The user's own rows go with them, so the next user with this id starts clean
+    assert (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.USER,
+            DBLimitedResource.owner_id == doomed_member_id,
+        )
+        .count()
+        == 0
+    )
+
+    response = client.post(
+        "/users/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "email": "replacement@example.com",
+            "password": "newpassword",
+            "team_id": test_team.id,
+        },
+    )
+    assert response.status_code == 201
+
+    # The recount saw one remaining member and the new member took a seat
+    db.expire_all()
+    limit = (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == test_team.id,
+            DBLimitedResource.resource == ResourceType.USER,
+        )
+        .first()
+    )
+    assert limit.current_value == 2.0
+
+
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_remove_user_from_team_frees_the_seat(client, admin_token, db, test_team):
+    """
+    GIVEN: A team at its member limit, counted by the limit service
+    WHEN: A member is removed from the team
+    THEN: A new member can be created in their place
+    """
+    member = DBUser(
+        email="leaving-member@example.com", team_id=test_team.id, role="read_only"
+    )
+    db.add(member)
+    db.commit()
+    db.refresh(member)
+
+    LimitService(db).set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.USER,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=1.0,
+        current_value=1.0,
+        limited_by=LimitSource.DEFAULT,
+    )
+
+    with patch("app.api.users.sync_remove_user_from_team", new_callable=AsyncMock):
+        response = client.post(
+            f"/users/{member.id}/remove-from-team",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    assert response.status_code == 200
+
+    response = client.post(
+        "/users/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "email": "replacement-member@example.com",
+            "password": "newpassword",
+            "team_id": test_team.id,
+        },
+    )
+    assert response.status_code == 201
+
+
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_add_user_to_team_takes_a_seat(client, admin_token, db, test_team):
+    """
+    GIVEN: A team with one free member seat
+    WHEN: An existing team-less user is added to the team
+    THEN: A 200 is returned and the counter goes up
+
+    Adding a member this way used to leave the counter untouched, so the team
+    could pass its cap.
+    """
+    joiner = DBUser(email="joiner@example.com", role="read_only")
+    db.add(joiner)
+    db.commit()
+    db.refresh(joiner)
+
+    LimitService(db).set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.USER,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=1.0,
+        current_value=0.0,
+        limited_by=LimitSource.DEFAULT,
+    )
+
+    with patch("app.api.users.sync_add_user_to_team", new_callable=AsyncMock):
+        response = client.post(
+            f"/users/{joiner.id}/add-to-team",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"team_id": test_team.id},
+        )
+    assert response.status_code == 200
+
+    db.expire_all()
+    limit = (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == test_team.id,
+            DBLimitedResource.resource == ResourceType.USER,
+        )
+        .first()
+    )
+    assert limit.current_value == 1.0
+
+
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_add_user_to_team_rejected_at_capacity(client, admin_token, db, test_team):
+    """
+    GIVEN: A team at its member limit
+    WHEN: An existing team-less user is added to the team
+    THEN: A 402 is returned and the user stays out of the team
+    """
+    member = DBUser(
+        email="sitting-member@example.com", team_id=test_team.id, role="read_only"
+    )
+    joiner = DBUser(email="late-joiner@example.com", role="read_only")
+    db.add_all([member, joiner])
+    db.commit()
+    db.refresh(joiner)
+
+    LimitService(db).set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.USER,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=1.0,
+        current_value=1.0,
+        limited_by=LimitSource.DEFAULT,
+    )
+
+    with patch("app.api.users.sync_add_user_to_team", new_callable=AsyncMock):
+        response = client.post(
+            f"/users/{joiner.id}/add-to-team",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"team_id": test_team.id},
+        )
+    assert response.status_code == 402
+    assert "maximum user limit" in response.json()["detail"]
+
+    db.expire_all()
+    db.refresh(joiner)
+    assert joiner.team_id is None

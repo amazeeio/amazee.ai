@@ -141,9 +141,6 @@ Requires docker compose >= 2.24. CI: the "LiteLLM Integration Gate" workflow
 (manual dispatch to gate a version bump + weekly cron); see
 `litellm-integration-tests-plan.md` for design and prerequisites.
 
-### 💳 Testing Stripe
-See [[tests/stripe_test_trigger.md]] for detailed instructions on testing Stripe integration for billing.
-
 ### Frontend Tests
 ```bash
 make frontend-test    # Run frontend tests if they exist
