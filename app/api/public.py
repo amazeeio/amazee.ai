@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import re
-from datetime import date, datetime, timedelta, UTC
+from datetime import datetime, timedelta, UTC
 from typing import Any
 
 import httpx
@@ -31,6 +31,7 @@ from app.schemas.models import (
     PublicRegionModels,
 )
 from app.services.litellm import LiteLLMService
+from app.services.model_eol import eol_dates_by_model, fetch_bedrock_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -559,7 +560,7 @@ def _extract_model_summary(
     item: dict[str, Any],
     profit_margin: float,
     alias_map: dict[str, str] | None = None,
-    eol_index: dict[str, str] | None = None,
+    eol_dates: dict[str, str] | None = None,
 ) -> PublicModelSummary:
     model_info = item.get("model_info", {})
     model_id = item.get("model_name") or model_info.get("key") or "unknown"
@@ -591,7 +592,10 @@ def _extract_model_summary(
 
     aliases = _extract_aliases(item, model_id)
     metadata_raw = model_info.get("metadata") or item.get("metadata")
-    eol_date, eol_source = _resolve_eol(item, metadata_raw, eol_index)
+    # Stored by the daily EOL scan (app/services/model_eol.py). The only source
+    # is the upstream Bedrock catalog, so the source label is constant.
+    eol_date = (eol_dates or {}).get(model_id)
+    eol_source = "bedrock" if eol_date else None
 
     return PublicModelSummary(
         aliased_to=(alias_map or {}).get(model_id),
@@ -813,7 +817,9 @@ async def _fetch_router_aliases(service: LiteLLMService) -> dict[str, str]:
 
 
 async def _fetch_region_model_group(
-    service: LiteLLMService, region_name: str
+    service: LiteLLMService,
+    region_name: str,
+    eol_dates: dict[str, str] | None = None,
 ) -> PublicRegionModels:
     async with _REGION_SEMAPHORE:
         try:
@@ -828,16 +834,15 @@ async def _fetch_region_model_group(
                 timeout=_REGION_TIMEOUT,
             )
             items = model_info.get("data", [])
-            # Both maps need the whole region: aliased_to compares models against
-            # each other, and the EOL index is shared by every model here.
-            # Real router aliases win over the derived fake-alias map.
+            # aliased_to compares models against each other, so the map needs
+            # the whole region. Real router aliases win over the derived
+            # fake-alias map.
             alias_map = {**_build_alias_map(items), **router_aliases}
-            eol_index = await _get_bedrock_eol_index()
             return PublicRegionModels(
                 region=region_name,
                 status="ga",
                 models=[
-                    _extract_model_summary(item, profit_margin, alias_map, eol_index)
+                    _extract_model_summary(item, profit_margin, alias_map, eol_dates)
                     for item in items
                 ],
             )
@@ -868,6 +873,7 @@ async def list_public_models(
 ):
     now = datetime.now(UTC)
     alias_filters = _parse_alias_filters(alias)
+    eol_dates = eol_dates_by_model(db)
 
     # --- Public regions (cached globally) ---
     if _models_cache["expires_at"] > now:
@@ -898,6 +904,7 @@ async def list_public_models(
                         api_key=region.litellm_api_key,
                     ),
                     region.name,
+                    eol_dates,
                 )
                 for region in regions_to_fetch
             ]
@@ -981,6 +988,7 @@ async def list_public_models(
                                 api_key=region.litellm_api_key,
                             ),
                             region.name,
+                            eol_dates,
                         )
                         for region in dedicated_to_fetch
                     ]
@@ -1044,226 +1052,6 @@ _AWS_REGION_GROUPS: dict[str, dict[str, str]] = {
     "EU": {"upstream_region": "eu-central-1", "provider_prefix": "eu."},
     "AU": {"upstream_region": "ap-southeast-2", "provider_prefix": "au."},
 }
-
-_BEDROCK_CATALOG_TTL = timedelta(hours=1)
-_bedrock_catalog_lock = asyncio.Lock()
-_bedrock_catalog_cache: dict[str, Any] = {
-    "url": None,
-    "expires_at": datetime.min.replace(tzinfo=UTC),
-    "data": None,
-    # EOL dates derived from "data", cached with it so the derivation happens
-    # once per fetch rather than once per caller.  See _build_eol_index.
-    "eol_index": {},
-}
-
-
-async def _fetch_bedrock_catalog(url: str) -> list[dict[str, Any]]:
-    """Fetch the upstream Bedrock model catalog, with a small in-memory cache.
-
-    The catalog is on the order of a few hundred KB and changes infrequently,
-    so a 1h TTL is plenty.  Cache key includes the URL so overrides bypass
-    stale data automatically.
-    """
-    now = datetime.now(UTC)
-    if (
-        _bedrock_catalog_cache["url"] == url
-        and _bedrock_catalog_cache["expires_at"] > now
-        and _bedrock_catalog_cache["data"] is not None
-    ):
-        return _bedrock_catalog_cache["data"]
-
-    async with _bedrock_catalog_lock:
-        now = datetime.now(UTC)
-        if (
-            _bedrock_catalog_cache["url"] == url
-            and _bedrock_catalog_cache["expires_at"] > now
-            and _bedrock_catalog_cache["data"] is not None
-        ):
-            return _bedrock_catalog_cache["data"]
-
-        timeout = settings.BEDROCK_MISSING_MODELS_TIMEOUT_SECONDS
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            try:
-                data = response.json()
-            except ValueError as exc:
-                raise HTTPException(
-                    status_code=502,
-                    detail=(
-                        f"Upstream Bedrock catalog at {url} returned non-JSON response: {exc}"
-                    ),
-                ) from exc
-
-        if not isinstance(data, list):
-            raise HTTPException(
-                status_code=502,
-                detail=(
-                    f"Upstream Bedrock catalog at {url} did not return a JSON array"
-                ),
-            )
-
-        _bedrock_catalog_cache["url"] = url
-        _bedrock_catalog_cache["data"] = data
-        _bedrock_catalog_cache["eol_index"] = _build_eol_index(data)
-        _bedrock_catalog_cache["expires_at"] = now + _BEDROCK_CATALOG_TTL
-        return data
-
-
-# ---------------------------------------------------------------------------
-# eol_date resolution
-# ---------------------------------------------------------------------------
-#
-# Why this is fetched in-request and NOT by a cron job:
-#
-#   * The data is already here.  ``BEDROCK_MODELS_URL`` and
-#     ``_fetch_bedrock_catalog`` exist for /models/missing/aws, and the catalog
-#     is cached for _BEDROCK_CATALOG_TTL.  Reading EOL dates out of it costs one
-#     extra ~190KB GET per hour per pod, and only on a cache miss.
-#   * /public/models is itself cached for _CACHE_TTL and served with
-#     ``Cache-Control: public, max-age=3600``, so EOL dates refresh on the same
-#     schedule as the rest of the response.  A cron job would add a second,
-#     different refresh schedule for no gain.
-#   * A cron job would need a table, a migration and a .lagoon.yml entry, and it
-#     would put stale rows between us and the upstream truth.  EOL dates change
-#     a handful of times a year; that machinery buys nothing.
-#
-# The weekly Slack alert stays a cron (GitHub Actions) — it reads this endpoint,
-# so it now gets ``eol_date`` instead of regex-parsing prose out of
-# ``metadata_raw``.
-
-# Operator-authored annotation in the LiteLLM model metadata, e.g.
-# "...Good for simple tasks. (EOL: 2026-09-10)".  Kept in sync with the same
-# pattern in scripts/check_eol_models.py, which cannot import from app/ because
-# it is deliberately stdlib-only (app.core imports pydantic).  A test asserts
-# both parse the same string.
-_EOL_ANNOTATION_PATTERN = re.compile(r"\(EOL:\s*(\d{4}-\d{2}-\d{2})\)")
-
-# ``bedrock/us.anthropic.claude-...`` -> the catalog's ``anthropic.claude-...``.
-_BEDROCK_REGION_PREFIXES = ("us.", "eu.", "au.", "apac.", "global.", "jp.")
-
-
-def _parse_eol_annotation(metadata_raw: Any) -> str | None:
-    """Return the ISO date from an ``(EOL: YYYY-MM-DD)`` annotation, if present."""
-    if not isinstance(metadata_raw, str):
-        return None
-    match = _EOL_ANNOTATION_PATTERN.search(metadata_raw)
-    if not match:
-        return None
-    try:
-        return date.fromisoformat(match.group(1)).isoformat()
-    except ValueError:
-        return None
-
-
-def _bedrock_catalog_id(item: dict[str, Any]) -> str | None:
-    """Return the upstream Bedrock ``modelId`` for a LiteLLM entry, or None.
-
-    Returns None for non-Bedrock providers (``vertex_ai/...``, ``azure/...``),
-    which the Bedrock catalog cannot describe.
-    """
-    params = item.get("litellm_params")
-    candidate = params.get("model") if isinstance(params, dict) else None
-    if not isinstance(candidate, str) or not candidate:
-        return None
-    if candidate.startswith("bedrock/"):
-        candidate = candidate.split("/", 1)[1]
-    elif "/" in candidate:
-        return None
-    for prefix in _BEDROCK_REGION_PREFIXES:
-        if candidate.startswith(prefix):
-            candidate = candidate[len(prefix) :]
-            break
-    return candidate or None
-
-
-def _build_eol_index(catalog: list[dict[str, Any]]) -> dict[str, str]:
-    """Map Bedrock ``modelId`` -> ISO EOL date for every model that has one.
-
-    Two upstream fields carry the date and they agree wherever both are set, but
-    neither covers the other's models: prefer ``modelLifecycle.endOfLifeTime``
-    (already ISO), fall back to the human-formatted ``modelCard.modelEolDate``.
-    """
-    index: dict[str, str] = {}
-    for model in catalog:
-        if not isinstance(model, dict):
-            continue
-        model_id = model.get("modelId")
-        if not isinstance(model_id, str) or not model_id:
-            continue
-
-        lifecycle = model.get("modelLifecycle")
-        raw = (
-            (lifecycle or {}).get("endOfLifeTime")
-            if isinstance(lifecycle, dict)
-            else None
-        )
-        if isinstance(raw, str) and raw.strip():
-            try:
-                index[model_id] = date.fromisoformat(raw.strip()[:10]).isoformat()
-                continue
-            except ValueError:
-                logger.debug(
-                    "Unparseable modelLifecycle.endOfLifeTime %r for Bedrock model "
-                    "%s; trying modelCard.modelEolDate",
-                    raw,
-                    model_id,
-                )
-
-        card = model.get("modelCard")
-        raw = (card or {}).get("modelEolDate") if isinstance(card, dict) else None
-        if isinstance(raw, str) and raw.strip():
-            try:
-                index[model_id] = (
-                    datetime.strptime(raw.strip(), "%B %d, %Y").date().isoformat()
-                )
-            except ValueError:
-                logger.debug(
-                    "Unparseable modelEolDate %r for Bedrock model %s", raw, model_id
-                )
-    return index
-
-
-async def _get_bedrock_eol_index() -> dict[str, str]:
-    """EOL dates keyed by Bedrock ``modelId``; empty dict when unavailable.
-
-    The index is built by _fetch_bedrock_catalog under its own lock, so a cold
-    multi-region fan-out derives it once no matter how many regions ask for it.
-
-    Never raises: /public/models must not fail because the upstream catalog is
-    down, so a fetch error degrades to the operator-authored annotations only.
-    An empty ``BEDROCK_MODELS_URL`` disables the lookup entirely (used by tests
-    to stay off the network).
-    """
-    if not settings.BEDROCK_MODELS_URL:
-        return {}
-    try:
-        await _fetch_bedrock_catalog(settings.BEDROCK_MODELS_URL)
-    except (httpx.RequestError, HTTPException, asyncio.TimeoutError) as exc:
-        logger.warning(
-            "Bedrock catalog unavailable for /public/models EOL dates: %s", str(exc)
-        )
-        return {}
-    return _bedrock_catalog_cache["eol_index"] or {}
-
-
-def _resolve_eol(
-    item: dict[str, Any], metadata_raw: Any, eol_index: dict[str, str] | None
-) -> tuple[str | None, str | None]:
-    """Return ``(eol_date, eol_source)`` for one model.
-
-    An operator-authored annotation wins over the upstream catalog: we may retire
-    a model before AWS does, and that decision must not be overwritten.
-    """
-    annotated = _parse_eol_annotation(metadata_raw)
-    if annotated:
-        return annotated, "manual"
-
-    catalog_id = _bedrock_catalog_id(item)
-    if catalog_id and (upstream := (eol_index or {}).get(catalog_id)):
-        return upstream, "bedrock"
-    return None, None
-
 
 def _build_available_aws_models_by_group(
     upstream_models: list[dict[str, Any]],
@@ -1410,7 +1198,10 @@ async def _build_aws_missing_report(
     """
     include_private = bool(user and user.is_admin)
 
-    upstream_models = await _fetch_bedrock_catalog(settings.BEDROCK_MODELS_URL)
+    try:
+        upstream_models = await fetch_bedrock_catalog(settings.BEDROCK_MODELS_URL)
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     available_by_group = _build_available_aws_models_by_group(upstream_models)
 
     region_query = db.query(DBRegion).filter(DBRegion.is_active.is_(True))

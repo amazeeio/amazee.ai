@@ -1,11 +1,11 @@
-import asyncio
+from datetime import UTC, datetime
 
 import pytest
 import httpx
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 from app.api import public as public_api
-from app.db.models import DBRegion, DBTeam, DBTeamRegion, DBUser
+from app.db.models import DBModel, DBRegion, DBTeam, DBTeamRegion, DBUser
 from app.core.security import get_password_hash
 
 
@@ -16,18 +16,6 @@ def _clear_public_models_cache():
     )
     public_api._dedicated_cache["by_team"] = {}
     public_api._dedicated_cache["team_expires"] = {}
-
-
-@pytest.fixture(autouse=True)
-def _offline_bedrock_catalog():
-    """Keep /public/models off the network.
-
-    The endpoint enriches models with EOL dates from the upstream Bedrock
-    catalog; an empty BEDROCK_MODELS_URL skips that fetch. Tests that exercise
-    the EOL path patch _get_bedrock_eol_index (or this setting) themselves.
-    """
-    with patch.object(public_api.settings, "BEDROCK_MODELS_URL", ""):
-        yield
 
 
 def test_public_models_returns_aggregated_data(client, db):
@@ -1196,184 +1184,81 @@ def _eol_response():
     }
 
 
-def test_public_models_reports_eol_from_annotation_and_catalog(client, db):
-    """Manual annotations and upstream catalog dates both surface, tagged."""
+def _store_eol(db, model_id, eol_date):
+    """Give a models row the stored upstream EOL date the scan would write."""
+    model = DBModel(
+        model_id=model_id,
+        display_name=model_id,
+        provider="bedrock",
+        type="chat",
+        upstream_eol=eol_date,
+    )
+    db.add(model)
+    db.commit()
+    return model
+
+
+def test_public_models_reports_stored_eol_dates(client, db):
+    """eol_date comes from models.upstream_eol, written by the daily scan."""
     _clear_public_models_cache()
     _make_public_region(db, "eol-region")
+    _store_eol(db, "claude-4-6-sonnet", datetime(2026, 10, 14, tzinfo=UTC))
 
-    with (
-        patch("app.api.public.LiteLLMService") as mock_cls,
-        patch.object(
-            public_api,
-            "_get_bedrock_eol_index",
-            AsyncMock(return_value={"anthropic.claude-sonnet-4-6": "2026-10-14"}),
-        ),
-    ):
+    with patch("app.api.public.LiteLLMService") as mock_cls:
         mock_cls.return_value.get_model_info = AsyncMock(return_value=_eol_response())
         response = client.get("/public/models")
 
     assert response.status_code == 200
     models = _models_by_id(response)
-
-    assert models["claude-3-haiku"]["eol_date"] == "2026-09-10"
-    assert models["claude-3-haiku"]["eol_source"] == "manual"
-    # metadata_raw must keep the annotation: no breaking change.
-    assert "(EOL: 2026-09-10)" in models["claude-3-haiku"]["metadata_raw"]
 
     assert models["claude-4-6-sonnet"]["eol_date"] == "2026-10-14"
     assert models["claude-4-6-sonnet"]["eol_source"] == "bedrock"
 
+    # No stored date, so no date reported -- the "(EOL: ...)" note in the
+    # metadata is no longer a source.
+    assert models["claude-3-haiku"]["eol_date"] is None
+    assert models["claude-3-haiku"]["eol_source"] is None
+    # metadata_raw still passes through untouched: no breaking change.
+    assert "(EOL: 2026-09-10)" in models["claude-3-haiku"]["metadata_raw"]
+
     assert models["gemini-2.5-pro"]["eol_date"] is None
-    assert models["gemini-2.5-pro"]["eol_source"] is None
 
 
-def test_public_models_annotation_overrides_catalog_eol(client, db):
-    """An operator may retire a model earlier than AWS does."""
+def test_public_models_makes_no_upstream_call_for_eol(client, db):
+    """The endpoint reads the column, so it must not fetch the Bedrock catalog."""
     _clear_public_models_cache()
-    _make_public_region(db, "eol-override-region")
+    _make_public_region(db, "eol-no-fetch-region")
+    _store_eol(db, "claude-3-haiku", datetime(2026, 9, 10, tzinfo=UTC))
 
     with (
         patch("app.api.public.LiteLLMService") as mock_cls,
         patch.object(
             public_api,
-            "_get_bedrock_eol_index",
-            AsyncMock(
-                return_value={"anthropic.claude-3-haiku-20240307-v1:0": "2026-09-10"}
-            ),
-        ),
-    ):
-        mock_cls.return_value.get_model_info = AsyncMock(
-            return_value={
-                "data": [
-                    {
-                        "model_name": "claude-3-haiku",
-                        "litellm_params": {
-                            "model": "bedrock/us.anthropic.claude-3-haiku-20240307-v1:0"
-                        },
-                        "model_info": {
-                            "mode": "chat",
-                            "metadata": "Retiring early. (EOL: 2026-08-01)",
-                        },
-                    }
-                ]
-            }
-        )
-        response = client.get("/public/models")
-
-    models = _models_by_id(response)
-    assert models["claude-3-haiku"]["eol_date"] == "2026-08-01"
-    assert models["claude-3-haiku"]["eol_source"] == "manual"
-
-
-def test_public_models_survives_unreachable_bedrock_catalog(client, db):
-    """A dead upstream catalog must not fail the endpoint."""
-    _clear_public_models_cache()
-    _make_public_region(db, "eol-degraded-region")
-    public_api._bedrock_catalog_cache["eol_index"] = {}
-
-    with (
-        patch("app.api.public.LiteLLMService") as mock_cls,
-        patch.object(
-            public_api.settings,
-            "BEDROCK_MODELS_URL",
-            "https://catalog.invalid/models.json",
-        ),
-        patch.object(
-            public_api,
-            "_fetch_bedrock_catalog",
-            AsyncMock(side_effect=httpx.ConnectError("boom")),
+            "fetch_bedrock_catalog",
+            AsyncMock(side_effect=AssertionError("must not fetch the catalog")),
         ),
     ):
         mock_cls.return_value.get_model_info = AsyncMock(return_value=_eol_response())
         response = client.get("/public/models")
 
     assert response.status_code == 200
-    models = _models_by_id(response)
-    # The manual annotation still works; the catalog-only date is simply absent.
-    assert models["claude-3-haiku"]["eol_date"] == "2026-09-10"
-    assert models["claude-4-6-sonnet"]["eol_date"] is None
+    assert _models_by_id(response)["claude-3-haiku"]["eol_date"] == "2026-09-10"
 
 
-def test_build_eol_index_prefers_lifecycle_and_parses_card_dates():
-    """Both upstream date fields are read; lifecycle wins when both are set."""
-    index = public_api._build_eol_index(
-        [
-            {
-                "modelId": "anthropic.claude-sonnet-4-20250514-v1:0",
-                "modelLifecycle": {"endOfLifeTime": "2026-10-14 07:00:00+00:00"},
-                "modelCard": {"modelEolDate": "October 14, 2026"},
-            },
-            {
-                "modelId": "anthropic.claude-3-haiku-20240307-v1:0",
-                "modelLifecycle": {"status": "ACTIVE"},
-                "modelCard": {"modelEolDate": "September 10, 2026"},
-            },
-            {
-                "modelId": "anthropic.claude-opus-5",
-                "modelLifecycle": {"status": "ACTIVE"},
-                "modelCard": {"modelEolDate": None},
-            },
-            {"modelId": "broken.model", "modelCard": {"modelEolDate": "not a date"}},
-        ]
-    )
-    assert index == {
-        "anthropic.claude-sonnet-4-20250514-v1:0": "2026-10-14",
-        "anthropic.claude-3-haiku-20240307-v1:0": "2026-09-10",
-    }
+def test_public_models_ignores_soft_deleted_model_rows(client, db):
+    """A soft-deleted models row must not resurrect its EOL date."""
+    _clear_public_models_cache()
+    _make_public_region(db, "eol-deleted-region")
+    model = _store_eol(db, "claude-3-haiku", datetime(2026, 9, 10, tzinfo=UTC))
+    model.deleted_at = datetime(2026, 8, 1, tzinfo=UTC)
+    db.commit()
 
+    with patch("app.api.public.LiteLLMService") as mock_cls:
+        mock_cls.return_value.get_model_info = AsyncMock(return_value=_eol_response())
+        response = client.get("/public/models")
 
-@pytest.mark.asyncio
-async def test_bedrock_eol_index_is_derived_once_per_fetch():
-    """A cold multi-region fan-out must not rebuild the index per region.
+    assert _models_by_id(response)["claude-3-haiku"]["eol_date"] is None
 
-    The index is derived inside _fetch_bedrock_catalog's lock, so concurrent
-    callers share one HTTP fetch and one derivation.
-    """
-    public_api._bedrock_catalog_cache["url"] = None
-    public_api._bedrock_catalog_cache["data"] = None
-    public_api._bedrock_catalog_cache["eol_index"] = {}
-    public_api._bedrock_catalog_cache["expires_at"] = public_api.datetime.min.replace(
-        tzinfo=public_api.UTC
-    )
-
-    catalog = [
-        {
-            "modelId": "anthropic.claude-3-haiku-20240307-v1:0",
-            "modelLifecycle": {"endOfLifeTime": "2026-09-10 08:00:00+00:00"},
-        }
-    ]
-    builds = []
-    real_build = public_api._build_eol_index
-
-    def counting_build(data):
-        builds.append(len(data))
-        return real_build(data)
-
-    response = MagicMock()
-    response.json.return_value = catalog
-    response.raise_for_status.return_value = None
-    mock_client = MagicMock()
-    mock_client.get = AsyncMock(return_value=response)
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-
-    with (
-        patch.object(
-            public_api.settings,
-            "BEDROCK_MODELS_URL",
-            "https://catalog.test/models.json",
-        ),
-        patch.object(public_api, "_build_eol_index", counting_build),
-        patch.object(public_api.httpx, "AsyncClient", return_value=mock_client),
-    ):
-        indexes = await asyncio.gather(
-            *(public_api._get_bedrock_eol_index() for _ in range(5))
-        )
-
-    assert len(builds) == 1, f"index rebuilt {len(builds)} times"
-    assert mock_client.get.await_count == 1
-    expected = {"anthropic.claude-3-haiku-20240307-v1:0": "2026-09-10"}
-    assert all(index == expected for index in indexes)
 
 
 @pytest.mark.parametrize(

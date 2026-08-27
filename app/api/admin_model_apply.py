@@ -504,9 +504,10 @@ async def apply_model_config(
         if req.prune:
             # Sunset protocol (issue #427): a callable name may only be
             # deactivated after its announced EOL has passed. No EOL = never
-            # announced = never pruned. The grace period is the gap between
-            # the catalog PR that sets eol_date and the PR that removes the row.
-            eol = _tz(model.override_eol) or _tz(model.real_eol)
+            # announced = never pruned. The date comes from the EOL scan
+            # (app/services/model_eol.py), the same column /public/models
+            # publishes, so what we announced is what gates the removal.
+            eol = _tz(model.upstream_eol)
             if model.is_active_globally and (not eol or eol > datetime.now(UTC)):
                 changes.append(
                     ApplyChange(

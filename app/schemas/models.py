@@ -372,9 +372,8 @@ class PublicModelSummary(BaseModel):
     eol_source: Optional[str] = Field(
         default=None,
         description=(
-            "Where eol_date came from: 'manual' for an operator-authored "
-            "'(EOL: ...)' annotation in the LiteLLM model metadata, 'bedrock' "
-            "for the upstream AWS Bedrock catalog. Null when eol_date is null."
+            "Where eol_date came from. Always 'bedrock' -- the upstream AWS "
+            "Bedrock catalog is the only source. Null when eol_date is null."
         ),
     )
 
@@ -1258,6 +1257,9 @@ class AdminModelBase(BaseModel):
     description: Optional[str] = None
     real_eol: Optional[datetime] = None
     override_eol: Optional[datetime] = None
+    # Written by the EOL scan. This is the date the sunset guard reads, so the
+    # admin UI must show it rather than the two catalog-declared columns.
+    upstream_eol: Optional[datetime] = None
     is_active_globally: bool = True
     litellm_params: Optional[dict] = None
 
