@@ -93,10 +93,10 @@ def _run_scan(db, catalog, litellm_payload, webhook_status=200):
         ),
         patch.object(
             model_eol.settings,
-            "BUDGET_ALERT_WEBHOOK_URL",
+            "MODEL_EOL_WEBHOOK_URL",
             "https://moad.test/webhook/amazeeai",
         ),
-        patch.object(model_eol.settings, "BUDGET_ALERT_WEBHOOK_TOKEN", "tok"),
+        patch.object(model_eol.settings, "MODEL_EOL_WEBHOOK_TOKEN", "tok"),
     ):
         totals = asyncio.run(model_eol.scan_models_for_eol(db))
     return totals, posts
@@ -331,7 +331,7 @@ def test_unreadable_region_does_not_clear_stored_dates(db):
             model_eol.settings, "BEDROCK_MODELS_URL", "https://catalog.test/models.json"
         ),
         patch.object(
-            model_eol.settings, "BUDGET_ALERT_WEBHOOK_URL", "https://moad.test/hook"
+            model_eol.settings, "MODEL_EOL_WEBHOOK_URL", "https://moad.test/hook"
         ),
     ):
         totals = asyncio.run(model_eol.scan_models_for_eol(db))
@@ -440,3 +440,33 @@ def test_deactivated_model_is_left_out_of_the_snapshot(db):
     _, posts = _run_scan(db, _catalog((HAIKU, "2026-09-10")), {"data": []})
 
     assert posts == []
+
+
+def test_unset_webhook_url_leaves_the_model_unnotified(db):
+    """Without a destination the dates are still stored, but nothing is sent."""
+    _make_region(db, "us1")
+    model = _make_model(db, "claude-3-haiku")
+
+    service = MagicMock()
+    service.get_model_info = AsyncMock(
+        return_value=_litellm_data(("claude-3-haiku", f"bedrock/us.{HAIKU}"))
+    )
+
+    with (
+        patch.object(
+            model_eol,
+            "fetch_bedrock_catalog",
+            AsyncMock(return_value=_catalog((HAIKU, "2026-09-10"))),
+        ),
+        patch.object(model_eol, "LiteLLMService", return_value=service),
+        patch.object(
+            model_eol.settings, "BEDROCK_MODELS_URL", "https://catalog.test/models.json"
+        ),
+        patch.object(model_eol.settings, "MODEL_EOL_WEBHOOK_URL", ""),
+    ):
+        totals = asyncio.run(model_eol.scan_models_for_eol(db))
+
+    db.refresh(model)
+    assert model.upstream_eol == datetime(2026, 9, 10, tzinfo=UTC)
+    assert model.eol_notified_at is None
+    assert totals["newly_notified"] == 0
