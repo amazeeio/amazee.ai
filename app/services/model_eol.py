@@ -40,6 +40,7 @@ EVENT_TYPE = "model.eol_announced"
 
 _REGION_TIMEOUT = 30.0  # seconds per region; a cron can wait longer than a request
 _REGION_CONCURRENCY = 4
+_WEBHOOK_TIMEOUT = 30.0  # seconds; one POST a day, no reason to make it a knob
 
 _BEDROCK_CATALOG_TTL = timedelta(hours=1)
 _bedrock_catalog_lock = asyncio.Lock()
@@ -334,25 +335,23 @@ async def _deliver(events: list[dict]) -> bool:
 
     Deliberately not reusing ``budget_alert_webhook.deliver_events``: that
     module's contract is per-event retry bookkeeping, which a daily full
-    snapshot does not need. It shares the destination and the envelope shape.
+    snapshot does not need. It shares only the envelope shape.
     """
-    url = settings.BUDGET_ALERT_WEBHOOK_URL
+    url = settings.MODEL_EOL_WEBHOOK_URL
     if not url:
         logger.error(
-            "BUDGET_ALERT_WEBHOOK_URL is not set; %d model EOL event(s) not delivered",
+            "MODEL_EOL_WEBHOOK_URL is not set; %d model EOL event(s) not delivered",
             len(events),
         )
         return False
 
     headers = {"Content-Type": "application/json"}
-    if settings.BUDGET_ALERT_WEBHOOK_TOKEN:
-        headers["Authorization"] = f"Bearer {settings.BUDGET_ALERT_WEBHOOK_TOKEN}"
+    if settings.MODEL_EOL_WEBHOOK_TOKEN:
+        headers["Authorization"] = f"Bearer {settings.MODEL_EOL_WEBHOOK_TOKEN}"
 
     payload = {"api_version": MODEL_EOL_API_VERSION, "events": events}
     try:
-        async with httpx.AsyncClient(
-            timeout=settings.BUDGET_ALERT_WEBHOOK_TIMEOUT
-        ) as client:
+        async with httpx.AsyncClient(timeout=_WEBHOOK_TIMEOUT) as client:
             response = await client.post(url, json=payload, headers=headers)
     except httpx.RequestError as exc:
         logger.error(
