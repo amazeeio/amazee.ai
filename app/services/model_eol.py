@@ -289,7 +289,7 @@ def _apply_dates(
 
 
 def _build_events(
-    db: Session, regions_by_model: dict[str, list[tuple[int, str, str | None]]]
+    db: Session, regions_by_model: dict[str, list[tuple[int, str]]]
 ) -> tuple[list[dict], list[DBModel]]:
     """One event per model that has a date. Also returns the un-notified rows."""
     # A globally deactivated model is already gone from the callable surface, so
@@ -323,11 +323,9 @@ def _build_events(
                         if row.upstream_eol_first_seen_at
                         else None
                     ),
-                    # Name and label both travel: the name is our stable
-                    # identifier, the label is what a customer is shown.
                     "regions": [
-                        {"id": rid, "name": name, "label": label}
-                        for rid, name, label in sorted(
+                        {"id": rid, "name": name}
+                        for rid, name in sorted(
                             regions_by_model.get(row.model_id, []),
                             key=lambda region: region[1],
                         )
@@ -415,7 +413,7 @@ async def scan_models_for_eol(db: Session) -> dict[str, int]:
 
     observed: set[str] = set()
     resolved: dict[str, str] = {}
-    regions_by_model: dict[str, list[tuple[int, str, str | None]]] = {}
+    regions_by_model: dict[str, list[tuple[int, str]]] = {}
     for region, mapping in zip(regions, mappings):
         if mapping is None:
             continue
@@ -424,7 +422,7 @@ async def scan_models_for_eol(db: Session) -> dict[str, int]:
             if eol := eol_index.get(catalog_id):
                 resolved[model_name] = eol
                 regions_by_model.setdefault(model_name, []).append(
-                    (region.id, region.name, region.label)
+                    (region.id, region.name)
                 )
 
     set_count, cleared_count = _apply_dates(db, resolved, observed)
