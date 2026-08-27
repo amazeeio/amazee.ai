@@ -14,10 +14,9 @@ HAIKU = "anthropic.claude-3-haiku-20240307-v1:0"
 SONNET = "anthropic.claude-sonnet-4-20250514-v1:0"
 
 
-def _make_region(db, name, active=True, label=None):
+def _make_region(db, name, active=True):
     region = DBRegion(
         name=name,
-        label=label if label is not None else f"{name} label",
         postgres_host="host",
         postgres_port=5432,
         postgres_admin_user="user",
@@ -236,7 +235,7 @@ def test_scan_stores_date_and_sends_one_snapshot(db):
                 "display_name": "claude-3-haiku",
                 "eol_date": "2026-09-10",
                 "first_seen_at": model.upstream_eol_first_seen_at.isoformat(),
-                "regions": [{"id": region.id, "name": "us1", "label": "us1 label"}],
+                "regions": [{"id": region.id, "name": "us1"}],
             },
         }
     ]
