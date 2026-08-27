@@ -175,6 +175,7 @@ def _build_model_response(
         description=db_model.description,
         real_eol=db_model.real_eol,
         override_eol=db_model.override_eol,
+        upstream_eol=db_model.upstream_eol,
         is_active_globally=db_model.is_active_globally,
         litellm_params=None if mask_litellm_params else _redact_litellm_params(db_model.litellm_params),
         created_at=db_model.created_at,
