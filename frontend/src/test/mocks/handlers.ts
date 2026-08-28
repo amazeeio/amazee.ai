@@ -45,7 +45,6 @@ export const handlers = [
         created_at: "2024-01-01T00:00:00Z",
         is_active: true,
         is_always_free: false,
-        products: [],
       },
     ]);
   }),

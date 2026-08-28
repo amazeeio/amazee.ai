@@ -93,12 +93,6 @@ backend makes no Stripe API calls and needs no Stripe credentials.
     *   Idempotent on `transaction_id`.
 *   **Top-ups**: `POST /budgets/region/{region_id}/teams/{team_id}/purchase` and `.../purchase/periodic`.
 
-### 4.2 Products
-`products` and `team_products` hold per-team entitlement limits (user count, keys
-per user, budget and RPM caps). `LimitService` reads them and falls back to the
-system defaults for a team with no product. The product id is still a Stripe
-product id for historical reasons; nothing reads it from Stripe.
-
 ---
 
 ## 4. Pool Budgets
@@ -159,7 +153,6 @@ The system calculates "Trial Status" for teams to determine if they should still
 *   **Logic Location**: `_calculate_trial_status` in `app/api/teams.py`.
 *   **Statuses**:
     *   `Always Free`: Team has `is_always_free = True`.
-    *   `Active Product`: Team has at least one active product subscription.
     *   `Expired`: More than 30 days since `last_payment` or `created_at`.
     *   `{X} days left`: Remaining time in the 30-day window.
 
