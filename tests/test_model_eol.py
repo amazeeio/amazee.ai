@@ -292,7 +292,11 @@ def test_scan_clears_a_withdrawn_date(db):
     payload = _litellm_data(("claude-3-haiku", f"bedrock/us.{HAIKU}"))
 
     _run_scan(db, _catalog((HAIKU, "2026-09-10")), payload)
-    totals, posts = _run_scan(db, _catalog((HAIKU, None)), payload)
+    # The catalog keeps another dated entry: an index with no dates at all means
+    # a broken feed, not a withdrawal, and is tested separately.
+    totals, posts = _run_scan(
+        db, _catalog((HAIKU, None), (SONNET, "2027-01-01")), payload
+    )
 
     db.refresh(model)
     assert model.upstream_eol is None
@@ -470,3 +474,73 @@ def test_unset_webhook_url_leaves_the_model_unnotified(db):
     assert model.upstream_eol == datetime(2026, 9, 10, tzinfo=UTC)
     assert model.eol_notified_at is None
     assert totals["newly_notified"] == 0
+
+
+def test_scan_aborts_when_the_catalog_carries_no_dates_at_all(db):
+    """A dateless catalog means the feed changed shape, not a mass withdrawal."""
+    _make_region(db, "us1")
+    model = _make_model(
+        db,
+        "claude-3-haiku",
+        upstream_eol=datetime(2026, 9, 10, tzinfo=UTC),
+        eol_notified_at=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+
+    totals, posts = _run_scan(
+        db,
+        _catalog((HAIKU, None), (SONNET, None)),
+        _litellm_data(("claude-3-haiku", f"bedrock/us.{HAIKU}")),
+    )
+
+    db.refresh(model)
+    assert model.upstream_eol == datetime(2026, 9, 10, tzinfo=UTC)
+    assert model.eol_notified_at == datetime(2026, 8, 1, tzinfo=UTC)
+    assert totals == {}
+    assert posts == []
+
+
+def test_earliest_regional_date_wins_regardless_of_region_order(db):
+    """Two regions, two backend ids, two dates: the earliest is announced."""
+    us1 = _make_region(db, "us1")
+    _make_region(db, "eu1")
+    model = _make_model(db, "claude-3-haiku")
+
+    per_region = {
+        us1.litellm_api_url: _litellm_data(("claude-3-haiku", f"bedrock/us.{HAIKU}")),
+        # Read last, and carries the later date: last-region-wins would pick it.
+        "https://eu1.example": _litellm_data(
+            ("claude-3-haiku", f"bedrock/eu.{SONNET}")
+        ),
+    }
+
+    def make_service(api_url, api_key):
+        service = MagicMock()
+        service.get_model_info = AsyncMock(return_value=per_region[api_url])
+        return service
+
+    client = MagicMock()
+    client.post = AsyncMock(return_value=MagicMock(status_code=200, text=""))
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch.object(
+            model_eol,
+            "fetch_bedrock_catalog",
+            AsyncMock(
+                return_value=_catalog((HAIKU, "2026-09-10"), (SONNET, "2026-12-01"))
+            ),
+        ),
+        patch.object(model_eol, "LiteLLMService", side_effect=make_service),
+        patch.object(model_eol.httpx, "AsyncClient", return_value=client),
+        patch.object(
+            model_eol.settings, "BEDROCK_MODELS_URL", "https://catalog.test/models.json"
+        ),
+        patch.object(
+            model_eol.settings, "MODEL_EOL_WEBHOOK_URL", "https://moad.test/hook"
+        ),
+    ):
+        asyncio.run(model_eol.scan_models_for_eol(db))
+
+    db.refresh(model)
+    assert model.upstream_eol == datetime(2026, 9, 10, tzinfo=UTC)
