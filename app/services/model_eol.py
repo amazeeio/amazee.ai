@@ -241,9 +241,10 @@ def _apply_dates(
 ) -> tuple[int, int]:
     """Write ``upstream_eol`` for observed models. Returns (set, cleared).
 
-    ``observed`` is every model name we successfully read from at least one
-    region. Only those may have a date cleared — a model we could not see this
-    run keeps whatever it had.
+    ``observed`` is every model name we read from at least one region *and*
+    found described in the upstream catalog. Only those may have a date cleared
+    — a model we could not see this run, or that upstream no longer describes,
+    keeps whatever it had.
     """
     if not observed:
         return 0, 0
@@ -409,6 +410,16 @@ async def scan_models_for_eol(db: Session) -> dict[str, int]:
         )
         return {}
 
+    # Every id the catalog describes, dated or not. A backend id missing from
+    # this set means upstream says nothing about the model -- a renamed id or a
+    # dropped entry -- so its stored date must be left alone. Only an id the
+    # catalog does describe, with no date on it, is a real withdrawal.
+    catalog_ids = {
+        model["modelId"]
+        for model in catalog
+        if isinstance(model, dict) and isinstance(model.get("modelId"), str)
+    }
+
     regions = db.query(DBRegion).filter(DBRegion.is_active.is_(True)).all()
     semaphore = asyncio.Semaphore(_REGION_CONCURRENCY)
     mappings = await asyncio.gather(
@@ -422,6 +433,8 @@ async def scan_models_for_eol(db: Session) -> dict[str, int]:
         if mapping is None:
             continue
         for model_name, catalog_id in mapping.items():
+            if catalog_id not in catalog_ids:
+                continue
             observed.add(model_name)
             if eol := eol_index.get(catalog_id):
                 # Regions can point the same callable name at different backend
