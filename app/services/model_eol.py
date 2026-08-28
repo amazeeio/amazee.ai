@@ -400,10 +400,14 @@ async def scan_models_for_eol(db: Session) -> dict[str, int]:
 
     eol_index = build_eol_index(catalog)
     if not eol_index:
-        logger.warning(
-            "Bedrock catalog carried no EOL dates at all — the upstream feed may "
-            "have changed shape or gone stale"
+        # A catalog with zero dates in it means the feed changed shape, not that
+        # AWS withdrew every retirement. Continuing would clear every stored
+        # date, so stop before touching the DB.
+        logger.error(
+            "Bedrock catalog carried no EOL dates at all; EOL scan aborted "
+            "(the upstream feed may have changed shape)"
         )
+        return {}
 
     regions = db.query(DBRegion).filter(DBRegion.is_active.is_(True)).all()
     semaphore = asyncio.Semaphore(_REGION_CONCURRENCY)
@@ -420,7 +424,12 @@ async def scan_models_for_eol(db: Session) -> dict[str, int]:
         for model_name, catalog_id in mapping.items():
             observed.add(model_name)
             if eol := eol_index.get(catalog_id):
-                resolved[model_name] = eol
+                # Regions can point the same callable name at different backend
+                # model ids with different dates. Take the earliest: it is the
+                # honest warning, and it keeps the announced date and the prune
+                # gate on the same day whatever order the regions are read in.
+                current = resolved.get(model_name)
+                resolved[model_name] = min(current, eol) if current else eol
                 regions_by_model.setdefault(model_name, []).append(
                     (region.id, region.name)
                 )
