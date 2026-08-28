@@ -1,16 +1,13 @@
 import pytest
 from datetime import datetime, UTC
 from fastapi import HTTPException
-from app.db.models import DBUser, DBTeamProduct
-from app.core.limit_service import LimitService
+from app.db.models import DBUser
+from app.core.limit_service import LimitService, DEFAULT_USER_COUNT
 
 
-def test_legacy_resource_limits_integration(db, test_team, test_product):
+def test_legacy_resource_limits_integration(db, test_team):
     """Test legacy resource limits integration with new limit service"""
     # This test ensures backward compatibility with the legacy resource limits system
-    # Add product to team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
     db.commit()
 
     # Test that the legacy system still works
@@ -26,11 +23,8 @@ def test_legacy_resource_limits_integration(db, test_team, test_product):
     limit_service.check_vector_db_limits(test_team.id)
 
 
-def test_legacy_fallback_behavior(db, test_team, test_product):
+def test_legacy_fallback_behavior(db, test_team):
     """Test that legacy fallback behavior still works correctly"""
-    # Add product to team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
     db.commit()
 
     limit_service = LimitService(db)
@@ -46,15 +40,12 @@ def test_legacy_fallback_behavior(db, test_team, test_product):
     assert len(team_limits) > 0
 
 
-def test_legacy_error_messages(db, test_team, test_product):
+def test_legacy_error_messages(db, test_team):
     """Test that legacy error messages are preserved"""
-    # Add product to team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
     db.commit()
 
     # Create users up to the limit
-    for i in range(test_product.user_count):
+    for i in range(DEFAULT_USER_COUNT):
         user = DBUser(
             email=f"user{i}@example.com",
             hashed_password="hashed_password",
@@ -73,6 +64,6 @@ def test_legacy_error_messages(db, test_team, test_product):
         limit_service.check_team_user_limit(test_team.id)
     assert exc_info.value.status_code == 402
     assert (
-        f"Team has reached the maximum user limit of {test_product.user_count} users"
+        f"Team has reached the maximum user limit of {DEFAULT_USER_COUNT} users"
         in str(exc_info.value.detail)
     )
