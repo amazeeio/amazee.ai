@@ -544,3 +544,27 @@ def test_earliest_regional_date_wins_regardless_of_region_order(db):
 
     db.refresh(model)
     assert model.upstream_eol == datetime(2026, 9, 10, tzinfo=UTC)
+
+
+def test_renamed_upstream_id_does_not_clear_a_stored_date(db):
+    """Upstream saying nothing about a model is not a withdrawal."""
+    _make_region(db, "us1")
+    model = _make_model(
+        db,
+        "claude-3-haiku",
+        upstream_eol=datetime(2026, 9, 10, tzinfo=UTC),
+        upstream_eol_first_seen_at=datetime(2026, 8, 1, tzinfo=UTC),
+        eol_notified_at=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+
+    # The feed still carries dates, but the served model's id is gone from it.
+    totals, _ = _run_scan(
+        db,
+        _catalog((SONNET, "2027-01-01")),
+        _litellm_data(("claude-3-haiku", f"bedrock/us.{HAIKU}")),
+    )
+
+    db.refresh(model)
+    assert model.upstream_eol == datetime(2026, 9, 10, tzinfo=UTC)
+    assert model.eol_notified_at == datetime(2026, 8, 1, tzinfo=UTC)
+    assert totals["dates_cleared"] == 0
