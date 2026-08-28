@@ -129,14 +129,20 @@ def bedrock_catalog_id(item: dict[str, Any]) -> str | None:
     return candidate or None
 
 
-def build_eol_index(catalog: list[dict[str, Any]]) -> dict[str, str]:
+def build_eol_index(catalog: list[dict[str, Any]]) -> dict[str, str | None]:
     """Map Bedrock ``modelId`` -> ISO EOL date for every model that has one.
 
     Two upstream fields carry the date and they agree wherever both are set, but
     neither covers the other's models: prefer ``modelLifecycle.endOfLifeTime``
     (already ISO), fall back to the human-formatted ``modelCard.modelEolDate``.
+
+    A ``None`` value means the entry carried a date we could not parse. That is
+    not the same as carrying no date: a garbled date tells us nothing, so the
+    caller must leave any stored date alone rather than read it as a withdrawal.
+    Models with no date field at all are simply absent from the index.
     """
-    index: dict[str, str] = {}
+    index: dict[str, str | None] = {}
+    _unparseable_lifecycle: set[str] = set()
     for model in catalog:
         if not isinstance(model, dict):
             continue
@@ -155,6 +161,7 @@ def build_eol_index(catalog: list[dict[str, Any]]) -> dict[str, str]:
                 index[model_id] = date.fromisoformat(raw.strip()[:10]).isoformat()
                 continue
             except ValueError:
+                _unparseable_lifecycle.add(model_id)
                 logger.debug(
                     "Unparseable modelLifecycle.endOfLifeTime %r for Bedrock model "
                     "%s; trying modelCard.modelEolDate",
@@ -170,9 +177,17 @@ def build_eol_index(catalog: list[dict[str, Any]]) -> dict[str, str]:
                     datetime.strptime(raw.strip(), "%B %d, %Y").date().isoformat()
                 )
             except ValueError:
-                logger.debug(
-                    "Unparseable modelEolDate %r for Bedrock model %s", raw, model_id
+                logger.warning(
+                    "Unparseable EOL date for Bedrock model %s (%r); leaving any "
+                    "stored date untouched",
+                    model_id,
+                    raw,
                 )
+                index[model_id] = None
+        elif model_id in _unparseable_lifecycle:
+            # The lifecycle field held a date we could not read and there is no
+            # card date to fall back on.
+            index[model_id] = None
     return index
 
 
@@ -400,7 +415,7 @@ async def scan_models_for_eol(db: Session) -> dict[str, int]:
         return {}
 
     eol_index = build_eol_index(catalog)
-    if not eol_index:
+    if not any(eol_index.values()):
         # A catalog with zero dates in it means the feed changed shape, not that
         # AWS withdrew every retirement. Continuing would clear every stored
         # date, so stop before touching the DB.
@@ -433,7 +448,16 @@ async def scan_models_for_eol(db: Session) -> dict[str, int]:
         if mapping is None:
             continue
         for model_name, catalog_id in mapping.items():
+            # The payload reports every region seen serving the model, whether or
+            # not that region's backend id resolved to a date.
+            regions_by_model.setdefault(model_name, []).append(
+                (region.id, region.name)
+            )
             if catalog_id not in catalog_ids:
+                continue
+            if catalog_id in eol_index and eol_index[catalog_id] is None:
+                # Upstream carried a date we could not parse. Saying nothing is
+                # right; treating it as a withdrawal would drop a real date.
                 continue
             observed.add(model_name)
             if eol := eol_index.get(catalog_id):
@@ -443,9 +467,6 @@ async def scan_models_for_eol(db: Session) -> dict[str, int]:
                 # gate on the same day whatever order the regions are read in.
                 current = resolved.get(model_name)
                 resolved[model_name] = min(current, eol) if current else eol
-                regions_by_model.setdefault(model_name, []).append(
-                    (region.id, region.name)
-                )
 
     set_count, cleared_count = _apply_dates(db, resolved, observed)
     db.commit()
