@@ -646,3 +646,66 @@ def test_payload_lists_every_serving_region_not_only_dated_ones(db):
 
     regions = posts[0]["events"][0]["data"]["regions"]
     assert [r["name"] for r in regions] == ["eu1", "us1"]
+
+
+def test_garbled_date_in_one_region_survives_a_dateless_id_in_another(db):
+    """Uncertainty is per callable name, not per backend mapping.
+
+    One region serves the name from an id whose date is unreadable, another from
+    a dateless id the catalog does describe. Reading only the second mapping
+    would look like a withdrawal and drop a real date.
+    """
+    us1 = _make_region(db, "us1")
+    eu1 = _make_region(db, "eu1")
+    model = _make_model(
+        db,
+        "claude-3-haiku",
+        upstream_eol=datetime(2026, 9, 10, tzinfo=UTC),
+        upstream_eol_first_seen_at=datetime(2026, 8, 1, tzinfo=UTC),
+        eol_notified_at=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+
+    per_region = {
+        us1.litellm_api_url: _litellm_data(("claude-3-haiku", f"bedrock/us.{HAIKU}")),
+        eu1.litellm_api_url: _litellm_data(("claude-3-haiku", f"bedrock/eu.{SONNET}")),
+    }
+
+    def make_service(api_url, api_key):
+        service = MagicMock()
+        service.get_model_info = AsyncMock(return_value=per_region[api_url])
+        return service
+
+    catalog = [
+        {"modelId": HAIKU, "modelCard": {"modelEolDate": "sometime next year"}},
+        {"modelId": SONNET, "modelLifecycle": {"status": "ACTIVE"}},
+        {"modelId": "other.model-v1:0", "modelLifecycle": {"endOfLifeTime": "2027-01-01"}},
+    ]
+
+    client = MagicMock()
+    client.post = AsyncMock(return_value=MagicMock(status_code=200, text=""))
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch.object(
+            model_eol, "fetch_bedrock_catalog", AsyncMock(return_value=catalog)
+        ),
+        patch.object(model_eol, "LiteLLMService", side_effect=make_service),
+        patch.object(model_eol.httpx, "AsyncClient", return_value=client),
+        patch.object(
+            model_eol.settings, "BEDROCK_MODELS_URL", "https://catalog.test/models.json"
+        ),
+        patch.object(
+            model_eol.settings,
+            "MODEL_EOL_WEBHOOK_URL",
+            "https://moad.test/webhook/amazeeai",
+        ),
+        patch.object(model_eol.settings, "MODEL_EOL_WEBHOOK_TOKEN", "tok"),
+    ):
+        totals = asyncio.run(model_eol.scan_models_for_eol(db))
+
+    db.refresh(model)
+    assert model.upstream_eol == datetime(2026, 9, 10, tzinfo=UTC)
+    assert model.upstream_eol_first_seen_at == datetime(2026, 8, 1, tzinfo=UTC)
+    assert model.eol_notified_at == datetime(2026, 8, 1, tzinfo=UTC)
+    assert totals["dates_cleared"] == 0

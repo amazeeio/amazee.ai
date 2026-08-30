@@ -442,6 +442,7 @@ async def scan_models_for_eol(db: Session) -> dict[str, int]:
     )
 
     observed: set[str] = set()
+    uncertain: set[str] = set()
     resolved: dict[str, str] = {}
     regions_by_model: dict[str, list[tuple[int, str]]] = {}
     for region, mapping in zip(regions, mappings):
@@ -458,6 +459,10 @@ async def scan_models_for_eol(db: Session) -> dict[str, int]:
             if catalog_id in eol_index and eol_index[catalog_id] is None:
                 # Upstream carried a date we could not parse. Saying nothing is
                 # right; treating it as a withdrawal would drop a real date.
+                # Marked per callable name, not per mapping: another region can
+                # serve the same name from a dateless backend id, and that must
+                # not turn the unreadable date into a withdrawal.
+                uncertain.add(model_name)
                 continue
             observed.add(model_name)
             if eol := eol_index.get(catalog_id):
@@ -467,6 +472,11 @@ async def scan_models_for_eol(db: Session) -> dict[str, int]:
                 # gate on the same day whatever order the regions are read in.
                 current = resolved.get(model_name)
                 resolved[model_name] = min(current, eol) if current else eol
+
+    # A name upstream was unclear about is left untouched, even if it resolved
+    # a date elsewhere: we cannot tell which mapping is the real one.
+    observed -= uncertain
+    resolved = {name: eol for name, eol in resolved.items() if name not in uncertain}
 
     set_count, cleared_count = _apply_dates(db, resolved, observed)
     db.commit()
