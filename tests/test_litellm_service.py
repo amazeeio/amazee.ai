@@ -1448,3 +1448,40 @@ def test_list_all_keys_concurrency_is_bounded(mock_client_class, test_region):
 
     assert len(result) == 29 * 100 + 5
     assert peak <= litellm_module.LIST_KEYS_PAGE_CONCURRENCY
+
+
+@patch("httpx.AsyncClient")
+def test_get_daily_activity_refuses_to_return_partial_history(
+    mock_client_class, test_region
+):
+    """Never stop paginating and hand back a page-capped range as if complete.
+
+    Silently dropping the oldest days looks like a whole answer, so the caller
+    has no way to tell that the range was cut short.
+    """
+    always_more = _daily_activity_page(
+        [{"date": "2025-06-01", "metrics": {"spend": 1.0}}], has_more=True
+    )
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = always_more
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            service.get_daily_activity(
+                litellm_token="sk-abc123",
+                start_date="2020-01-01",
+                end_date="2030-01-01",
+            )
+        )
+
+    assert exc.value.status_code == 500
+    assert "exceeded" in str(exc.value.detail)
+    assert mock_client.get.call_count == 100
