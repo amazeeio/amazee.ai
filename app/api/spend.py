@@ -263,6 +263,13 @@ def _daily_metric_fields(metrics: dict) -> dict:
     }
 
 
+# Metric field names shared by every daily-activity row, read off the schema so
+# folding cannot silently miss a field added later.
+UsageMetricFields = tuple(
+    name for name in DailyActivityModelBreakdown.model_fields if name != "model"
+)
+
+
 def _row_model_breakdown(row: dict) -> list[DailyActivityModelBreakdown]:
     """Build the per-model breakdown for one raw LiteLLM daily row.
 
@@ -291,21 +298,56 @@ def _rows_to_daily_activity(
     ``breakdown`` block (per model/provider/key) is dropped by default to keep
     the response flat; when ``include_breakdown`` is set, the per-model slice is
     attached to each row's ``breakdown`` field.
+
+    A date can arrive more than once. LiteLLM paginates over the underlying
+    per-key, per-model rows and aggregates each page on its own, so a day
+    straddling a page boundary comes back as one partial row per page. Emitting
+    those separately would show a caller two half-days, so rows are folded by
+    date and their metrics summed.
     """
-    activity: list[KeyDailyActivityRow] = []
+    by_date: dict[str, dict] = {}
+    models_by_date: dict[str, dict[str, dict]] = {}
+
     for row in rows:
-        if not row.get("date"):
+        row_date = row.get("date")
+        if not row_date:
             continue
-        metrics = row.get("metrics") or {}
-        activity.append(
-            KeyDailyActivityRow(
-                date=row["date"],
-                breakdown=_row_model_breakdown(row) if include_breakdown else None,
-                **_daily_metric_fields(metrics),
-            )
+        totals = by_date.setdefault(row_date, {})
+        for name, value in _daily_metric_fields(row.get("metrics") or {}).items():
+            totals[name] = totals.get(name, 0) + value
+
+        if not include_breakdown:
+            continue
+        day_models = models_by_date.setdefault(row_date, {})
+        for entry in _row_model_breakdown(row):
+            model_totals = day_models.setdefault(entry.model, {})
+            for name in UsageMetricFields:
+                model_totals[name] = model_totals.get(name, 0) + getattr(entry, name)
+
+    activity = [
+        KeyDailyActivityRow(
+            date=row_date,
+            breakdown=_sorted_model_breakdown(models_by_date.get(row_date, {}))
+            if include_breakdown
+            else None,
+            **totals,
         )
+        for row_date, totals in by_date.items()
+    ]
     activity.sort(key=lambda r: r.date)
     return activity
+
+
+def _sorted_model_breakdown(
+    models: dict[str, dict],
+) -> list[DailyActivityModelBreakdown]:
+    """Build a per-model breakdown list from folded totals, biggest spend first."""
+    breakdown = [
+        DailyActivityModelBreakdown(model=name, **totals)
+        for name, totals in models.items()
+    ]
+    breakdown.sort(key=lambda b: b.spend, reverse=True)
+    return breakdown
 
 
 # Default look-back window (in days) used when a daily-activity request omits
@@ -1498,7 +1540,10 @@ async def get_key_last_used(
         "start_date and end_date are optional and default to the last 30 days "
         "(end_date defaults to today UTC, start_date to 30 days earlier). Proxies "
         "LiteLLM's `/user/daily/activity`, filtered to this key. Days with no "
-        "usage are omitted from the response."
+        "usage are omitted from the response.\n\n"
+        "A range wide enough to exceed the upstream page limit fails with 500 "
+        "rather than returning a partial history that looks complete. Narrow the "
+        "range if that happens."
     ),
     response_description="Per-day usage rows for the key, ordered by date.",
 )
@@ -1602,7 +1647,10 @@ async def get_key_daily_activity(
         "UTC days) and are independent of billing-cycle spend resets, so they "
         "do NOT reconcile with the cycle-reset spend/budget figures returned by "
         "the other spend endpoints. The current UTC day may under-report until "
-        "LiteLLM's next batch flush."
+        "LiteLLM's next batch flush.\n\n"
+        "A range wide enough to exceed the upstream page limit fails with 500 "
+        "rather than returning a partial history that looks complete. Narrow the "
+        "range if that happens."
     ),
     response_description="Per-day usage rows for the user, ordered by date.",
 )
@@ -1677,7 +1725,10 @@ async def get_user_daily_activity(
         "UTC days) and are independent of billing-cycle spend resets, so they "
         "do NOT reconcile with the cycle-reset spend/budget figures returned by "
         "the other spend endpoints. The current UTC day may under-report until "
-        "LiteLLM's next batch flush."
+        "LiteLLM's next batch flush.\n\n"
+        "A range wide enough to exceed the upstream page limit fails with 500 "
+        "rather than returning a partial history that looks complete. Narrow the "
+        "range if that happens."
     ),
     response_description="Per-day usage rows for the team, ordered by date.",
 )
