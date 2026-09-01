@@ -3,7 +3,9 @@ from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi import Query
-from sqlalchemy import func
+from collections import defaultdict
+
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.orm import aliased
 
@@ -44,6 +46,9 @@ from app.db.models import (
 from app.schemas.limits import OwnerType, ResourceType
 from app.api.users import invalidate_user_spend_cache
 from app.schemas.models import (
+    BreakdownKeyItem,
+    BreakdownModelItem,
+    BreakdownUserItem,
     BudgetType,
     DailyActivityModelBreakdown,
     KeyDailyActivityResponse,
@@ -57,9 +62,11 @@ from app.schemas.models import (
     TeamPeriodicTransactionItem,
     TeamSpendHistoryPeriodItem,
     TeamSpendHistoryResponse,
+    TeamSpendBreakdownResponse,
     TeamSpendResponse,
     PeriodicTeamBudgetView,
     TeamDailyActivityResponse,
+    UsageMetrics,
     UserDailyActivityResponse,
     UserSpendResponse,
 )
@@ -336,6 +343,94 @@ def _rows_to_daily_activity(
     ]
     activity.sort(key=lambda r: r.date)
     return activity
+
+
+def _accumulate(target: dict, metrics: dict) -> None:
+    """Add one LiteLLM metrics block into a running total.
+
+    `budget_alert_service._sum_activity_since` folds the same rows for a
+    different purpose (spend only, from a cutoff date). Both readers need
+    updating if LiteLLM changes the daily-activity row shape.
+    """
+    fields = _daily_metric_fields(metrics)
+    for name, value in fields.items():
+        target[name] = target.get(name, 0) + value
+
+
+def _team_breakdown_from_rows(rows: list[dict]) -> tuple[dict[str, dict], dict]:
+    """Fold daily rows into per-key totals with a per-model split.
+
+    LiteLLM reports each day separately and splits the day by dimension, so a
+    key's spend appears once under ``breakdown.api_keys`` and again, sliced by
+    model, under ``breakdown.models[*].api_key_breakdown``. We read the key
+    totals from the first and the model split from the second, which keeps the
+    two consistent without summing the same spend twice.
+
+    Keys LiteLLM reports but we no longer hold (deleted inside the range) are
+    kept with a null ``key_id`` rather than dropped, so the per-key rows still
+    add up to the team total.
+    """
+    per_key: dict[str, dict] = {}
+    totals: dict = {}
+
+    for row in rows:
+        breakdown = row.get("breakdown") or {}
+        _accumulate(totals, row.get("metrics") or {})
+
+        for hashed, entry in (breakdown.get("api_keys") or {}).items():
+            slot = per_key.setdefault(
+                hashed,
+                {
+                    "metrics": {},
+                    "models": {},
+                    "alias": (entry.get("metadata") or {}).get("key_alias"),
+                },
+            )
+            _accumulate(slot["metrics"], entry.get("metrics") or {})
+
+        for model_name, model_entry in (breakdown.get("models") or {}).items():
+            for hashed, key_entry in (
+                model_entry.get("api_key_breakdown") or {}
+            ).items():
+                slot = per_key.setdefault(
+                    hashed,
+                    {
+                        "metrics": {},
+                        "models": {},
+                        "alias": (key_entry.get("metadata") or {}).get("key_alias"),
+                    },
+                )
+                _accumulate(
+                    slot["models"].setdefault(model_name, {}),
+                    key_entry.get("metrics") or {},
+                )
+
+    return per_key, totals
+
+
+def _sum_metrics(items: list[UsageMetrics]) -> dict:
+    """Total a list of metric-carrying rows into a plain field dict."""
+    return {
+        name: sum(getattr(i, name) for i in items) for name in UsageMetrics.model_fields
+    }
+
+
+def _build_key_item(slot: dict, db_key: DBPrivateAIKey | None) -> BreakdownKeyItem:
+    models = [
+        BreakdownModelItem(model=name, **metrics)
+        for name, metrics in slot["models"].items()
+    ]
+    models.sort(key=lambda m: m.spend, reverse=True)
+    # A key normally appears under `breakdown.api_keys` as well, but if LiteLLM
+    # only reports it inside the model split, fall back to summing the models so
+    # its spend still reaches the user and team totals.
+    metrics = slot["metrics"] or _sum_metrics(models)
+    return BreakdownKeyItem(
+        key_id=db_key.id if db_key else None,
+        key_name=db_key.name if db_key else slot.get("alias"),
+        models=models,
+        **metrics,
+    )
 
 
 def _sorted_model_breakdown(
@@ -1789,6 +1884,167 @@ async def get_team_daily_activity(
         start_date=start_date,
         end_date=end_date,
         activity=_rows_to_daily_activity(rows, include_breakdown=include_breakdown),
+    )
+
+
+@router.get(
+    "/{region_id}/team/{team_id}/breakdown",
+    response_model=TeamSpendBreakdownResponse,
+    summary="Get team usage broken down by user, key and model",
+    description=(
+        "Returns a team's usage over the requested date range, drilled down "
+        "from the team total to each member, each of their keys and each model "
+        "that key used. start_date and end_date are optional and default to the "
+        "last 30 days (end_date defaults to today UTC, start_date to 30 days "
+        "earlier).\n\n"
+        "Built from a single LiteLLM `/team/daily/activity` call, so it costs "
+        "one request regardless of how many members or keys the team has.\n\n"
+        "Team-owned keys belong to a site or an automation rather than a "
+        "person, so they are returned in `service_keys` instead of under a "
+        "user. Keys we no longer hold, typically deleted inside the range, are "
+        "returned in `unattributed_keys` because their owner is unknowable.\n\n"
+        "A team admin sees the whole team; any other member sees only their "
+        "own keys, and the totals cover only what they can see. A member's "
+        "view therefore omits `unattributed_keys` entirely, so it can "
+        "under-report if one of their own keys was deleted inside the range.\n\n"
+        "Values come from LiteLLM's pre-aggregated daily-spend tables (whole "
+        "UTC days) and are independent of billing-cycle spend resets, so they "
+        "do NOT reconcile with the cycle-reset spend/budget figures returned by "
+        "the other spend endpoints. The current UTC day may under-report until "
+        "LiteLLM's next batch flush."
+    ),
+    response_description=(
+        "Team totals with per-user, per-key and per-model rows, each ordered by "
+        "descending spend."
+    ),
+)
+async def get_team_spend_breakdown(
+    region_id: int,
+    team_id: int,
+    start_date: date | None = Query(
+        None,
+        description=(
+            "Start date (inclusive), formatted YYYY-MM-DD. "
+            "Defaults to 30 days before end_date when omitted."
+        ),
+    ),
+    end_date: date | None = Query(
+        None,
+        description=(
+            "End date (inclusive), formatted YYYY-MM-DD. "
+            "Defaults to today (UTC) when omitted."
+        ),
+    ),
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    start_date, end_date = _resolve_daily_activity_range(start_date, end_date)
+
+    team = (
+        db.query(DBTeam)
+        .filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None))
+        .first()
+    )
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    _assert_team_access(current_user, user_role, team_id)
+
+    # A team admin sees the whole team; every other member sees only their own
+    # keys. Restricting here rather than in the response keeps the team totals
+    # from leaking amounts a member is not allowed to see.
+    sees_whole_team = current_user.is_admin or user_role == UserRole.TEAM_ADMIN
+    visible_owner_id = None if sees_whole_team else current_user.id
+
+    region = _get_region_or_404(db, region_id)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+    rows = await service.get_team_daily_activity(
+        team_id=LiteLLMService.format_team_id(region.name, team_id),
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+    )
+
+    # LiteLLM identifies a key by its hashed token, so hash ours to match. Keys
+    # owned by a member of this team are included even when the key itself is
+    # user-owned, because that is how a member's usage reaches the team view.
+    db_keys = (
+        db.query(DBPrivateAIKey)
+        .outerjoin(DBUser, DBPrivateAIKey.owner_id == DBUser.id)
+        .filter(
+            DBPrivateAIKey.region_id == region_id,
+            or_(DBPrivateAIKey.team_id == team_id, DBUser.team_id == team_id),
+        )
+        # `litellm_token` has no unique constraint, so order the rows to make
+        # the winner deterministic if two ever carry the same token.
+        .order_by(DBPrivateAIKey.id)
+        .all()
+    )
+    key_by_hash = {
+        LiteLLMService.hash_token(k.litellm_token): k
+        for k in db_keys
+        if k.litellm_token
+    }
+
+    per_key, _ = _team_breakdown_from_rows(rows)
+
+    user_keys: dict[int, list[BreakdownKeyItem]] = defaultdict(list)
+    service_keys: list[BreakdownKeyItem] = []
+    unattributed_keys: list[BreakdownKeyItem] = []
+    for hashed, slot in per_key.items():
+        db_key = key_by_hash.get(hashed)
+        if db_key is None:
+            # We no longer hold this key, so its owner is unknowable. A caller
+            # limited to their own keys cannot be shown it without guessing.
+            if visible_owner_id is None:
+                unattributed_keys.append(_build_key_item(slot, None))
+            continue
+        if visible_owner_id is not None and db_key.owner_id != visible_owner_id:
+            continue
+        item = _build_key_item(slot, db_key)
+        if db_key.owner_id is None:
+            service_keys.append(item)
+        else:
+            user_keys[db_key.owner_id].append(item)
+
+    emails = (
+        {
+            u.id: u.email
+            for u in db.query(DBUser).filter(DBUser.id.in_(user_keys.keys())).all()
+        }
+        if user_keys
+        else {}
+    )
+
+    users = [
+        BreakdownUserItem(
+            user_id=owner_id,
+            email=emails.get(owner_id),
+            keys=sorted(items, key=lambda k: k.spend, reverse=True),
+            **_sum_metrics(items),
+        )
+        for owner_id, items in user_keys.items()
+    ]
+    users.sort(key=lambda u: u.spend, reverse=True)
+    service_keys.sort(key=lambda k: k.spend, reverse=True)
+    unattributed_keys.sort(key=lambda k: k.spend, reverse=True)
+
+    # Sum the visible rows rather than reusing LiteLLM's day totals, so a
+    # member's totals cover only their own keys.
+    totals = _sum_metrics(
+        [k for u in users for k in u.keys] + service_keys + unattributed_keys
+    )
+
+    return TeamSpendBreakdownResponse(
+        region_id=region_id,
+        team_id=team_id,
+        start_date=start_date,
+        end_date=end_date,
+        totals=UsageMetrics(**totals),
+        users=users,
+        service_keys=service_keys,
+        unattributed_keys=unattributed_keys,
     )
 
 

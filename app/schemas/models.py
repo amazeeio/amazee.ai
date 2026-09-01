@@ -770,6 +770,97 @@ class TeamDailyActivityResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class UsageMetrics(BaseModel):
+    """Usage totals for one slice of the team breakdown."""
+
+    spend: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    request_count: int = 0
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BreakdownModelItem(UsageMetrics):
+    """One model's share of a key's usage over the requested range."""
+
+    model: str = Field(
+        description="LiteLLM model name, e.g. 'bedrock/us.anthropic.claude-sonnet-4-6'.",
+    )
+    # `model` is a normal field here; opt out of pydantic's protected `model_`
+    # namespace so it doesn't warn/clash.
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+
+class BreakdownKeyItem(UsageMetrics):
+    """One key's usage over the requested range, split by model."""
+
+    key_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "Our private AI key id. Null when LiteLLM reports usage for a key "
+            "we no longer hold, e.g. one deleted inside the date range."
+        ),
+    )
+    key_name: Optional[str] = None
+    models: List[BreakdownModelItem] = Field(
+        default_factory=list,
+        description="Per-model usage for this key, ordered by descending spend.",
+    )
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BreakdownUserItem(UsageMetrics):
+    """One team member's usage over the requested range, split by key."""
+
+    user_id: int
+    email: Optional[str] = None
+    keys: List[BreakdownKeyItem] = Field(
+        default_factory=list,
+        description="Per-key usage for this user, ordered by descending spend.",
+    )
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TeamSpendBreakdownResponse(BaseModel):
+    """Team usage drilled down to user, key and model in one response."""
+
+    region_id: int
+    team_id: int
+    start_date: date
+    end_date: date
+    totals: UsageMetrics = Field(
+        description="Team totals over the range, summed from the rows below."
+    )
+    users: List[BreakdownUserItem] = Field(
+        default_factory=list,
+        description=(
+            "Team members with usage in the range, ordered by descending spend. "
+            "Members with no usage are omitted."
+        ),
+    )
+    service_keys: List[BreakdownKeyItem] = Field(
+        default_factory=list,
+        description=(
+            "Team-owned keys, which belong to a site or an automation rather "
+            "than a person, so they sit beside the users instead of under one."
+        ),
+    )
+    unattributed_keys: List[BreakdownKeyItem] = Field(
+        default_factory=list,
+        description=(
+            "Keys LiteLLM reports usage for that we no longer hold, typically "
+            "deleted inside the date range. Their owner is unknowable, so they "
+            "are listed separately rather than counted as a service key. "
+            "Always empty for a caller who only sees their own keys, because "
+            "ownership cannot be checked."
+        ),
+    )
+    model_config = ConfigDict(from_attributes=True)
+
+
 class SpendBudgetUpdateRequest(BaseModel):
     max_budget: Optional[float] = Field(default=None, ge=0)
 
