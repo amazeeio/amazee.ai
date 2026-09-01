@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 from app.db.models import (
@@ -121,6 +122,16 @@ def test_apply_reschedules_failed_syncs_without_config_diff(
     }
 
 
+def _announce_eol(db, model_id, when):
+    """Stamp the EOL date the daily scan would have written.
+
+    The sunset guard reads ``models.upstream_eol``, which is owned by the EOL
+    scan (app/services/model_eol.py) and never sent in an apply payload.
+    """
+    db.query(DBModel).filter_by(model_id=model_id).update({"upstream_eol": when})
+    db.commit()
+
+
 @patch("app.services.model_sync.LiteLLMService")
 def test_apply_pruned_deployment_is_deactivated_not_resynced(
     mock_svc, client, admin_token, db, test_region
@@ -128,8 +139,8 @@ def test_apply_pruned_deployment_is_deactivated_not_resynced(
     """A failed deployment that is being pruned in the same apply must show a
     single 'deactivate' change — never a contradictory 'resync' as well."""
     payload = _payload(test_region.name)
-    payload["models"][1]["real_eol"] = "2020-01-01T00:00:00Z"
     assert _apply(client, admin_token, payload).status_code == 200
+    _announce_eol(db, "chat", datetime(2020, 1, 1, tzinfo=UTC))
     db.query(DBModelRegion).update({"sync_status": "failed"})
     db.commit()
 
@@ -178,9 +189,9 @@ def test_apply_removes_deployment_declaratively(mock_svc, client, admin_token, d
 @patch("app.services.model_sync.LiteLLMService")
 def test_apply_prune_deactivates_absent_models(mock_svc, client, admin_token, db, test_region):
     payload = _payload(test_region.name)
-    # Announce EOL (in the past) so the sunset guard allows the prune.
-    payload["models"][1]["real_eol"] = "2020-01-01T00:00:00Z"
     assert _apply(client, admin_token, payload).status_code == 200
+    # Announce EOL (in the past) so the sunset guard allows the prune.
+    _announce_eol(db, "chat", datetime(2020, 1, 1, tzinfo=UTC))
 
     pruned = _payload(test_region.name)
     pruned["models"] = [m for m in pruned["models"] if m["model_id"] == "claude-sonnet"]
@@ -200,8 +211,8 @@ def test_apply_prune_blocked_before_eol(mock_svc, client, admin_token, db, test_
     """Sunset protocol: prune must refuse a model with no announced EOL, or
     whose EOL has not passed yet — it stays active and is reported."""
     payload = _payload(test_region.name)
-    payload["models"][0]["real_eol"] = "2099-01-01T00:00:00Z"  # future EOL
     assert _apply(client, admin_token, payload).status_code == 200
+    _announce_eol(db, "claude-sonnet", datetime(2099, 1, 1, tzinfo=UTC))  # future EOL
 
     pruned = {
         "prune": True,
@@ -226,6 +237,38 @@ def test_apply_prune_blocked_before_eol(mock_svc, client, admin_token, db, test_
     db.refresh(sonnet)
     db.refresh(alias)
     assert sonnet.is_active_globally is True
+    assert alias.is_active_globally is True
+
+
+@patch("app.services.model_sync.LiteLLMService")
+def test_apply_prune_ignores_catalog_eol_columns(
+    mock_svc, client, admin_token, db, test_region
+):
+    """Only upstream_eol unlocks a prune.
+
+    real_eol comes from the catalog CSV and is hand-typed; the sunset guard now
+    reads the scanned date instead, so a CSV date alone must not allow removal.
+    """
+    payload = _payload(test_region.name)
+    payload["models"][1]["real_eol"] = "2020-01-01T00:00:00Z"
+    payload["models"][1]["override_eol"] = "2020-01-01T00:00:00Z"
+    assert _apply(client, admin_token, payload).status_code == 200
+
+    pruned = _payload(test_region.name)
+    pruned["models"] = [m for m in pruned["models"] if m["model_id"] == "claude-sonnet"]
+    pruned["models"][0]["access_groups"] = ["default-models"]
+    pruned["prune"] = True
+    res = _apply(client, admin_token, pruned)
+    assert res.status_code == 200
+
+    blocked = {
+        c["key"]: c["detail"]
+        for c in res.json()["changes"]
+        if c["action"] == "prune_blocked"
+    }
+    assert "no eol_date announced" in blocked["chat"]
+    alias = db.query(DBModel).filter_by(model_id="chat").one()
+    db.refresh(alias)
     assert alias.is_active_globally is True
 
 

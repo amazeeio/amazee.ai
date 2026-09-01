@@ -844,6 +844,14 @@ class DBModel(Base):
     description = Column(String, nullable=True)
     real_eol = Column(DateTime(timezone=True), nullable=True)
     override_eol = Column(DateTime(timezone=True), nullable=True)
+    # Written only by the EOL scan, from the upstream Bedrock catalog. Kept
+    # apart from real_eol because the catalog apply rewrites that column from
+    # its CSV on every run.
+    upstream_eol = Column(DateTime(timezone=True), nullable=True)
+    # When upstream_eol first held its current value: the proof of how long ago
+    # a retirement was announced.
+    upstream_eol_first_seen_at = Column(DateTime(timezone=True), nullable=True)
+    eol_notified_at = Column(DateTime(timezone=True), nullable=True)
     is_active_globally = Column(Boolean, default=True, nullable=False)
     litellm_params = Column(JSON, nullable=True)
     # Alias models point at another model per region (model_alias_targets) and

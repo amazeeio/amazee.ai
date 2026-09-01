@@ -55,6 +55,7 @@ interface AdminModelResponse {
   description: string | null;
   real_eol: string | null;
   override_eol: string | null;
+  upstream_eol: string | null;
   is_active_globally: boolean;
   litellm_params: Record<string, any> | null;
   created_at: string;
@@ -128,7 +129,10 @@ export default function ModelsPage() {
   }, [models, searchTerm, selectedProvider]);
 
   const getEolBadge = (model: AdminModelResponse) => {
-    const activeEolStr = model.override_eol || model.real_eol;
+    // upstream_eol is the announced date: the one /public/models publishes
+    // and the only one the catalog prune guard accepts. real_eol and
+    // override_eol are catalog-declared and gate nothing.
+    const activeEolStr = model.upstream_eol;
     if (!activeEolStr) {
       return (
         <Badge variant="outline" className="bg-transparent text-gray-400 border-gray-200 hover:bg-transparent">
@@ -161,19 +165,6 @@ export default function ModelsPage() {
     const diffTime = Math.abs(activeEol.getTime() - now.getTime());
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
     const isWarning = diffDays <= 90;
-
-    if (model.override_eol) {
-      return (
-        <div className="flex flex-col gap-1 items-start">
-          <Badge variant="outline" className="bg-transparent text-gray-700 border-gray-300 hover:bg-transparent">
-            Override Deprecating
-          </Badge>
-          <span className="text-[10px] text-muted-foreground font-medium">
-            {isWarning ? `In ${diffDays} days (${formattedDate})` : formattedDate}
-          </span>
-        </div>
-      );
-    }
 
     return (
       <div className="flex flex-col gap-1 items-start">
