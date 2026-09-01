@@ -9,7 +9,6 @@ import {
   Calendar,
   Users,
   Globe,
-  Package,
   Plus,
   X,
 } from "lucide-react";
@@ -43,16 +42,9 @@ interface Team {
   created_at: string;
   last_payment?: string;
   is_always_free: boolean;
-  products: Product[];
   regions: string[];
   total_spend: number;
   trial_status: string;
-}
-
-interface Product {
-  id: string;
-  name: string;
-  active: boolean;
 }
 
 type SortField =
@@ -60,7 +52,6 @@ type SortField =
   | "name"
   | "created_at"
   | "last_payment"
-  | "products"
   | "trial_status"
   | "regions"
   | "total_spend"
@@ -222,7 +213,6 @@ export default function SalesDashboardPage() {
   const filterColumns = [
     { value: "admin_email", label: "Team Email", type: "text" },
     { value: "name", label: "Team Name", type: "text" },
-    { value: "products", label: "Products", type: "select" },
     { value: "trial_status", label: "Trial Status", type: "select" },
     { value: "regions", label: "Regions", type: "select" },
   ];
@@ -266,7 +256,6 @@ export default function SalesDashboardPage() {
     switch (column) {
       case "trial_status":
         return [
-          { value: "Active Product", label: "Active Product" },
           { value: "Always Free", label: "Always Free" },
           { value: "In Progress", label: "In Progress" },
           { value: "Expired", label: "Expired" },
@@ -285,21 +274,6 @@ export default function SalesDashboardPage() {
             .map((region) => ({
               value: region,
               label: region,
-            })),
-        ];
-      case "products":
-        const allProducts = new Set<string>();
-        teams.forEach((team) => {
-          const teamProducts = team.products || [];
-          teamProducts.forEach((product) => allProducts.add(product.name));
-        });
-        return [
-          { value: "No Product", label: "No Product" },
-          ...Array.from(allProducts)
-            .sort()
-            .map((productName) => ({
-              value: productName,
-              label: productName,
             })),
         ];
       default:
@@ -371,13 +345,6 @@ export default function SalesDashboardPage() {
             case "name":
               teamValue = team.name.toLowerCase();
               break;
-            case "products":
-              const teamProducts = team.products || [];
-              teamValue =
-                teamProducts.length > 0
-                  ? teamProducts.map((p) => p.name).join(", ")
-                  : "No Product";
-              break;
             case "trial_status":
               const trialStatus = getTrialTimeRemaining(team);
               if (trialStatus.includes("days left")) {
@@ -448,10 +415,6 @@ export default function SalesDashboardPage() {
           case "last_payment":
             aValue = a.last_payment ? new Date(a.last_payment).getTime() : 0;
             bValue = b.last_payment ? new Date(b.last_payment).getTime() : 0;
-            break;
-          case "products":
-            aValue = (a.products || []).length;
-            bValue = (b.products || []).length;
             break;
           case "trial_status":
             aValue = getTrialTimeRemaining(a);
@@ -705,16 +668,6 @@ export default function SalesDashboardPage() {
                 </TableHead>
                 <TableHead
                   className="cursor-pointer hover:bg-gray-50 w-28"
-                  onClick={() => handleSort("products")}
-                >
-                  <div className="flex items-center gap-2">
-                    <Package className="h-4 w-4" />
-                    Products
-                    {getSortIcon("products")}
-                  </div>
-                </TableHead>
-                <TableHead
-                  className="cursor-pointer hover:bg-gray-50 w-28"
                   onClick={() => handleSort("trial_status")}
                 >
                   <div className="flex items-center gap-2">
@@ -772,30 +725,6 @@ export default function SalesDashboardPage() {
                     </TableCell>
                     <TableCell className="py-2">
                       {(() => {
-                        const teamProducts = team.products || [];
-                        return teamProducts.length > 0 ? (
-                          <div className="space-y-0.5">
-                            {teamProducts.map((product) => (
-                              <Badge
-                                key={product.id}
-                                variant={
-                                  product.active ? "default" : "secondary"
-                                }
-                                className="mr-1 text-xs px-1.5 py-0.5"
-                              >
-                                {product.name}
-                              </Badge>
-                            ))}
-                          </div>
-                        ) : (
-                          <span className="text-muted-foreground text-xs">
-                            No products
-                          </span>
-                        );
-                      })()}
-                    </TableCell>
-                    <TableCell className="py-2">
-                      {(() => {
                         const trialStatus = getTrialTimeRemaining(team);
                         let badgeVariant:
                           | "default"
@@ -804,13 +733,7 @@ export default function SalesDashboardPage() {
                           | "outline" = "outline";
                         let customStyle = {};
 
-                        if (trialStatus === "Active Product") {
-                          badgeVariant = "default";
-                          customStyle = {
-                            backgroundColor: "#166534",
-                            color: "white",
-                          }; // dark green
-                        } else if (trialStatus === "Always Free") {
+                        if (trialStatus === "Always Free") {
                           badgeVariant = "secondary";
                         } else if (trialStatus === "Expired") {
                           badgeVariant = "destructive";

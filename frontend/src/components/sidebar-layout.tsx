@@ -11,7 +11,6 @@ import {
   PanelLeftClose,
   PanelLeft,
   Users2,
-  Package,
   DollarSign,
   Cpu,
 } from "lucide-react";
@@ -53,11 +52,6 @@ const navigation = [
       { name: "Users", href: "/admin/users", icon: <Users size={16} /> },
       { name: "Regions", href: "/admin/regions", icon: <Globe size={16} /> },
       { name: "Models", href: "/admin/models", icon: <Cpu size={16} /> },
-      {
-        name: "Products",
-        href: "/admin/products",
-        icon: <Package size={16} />,
-      },
       {
         name: "Private AI Keys",
         href: "/admin/private-ai-keys",

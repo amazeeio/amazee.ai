@@ -8,11 +8,9 @@ from app.db.models import (
     DBBudgetAlertState,
     DBLimitedResource,
     DBPrivateAIKey,
-    DBProduct,
     DBRegion,
     DBSpendCap,
     DBTeam,
-    DBTeamProduct,
     DBTeamRegion,
     DBUser,
 )
@@ -737,41 +735,6 @@ def test_delete_team_zeros_litellm_budget(client, admin_token, test_team, test_r
         team_id=f"{test_region.name}_{test_team.id}",
         max_budget=0.0,
     )
-
-
-def test_delete_team_with_products(client, admin_token, db, test_team, test_product):
-    """Test deleting a team that has associated products"""
-    product_id = test_product.id
-    # Associate the product with the team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=product_id)
-    db.add(team_product)
-    db.commit()
-
-    # Delete the team
-    response = client.delete(
-        f"/teams/{test_team.id}", headers={"Authorization": f"Bearer {admin_token}"}
-    )
-    assert response.status_code == 200
-    assert response.json()["message"] == "Team deleted successfully"
-
-    # Verify the team is deleted
-    db_team = db.query(DBTeam).filter(DBTeam.id == test_team.id).first()
-    assert db_team is None
-
-    # Verify the product association is removed
-    db_team_product = (
-        db.query(DBTeamProduct)
-        .filter(
-            DBTeamProduct.team_id == test_team.id,
-            DBTeamProduct.product_id == product_id,
-        )
-        .first()
-    )
-    assert db_team_product is None
-
-    # Verify the product still exists (should not be deleted)
-    db_product = db.query(DBProduct).filter(DBProduct.id == product_id).first()
-    assert db_product is not None
 
 
 def test_delete_team_unauthorized(client, test_token, test_team):
@@ -1650,68 +1613,6 @@ def test_merge_teams_with_users_and_keys(
     # Verify source team was deleted
     source_team_exists = db.query(DBTeam).filter(DBTeam.id == source_team.id).first()
     assert source_team_exists is None
-
-
-def test_merge_teams_with_product_associations_fails(
-    client, admin_token, db, test_product
-):
-    """Given a source team with product associations
-    When attempting to merge teams
-    Then the merge should fail with a 400 error"""
-
-    # Store product ID before any database operations that might detach it
-    product_id = test_product.id
-
-    # Create teams
-    source_team = DBTeam(
-        name="Source",
-        admin_email="source@example.com",
-        is_active=True,
-        budget_type="periodic",
-    )
-    target_team = DBTeam(
-        name="Target",
-        admin_email="target@example.com",
-        is_active=True,
-        budget_type="periodic",
-    )
-    db.add_all([source_team, target_team])
-    db.commit()
-
-    # Associate product with source team
-    source_team_product = DBTeamProduct(team_id=source_team.id, product_id=product_id)
-    db.add(source_team_product)
-    db.commit()
-
-    response = client.post(
-        f"/teams/{target_team.id}/merge",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "source_team_id": source_team.id,
-            "conflict_resolution_strategy": "delete",
-        },
-    )
-
-    assert response.status_code == 400
-    assert "active product associations" in response.json()["detail"]
-    assert product_id in response.json()["detail"]
-
-    # Verify both teams still exist
-    source_team_exists = db.query(DBTeam).filter(DBTeam.id == source_team.id).first()
-    target_team_exists = db.query(DBTeam).filter(DBTeam.id == target_team.id).first()
-    assert source_team_exists is not None
-    assert target_team_exists is not None
-
-    # Verify product association still exists
-    source_team_product_exists = (
-        db.query(DBTeamProduct)
-        .filter(
-            DBTeamProduct.team_id == source_team.id,
-            DBTeamProduct.product_id == product_id,
-        )
-        .first()
-    )
-    assert source_team_product_exists is not None
 
 
 def test_merge_teams_with_source_team_dedicated_regions_fails(client, admin_token, db):

@@ -4249,3 +4249,89 @@ def test_team_spend_breakdown_member_never_sees_unattributed(
     # Ownership of a stale key cannot be checked, so it must not reach a member.
     assert data["unattributed_keys"] == []
     assert data["totals"]["spend"] == 3.0
+
+
+@patch("app.api.spend.LiteLLMService.get_daily_activity", new_callable=AsyncMock)
+def test_key_daily_activity_folds_dates_split_across_pages(
+    mock_get_daily_activity, client, team_admin_token, test_team_user, test_region, db
+):
+    """LiteLLM aggregates each page on its own, so one day can arrive twice.
+
+    Emitting both would show the caller two partial days for the same date.
+    """
+    key = DBPrivateAIKey(
+        name="paged-activity-key",
+        litellm_token="sk-paged-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team_user.team_id,
+    )
+    db.add(key)
+    db.commit()
+
+    # 2025-06-01 straddles a page boundary and comes back as two partial rows.
+    mock_get_daily_activity.return_value = [
+        {
+            "date": "2025-06-01",
+            "metrics": {
+                "spend": 2.0,
+                "prompt_tokens": 100,
+                "total_tokens": 120,
+                "api_requests": 2,
+            },
+            "breakdown": {
+                "models": {
+                    "bedrock/claude": {"metrics": {"spend": 2.0, "api_requests": 2}},
+                },
+            },
+        },
+        {
+            "date": "2025-06-02",
+            "metrics": {"spend": 5.0, "total_tokens": 500, "api_requests": 5},
+        },
+        {
+            "date": "2025-06-01",
+            "metrics": {
+                "spend": 1.5,
+                "prompt_tokens": 50,
+                "total_tokens": 60,
+                "api_requests": 1,
+            },
+            "breakdown": {
+                "models": {
+                    "bedrock/claude": {"metrics": {"spend": 1.0, "api_requests": 1}},
+                    "bedrock/titan": {"metrics": {"spend": 0.5}},
+                },
+            },
+        },
+    ]
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/daily-activity",
+        params={
+            "start_date": "2025-06-01",
+            "end_date": "2025-06-02",
+            "include_breakdown": "true",
+        },
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    rows = response.json()["activity"]
+
+    assert [r["date"] for r in rows] == ["2025-06-01", "2025-06-02"]
+    first = rows[0]
+    assert first["spend"] == 3.5
+    assert first["prompt_tokens"] == 150
+    assert first["total_tokens"] == 180
+    assert first["request_count"] == 3
+
+    # The model split is folded the same way, still ordered by descending spend.
+    assert [m["model"] for m in first["breakdown"]] == [
+        "bedrock/claude",
+        "bedrock/titan",
+    ]
+    assert first["breakdown"][0]["spend"] == 3.0
+    assert first["breakdown"][0]["request_count"] == 3
+    assert first["breakdown"][1]["spend"] == 0.5
+    # Folded rows still add up to what LiteLLM reported for the range.
+    assert sum(r["spend"] for r in rows) == 8.5

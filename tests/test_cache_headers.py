@@ -1,21 +1,6 @@
-from unittest.mock import patch
 
-import pytest
 from fastapi.testclient import TestClient
 
-from app.api import public as public_api
-
-
-@pytest.fixture(autouse=True)
-def _offline_bedrock_catalog():
-    """Keep /public/models off the network.
-
-    The endpoint enriches models with EOL dates from the upstream Bedrock
-    catalog; an empty BEDROCK_MODELS_URL skips that fetch. Tests that exercise
-    the EOL path patch _get_bedrock_eol_index (or this setting) themselves.
-    """
-    with patch.object(public_api.settings, "BEDROCK_MODELS_URL", ""):
-        yield
 
 
 def test_cache_control_headers_present(client: TestClient):
