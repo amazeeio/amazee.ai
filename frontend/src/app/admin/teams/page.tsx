@@ -194,8 +194,6 @@ export default function TeamsPage() {
 
   const isTeamExpired = (team: Team): boolean => {
     if (team.is_always_free) return false;
-    if (team.products && team.products.some((product) => product.active))
-      return false;
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
     return !team.last_payment
