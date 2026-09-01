@@ -7,7 +7,7 @@ from urllib.error import URLError
 
 import httpx
 
-from app.api import public as public_api
+from app.services import model_eol
 from app.core.security import get_password_hash
 from app.db.models import DBRegion, DBUser
 
@@ -15,10 +15,9 @@ AWS_PATH = "/models/missing/aws"
 
 
 def _clear_bedrock_catalog_cache():
-    public_api._bedrock_catalog_cache["url"] = None
-    public_api._bedrock_catalog_cache["data"] = None
-    public_api._bedrock_catalog_cache["eol_index"] = {}
-    public_api._bedrock_catalog_cache["expires_at"] = datetime.min.replace(tzinfo=UTC)
+    model_eol._bedrock_catalog_cache["url"] = None
+    model_eol._bedrock_catalog_cache["data"] = None
+    model_eol._bedrock_catalog_cache["expires_at"] = datetime.min.replace(tzinfo=UTC)
 
 
 def _make_public_region(db, name, suffix="public"):

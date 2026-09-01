@@ -1,4 +1,3 @@
-import { Product } from "./product";
 import { User } from "./user";
 
 export interface TeamUser extends User {
@@ -16,7 +15,6 @@ export interface Team {
   updated_at: string;
   last_payment?: string;
   users?: TeamUser[];
-  products?: Product[];
   is_always_free: boolean;
   force_user_keys?: boolean;
   deleted_at?: string;

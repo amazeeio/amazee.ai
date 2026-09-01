@@ -37,6 +37,8 @@ class OwnerType(Enum):
 
 
 class LimitSource(Enum):
+    # Retired: no code writes PRODUCT any more. The label stays so the Python
+    # enum matches the Postgres type, which alembic would otherwise try to alter.
     PRODUCT = "product"
     DEFAULT = "default"
     MANUAL = "manual"

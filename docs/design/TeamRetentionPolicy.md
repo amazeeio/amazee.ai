@@ -8,7 +8,6 @@ Add a 3-month retention period for inactive teams. Teams will be soft-deleted af
 
 A team is considered "active" if ANY of these are true:
 
-- Has at least one product association (`DBTeamProduct`) - **team remains active regardless of when association was created**
 - Has at least one key with `updated_at` within last 90 days (indicates usage via cached_spend updates)
 - Has created a resource (user, key, etc.) within last 90 days (based on `created_at` timestamps)
 
@@ -58,12 +57,9 @@ In `app/core/worker.py`, add retention monitoring to existing `monitor_teams()` 
 
 **For each team (in order):**
 
-1. **Reconcile product associations with Stripe** (existing logic)
-
-2. **Check retention policy** (new logic):
+1. **Check retention policy**:
    - Call `_check_team_retention_policy()` method which:
      - Calculates last activity date by checking:
-       - Any product association (if exists, team is considered active)
        - Most recent key `updated_at` across all `DBPrivateAIKey`
        - Most recent user `created_at` in `DBUser`
        - Most recent key `created_at` in `DBPrivateAIKey`
@@ -129,10 +125,9 @@ Create `tests/test_team_retention.py`:
 1. Test activity calculation logic with various scenarios
 2. Test warning email sent at 76 days
 3. Test soft deletion at 90 days
-4. Test teams with products are never deleted
-5. Test teams with recent key usage are not deleted
-6. Test teams with recent resource creation are not deleted
-7. Test warning only sent once
+4. Test teams with recent key usage are not deleted
+5. Test teams with recent resource creation are not deleted
+6. Test warning only sent once
 
 ### Integration Tests
 
@@ -167,7 +162,6 @@ No new environment variables needed - uses existing:
 
 Track last activity via existing timestamps:
 
-- Product association: Any `DBTeamProduct` record makes team active regardless of creation date
 - Key usage: `DBPrivateAIKey.updated_at` (updated only when `cached_spend` actually changes, indicating real usage)
 - Resource creation: `created_at` on users, keys
 
@@ -268,7 +262,6 @@ When a team is soft-deleted (after 90 days of inactivity):
    - Delete `DBLimitedResource` (team and user resources)
    - Delete `DBPrivateAIKey` (team and user keys)
    - Delete `DBUser` (team members)
-   - Delete `DBTeamProduct` associations
    - Delete `DBTeamRegion` associations
    - Delete `DBTeam` record
 3. Emit `team_hard_deleted_total` metric

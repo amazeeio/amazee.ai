@@ -43,7 +43,7 @@ export interface LimitedResource {
   current_value: number | null;
   owner_type: "system" | "team" | "user";
   owner_id: number;
-  limited_by: "product" | "default" | "manual";
+  limited_by: "default" | "manual";
   set_by: string | null;
   created_at: string;
   updated_at: string | null;
@@ -368,7 +368,6 @@ export function LimitsView({
 
   const formatLimitSource = (source: string): string => {
     const mapping: Record<string, string> = {
-      product: "Product",
       default: "Default",
       manual: "Manual",
     };
@@ -409,7 +408,7 @@ export function LimitsView({
                 <DialogTitle>Create New Limit</DialogTitle>
                 <DialogDescription>
                   Create a new limit for this {ownerType}. This will override
-                  any existing product or default limits.
+                  any existing default limit.
                 </DialogDescription>
               </DialogHeader>
               <form onSubmit={handleCreateLimit} className="space-y-4">
@@ -561,7 +560,7 @@ export function LimitsView({
           {showResetAll && onResetAll && (
             <DeleteConfirmationDialog
               title={`Reset All ${ownerType === "team" ? "Team" : "User"} Limits`}
-              description={`Are you sure you want to reset all limits for this ${ownerType}? This will revert all manual overrides back to product or default limits.`}
+              description={`Are you sure you want to reset all limits for this ${ownerType}? This will revert all manual overrides back to default limits.`}
               triggerText={`Reset All ${ownerType === "team" ? "Team" : "User"} Limits`}
               confirmText="Reset"
               onConfirm={onResetAll}
@@ -637,11 +636,7 @@ export function LimitsView({
                   <TableCell>
                     <Badge
                       variant={
-                        limit.limited_by === "manual"
-                          ? "default"
-                          : limit.limited_by === "product"
-                            ? "secondary"
-                            : "outline"
+                        limit.limited_by === "manual" ? "default" : "outline"
                       }
                     >
                       {formatLimitSource(limit.limited_by)}
@@ -691,7 +686,7 @@ export function LimitsView({
                         {allowIndividualReset && (
                           <DeleteConfirmationDialog
                             title="Reset Limit"
-                            description="Are you sure you want to reset this limit? This will revert any manual override back to the product or default limit."
+                            description="Are you sure you want to reset this limit? This will revert any manual override back to the default limit."
                             triggerText="Reset"
                             confirmText="Reset"
                             onConfirm={() => handleResetLimit(limit)}

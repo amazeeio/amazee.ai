@@ -120,46 +120,6 @@ class APITokenResponse(APITokenBase):
     model_config = ConfigDict(from_attributes=True)
 
 
-class ProductBase(BaseModel):
-    name: str
-    id: str  # This is the Stripe product ID, format should be prod_XXX
-    user_count: Optional[int] = 1
-    keys_per_user: Optional[int] = 1
-    total_key_count: Optional[int] = 6
-    service_key_count: Optional[int] = 5
-    max_budget_per_key: Optional[float] = 20.0
-    rpm_per_key: Optional[int] = 500
-    vector_db_count: Optional[int] = 1
-    vector_db_storage: Optional[int] = 50  # Not used yet, should be a number in GiB
-    renewal_period_days: int = 30
-    active: bool = True
-
-
-class ProductCreate(ProductBase):
-    pass
-
-
-class ProductUpdate(BaseModel):
-    name: Optional[str] = None
-    user_count: Optional[int] = None
-    keys_per_user: Optional[int] = None
-    total_key_count: Optional[int] = None
-    service_key_count: Optional[int] = None
-    max_budget_per_key: Optional[float] = None
-    rpm_per_key: Optional[int] = None
-    vector_db_count: Optional[int] = None
-    vector_db_storage: Optional[int] = None
-    renewal_period_days: Optional[int] = None
-    active: Optional[bool] = None
-    model_config = ConfigDict(from_attributes=True)
-
-
-class Product(ProductBase):
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-    model_config = ConfigDict(from_attributes=True)
-
-
 _BLOCKED_HOST_ALIASES = {
     "localhost",
     "ip6-localhost",
@@ -372,9 +332,8 @@ class PublicModelSummary(BaseModel):
     eol_source: Optional[str] = Field(
         default=None,
         description=(
-            "Where eol_date came from: 'manual' for an operator-authored "
-            "'(EOL: ...)' annotation in the LiteLLM model metadata, 'bedrock' "
-            "for the upstream AWS Bedrock catalog. Null when eol_date is null."
+            "Where eol_date came from. Always 'bedrock' -- the upstream AWS "
+            "Bedrock catalog is the only source. Null when eol_date is null."
         ),
     )
 
@@ -1078,7 +1037,6 @@ class Team(TeamBase):
     deleted_at: Optional[datetime] = None
     retention_warning_sent_at: Optional[datetime] = None
     region_id: Optional[int] = None
-    products: List[Product] = []
     allowed_regions: List[RegionSummaryResponse] = []
     model_config = ConfigDict(from_attributes=True)
 
@@ -1136,13 +1094,6 @@ class PortalRequest(BaseModel):
 
 
 # Sales Dashboard schemas
-class SalesProduct(BaseModel):
-    id: str
-    name: str
-    active: bool
-    model_config = ConfigDict(from_attributes=True)
-
-
 class SalesTeam(BaseModel):
     id: int
     name: str
@@ -1151,7 +1102,6 @@ class SalesTeam(BaseModel):
     last_payment: Optional[datetime] = None
     is_always_free: bool
     budget_type: BudgetType
-    products: List[SalesProduct]
     regions: List[str]
     total_spend: float
     trial_status: str
@@ -1349,6 +1299,9 @@ class AdminModelBase(BaseModel):
     description: Optional[str] = None
     real_eol: Optional[datetime] = None
     override_eol: Optional[datetime] = None
+    # Written by the EOL scan. This is the date the sunset guard reads, so the
+    # admin UI must show it rather than the two catalog-declared columns.
+    upstream_eol: Optional[datetime] = None
     is_active_globally: bool = True
     litellm_params: Optional[dict] = None
 

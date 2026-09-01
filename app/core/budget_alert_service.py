@@ -37,8 +37,9 @@ Two stages, both bounded by *activity* rather than by key count:
    saw traffic rather than every key in the region. The request costs a handful of
    pages even at the full lookback, and usually fewer, because the window only
    reaches back as far as the oldest unexpired purchase. ``_fetch_daily_activity``
-   follows ``has_more``, and pages partition the data rather than repeating it, so
-   the per-day totals add up cleanly.
+   follows ``has_more``. A page boundary can split one day across two rows, but
+   every row here is summed rather than read on its own, so the totals are
+   unaffected.
 2. **Denominators for keys** — one scoped ``/key/list?team_id=`` per candidate team,
    used for ``max_budget`` and to spot keys being expired. Its ``spend`` figures are
    deliberately ignored; spend comes from the daily rows instead.
@@ -106,6 +107,12 @@ budget_alert_subjects_skipped_total = Counter(
     "budget_alert_subjects_skipped_total",
     "Subjects that could not be evaluated safely and were dropped",
     ["reason"],
+)
+
+budget_alert_region_sweeps_failed_total = Counter(
+    "budget_alert_region_sweeps_failed_total",
+    "Region sweeps that could not be evaluated, so the region got no alerts",
+    ["region"],
 )
 
 budget_alert_subjects_evaluated = Gauge(
@@ -805,7 +812,12 @@ async def evaluate_region(
         team_rows = await service.get_all_team_daily_activity(start_str, end_str)
         result.litellm_calls += 1
     except Exception as exc:
+        # A failed sweep means no alerts at all for this region on this tick, and
+        # it repeats every tick until the cause clears. One of the causes is the
+        # daily-activity page cap, which a busy region grows into rather than
+        # hits suddenly, so the log alone is easy to miss.
         logger.error("Budget alert sweep failed for region %s: %s", region.name, exc)
+        budget_alert_region_sweeps_failed_total.labels(region=region.name).inc()
         return result
 
     subjects: list[_Subject] = []

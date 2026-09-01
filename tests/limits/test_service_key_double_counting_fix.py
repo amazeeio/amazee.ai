@@ -1,10 +1,9 @@
 import pytest
 from datetime import datetime, UTC
+from fastapi import HTTPException
 from app.db.models import (
     DBPrivateAIKey,
     DBUser,
-    DBProduct,
-    DBTeamProduct,
     DBLimitedResource,
 )
 from app.core.limit_service import LimitService
@@ -57,21 +56,7 @@ def test_team_with_keys_and_users(db, test_team):
 
     db.commit()
 
-    # Create a product with service key limit of 150
-    product = DBProduct(
-        id="test_product",
-        name="Test Product",
-        service_key_count=150,
-        created_at=datetime.now(UTC),
-    )
-    db.add(product)
-
-    # Associate the product with the team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=product.id)
-    db.add(team_product)
-    db.commit()
-
-    return {"team": test_team, "user1": user1, "user2": user2, "product": product}
+    return {"team": test_team, "user1": user1, "user2": user2}
 
 
 def get_actual_counts(db, team_id):
@@ -254,10 +239,8 @@ def test_production_scenario_multiple_check_key_limits_calls(
     limit_service = LimitService(db)
 
     # Simulate multiple calls to check_key_limits (as might happen in production)
-    try:
+    with pytest.raises(HTTPException):
         limit_service.check_key_limits(team_data["team"].id, owner_id=None)
-    except Exception as e:
-        pytest.fail(f"First call failed: {e}")
 
     # Check the count after first call
     service_key_limit = (
@@ -275,10 +258,8 @@ def test_production_scenario_multiple_check_key_limits_calls(
     else:
         pytest.fail("No service key limit found after first call")
 
-    try:
+    with pytest.raises(HTTPException):
         limit_service.check_key_limits(team_data["team"].id, owner_id=None)
-    except Exception as e:
-        pytest.fail(f"Second call failed: {e}")
 
     # Check the count after second call
     db.refresh(service_key_limit)
@@ -287,8 +268,7 @@ def test_production_scenario_multiple_check_key_limits_calls(
     else:
         pytest.fail("No service key limit found after second call")
 
-    # The count should not keep incrementing beyond the actual number of keys
-    # With the fix, the count should stabilize at 77 + number of actual calls that create keys
+    # The count must not keep incrementing across calls
     assert second_call_count <= 80, (
         f"Count is too high: {second_call_count}. This indicates the production bug where counts keep incrementing."
     )
@@ -406,7 +386,8 @@ def test_check_key_limits_creates_limit_with_correct_count(
     """
     Given: A team with 77 service keys, and no existing limit
     When: check_key_limits is called for the creation of a new service key
-    Then: the limit is created with the correct current_value
+    Then: the limit is created with the correct current_value, and the team is
+    refused because 77 is over the default allowance
     """
     team_data = test_team_with_keys_and_users
     counts = get_actual_counts(db, team_data["team"].id)
@@ -429,10 +410,8 @@ def test_check_key_limits_creates_limit_with_correct_count(
     limit_service = LimitService(db)
 
     # Call check_key_limits - this should create a new limit with correct count
-    try:
+    with pytest.raises(HTTPException):
         limit_service.check_key_limits(team_data["team"].id, owner_id=None)
-    except Exception as e:
-        pytest.fail(f"check_key_limits should work and create a limit: {e}")
 
     # Check that a limit was created with the correct count
     new_limit = (
@@ -447,9 +426,9 @@ def test_check_key_limits_creates_limit_with_correct_count(
 
     assert new_limit is not None, "A new limit should have been created"
 
-    # The limit should be created with the correct count (77) then incremented to 78
-    assert new_limit.current_value == 78, (
-        f"Expected limit to be created with count 77 then incremented to 78, got {new_limit.current_value}"
+    # The limit records the real key count, not a double-counted one
+    assert new_limit.current_value == 77, (
+        f"Expected limit to be created with count 77, got {new_limit.current_value}"
     )
 
 

@@ -26,6 +26,7 @@ from app.db.models import (
 )
 from app.schemas.models import BudgetType
 from app.core.worker import apply_billing_cycle_for_team
+from app.core.limit_service import DEFAULT_MAX_SPEND
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────────
@@ -104,7 +105,6 @@ async def test_periodic_team_uses_31d_duration(
     mock_litellm_class,
     db,
     test_team,
-    test_product,
     test_region,
 ):
     """PERIODIC teams must always use a fixed 31-day budget duration,
@@ -143,7 +143,6 @@ async def test_pool_subscription_team_uses_31d_duration(
     mock_get_keys,
     mock_litellm_class,
     db,
-    test_product,
     test_region,
 ):
     """POOL subscription teams go through apply_billing_cycle_for_team and
@@ -167,7 +166,7 @@ async def test_pool_subscription_team_uses_31d_duration(
         db,
         team,
         test_region,
-        budget_cents=int(round(test_product.max_budget_per_key * 100)),
+        budget_cents=int(round(DEFAULT_MAX_SPEND * 100)),
     )
 
     team_call = mock_litellm.update_team_budget.await_args
@@ -187,7 +186,6 @@ async def test_periodic_team_compounds_max_budget(
     mock_litellm_class,
     db,
     test_team,
-    test_product,
     test_region,
 ):
     """PERIODIC webhook resets key spend to 0; max_budget = desired_remaining = monthly_cap + topup."""
@@ -231,7 +229,6 @@ async def test_periodic_compounding_stops_on_get_team_info_failure(
     mock_litellm_class,
     db,
     test_team,
-    test_product,
     test_region,
 ):
     """When get_team_info fails, apply_billing_cycle_for_team must abort the
@@ -304,7 +301,6 @@ async def test_periodic_team_resets_key_spend_to_zero(
     mock_litellm_class,
     db,
     test_team,
-    test_product,
     test_region,
 ):
     """PERIODIC teams must pass spend=0.0 to set_key_restrictions so that
@@ -346,7 +342,6 @@ async def test_pool_subscription_team_resets_key_spend(
     mock_get_keys,
     mock_litellm_class,
     db,
-    test_product,
     test_region,
 ):
     """POOL subscription teams go through apply_billing_cycle_for_team and
@@ -373,7 +368,7 @@ async def test_pool_subscription_team_resets_key_spend(
         db,
         team,
         test_region,
-        budget_cents=int(round(test_product.max_budget_per_key * 100)),
+        budget_cents=int(round(DEFAULT_MAX_SPEND * 100)),
     )
 
     # Every key must have been called with spend=0.0 (reset on cycle)
@@ -586,7 +581,6 @@ async def test_periodic_payment_sync_status_updated_on_success(
     mock_litellm_class,
     db,
     test_team,
-    test_product,
     test_region,
 ):
     """When apply_billing_cycle_for_team succeeds, the payment record's
@@ -639,7 +633,6 @@ async def test_periodic_payment_sync_status_updated_on_key_failure(
     mock_litellm_class,
     db,
     test_team,
-    test_product,
     test_region,
 ):
     """When some keys fail during apply_billing_cycle_for_team, the payment

@@ -472,25 +472,3 @@ class TestStructuredEolDateField:
     def test_unparseable_structured_field_is_ignored(self, value):
         mod = _load_module()
         assert mod["parse_eol_date"](value) is None
-
-    def test_annotation_regex_matches_the_backend_copy(self):
-        """The duplicated (EOL: ...) pattern must agree with app/api/public.py.
-
-        The script is stdlib-only so it cannot import from app/; this pins the
-        two copies together.
-        """
-        from app.api.public import _parse_eol_annotation
-
-        mod = _load_module()
-        for text in (
-            "Low cost Claude model. (EOL: 2026-09-10)",
-            "Alias pointing to Claude 3 Haiku. (EOL: 2026-09-10)",
-            "(EOL:2026-01-02) leading",
-            "no annotation here",
-            "malformed (EOL: 2026-9-10)",
-        ):
-            script_result = mod["extract_eol_date"](text)
-            backend_result = _parse_eol_annotation(text)
-            assert (
-                script_result.isoformat() if script_result else None
-            ) == backend_result, text
