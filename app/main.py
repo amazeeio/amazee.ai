@@ -14,7 +14,6 @@ from app.api import (
     internal,
     limits,
     private_ai_keys,
-    products,
     public,
     regions,
     spend,
@@ -221,7 +220,6 @@ app.include_router(teams.router, prefix="/teams", tags=["teams"])
 app.include_router(
     subscription.router, prefix="/billing/subscription", tags=["billing"]
 )
-app.include_router(products.router, prefix="/products", tags=["products"])
 app.include_router(limits.router, prefix="/limits", tags=["limits"])
 app.include_router(budgets.router, prefix="/budgets", tags=["budgets"])
 app.include_router(spend.router, prefix="/spend", tags=["spend"])

@@ -8,8 +8,6 @@ from app.db.models import (
     DBPoolPurchase,
     DBTeam,
     DBUser,
-    DBProduct,
-    DBTeamProduct,
     DBSpendCap,
 )
 from datetime import datetime, UTC
@@ -20,6 +18,14 @@ from app.core.config import settings
 from app.core.limit_service import (
     DEFAULT_MAX_SPEND,
     DEFAULT_RPM_PER_KEY,
+    LimitService,
+)
+from app.schemas.limits import (
+    LimitSource,
+    LimitType,
+    OwnerType,
+    ResourceType,
+    UnitType,
 )
 
 
@@ -2337,30 +2343,18 @@ def test_create_too_many_service_keys(
     mock_httpx_post_client,
 ):
     """Test that when ENABLE_LIMITS is true, creating too many service keys fails"""
-    # Create a product with a specific service key limit for testing
     key_count = 2
-    test_product = DBProduct(
-        id="prod_test_service_limit",
-        name="Test Product Service Limit",
-        user_count=3,
-        keys_per_user=2,
-        total_key_count=10,
-        service_key_count=key_count,  # Specific limit for testing
-        max_budget_per_key=50.0,
-        rpm_per_key=1000,
-        vector_db_count=1,
-        vector_db_storage=100,
-        renewal_period_days=30,
-        active=True,
-        created_at=datetime.now(UTC),
+    LimitService(db).set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.SERVICE_KEY,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=key_count,
+        current_value=0,
+        limited_by=LimitSource.MANUAL,
+        set_by="test",
     )
-    db.add(test_product)
-    product_id = test_product.id
-
-    # Associate the product with the team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=product_id)
-    db.add(team_product)
-    db.commit()
 
     # Use the httpx POST client fixture
     mock_client_class.return_value = mock_httpx_post_client
@@ -2408,32 +2402,18 @@ def test_create_too_many_user_keys(
     mock_httpx_post_client,
 ):
     """Test that when ENABLE_LIMITS is true, creating too many user keys fails"""
-    # Get the team from the team user
-    team_id = test_team_user.team_id
     key_count = 2
-
-    # Create a product with a specific user key limit for testing
-    test_product = DBProduct(
-        id="prod_test_user_key_limit",
-        name="Test Product User Key Limit",
-        user_count=3,
-        keys_per_user=key_count,  # Specific limit for testing
-        total_key_count=10,
-        service_key_count=2,
-        max_budget_per_key=50.0,
-        rpm_per_key=1000,
-        vector_db_count=1,
-        vector_db_storage=100,
-        renewal_period_days=30,
-        active=True,
-        created_at=datetime.now(UTC),
+    LimitService(db).set_limit(
+        owner_type=OwnerType.USER,
+        owner_id=test_team_user.id,
+        resource_type=ResourceType.USER_KEY,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=key_count,
+        current_value=0,
+        limited_by=LimitSource.MANUAL,
+        set_by="test",
     )
-    db.add(test_product)
-
-    # Associate the product with the team
-    team_product = DBTeamProduct(team_id=team_id, product_id=test_product.id)
-    db.add(team_product)
-    db.commit()
 
     # Use the httpx POST client fixture
     mock_client_class.return_value = mock_httpx_post_client
@@ -2472,30 +2452,18 @@ def test_create_too_many_user_keys(
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
 def test_create_too_many_vector_dbs(client, admin_token, test_region, db, test_team):
     """Test that when ENABLE_LIMITS is true, creating too many vector DBs fails"""
-    # Create a product with a specific vector DB limit for testing
     vector_db_count = 2
-    test_product = DBProduct(
-        id="prod_test_vector_db_limit",
-        name="Test Product Vector DB Limit",
-        user_count=3,
-        keys_per_user=2,
-        total_key_count=10,
-        service_key_count=2,
-        max_budget_per_key=50.0,
-        rpm_per_key=1000,
-        vector_db_count=vector_db_count,  # Specific limit for testing
-        vector_db_storage=100,
-        renewal_period_days=30,
-        active=True,
-        created_at=datetime.now(UTC),
+    LimitService(db).set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.VECTOR_DB,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=vector_db_count,
+        current_value=0,
+        limited_by=LimitSource.MANUAL,
+        set_by="test",
     )
-    db.add(test_product)
-
-    # Associate the product with the team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
-    db.commit()
-    db.refresh(test_product)
 
     # Create vector DBs up to the limit
     team_id = test_team.id
@@ -2537,28 +2505,18 @@ def test_create_too_many_service_keys_check(
     mock_httpx_post_client,
 ):
     """Test that when ENABLE_LIMITS is true, creating too many service keys fails"""
-    # Create a product with a specific service key limit for testing
     service_key_count = 2
-    test_product = DBProduct(
-        id="prod_test_service_limit",
-        name="Test Product Service Limit",
-        user_count=5,
-        keys_per_user=3,
-        service_key_count=service_key_count,  # Specific limit for testing
-        max_budget_per_key=50.0,
-        rpm_per_key=1000,
-        vector_db_count=1,
-        vector_db_storage=100,
-        renewal_period_days=30,
-        active=True,
-        created_at=datetime.now(UTC),
+    LimitService(db).set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.SERVICE_KEY,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=service_key_count,
+        current_value=0,
+        limited_by=LimitSource.MANUAL,
+        set_by="test",
     )
-    db.add(test_product)
-
-    # Associate the product with the team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
-    db.commit()
 
     # Use the httpx POST client fixture
     mock_client_class.return_value = mock_httpx_post_client

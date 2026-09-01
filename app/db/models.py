@@ -27,33 +27,6 @@ def enum_values(enum_cls):
     return [member.value for member in enum_cls]
 
 
-class DBTeamProduct(Base):
-    """
-    Association table for team-product relationship.
-    This model is required to implement a many-to-many relationship between teams and products.
-    It allows:
-    - Teams to subscribe to multiple products
-    - Products to be used by multiple teams
-    - Tracking when products were added to teams
-    - Maintaining referential integrity between teams and products
-    """
-
-    __tablename__ = "team_products"
-
-    team_id = Column(Integer, ForeignKey("teams.id"), primary_key=True, nullable=False)
-    product_id = Column(
-        String,
-        ForeignKey("products.id", ondelete="CASCADE"),
-        primary_key=True,
-        nullable=False,
-    )
-    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
-
-    team = relationship("DBTeam", back_populates="active_products")
-    product = relationship("DBProduct", back_populates="teams")
-
-
 class DBTeamRegion(Base):
     """
     Association table for team-region relationship.
@@ -210,7 +183,6 @@ class DBTeam(Base):
 
     users = relationship("DBUser", back_populates="team")
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="team")
-    active_products = relationship("DBTeamProduct", back_populates="team")
     allowed_region_associations = relationship(
         "DBTeamRegion",
         back_populates="team",
@@ -221,10 +193,6 @@ class DBTeam(Base):
     metrics = relationship(
         "DBTeamMetrics", back_populates="team", uselist=False, cascade="all, delete"
     )
-
-    @property
-    def products(self):
-        return [tp.product for tp in self.active_products if tp.product]
 
     @property
     def dedicated_regions(self):
@@ -491,48 +459,6 @@ class DBUserSpendCache(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 
 
-class DBProduct(Base):
-    __tablename__ = "products"
-
-    id = Column(String, primary_key=True, index=True)
-    name = Column(String, nullable=False)
-    user_count = Column(Integer, default=0)
-    keys_per_user = Column(Integer, default=0)
-    total_key_count = Column(Integer, default=0)
-    service_key_count = Column(Integer, default=0)
-    max_budget_per_key = Column(Float, default=0.0)
-    rpm_per_key = Column(Integer, default=0)
-    vector_db_count = Column(Integer, default=0)
-    vector_db_storage = Column(Integer, default=0)
-    renewal_period_days = Column(Integer, default=30)
-    active = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-    teams = relationship("DBTeamProduct", back_populates="product")
-
-
-class DBPricingTable(Base):
-    __tablename__ = "pricing_tables"
-
-    id = Column(Integer, primary_key=True, index=True)
-    table_type = Column(
-        String, nullable=False, index=True
-    )  # "standard" or "always_free"
-    pricing_table_id = Column(String, nullable=False)  # Stripe pricing table ID
-    stripe_publishable_key = Column(String, nullable=False)  # Stripe publishable key
-    is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-    # Ensure only one active table per type
-    __table_args__ = (
-        UniqueConstraint(
-            "table_type", "is_active", name="uq_pricing_table_type_active"
-        ),
-    )
-
-
 class DBLimitedResource(Base):
     """
     Unified limit management for both Control Plane and Data Plane resources.
@@ -540,7 +466,7 @@ class DBLimitedResource(Base):
     Control Plane (CP) limits are enforced by amazee.ai and must have current_value.
     Data Plane (DP) limits are enforced by external systems and have current_value=None.
 
-    Source hierarchy: MANUAL > PRODUCT > DEFAULT
+    Source hierarchy: MANUAL > DEFAULT
     Users inherit team limits unless they have individual overrides.
     """
 
@@ -858,10 +784,14 @@ class DBModel(Base):
     # inherit the target's effective litellm_params at sync time.
     is_alias = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False
+    )
     deleted_at = Column(DateTime(timezone=True), nullable=True)
 
-    regions = relationship("DBModelRegion", back_populates="model", cascade="all, delete-orphan")
+    regions = relationship(
+        "DBModelRegion", back_populates="model", cascade="all, delete-orphan"
+    )
     alias_targets = relationship(
         "DBModelAliasTarget",
         back_populates="alias_model",
@@ -897,7 +827,9 @@ class DBModelAccessGroup(Base):
     label = Column(String, nullable=False)
     description = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False
+    )
 
     model_associations = relationship(
         "DBModelAccessGroupModel", back_populates="group", cascade="all, delete-orphan"
@@ -920,7 +852,10 @@ class DBModelAccessGroupModel(Base):
         nullable=False,
     )
     model_id = Column(
-        Integer, ForeignKey("models.id", ondelete="CASCADE"), primary_key=True, nullable=False
+        Integer,
+        ForeignKey("models.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
     )
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
 
@@ -942,7 +877,10 @@ class DBModelAccessGroupRegion(Base):
         nullable=False,
     )
     region_id = Column(
-        Integer, ForeignKey("regions.id", ondelete="CASCADE"), primary_key=True, nullable=False
+        Integer,
+        ForeignKey("regions.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
     )
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
 
@@ -957,7 +895,10 @@ class DBTeamModelAccessGroup(Base):
     __tablename__ = "team_model_access_groups"
 
     team_id = Column(
-        Integer, ForeignKey("teams.id", ondelete="CASCADE"), primary_key=True, nullable=False
+        Integer,
+        ForeignKey("teams.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
     )
     group_id = Column(
         Integer,
@@ -980,9 +921,14 @@ class DBTeamGroupSyncRun(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     region_id = Column(
-        Integer, ForeignKey("regions.id", ondelete="CASCADE"), nullable=False, index=True
+        Integer,
+        ForeignKey("regions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
-    status = Column(String, default="running", nullable=False)  # running | done | failed
+    status = Column(
+        String, default="running", nullable=False
+    )  # running | done | failed
     total = Column(Integer, default=0, nullable=False)
     done = Column(Integer, default=0, nullable=False)
     failed_team_ids = Column(JSON, nullable=True)
@@ -996,8 +942,18 @@ class DBTeamGroupSyncRun(Base):
 class DBModelRegion(Base):
     __tablename__ = "model_regions"
 
-    model_id = Column(Integer, ForeignKey("models.id", ondelete="CASCADE"), primary_key=True, nullable=False)
-    region_id = Column(Integer, ForeignKey("regions.id", ondelete="CASCADE"), primary_key=True, nullable=False)
+    model_id = Column(
+        Integer,
+        ForeignKey("models.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    region_id = Column(
+        Integer,
+        ForeignKey("regions.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
     is_active = Column(Boolean, default=True, nullable=False)
     # Merged over the model's litellm_params at sync time — lets the same
     # catalog model use a different backend ID (e.g. bedrock inference
@@ -1007,7 +963,9 @@ class DBModelRegion(Base):
     sync_error = Column(String, nullable=True)
     synced_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False
+    )
 
     model = relationship("DBModel", back_populates="regions")
     region = relationship("DBRegion")
@@ -1020,14 +978,22 @@ class DBModelAliasTarget(Base):
     __tablename__ = "model_alias_targets"
 
     alias_model_id = Column(
-        Integer, ForeignKey("models.id", ondelete="CASCADE"), primary_key=True, nullable=False
+        Integer,
+        ForeignKey("models.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
     )
     region_id = Column(
-        Integer, ForeignKey("regions.id", ondelete="CASCADE"), primary_key=True, nullable=False
+        Integer,
+        ForeignKey("regions.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
     )
     target_model_id = Column(Integer, ForeignKey("models.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False
+    )
 
     alias_model = relationship(
         "DBModel", back_populates="alias_targets", foreign_keys=[alias_model_id]
