@@ -17,8 +17,6 @@ dependencies:
   - name: backend
     version: 2.4.0 # x-release-please-version
     condition: backend.enabled
-    dependsOn:
-      - postgresql
   - name: frontend
     version: 2.4.0 # x-release-please-version
     condition: frontend.enabled
