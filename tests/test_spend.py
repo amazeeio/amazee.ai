@@ -109,6 +109,25 @@ def test_get_team_spend_allows_inactive_region(
     assert response.json()["region_id"] == test_region.id
 
 
+@patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
+def test_get_team_breakdown_allows_inactive_region(
+    mock_get_team_daily_activity, client, team_admin_token, test_team, test_region, db
+):
+    # The breakdown route is a read, so it has to survive its region retiring
+    # like every other spend read.
+    test_region.is_active = False
+    db.add(test_region)
+    db.commit()
+
+    mock_get_team_daily_activity.return_value = []
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/breakdown",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+
+
 @patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
 def test_update_team_budget_rejects_inactive_region(
     mock_update_team_budget, client, admin_token, test_team, test_region, db
