@@ -107,7 +107,7 @@ async def get_team_spend_history(
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
     _assert_team_access(current_user, user_role, team_id)
-    region = _get_region_or_404(db, region_id)
+    region = _get_region_or_404(db, region_id, include_inactive=True)
 
     periods = (
         db.query(DBTeamSpendPeriod)
@@ -393,12 +393,18 @@ def _compute_pool_monthly_effective_budget(
     )
 
 
-def _get_region_or_404(db: Session, region_id: int) -> DBRegion:
-    region = (
-        db.query(DBRegion)
-        .filter(DBRegion.id == region_id, DBRegion.is_active.is_(True))
-        .first()
-    )
+def _get_region_or_404(
+    db: Session, region_id: int, include_inactive: bool = False
+) -> DBRegion:
+    """Load a region or raise 404.
+
+    Read endpoints pass include_inactive=True: a retired region keeps serving
+    its existing keys, so spend must stay readable. Mutations stay active-only.
+    """
+    query = db.query(DBRegion).filter(DBRegion.id == region_id)
+    if not include_inactive:
+        query = query.filter(DBRegion.is_active.is_(True))
+    region = query.first()
     if not region:
         raise HTTPException(status_code=404, detail="Region not found")
     return region
@@ -790,7 +796,7 @@ async def get_team_spend(
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
     _assert_team_access(current_user, user_role, team_id)
-    region = _get_region_or_404(db, region_id)
+    region = _get_region_or_404(db, region_id, include_inactive=True)
 
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
@@ -1124,7 +1130,7 @@ async def get_user_spend(
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
     _assert_user_access(current_user, user_role, target_user)
-    region = _get_region_or_404(db, region_id)
+    region = _get_region_or_404(db, region_id, include_inactive=True)
 
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
@@ -1276,7 +1282,7 @@ async def get_key_spend_alias(
         if key.owner_id != current_user.id:
             raise HTTPException(status_code=404, detail="Private AI Key not found")
 
-    region = _get_region_or_404(db, region_id)
+    region = _get_region_or_404(db, region_id, include_inactive=True)
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
@@ -1435,7 +1441,7 @@ async def get_key_last_used(
         if key.owner_id != current_user.id:
             raise HTTPException(status_code=404, detail="Private AI Key not found")
 
-    region = _get_region_or_404(db, region_id)
+    region = _get_region_or_404(db, region_id, include_inactive=True)
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
@@ -1535,7 +1541,7 @@ async def get_key_daily_activity(
         if key.owner_id != current_user.id:
             raise HTTPException(status_code=404, detail="Private AI Key not found")
 
-    region = _get_region_or_404(db, region_id)
+    region = _get_region_or_404(db, region_id, include_inactive=True)
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
@@ -1610,7 +1616,7 @@ async def get_user_daily_activity(
         raise HTTPException(status_code=404, detail="User not found")
     _assert_user_access(current_user, user_role, target_user)
 
-    region = _get_region_or_404(db, region_id)
+    region = _get_region_or_404(db, region_id, include_inactive=True)
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
@@ -1689,7 +1695,7 @@ async def get_team_daily_activity(
         raise HTTPException(status_code=404, detail="Team not found")
     _assert_team_access(current_user, user_role, team_id)
 
-    region = _get_region_or_404(db, region_id)
+    region = _get_region_or_404(db, region_id, include_inactive=True)
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )

@@ -86,6 +86,45 @@ def test_get_team_spend_by_region(
     assert all(key["max_budget"] is None for key in data["keys"])
 
 
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_get_team_spend_allows_inactive_region(
+    mock_get_team_info, client, team_admin_token, test_team, test_region, db
+):
+    # A retired region keeps serving existing keys, so spend stays readable.
+    test_region.is_active = False
+    db.add(test_region)
+    db.commit()
+
+    mock_get_team_info.return_value = {
+        "team_info": {"spend": 3.0, "max_budget": 10.0},
+        "keys": [],
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["region_id"] == test_region.id
+
+
+@patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
+def test_update_team_budget_rejects_inactive_region(
+    mock_update_team_budget, client, admin_token, test_team, test_region, db
+):
+    test_region.is_active = False
+    db.add(test_region)
+    db.commit()
+
+    response = client.put(
+        f"/spend/{test_region.id}/team/{test_team.id}/budget",
+        json={"max_budget": 12.5},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 404
+    mock_update_team_budget.assert_not_awaited()
+
+
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
 def test_get_user_spend_by_region(
     mock_get_key_info, client, team_admin_token, test_team_user, test_region, db
