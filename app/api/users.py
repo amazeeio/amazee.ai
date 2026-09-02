@@ -213,6 +213,22 @@ async def _fetch_region_spend(
     max_budget: float | None = None,
 ) -> Optional[UserSpendRegion]:
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+    # A region can be retired with its LiteLLM credentials cleared. Building the
+    # service would raise, and asyncio.gather below has no return_exceptions, so
+    # one such region would fail the whole response. Report the region as
+    # unavailable instead — hiding it is what this endpoint was fixed to stop.
+    if not region.litellm_api_url or not region.litellm_api_key:
+        logger.warning(
+            "Region %s has no LiteLLM credentials; reporting spend as unavailable",
+            region.name,
+        )
+        return UserSpendRegion(
+            region_id=region.id,
+            region_name=region.name,
+            spend=0.0,
+            status="unavailable",
+            max_budget=max_budget,
+        )
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
@@ -343,10 +359,13 @@ async def _compute_user_spend(
         except (TypeError, ValueError):
             continue
 
+    # Inactive regions are included: a retired region keeps serving its
+    # existing keys, so leaving it out silently undercounts a user's spend
+    # instead of reporting it.
     team_regions = (
         db.query(DBTeamRegion, DBRegion)
         .join(DBRegion, DBTeamRegion.region_id == DBRegion.id)
-        .filter(DBTeamRegion.team_id.in_(team_ids), DBRegion.is_active.is_(True))
+        .filter(DBTeamRegion.team_id.in_(team_ids))
         .all()
     )
 
