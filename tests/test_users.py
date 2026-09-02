@@ -627,6 +627,65 @@ def test_get_user_spend_skips_regions_without_user_keys(
 
 
 @patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_get_user_spend_reports_region_without_credentials_as_unavailable(
+    mock_get_team_info, client, admin_token, db
+):
+    # One credential-less region must not fail the whole response: the results
+    # are gathered without return_exceptions.
+    team = DBTeam(
+        name="No Creds Team",
+        admin_email="no-creds@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    region = DBRegion(
+        name="region-no-creds",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="http://litellm.nocreds",
+        litellm_api_key=None,
+        is_active=False,
+        is_dedicated=False,
+    )
+    user = DBUser(
+        email="dave+1@example.com",
+        hashed_password=get_password_hash("pw"),
+        is_active=True,
+        is_admin=False,
+        team=team,
+    )
+    db.add_all([team, region, user])
+    db.commit()
+    db.refresh(team)
+    db.refresh(region)
+    db.refresh(user)
+    db.add(DBTeamRegion(team_id=team.id, region_id=region.id))
+    db.commit()
+    db.add(
+        DBPrivateAIKey(
+            database_name="db_nocreds",
+            database_username="u_nocreds",
+            owner_id=user.id,
+            team_id=team.id,
+            region_id=region.id,
+        )
+    )
+    db.commit()
+
+    response = client.get(
+        "/users/spend?email=dave@example.com",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    regions = response.json()["teams"][0]["regions"]
+    assert [r["status"] for r in regions] == ["unavailable"]
+    mock_get_team_info.assert_not_awaited()
+
+
+@patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
 def test_get_user_spend_includes_retired_region(
     mock_get_team_info, client, admin_token, db
 ):

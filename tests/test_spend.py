@@ -109,6 +109,73 @@ def test_get_team_spend_allows_inactive_region(
     assert response.json()["region_id"] == test_region.id
 
 
+def test_every_spend_read_allows_inactive_regions_and_no_mutation_does():
+    """Guard the read/write split structurally, not route by route.
+
+    The 404-on-retired-region bug came back once already, when a new GET route
+    was added that resolved its region active-only. A per-route test would not
+    have caught that, because a new route simply is not in the list. Walking the
+    source does catch it.
+    """
+    import ast
+    from pathlib import Path
+
+    source = Path("app/api/spend.py").read_text()
+    tree = ast.parse(source)
+
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        verbs = {
+            d.func.attr
+            for d in node.decorator_list
+            if isinstance(d, ast.Call)
+            and isinstance(d.func, ast.Attribute)
+            and isinstance(d.func.value, ast.Name)
+            and d.func.value.id == "router"
+        }
+        if not verbs:
+            continue
+        for call in ast.walk(node):
+            if not (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id == "_get_region_or_404"
+            ):
+                continue
+            relaxed = any(
+                kw.arg == "include_inactive"
+                and isinstance(kw.value, ast.Constant)
+                and kw.value.value is True
+                for kw in call.keywords
+            )
+            is_read = verbs == {"get"}
+            if is_read and not relaxed:
+                offenders.append(f"{node.name} is a read but resolves active-only")
+            if not is_read and relaxed:
+                offenders.append(f"{node.name} mutates but allows inactive regions")
+
+    assert not offenders, "; ".join(offenders)
+
+
+def test_spend_read_on_region_without_litellm_credentials_is_unavailable(
+    client, team_admin_token, test_team, test_region, db
+):
+    # A retired region can have had its credentials cleared. The read must say
+    # the region cannot answer, not raise from the LiteLLM constructor.
+    test_region.is_active = False
+    test_region.litellm_api_key = None
+    db.add(test_region)
+    db.commit()
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 503
+
+
 @patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
 def test_get_team_breakdown_allows_inactive_region(
     mock_get_team_daily_activity, client, team_admin_token, test_team, test_region, db

@@ -545,6 +545,15 @@ def _get_region_or_404(
     region = query.first()
     if not region:
         raise HTTPException(status_code=404, detail="Region not found")
+    # Only reachable on the relaxed path: a retired region can have had its
+    # LiteLLM credentials cleared, and every caller hands them straight to
+    # LiteLLMService, which raises. Say the region cannot answer rather than
+    # surfacing a 500.
+    if include_inactive and not (region.litellm_api_url and region.litellm_api_key):
+        raise HTTPException(
+            status_code=503,
+            detail="Region is not currently serving spend data",
+        )
     return region
 
 
