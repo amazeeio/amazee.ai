@@ -225,7 +225,18 @@ async def _fetch_region_spend(
             )
         except Exception as exc:
             if _is_litellm_404(exc):
-                return None
+                # No LiteLLM team in this region, so there is no spend to
+                # report. A configured cap is still real configuration, so keep
+                # the row (with zero spend) instead of hiding the cap.
+                if max_budget is None:
+                    return None
+                return UserSpendRegion(
+                    region_id=region.id,
+                    region_name=region.name,
+                    spend=0.0,
+                    status="ok",
+                    max_budget=max_budget,
+                )
             if _is_litellm_unavailable(exc):
                 logger.warning(
                     "LiteLLM unavailable for team %s (%s) in region %s: %s",
@@ -374,9 +385,16 @@ async def _compute_user_spend(
     for team_id in team_ids:
         team_name = team_names[team_id]
         for region in regions_by_team.get(team_id, {}).values():
+            # A region is reported when the member has spend to report there
+            # (a team-owned or user-owned key exists) *or* when a team-member
+            # cap is configured for it. Without the cap clause, a cap set in a
+            # region the member has no key in yet is written successfully but
+            # can never be read back — callers see `max_budget: null` and
+            # conclude the write failed (moad-dev member spending limits).
             if (
                 (team_id, region.id) not in key_team_region_set
                 and region.id not in user_key_regions_by_team.get(team_id, set())
+                and (team_id, region.id) not in max_budget_by_team_region
             ):
                 continue
 

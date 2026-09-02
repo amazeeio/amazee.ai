@@ -6,7 +6,6 @@ export const handlers = [
     return HttpResponse.json({
       NEXT_PUBLIC_API_URL: "http://localhost:8800",
       PASSWORDLESS_SIGN_IN: false,
-      STRIPE_PUBLISHABLE_KEY: "",
     });
   }),
 
@@ -46,7 +45,6 @@ export const handlers = [
         created_at: "2024-01-01T00:00:00Z",
         is_active: true,
         is_always_free: false,
-        products: [],
       },
     ]);
   }),
@@ -235,6 +233,7 @@ export const handlers = [
         description: "Meta's flagship open-weights model",
         real_eol: "2026-12-31T23:59:59Z",
         override_eol: null,
+        upstream_eol: "2026-12-31T23:59:59Z",
         is_active_globally: true,
         litellm_params: {},
         created_at: "2024-01-01T00:00:00Z",
@@ -272,6 +271,7 @@ export const handlers = [
         description: "OpenAI's fast, cost-efficient small model",
         real_eol: null,
         override_eol: "2026-06-30T00:00:00Z",
+        upstream_eol: "2026-06-30T00:00:00Z",
         is_active_globally: true,
         litellm_params: {},
         created_at: "2024-02-01T00:00:00Z",

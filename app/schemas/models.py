@@ -120,46 +120,6 @@ class APITokenResponse(APITokenBase):
     model_config = ConfigDict(from_attributes=True)
 
 
-class ProductBase(BaseModel):
-    name: str
-    id: str  # This is the Stripe product ID, format should be prod_XXX
-    user_count: Optional[int] = 1
-    keys_per_user: Optional[int] = 1
-    total_key_count: Optional[int] = 6
-    service_key_count: Optional[int] = 5
-    max_budget_per_key: Optional[float] = 20.0
-    rpm_per_key: Optional[int] = 500
-    vector_db_count: Optional[int] = 1
-    vector_db_storage: Optional[int] = 50  # Not used yet, should be a number in GiB
-    renewal_period_days: int = 30
-    active: bool = True
-
-
-class ProductCreate(ProductBase):
-    pass
-
-
-class ProductUpdate(BaseModel):
-    name: Optional[str] = None
-    user_count: Optional[int] = None
-    keys_per_user: Optional[int] = None
-    total_key_count: Optional[int] = None
-    service_key_count: Optional[int] = None
-    max_budget_per_key: Optional[float] = None
-    rpm_per_key: Optional[int] = None
-    vector_db_count: Optional[int] = None
-    vector_db_storage: Optional[int] = None
-    renewal_period_days: Optional[int] = None
-    active: Optional[bool] = None
-    model_config = ConfigDict(from_attributes=True)
-
-
-class Product(ProductBase):
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-    model_config = ConfigDict(from_attributes=True)
-
-
 _BLOCKED_HOST_ALIASES = {
     "localhost",
     "ip6-localhost",
@@ -372,9 +332,8 @@ class PublicModelSummary(BaseModel):
     eol_source: Optional[str] = Field(
         default=None,
         description=(
-            "Where eol_date came from: 'manual' for an operator-authored "
-            "'(EOL: ...)' annotation in the LiteLLM model metadata, 'bedrock' "
-            "for the upstream AWS Bedrock catalog. Null when eol_date is null."
+            "Where eol_date came from. Always 'bedrock' -- the upstream AWS "
+            "Bedrock catalog is the only source. Null when eol_date is null."
         ),
     )
 
@@ -811,6 +770,97 @@ class TeamDailyActivityResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class UsageMetrics(BaseModel):
+    """Usage totals for one slice of the team breakdown."""
+
+    spend: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    request_count: int = 0
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BreakdownModelItem(UsageMetrics):
+    """One model's share of a key's usage over the requested range."""
+
+    model: str = Field(
+        description="LiteLLM model name, e.g. 'bedrock/us.anthropic.claude-sonnet-4-6'.",
+    )
+    # `model` is a normal field here; opt out of pydantic's protected `model_`
+    # namespace so it doesn't warn/clash.
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+
+class BreakdownKeyItem(UsageMetrics):
+    """One key's usage over the requested range, split by model."""
+
+    key_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "Our private AI key id. Null when LiteLLM reports usage for a key "
+            "we no longer hold, e.g. one deleted inside the date range."
+        ),
+    )
+    key_name: Optional[str] = None
+    models: List[BreakdownModelItem] = Field(
+        default_factory=list,
+        description="Per-model usage for this key, ordered by descending spend.",
+    )
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BreakdownUserItem(UsageMetrics):
+    """One team member's usage over the requested range, split by key."""
+
+    user_id: int
+    email: Optional[str] = None
+    keys: List[BreakdownKeyItem] = Field(
+        default_factory=list,
+        description="Per-key usage for this user, ordered by descending spend.",
+    )
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TeamSpendBreakdownResponse(BaseModel):
+    """Team usage drilled down to user, key and model in one response."""
+
+    region_id: int
+    team_id: int
+    start_date: date
+    end_date: date
+    totals: UsageMetrics = Field(
+        description="Team totals over the range, summed from the rows below."
+    )
+    users: List[BreakdownUserItem] = Field(
+        default_factory=list,
+        description=(
+            "Team members with usage in the range, ordered by descending spend. "
+            "Members with no usage are omitted."
+        ),
+    )
+    service_keys: List[BreakdownKeyItem] = Field(
+        default_factory=list,
+        description=(
+            "Team-owned keys, which belong to a site or an automation rather "
+            "than a person, so they sit beside the users instead of under one."
+        ),
+    )
+    unattributed_keys: List[BreakdownKeyItem] = Field(
+        default_factory=list,
+        description=(
+            "Keys LiteLLM reports usage for that we no longer hold, typically "
+            "deleted inside the date range. Their owner is unknowable, so they "
+            "are listed separately rather than counted as a service key. "
+            "Always empty for a caller who only sees their own keys, because "
+            "ownership cannot be checked."
+        ),
+    )
+    model_config = ConfigDict(from_attributes=True)
+
+
 class SpendBudgetUpdateRequest(BaseModel):
     max_budget: Optional[float] = Field(default=None, ge=0)
 
@@ -987,7 +1037,6 @@ class Team(TeamBase):
     deleted_at: Optional[datetime] = None
     retention_warning_sent_at: Optional[datetime] = None
     region_id: Optional[int] = None
-    products: List[Product] = []
     allowed_regions: List[RegionSummaryResponse] = []
     model_config = ConfigDict(from_attributes=True)
 
@@ -1039,62 +1088,12 @@ class SignInData(BaseModel):
     verification_code: str
 
 
-class CheckoutSessionCreate(BaseModel):
-    price_lookup_token: str
-
-
-class PricingTableSession(BaseModel):
-    client_secret: str
-    model_config = ConfigDict(from_attributes=True)
-
-
-class PricingTableCreate(BaseModel):
-    pricing_table_id: str
-    table_type: Literal["standard", "always_free", "gpt"] = "standard"
-    stripe_publishable_key: Optional[str] = (
-        None  # Optional on create, defaults to system config
-    )
-    model_config = ConfigDict(from_attributes=True)
-
-
-class PricingTableResponse(BaseModel):
-    pricing_table_id: str
-    stripe_publishable_key: str  # Always included in response
-    updated_at: datetime
-    model_config = ConfigDict(from_attributes=True)
-
-
-class PricingTablesResponse(BaseModel):
-    tables: Dict[str, PricingTableResponse | None]
-    model_config = ConfigDict(from_attributes=True)
-
-
-class SubscriptionCreate(BaseModel):
-    product_id: str  # Stripe product ID
-    model_config = ConfigDict(from_attributes=True)
-
-
-class SubscriptionResponse(BaseModel):
-    subscription_id: str
-    product_id: str
-    team_id: int
-    created_at: datetime
-    model_config = ConfigDict(from_attributes=True)
-
-
 class PortalRequest(BaseModel):
     return_url: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 
 
 # Sales Dashboard schemas
-class SalesProduct(BaseModel):
-    id: str
-    name: str
-    active: bool
-    model_config = ConfigDict(from_attributes=True)
-
-
 class SalesTeam(BaseModel):
     id: int
     name: str
@@ -1103,7 +1102,6 @@ class SalesTeam(BaseModel):
     last_payment: Optional[datetime] = None
     is_always_free: bool
     budget_type: BudgetType
-    products: List[SalesProduct]
     regions: List[str]
     total_spend: float
     trial_status: str
@@ -1301,6 +1299,9 @@ class AdminModelBase(BaseModel):
     description: Optional[str] = None
     real_eol: Optional[datetime] = None
     override_eol: Optional[datetime] = None
+    # Written by the EOL scan. This is the date the sunset guard reads, so the
+    # admin UI must show it rather than the two catalog-declared columns.
+    upstream_eol: Optional[datetime] = None
     is_active_globally: bool = True
     litellm_params: Optional[dict] = None
 
@@ -1455,5 +1456,3 @@ class ApplyConfigResponse(BaseModel):
     # (PR comment, Slack) so a typo'd or retired region stays visible.
     skipped_regions: List[SkippedRegion] = Field(default_factory=list)
     syncs_scheduled: int = 0
-
-

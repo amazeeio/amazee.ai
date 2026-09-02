@@ -8,17 +8,16 @@ from app.db.models import (
     DBBudgetAlertState,
     DBLimitedResource,
     DBPrivateAIKey,
-    DBProduct,
     DBRegion,
     DBSpendCap,
     DBTeam,
-    DBTeamProduct,
     DBTeamRegion,
     DBUser,
 )
 from app.main import app
 from app.schemas.limits import LimitSource, LimitType, OwnerType, ResourceType, UnitType
 from app.schemas.models import BudgetType
+from app.services.disposable_domains import refresh_disposable_domains
 from fastapi.testclient import TestClient
 from tests.conftest import soft_delete_team_for_test
 
@@ -736,41 +735,6 @@ def test_delete_team_zeros_litellm_budget(client, admin_token, test_team, test_r
         team_id=f"{test_region.name}_{test_team.id}",
         max_budget=0.0,
     )
-
-
-def test_delete_team_with_products(client, admin_token, db, test_team, test_product):
-    """Test deleting a team that has associated products"""
-    product_id = test_product.id
-    # Associate the product with the team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=product_id)
-    db.add(team_product)
-    db.commit()
-
-    # Delete the team
-    response = client.delete(
-        f"/teams/{test_team.id}", headers={"Authorization": f"Bearer {admin_token}"}
-    )
-    assert response.status_code == 200
-    assert response.json()["message"] == "Team deleted successfully"
-
-    # Verify the team is deleted
-    db_team = db.query(DBTeam).filter(DBTeam.id == test_team.id).first()
-    assert db_team is None
-
-    # Verify the product association is removed
-    db_team_product = (
-        db.query(DBTeamProduct)
-        .filter(
-            DBTeamProduct.team_id == test_team.id,
-            DBTeamProduct.product_id == product_id,
-        )
-        .first()
-    )
-    assert db_team_product is None
-
-    # Verify the product still exists (should not be deleted)
-    db_product = db.query(DBProduct).filter(DBProduct.id == product_id).first()
-    assert db_product is not None
 
 
 def test_delete_team_unauthorized(client, test_token, test_team):
@@ -1651,68 +1615,6 @@ def test_merge_teams_with_users_and_keys(
     assert source_team_exists is None
 
 
-def test_merge_teams_with_product_associations_fails(
-    client, admin_token, db, test_product
-):
-    """Given a source team with product associations
-    When attempting to merge teams
-    Then the merge should fail with a 400 error"""
-
-    # Store product ID before any database operations that might detach it
-    product_id = test_product.id
-
-    # Create teams
-    source_team = DBTeam(
-        name="Source",
-        admin_email="source@example.com",
-        is_active=True,
-        budget_type="periodic",
-    )
-    target_team = DBTeam(
-        name="Target",
-        admin_email="target@example.com",
-        is_active=True,
-        budget_type="periodic",
-    )
-    db.add_all([source_team, target_team])
-    db.commit()
-
-    # Associate product with source team
-    source_team_product = DBTeamProduct(team_id=source_team.id, product_id=product_id)
-    db.add(source_team_product)
-    db.commit()
-
-    response = client.post(
-        f"/teams/{target_team.id}/merge",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "source_team_id": source_team.id,
-            "conflict_resolution_strategy": "delete",
-        },
-    )
-
-    assert response.status_code == 400
-    assert "active product associations" in response.json()["detail"]
-    assert product_id in response.json()["detail"]
-
-    # Verify both teams still exist
-    source_team_exists = db.query(DBTeam).filter(DBTeam.id == source_team.id).first()
-    target_team_exists = db.query(DBTeam).filter(DBTeam.id == target_team.id).first()
-    assert source_team_exists is not None
-    assert target_team_exists is not None
-
-    # Verify product association still exists
-    source_team_product_exists = (
-        db.query(DBTeamProduct)
-        .filter(
-            DBTeamProduct.team_id == source_team.id,
-            DBTeamProduct.product_id == product_id,
-        )
-        .first()
-    )
-    assert source_team_product_exists is not None
-
-
 def test_merge_teams_with_source_team_dedicated_regions_fails(client, admin_token, db):
     """
     Given a source team with dedicated region associations
@@ -2590,3 +2492,161 @@ def test_merge_teams_removes_source_team_limit_rows(mock_post, client, admin_tok
         .count()
         == 0
     )
+
+
+def test_register_team_non_admin_admin_email_is_forced_to_caller(
+    client, test_token, test_user, test_region
+):
+    """A non-admin caller cannot name someone else as the team admin."""
+    with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock):
+        response = client.post(
+            "/teams/",
+            json={
+                "name": "Self Service Team",
+                "admin_email": "victim@example.com",
+                "phone": "1234567890",
+                "billing_address": "123 Test St, Test City, 12345",
+                "region_id": test_region.id,
+            },
+            headers={"Authorization": f"Bearer {test_token}"},
+        )
+    assert response.status_code == 201, response.text
+    assert response.json()["admin_email"] == test_user.email
+
+
+def test_register_team_admin_may_set_other_admin_email(
+    client, admin_token, test_region
+):
+    """A system admin may still register a team for another admin_email."""
+    with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock):
+        response = client.post(
+            "/teams/",
+            json={
+                "name": "Delegated Team",
+                "admin_email": "delegated@example.com",
+                "phone": "1234567890",
+                "billing_address": "123 Test St, Test City, 12345",
+                "region_id": test_region.id,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    assert response.status_code == 201, response.text
+    assert response.json()["admin_email"] == "delegated@example.com"
+
+
+def test_register_team_domain_check_uses_effective_email(
+    client, test_token, test_user, test_region, db
+):
+    """The blocklist check runs on the stored email, not the discarded body value."""
+    refresh_disposable_domains(db)
+
+    with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock):
+        response = client.post(
+            "/teams/",
+            json={
+                "name": "Effective Email Team",
+                "admin_email": "throwaway@dynv6.net",
+                "phone": "1234567890",
+                "billing_address": "123 Test St, Test City, 12345",
+                "region_id": test_region.id,
+            },
+            headers={"Authorization": f"Bearer {test_token}"},
+        )
+    assert response.status_code == 201, response.text
+    assert response.json()["admin_email"] == test_user.email
+
+
+def test_update_team_admin_email_is_admin_only(
+    client, team_admin_token, test_team, test_team_admin
+):
+    """A team admin cannot move admin_email onto someone else's address."""
+    response = client.put(
+        f"/teams/{test_team.id}",
+        json={"admin_email": "victim@example.com"},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 403
+    assert "admin_email" in response.json()["detail"]
+
+
+def test_update_team_admin_email_resent_unchanged_is_allowed(
+    client, team_admin_token, test_team, test_team_admin, db
+):
+    """A GET-then-PUT round-trip that re-sends the current email is a no-op.
+
+    The stored address is mixed case while the schema lowercases the incoming
+    one, so only a case-insensitive compare keeps this a no-op.
+    """
+    stored = test_team.admin_email
+    test_team.admin_email = stored.upper()
+    db.commit()
+
+    response = client.put(
+        f"/teams/{test_team.id}",
+        json={"name": "Renamed Team", "admin_email": stored},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "Renamed Team"
+
+
+def test_update_team_admin_email_allowed_for_system_admin(
+    client, admin_token, test_team
+):
+    """A system admin may still reassign the team admin."""
+    response = client.put(
+        f"/teams/{test_team.id}",
+        json={"admin_email": "newadmin@example.com"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["admin_email"] == "newadmin@example.com"
+
+
+def test_update_team_admin_email_blocks_disposable_domain(
+    client, admin_token, test_team, db
+):
+    """The blocklist also gates a changed admin_email on update."""
+    refresh_disposable_domains(db)
+
+    response = client.put(
+        f"/teams/{test_team.id}",
+        json={"admin_email": "throwaway@dynv6.net"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == "Invalid email domain."
+
+
+def test_update_team_admin_email_rejects_a_case_variant_duplicate(
+    client, admin_token, test_team, test_region, db
+):
+    """The DB unique index is case-sensitive, so the check must not be."""
+    other = DBTeam(
+        name="Other Team",
+        admin_email="taken@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        region_id=test_region.id,
+    )
+    db.add(other)
+    db.commit()
+
+    response = client.put(
+        f"/teams/{test_team.id}",
+        json={"admin_email": "TAKEN@example.com"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "Email already registered"
+
+
+def test_update_team_admin_email_ignores_its_own_row(client, admin_token, test_team):
+    """The uniqueness check must not treat the team's own address as taken."""
+    response = client.put(
+        f"/teams/{test_team.id}",
+        json={"admin_email": "moved@example.com"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["admin_email"] == "moved@example.com"

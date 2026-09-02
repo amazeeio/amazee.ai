@@ -33,7 +33,6 @@ Feature: amazee.ai Key and Team Management Workflows
 
   Scenario: Trial status calculation for a new team
     Given a new team has been created today
-    And the team has no active product subscriptions
     And "is_always_free" is set to "False"
     When the system calculates the trial status via "_calculate_trial_status"
     Then the status should be "30 days left"
@@ -41,7 +40,6 @@ Feature: amazee.ai Key and Team Management Workflows
   Scenario: Trial expiry after 30 days
     Given a team was created 31 days ago
     And the team has no "last_payment" recorded
-    And the team has no active product subscriptions
     When the system calculates the trial status
     Then the status should be "Expired"
 

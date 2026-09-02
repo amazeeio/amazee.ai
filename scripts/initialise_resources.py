@@ -18,7 +18,6 @@ from app.core.security import get_password_hash
 from app.db.database import engine
 from app.db.models import Base, DBUser
 from app.services.ses import SESService
-from scripts.migrate_pricing_tables import migrate_pricing_tables
 
 
 def verify_schema_matches_models() -> None:
@@ -126,23 +125,6 @@ def init_ses_templates():
         print("PASSWORDLESS_SIGN_IN is disabled - skipping SES initialization")
 
 
-def init_pricing_table_migration(db: Session):
-    """Initialize pricing table data migration"""
-    try:
-        print("Initializing pricing table data migration...")
-        success = migrate_pricing_tables(db)
-        if success:
-            print("Pricing table migration completed successfully")
-        else:
-            print(
-                "Warning: Pricing table migration failed - continuing with initialization"
-            )
-    except Exception as e:
-        print(
-            f"Warning: Error during pricing table migration: {str(e)} - continuing with initialization"
-        )
-
-
 def init_default_limits(db: Session):
     """Initialize default system limits"""
     try:
@@ -163,7 +145,6 @@ def main():
         print(f"Main route: {settings.main_route}")
         db = init_database()
         init_ses_templates()
-        init_pricing_table_migration(db)
         init_default_limits(db)
         db.close()
     except Exception as e:

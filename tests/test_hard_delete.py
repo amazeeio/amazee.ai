@@ -7,8 +7,6 @@ from app.db.models import (
     DBTeam,
     DBUser,
     DBPrivateAIKey,
-    DBTeamProduct,
-    DBProduct,
     DBTeamMetrics,
     DBLimitedResource,
     DBTeamRegion,
@@ -231,47 +229,6 @@ async def test_hard_delete_cascades_limited_resources(
         .all()
     )
     assert len(user_resources) == 0
-
-
-@patch("app.core.worker.LiteLLMService")
-@pytest.mark.asyncio
-async def test_hard_delete_cascades_product_associations(
-    mock_litellm, db: Session, test_team
-):
-    """
-    Given: A team with product associations that was soft-deleted 91 days ago
-    When: Running the hard delete job
-    Then: Should delete the team-product associations
-    """
-    # Create product and associate with team
-    product = DBProduct(id="test-product", name="Test Product", active=True)
-    db.add(product)
-    db.commit()
-
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=product.id)
-    db.add(team_product)
-
-    # Soft delete the team 91 days ago
-    soft_delete_team_for_test(
-        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
-    )
-
-    team_id = test_team.id
-
-    # Run hard delete job
-    await hard_delete_expired_teams(db)
-
-    # Verify team-product association was deleted
-    association = (
-        db.query(DBTeamProduct).filter(DBTeamProduct.team_id == team_id).first()
-    )
-    assert association is None
-
-    # Product itself should still exist
-    existing_product = (
-        db.query(DBProduct).filter(DBProduct.id == "test-product").first()
-    )
-    assert existing_product is not None
 
 
 @patch("app.core.worker.LiteLLMService")

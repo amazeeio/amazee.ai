@@ -141,9 +141,6 @@ Requires docker compose >= 2.24. CI: the "LiteLLM Integration Gate" workflow
 (manual dispatch to gate a version bump + weekly cron); see
 `litellm-integration-tests-plan.md` for design and prerequisites.
 
-### 💳 Testing Stripe
-See [[tests/stripe_test_trigger.md]] for detailed instructions on testing Stripe integration for billing.
-
 ### Frontend Tests
 ```bash
 make frontend-test    # Run frontend tests if they exist
@@ -269,7 +266,7 @@ When `hard_delete_expired_teams()` runs (daily at 03:00 via cron), it deletes ea
 6. `audit_logs.user_id` set to `NULL` (rows preserved for audit history)
 7. `user_spend_cache` (email-keyed stale cache)
 8. `users`
-9. `team_products`, `team_regions`
+9. `team_regions`
 10. Audit log entry written (`action=team.hard_delete`)
 11. `teams` (cascades `team_metrics` automatically)
 

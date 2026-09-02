@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from app.api.spend import _lock_region_or_404
 from app.core.config import settings
 from app.core.security import get_password_hash
+from app.services.litellm import LiteLLMService
 from app.db.models import (
     BudgetType,
     DBPeriodicBudgetLedgerEntry,
@@ -923,6 +924,154 @@ def test_get_team_spend_uses_configured_caps_for_no_purchase_pool_team(
     data = response.json()
     assert data["total_budget"] == 5.0
     assert data["keys"][0]["max_budget"] == 11.0
+
+
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_key_spend_alias_trusts_litellm_reset_over_derived_anchor(
+    mock_get_key_info, client, admin_token, test_team, test_region, db
+):
+    """
+    Given: A POOL team with no active subscription, created 180 days ago, and
+        a capped key whose LiteLLM-managed budget_reset_at is a few weeks out
+    When: A client requests key spend
+    Then: The real LiteLLM budget_reset_at is returned. The old anchor-based
+        derivation (team.created_at + 31d) would instead land ~5 months in
+        the past, making a live cap look expired (issue #685)
+    """
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    test_team.created_at = datetime.now(UTC) - timedelta(days=180)
+    db.add(test_team)
+    db.commit()
+    (
+        db.query(DBPoolPurchase)
+        .filter(
+            DBPoolPurchase.team_id == test_team.id,
+            DBPoolPurchase.region_id == test_region.id,
+        )
+        .delete()
+    )
+    db.commit()
+
+    key = DBPrivateAIKey(
+        name="pool-litellm-reset-key",
+        litellm_token="pool-litellm-reset-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            key_id=key.id,
+            max_budget=500.0,
+            budget_duration="31d",
+        )
+    )
+    db.commit()
+
+    litellm_reset_at = (datetime.now(UTC) + timedelta(days=18)).replace(microsecond=0)
+    mock_get_key_info.return_value = {
+        "info": {
+            "spend": 0.1,
+            "expires": "2026-12-31T23:59:59Z",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-02T00:00:00Z",
+            "max_budget": 0.0,
+            "budget_duration": "31d",
+            "budget_reset_at": litellm_reset_at.isoformat().replace("+00:00", "Z"),
+        }
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    returned_reset_at = datetime.fromisoformat(
+        data["budget_reset_at"].replace("Z", "+00:00")
+    )
+    assert returned_reset_at == litellm_reset_at
+    assert returned_reset_at > datetime.now(UTC)
+
+
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_team_spend_key_list_trusts_litellm_reset_over_derived_anchor(
+    mock_get_team_info, client, admin_token, test_team, test_region, db
+):
+    """
+    Given: A POOL team with no active subscription, created 180 days ago, and
+        a capped key whose LiteLLM-managed budget_reset_at is a few weeks out
+    When: A client requests the team's key list
+    Then: The key's real LiteLLM budget_reset_at is returned, not the
+        anchor-derived one that the same fix in the single-key endpoint
+        addresses (issue #685)
+    """
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    test_team.created_at = datetime.now(UTC) - timedelta(days=180)
+    db.add(test_team)
+    db.commit()
+    (
+        db.query(DBPoolPurchase)
+        .filter(
+            DBPoolPurchase.team_id == test_team.id,
+            DBPoolPurchase.region_id == test_region.id,
+        )
+        .delete()
+    )
+    db.commit()
+
+    key = DBPrivateAIKey(
+        name="team-litellm-reset-key",
+        litellm_token="team-litellm-reset-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            key_id=key.id,
+            max_budget=500.0,
+            budget_duration="31d",
+        )
+    )
+    db.commit()
+
+    litellm_reset_at = (datetime.now(UTC) + timedelta(days=18)).replace(microsecond=0)
+    mock_get_team_info.return_value = {
+        "team_info": {"spend": 0.0, "max_budget": 0.0},
+        "keys": [
+            {
+                "metadata": {"amazeeai_private_ai_key_name": key.name},
+                "spend": 0.0,
+                "max_budget": 0.0,
+                "user_id": None,
+                "budget_duration": "31d",
+                "budget_reset_at": litellm_reset_at.isoformat().replace("+00:00", "Z"),
+            }
+        ],
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    returned_reset_at = datetime.fromisoformat(
+        data["keys"][0]["budget_reset_at"].replace("Z", "+00:00")
+    )
+    assert returned_reset_at == litellm_reset_at
+    assert returned_reset_at > datetime.now(UTC)
 
 
 @patch("app.api.spend.LiteLLMService.get_user_info", new_callable=AsyncMock)
@@ -3226,7 +3375,7 @@ def test_key_spend_includes_period_start(
 def test_pool_key_with_cap_shows_period_fields(
     mock_get_team_info, client, admin_token, test_team, test_region, db
 ):
-    """POOL capped keys use 31d window semantics.
+    """A capped POOL key with a real LiteLLM reset schedule is trusted as-is.
     Team window remains POOL baseline (365d) when no active subscription."""
     test_team.budget_type = BudgetType.POOL
     test_team.require_purchase_for_requests = True
@@ -3281,11 +3430,14 @@ def test_pool_key_with_cap_shows_period_fields(
     data = response.json()
     # Team shows POOL no-subscription baseline window.
     assert data["budget_duration"] == "365d"
-    # Key with cap uses 31d window semantics.
+    # The key's own real LiteLLM reset schedule ("1mo", resetting 2026-06-01)
+    # is trusted as-is, not relabelled to a fixed "31d" - doing so without a
+    # real 31-day cycle behind it would make period_start describe a window
+    # LiteLLM isn't actually enforcing.
     k = data["keys"][0]
-    assert k["budget_duration"] == "31d"
-    assert k["budget_reset_at"] is not None
-    assert k["period_start"] is not None
+    assert k["budget_duration"] == "1mo"
+    assert k["budget_reset_at"] == "2026-06-01T00:00:00Z"
+    assert k["period_start"] == "2026-05-01T00:00:00Z"
 
 
 # ---------------------------------------------------------------------------
@@ -3849,3 +4001,376 @@ def test_get_key_last_used_wrong_team_id_is_404(
 
     db.delete(key)
     db.commit()
+
+
+def _breakdown_rows(hash_a: str, hash_b: str) -> list[dict]:
+    """Two days of LiteLLM team activity covering two keys and two models.
+
+    Mirrors LiteLLM's real shape: a key's total appears under
+    ``breakdown.api_keys`` and the same spend appears again, sliced by model,
+    under ``breakdown.models[*].api_key_breakdown``.
+    """
+    return [
+        {
+            "date": "2025-06-01",
+            "metrics": {"spend": 3.0, "total_tokens": 300, "api_requests": 3},
+            "breakdown": {
+                "api_keys": {
+                    hash_a: {
+                        "metrics": {
+                            "spend": 2.0,
+                            "prompt_tokens": 150,
+                            "total_tokens": 200,
+                            "api_requests": 2,
+                        },
+                        "metadata": {"key_alias": "alias-a"},
+                    },
+                    hash_b: {
+                        "metrics": {
+                            "spend": 1.0,
+                            "total_tokens": 100,
+                            "api_requests": 1,
+                        },
+                        "metadata": {"key_alias": "alias-b"},
+                    },
+                },
+                "models": {
+                    "bedrock/claude": {
+                        "metrics": {"spend": 2.5},
+                        "api_key_breakdown": {
+                            hash_a: {"metrics": {"spend": 1.5, "api_requests": 1}},
+                            hash_b: {"metrics": {"spend": 1.0, "api_requests": 1}},
+                        },
+                    },
+                    "bedrock/titan": {
+                        "metrics": {"spend": 0.5},
+                        "api_key_breakdown": {
+                            hash_a: {"metrics": {"spend": 0.5, "api_requests": 1}},
+                        },
+                    },
+                },
+            },
+        },
+        {
+            "date": "2025-06-02",
+            "metrics": {"spend": 1.0, "total_tokens": 50, "api_requests": 1},
+            "breakdown": {
+                "api_keys": {
+                    hash_a: {
+                        "metrics": {
+                            "spend": 1.0,
+                            "total_tokens": 50,
+                            "api_requests": 1,
+                        },
+                        "metadata": {"key_alias": "alias-a"},
+                    },
+                },
+                "models": {
+                    "bedrock/claude": {
+                        "metrics": {"spend": 1.0},
+                        "api_key_breakdown": {
+                            hash_a: {"metrics": {"spend": 1.0, "api_requests": 1}},
+                        },
+                    },
+                },
+            },
+        },
+    ]
+
+
+@patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
+def test_team_spend_breakdown_groups_by_user_key_and_model(
+    mock_activity, client, team_admin_token, test_team, test_team_user, test_region, db
+):
+    user_key = DBPrivateAIKey(
+        name="user-key",
+        litellm_token="sk-user-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+    )
+    service_key = DBPrivateAIKey(
+        name="service-key",
+        litellm_token="sk-service-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add_all([user_key, service_key])
+    db.commit()
+
+    mock_activity.return_value = _breakdown_rows(
+        LiteLLMService.hash_token("sk-user-token"),
+        LiteLLMService.hash_token("sk-service-token"),
+    )
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/breakdown",
+        params={"start_date": "2025-06-01", "end_date": "2025-06-02"},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    # Team total is the sum of every visible key, across both days.
+    assert data["totals"]["spend"] == 4.0
+    assert data["totals"]["request_count"] == 4
+
+    assert len(data["users"]) == 1
+    user = data["users"][0]
+    assert user["user_id"] == test_team_user.id
+    assert user["email"] == test_team_user.email
+    assert user["spend"] == 3.0
+
+    assert len(user["keys"]) == 1
+    key = user["keys"][0]
+    assert key["key_id"] == user_key.id
+    assert key["key_name"] == "user-key"
+    assert key["spend"] == 3.0
+    # Ordered by descending spend; the per-model split sums to the key total.
+    assert [m["model"] for m in key["models"]] == ["bedrock/claude", "bedrock/titan"]
+    assert sum(m["spend"] for m in key["models"]) == 3.0
+
+    # A team-owned key has no person behind it, so it sits beside the users.
+    assert len(data["service_keys"]) == 1
+    assert data["service_keys"][0]["key_id"] == service_key.id
+    assert data["service_keys"][0]["spend"] == 1.0
+
+
+@patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
+def test_team_spend_breakdown_member_sees_only_own_keys(
+    mock_activity,
+    client,
+    team_key_creator_token,
+    test_team,
+    test_team_key_creator,
+    test_region,
+    db,
+):
+    own_key = DBPrivateAIKey(
+        name="own-key",
+        litellm_token="sk-own-token",
+        region_id=test_region.id,
+        owner_id=test_team_key_creator.id,
+    )
+    service_key = DBPrivateAIKey(
+        name="service-key",
+        litellm_token="sk-service-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add_all([own_key, service_key])
+    db.commit()
+
+    mock_activity.return_value = _breakdown_rows(
+        LiteLLMService.hash_token("sk-own-token"),
+        LiteLLMService.hash_token("sk-service-token"),
+    )
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/breakdown",
+        headers={"Authorization": f"Bearer {team_key_creator_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    # The service key is invisible, and the totals must not leak its spend.
+    assert data["service_keys"] == []
+    assert data["totals"]["spend"] == 3.0
+    assert [u["user_id"] for u in data["users"]] == [test_team_key_creator.id]
+
+
+@patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
+def test_team_spend_breakdown_keeps_keys_we_no_longer_hold(
+    mock_activity, client, team_admin_token, test_team, test_region, db
+):
+    """A key deleted inside the range still has spend; drop it and totals lie."""
+    mock_activity.return_value = _breakdown_rows(
+        "hash-of-deleted-a", "hash-of-deleted-b"
+    )
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/breakdown",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["users"] == []
+    # An unknown owner is not the same as a team-owned key, so these must not
+    # be mislabelled as service keys.
+    assert data["service_keys"] == []
+    assert data["totals"]["spend"] == 4.0
+    assert {k["key_id"] for k in data["unattributed_keys"]} == {None}
+    assert sorted(k["key_name"] for k in data["unattributed_keys"]) == [
+        "alias-a",
+        "alias-b",
+    ]
+
+
+@patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
+def test_team_spend_breakdown_key_seen_only_in_model_split(
+    mock_activity, client, team_admin_token, test_team, test_team_user, test_region, db
+):
+    """LiteLLM may report a key only inside the per-model breakdown.
+
+    Reading the key total from `breakdown.api_keys` alone would then score it
+    at zero and drop its spend from the user and team totals.
+    """
+    key = DBPrivateAIKey(
+        name="model-only-key",
+        litellm_token="sk-model-only",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+    )
+    db.add(key)
+    db.commit()
+
+    hashed = LiteLLMService.hash_token("sk-model-only")
+    mock_activity.return_value = [
+        {
+            "date": "2025-06-01",
+            "metrics": {"spend": 2.0, "api_requests": 2},
+            "breakdown": {
+                "api_keys": {},
+                "models": {
+                    "bedrock/claude": {
+                        "metrics": {"spend": 2.0},
+                        "api_key_breakdown": {
+                            hashed: {"metrics": {"spend": 2.0, "api_requests": 2}},
+                        },
+                    },
+                },
+            },
+        },
+    ]
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/breakdown",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["totals"]["spend"] == 2.0
+    assert data["users"][0]["keys"][0]["spend"] == 2.0
+    assert data["users"][0]["keys"][0]["request_count"] == 2
+
+
+@patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
+def test_team_spend_breakdown_member_never_sees_unattributed(
+    mock_activity,
+    client,
+    team_key_creator_token,
+    test_team,
+    test_team_key_creator,
+    test_region,
+    db,
+):
+    own_key = DBPrivateAIKey(
+        name="own-key",
+        litellm_token="sk-own-token",
+        region_id=test_region.id,
+        owner_id=test_team_key_creator.id,
+    )
+    db.add(own_key)
+    db.commit()
+
+    mock_activity.return_value = _breakdown_rows(
+        LiteLLMService.hash_token("sk-own-token"),
+        "hash-of-a-key-we-no-longer-hold",
+    )
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/breakdown",
+        headers={"Authorization": f"Bearer {team_key_creator_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    # Ownership of a stale key cannot be checked, so it must not reach a member.
+    assert data["unattributed_keys"] == []
+    assert data["totals"]["spend"] == 3.0
+
+
+@patch("app.api.spend.LiteLLMService.get_daily_activity", new_callable=AsyncMock)
+def test_key_daily_activity_folds_dates_split_across_pages(
+    mock_get_daily_activity, client, team_admin_token, test_team_user, test_region, db
+):
+    """LiteLLM aggregates each page on its own, so one day can arrive twice.
+
+    Emitting both would show the caller two partial days for the same date.
+    """
+    key = DBPrivateAIKey(
+        name="paged-activity-key",
+        litellm_token="sk-paged-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team_user.team_id,
+    )
+    db.add(key)
+    db.commit()
+
+    # 2025-06-01 straddles a page boundary and comes back as two partial rows.
+    mock_get_daily_activity.return_value = [
+        {
+            "date": "2025-06-01",
+            "metrics": {
+                "spend": 2.0,
+                "prompt_tokens": 100,
+                "total_tokens": 120,
+                "api_requests": 2,
+            },
+            "breakdown": {
+                "models": {
+                    "bedrock/claude": {"metrics": {"spend": 2.0, "api_requests": 2}},
+                },
+            },
+        },
+        {
+            "date": "2025-06-02",
+            "metrics": {"spend": 5.0, "total_tokens": 500, "api_requests": 5},
+        },
+        {
+            "date": "2025-06-01",
+            "metrics": {
+                "spend": 1.5,
+                "prompt_tokens": 50,
+                "total_tokens": 60,
+                "api_requests": 1,
+            },
+            "breakdown": {
+                "models": {
+                    "bedrock/claude": {"metrics": {"spend": 1.0, "api_requests": 1}},
+                    "bedrock/titan": {"metrics": {"spend": 0.5}},
+                },
+            },
+        },
+    ]
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/daily-activity",
+        params={
+            "start_date": "2025-06-01",
+            "end_date": "2025-06-02",
+            "include_breakdown": "true",
+        },
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    rows = response.json()["activity"]
+
+    assert [r["date"] for r in rows] == ["2025-06-01", "2025-06-02"]
+    first = rows[0]
+    assert first["spend"] == 3.5
+    assert first["prompt_tokens"] == 150
+    assert first["total_tokens"] == 180
+    assert first["request_count"] == 3
+
+    # The model split is folded the same way, still ordered by descending spend.
+    assert [m["model"] for m in first["breakdown"]] == [
+        "bedrock/claude",
+        "bedrock/titan",
+    ]
+    assert first["breakdown"][0]["spend"] == 3.0
+    assert first["breakdown"][0]["request_count"] == 3
+    assert first["breakdown"][1]["spend"] == 0.5
+    # Folded rows still add up to what LiteLLM reported for the range.
+    assert sum(r["spend"] for r in rows) == 8.5

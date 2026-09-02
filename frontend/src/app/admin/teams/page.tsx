@@ -30,7 +30,6 @@ import { CreateTeamDialog } from "./_components/create-team-dialog";
 import { CreateUserInTeamDialog } from "./_components/create-user-in-team-dialog";
 import { EditTeamDialog } from "./_components/edit-team-dialog";
 import { MergeTeamsDialog } from "./_components/merge-teams-dialog";
-import { SubscribeToProductDialog } from "./_components/subscribe-to-product-dialog";
 import { TeamExpansionRow } from "./_components/team-expansion-row";
 
 type SortField = "name" | "admin_email" | "is_active" | "created_at" | null;
@@ -46,7 +45,6 @@ export default function TeamsPage() {
   const [isEditingTeam, setIsEditingTeam] = useState(false);
   const [isAddingUserToTeam, setIsAddingUserToTeam] = useState(false);
   const [isCreatingUserInTeam, setIsCreatingUserInTeam] = useState(false);
-  const [isSubscribingToProduct, setIsSubscribingToProduct] = useState(false);
 
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
   const [editingTeam, setEditingTeam] = useState<Team | null>(null);
@@ -196,8 +194,6 @@ export default function TeamsPage() {
 
   const isTeamExpired = (team: Team): boolean => {
     if (team.is_always_free) return false;
-    if (team.products && team.products.some((product) => product.active))
-      return false;
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
     return !team.last_payment
@@ -363,10 +359,6 @@ export default function TeamsPage() {
                           setSelectedTeamId(id);
                           setIsCreatingUserInTeam(true);
                         }}
-                        onSubscribe={(id) => {
-                          setSelectedTeamId(id);
-                          setIsSubscribingToProduct(true);
-                        }}
                         regions={regions}
                       />
                     </Fragment>
@@ -400,11 +392,6 @@ export default function TeamsPage() {
           teamId={selectedTeamId}
           open={isCreatingUserInTeam}
           onOpenChange={setIsCreatingUserInTeam}
-        />
-        <SubscribeToProductDialog
-          teamId={selectedTeamId}
-          open={isSubscribingToProduct}
-          onOpenChange={setIsSubscribingToProduct}
         />
       </div>
     </div>

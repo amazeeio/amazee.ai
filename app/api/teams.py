@@ -27,19 +27,16 @@ from app.db.database import get_db
 from app.db.models import (
     DBBudgetAlertState,
     DBPrivateAIKey,
-    DBProduct,
     DBRegion,
     DBSpendCap,
     DBTeam,
     DBTeamMetrics,
-    DBTeamProduct,
     DBTeamRegion,
     DBUser,
 )
 from app.schemas.limits import OwnerType
 from app.schemas.models import (
     BudgetType,
-    SalesProduct,
     SalesTeam,
     SalesTeamsResponse,
     Team,
@@ -55,11 +52,27 @@ from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func
-from sqlalchemy.orm import Session, joinedload, selectinload
+from sqlalchemy.orm import Session, selectinload
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["teams"])
+
+
+def _field_value_unchanged(team: DBTeam, field: str, new_value) -> bool:
+    """Is the submitted value the same as what the team already stores?
+
+    Emails are compared case-insensitively: the schema lowercases the incoming
+    address, so a stored mixed-case admin_email would otherwise look changed.
+    """
+    current = getattr(team, field)
+    if (
+        field == "admin_email"
+        and isinstance(current, str)
+        and isinstance(new_value, str)
+    ):
+        return current.lower() == new_value.lower()
+    return current == new_value
 
 
 def _create_default_limits_for_team(team: DBTeam, db: Session) -> None:
@@ -82,7 +95,9 @@ def _create_default_limits_for_team(team: DBTeam, db: Session) -> None:
             # Don't fail team creation if limit creation fails
 
 
-async def _create_litellm_team_for_region(db: Session, team: DBTeam, region: DBRegion) -> None:
+async def _create_litellm_team_for_region(
+    db: Session, team: DBTeam, region: DBRegion
+) -> None:
     """
     Create a region-scoped LiteLLM team for the given team in the given region.
 
@@ -114,13 +129,24 @@ async def _create_litellm_team_for_region(db: Session, team: DBTeam, region: DBR
 async def register_team(
     team: TeamCreate,
     db: Session = Depends(get_db),
-    current_user: DBUser = Depends(get_current_user_from_auth),
+    current_user: Optional[DBUser] = Depends(get_current_user_from_auth),
 ):
     """
     Register a new team. Requires authentication.
+
+    A non-admin caller always becomes the team admin: `admin_email` from the
+    request body is ignored. Only system admins may name another admin.
+    Internal callers (sign-in auto-provision, anonymous trial) pass
+    `current_user=None` and set `admin_email` themselves.
     """
+    # A non-admin caller may only register a team they administer themselves;
+    # only privileged callers may set an arbitrary admin_email.
+    if current_user is not None and not current_user.is_admin:
+        team.admin_email = current_user.email
+
     # Defense-in-depth: block disposable / dynamic-DNS admin emails before any
     # team is created (the sign-in auto-provision path creates a team first).
+    # Runs after the override, so it checks the email that is actually stored.
     assert_email_domain_allowed(db, team.admin_email)
 
     # Validate region — must be active and non-dedicated
@@ -265,7 +291,6 @@ async def list_teams(
     order_by.append(DBTeam.id)
 
     query = query.options(
-        joinedload(DBTeam.active_products).joinedload(DBTeamProduct.product),
         selectinload(DBTeam.allowed_region_associations).joinedload(
             DBTeamRegion.region
         ),
@@ -299,7 +324,6 @@ async def get_team(
     query = (
         db.query(DBTeam)
         .options(
-            joinedload(DBTeam.active_products).joinedload(DBTeamProduct.product),
             selectinload(DBTeam.allowed_region_associations).joinedload(
                 DBTeamRegion.region
             ),
@@ -353,6 +377,9 @@ async def update_team(
     # these would bypass the pool-purchase gate (require_purchase_for_requests),
     # remove an imposed key policy (force_user_keys), or change region
     # visibility / dedicated status (hide_public_regions drives is_dedicated).
+    # admin_email is admin-only for a different reason: sign-in re-attaches a
+    # first-time user to the team that already carries their address, so this
+    # field decides team membership rather than being a free-text contact.
     admin_only_fields = {
         "is_always_free",
         "budget_type",
@@ -360,6 +387,7 @@ async def update_team(
         "is_active",
         "force_user_keys",
         "hide_public_regions",
+        "admin_email",
     }
     if not current_user.is_admin:
         # Only block an actual CHANGE to an admin-only field. A GET-then-PUT
@@ -368,7 +396,7 @@ async def update_team(
         forbidden = {
             field
             for field in admin_only_fields & update_data.keys()
-            if getattr(db_team, field) != update_data[field]
+            if not _field_value_unchanged(db_team, field, update_data[field])
         }
         if forbidden:
             raise HTTPException(
@@ -377,6 +405,29 @@ async def update_team(
                     "Only system administrators can modify: "
                     + ", ".join(sorted(forbidden))
                 ),
+            )
+
+    # Same gates as team creation, but only when the value changes.
+    if "admin_email" in update_data and not _field_value_unchanged(
+        db_team, "admin_email", update_data["admin_email"]
+    ):
+        assert_email_domain_allowed(db, update_data["admin_email"])
+        # The DB unique index is case-sensitive, so a case variant would slip
+        # past it and leave two teams that sign-in could both re-attach to.
+        # Soft-deleted teams still hold the address, so they count as taken.
+        clash = (
+            db.query(DBTeam)
+            .filter(
+                func.lower(DBTeam.admin_email)
+                == func.lower(update_data["admin_email"]),
+                DBTeam.id != db_team.id,
+            )
+            .first()
+        )
+        if clash:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered",
             )
 
     # Update team fields
@@ -414,7 +465,6 @@ async def update_team(
 async def delete_team(team_id: int, db: Session = Depends(get_db)):
     """
     Delete a team. Only accessible by admin users.
-    First removes all product associations, then deletes the team.
     """
     # Check if team exists
     db_team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
@@ -436,9 +486,6 @@ async def delete_team(team_id: int, db: Session = Depends(get_db)):
             logger.warning(
                 f"Failed to zero LiteLLM budget for team {team_id} in region {region.id}: {e}"
             )
-
-    # Remove all product associations
-    db.query(DBTeamProduct).filter(DBTeamProduct.team_id == team_id).delete()
 
     # Budget rows reference the team without a cascade, so a team that ever had a
     # team or member budget, or fired a budget alert, cannot be deleted until
@@ -654,7 +701,7 @@ async def manual_soft_delete_team(team_id: int, db: Session = Depends(get_db)):
 async def list_teams_for_sales(db: Session = Depends(get_db)):
     """
     Get consolidated team information for sales dashboard.
-    Returns all teams with their products, regions, spend data, and trial status.
+    Returns all teams with their regions, spend data, and trial status.
     Accessible by system admin and sales users.
     """
     try:
@@ -671,23 +718,6 @@ async def list_teams_for_sales(db: Session = Depends(get_db)):
         sales_teams = []
 
         for team in teams:
-            # Get team products
-            team_products = (
-                db.query(DBTeamProduct)
-                .join(DBProduct)
-                .filter(DBTeamProduct.team_id == team.id, DBProduct.active.is_(True))
-                .all()
-            )
-
-            products = [
-                SalesProduct(
-                    id=team_product.product.id,
-                    name=team_product.product.name,
-                    active=team_product.product.active,
-                )
-                for team_product in team_products
-            ]
-
             # Try to get cached metrics first
             team_metrics = (
                 db.query(DBTeamMetrics).filter(DBTeamMetrics.team_id == team.id).first()
@@ -765,7 +795,7 @@ async def list_teams_for_sales(db: Session = Depends(get_db)):
                 db.add(team_metrics)
 
             # Calculate trial status
-            trial_status = _calculate_trial_status(team, products)
+            trial_status = _calculate_trial_status(team)
 
             sales_team = SalesTeam(
                 id=team.id,
@@ -775,7 +805,6 @@ async def list_teams_for_sales(db: Session = Depends(get_db)):
                 last_payment=team.last_payment,
                 is_always_free=team.is_always_free,
                 budget_type=team.budget_type,
-                products=products,
                 regions=regions,
                 total_spend=round(total_spend, 4),
                 trial_status=trial_status,
@@ -803,15 +832,12 @@ async def list_teams_for_sales(db: Session = Depends(get_db)):
         )
 
 
-def _calculate_trial_status(team: DBTeam, products: List[SalesProduct]) -> str:
+def _calculate_trial_status(team: DBTeam) -> str:
     """
-    Calculate trial status based on team creation, last payment, and active products.
+    Calculate trial status based on team creation and last payment.
     """
     if team.is_always_free:
         return "Always Free"
-
-    if len(products) > 0:
-        return "Active Product"
 
     # Calculate days until expiry
     trial_period_days = 30
@@ -899,12 +925,11 @@ async def merge_teams(
 
     This endpoint will:
     1. Validate both teams exist
-    2. Check if source team has active product associations (fails if it does)
-    3. Check for key name conflicts
-    4. Apply conflict resolution strategy
-    5. Migrate users and keys
-    6. Update LiteLLM key associations
-    7. Delete the source team
+    2. Check for key name conflicts
+    3. Apply conflict resolution strategy
+    4. Migrate users and keys
+    5. Update LiteLLM key associations
+    6. Delete the source team
     """
     try:
         # Validate teams exist
@@ -922,19 +947,6 @@ async def merge_teams(
         if source_team.id == target_team.id:
             raise HTTPException(
                 status_code=400, detail="Cannot merge a team into itself"
-            )
-
-        # Check if source team has active product associations first
-        source_products = (
-            db.query(DBTeamProduct)
-            .filter(DBTeamProduct.team_id == source_team.id)
-            .all()
-        )
-        if source_products:
-            product_names = [product.product_id for product in source_products]
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cannot merge team '{source_team.name}' - it has active product associations: {', '.join(product_names)}. Please remove product associations before merging.",
             )
 
         # Block only if source team has dedicated-region associations; public-region
@@ -958,7 +970,7 @@ async def merge_teams(
                 detail=f"Cannot merge team '{source_team.name}' - it has dedicated region associations: {', '.join(region_names)}. Please remove the dedicated region associations before merging.",
             )
 
-        # Get team keys and users (only if no product associations found)
+        # Get team keys and users
         source_keys = (
             db.query(DBPrivateAIKey)
             .filter(DBPrivateAIKey.team_id == source_team.id)

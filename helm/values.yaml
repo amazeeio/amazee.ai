@@ -36,8 +36,6 @@ backend:
     url: ""  # Leave empty to auto-generate based on release name and PostgreSQL config
   # Application configuration
   secretKey: ""  # JWT signing secret (AMAZEEAI_JWT_SECRET). REQUIRED, no default — deploy fails if unset.
-  stripeSecretKey: "sk_test_your_stripe_secret_key"
-  webhookSig: ""  # Only needed for local development with Stripe CLI
   awsAccessKeyId: "your_aws_access_key"
   awsSecretAccessKey: "your_aws_secret_key"
   enableMetrics: "true"
@@ -74,7 +72,6 @@ frontend:
     tag: "main"
     pullPolicy: IfNotPresent
   apiUrl: ""  # Will be auto-generated using release name and backend service
-  stripePublishableKey: "pk_test_your_stripe_publishable_key"
   passwordlessSignIn: "true"
   resources:
     requests:
