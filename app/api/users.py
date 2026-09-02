@@ -343,10 +343,13 @@ async def _compute_user_spend(
         except (TypeError, ValueError):
             continue
 
+    # Inactive regions are included: a retired region keeps serving its
+    # existing keys, so leaving it out silently undercounts a user's spend
+    # instead of reporting it.
     team_regions = (
         db.query(DBTeamRegion, DBRegion)
         .join(DBRegion, DBTeamRegion.region_id == DBRegion.id)
-        .filter(DBTeamRegion.team_id.in_(team_ids), DBRegion.is_active.is_(True))
+        .filter(DBTeamRegion.team_id.in_(team_ids))
         .all()
     )
 

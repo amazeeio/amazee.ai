@@ -1962,7 +1962,7 @@ async def get_team_spend_breakdown(
     sees_whole_team = current_user.is_admin or user_role == UserRole.TEAM_ADMIN
     visible_owner_id = None if sees_whole_team else current_user.id
 
-    region = _get_region_or_404(db, region_id)
+    region = _get_region_or_404(db, region_id, include_inactive=True)
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )

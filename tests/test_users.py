@@ -627,6 +627,73 @@ def test_get_user_spend_skips_regions_without_user_keys(
 
 
 @patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_get_user_spend_includes_retired_region(
+    mock_get_team_info, client, admin_token, db
+):
+    # A retired region keeps serving its existing keys. Filtering it out here
+    # silently undercounts the user's spend instead of reporting it.
+    team = DBTeam(
+        name="Retired Region Team",
+        admin_email="retired-region@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    retired_region = DBRegion(
+        name="region-retired",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="http://litellm.retired",
+        litellm_api_key="kr",
+        is_active=False,
+        is_dedicated=False,
+    )
+    user = DBUser(
+        email="carol+1@example.com",
+        hashed_password=get_password_hash("pw"),
+        is_active=True,
+        is_admin=False,
+        team=team,
+    )
+    db.add_all([team, retired_region, user])
+    db.commit()
+    db.refresh(team)
+    db.refresh(retired_region)
+    db.refresh(user)
+    db.add(DBTeamRegion(team_id=team.id, region_id=retired_region.id))
+    db.commit()
+
+    db.add(
+        DBPrivateAIKey(
+            database_name="db_retired",
+            database_username="u_retired",
+            owner_id=user.id,
+            team_id=team.id,
+            region_id=retired_region.id,
+        )
+    )
+    db.commit()
+
+    mock_get_team_info.return_value = {
+        "keys": [
+            {"metadata": {"amazeeai_user_id": str(user.id)}, "spend": 7.5},
+        ]
+    }
+
+    response = client.get(
+        "/users/spend?email=carol@example.com",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total_spend"] == 7.5
+    assert len(data["teams"][0]["regions"]) == 1
+    assert data["teams"][0]["regions"][0]["region_name"] == "region-retired"
+
+
+@patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
 def test_get_user_spend_includes_user_owned_keys(
     mock_get_team_info, client, admin_token, db
 ):
