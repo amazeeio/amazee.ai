@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 from app.db.models import (
     DBTeam,
     DBTeamMetrics,
-    DBTeamProduct,
     DBPrivateAIKey,
     DBRegion,
     DBUser,
@@ -125,16 +124,12 @@ def test_list_teams_for_sales_success(
     client,
     admin_token,
     test_team,
-    test_product,
     test_region,
     test_ai_key,
     mock_litellm_response,
     db,
 ):
     """Test successful retrieval of sales data."""
-    # Create team-product association
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
     db.commit()
 
     validation_data = {
@@ -143,12 +138,9 @@ def test_list_teams_for_sales_success(
         "admin_email": test_team.admin_email,
         "is_always_free": False,
         "budget_type": "periodic",
-        "products": [
-            {"id": test_product.id, "name": test_product.name, "active": True}
-        ],
         "regions": [test_region.name],
         "total_spend": 25.50,
-        "trial_status": "Active Product",
+        "trial_status": "30 days left",
         "last_payment": None,
     }
 
@@ -175,17 +167,11 @@ def test_always_free_team_trial_status(
     client,
     admin_token,
     test_always_free_team,
-    test_product,
     test_region,
     test_ai_key,
     db,
 ):
     """Test that always-free teams show correct trial status."""
-    # Create team-product association
-    team_product = DBTeamProduct(
-        team_id=test_always_free_team.id, product_id=test_product.id
-    )
-    db.add(team_product)
     db.commit()
 
     # Mock LiteLLM service
@@ -207,15 +193,11 @@ def test_paid_team_trial_status(
     client,
     admin_token,
     test_paid_team,
-    test_product,
     test_region,
     test_ai_key,
     db,
 ):
     """Test that teams with payment history show correct trial status."""
-    # Create team-product association
-    team_product = DBTeamProduct(team_id=test_paid_team.id, product_id=test_product.id)
-    db.add(team_product)
     db.commit()
 
     # Mock LiteLLM service
@@ -229,14 +211,14 @@ def test_paid_team_trial_status(
     data = response.json()
     assert "teams" in data
     team_data = data["teams"][0]
-    assert team_data["trial_status"] == "Active Product"
+    assert team_data["trial_status"] == "25 days left"
 
 
 @patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
-def test_team_without_products(
+def test_team_trial_status_from_creation_date(
     mock_get_info, client, admin_token, test_team, test_region, test_ai_key, db
 ):
-    """Test team without any products shows trial status based on creation date."""
+    """Test team trial status is derived from its creation date."""
     # Mock LiteLLM service
     mock_get_info.return_value = {"info": {"spend": 0.0}}
 
@@ -248,9 +230,7 @@ def test_team_without_products(
     data = response.json()
     assert "teams" in data
     team_data = data["teams"][0]
-    # Team without products should show trial status based on creation date
     assert team_data["trial_status"] == "30 days left"
-    assert len(team_data["products"]) == 0
 
 
 @patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
@@ -259,7 +239,6 @@ def test_team_with_multiple_ai_keys(
     client,
     admin_token,
     test_team,
-    test_product,
     test_region,
     test_ai_key,
     db,
@@ -280,10 +259,6 @@ def test_team_with_multiple_ai_keys(
     )
     db.add(ai_key2)
     db.commit()
-
-    # Create team-product association
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
     db.commit()
 
     # Mock LiteLLM service with different spend values
@@ -305,15 +280,11 @@ def test_litellm_service_error_handling(
     client,
     admin_token,
     test_team,
-    test_product,
     test_region,
     test_ai_key,
     db,
 ):
     """Test that LiteLLM service errors don't break the entire response."""
-    # Create team-product association
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
     db.commit()
 
     # Mock LiteLLM service to raise an exception
@@ -335,7 +306,7 @@ def test_expired_trial_status(
     mock_get_info, client, admin_token, test_team, test_region, test_ai_key, db
 ):
     """Test that expired trials show correct status."""
-    # Update team to be older than 30 days (no products, so should show expired)
+    # Update team to be older than 30 days so the trial shows as expired
     test_team.created_at = datetime.now(UTC) - timedelta(days=35)
     db.commit()
 
@@ -358,7 +329,6 @@ def test_list_teams_for_sales_includes_user_owned_keys(
     client,
     admin_token,
     test_team,
-    test_product,
     test_region,
     test_ai_key,
     test_team_user,
@@ -367,9 +337,6 @@ def test_list_teams_for_sales_includes_user_owned_keys(
     db,
 ):
     """Test that sales data includes both team-owned and user-owned AI keys."""
-    # Create team-product association
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
     db.commit()
     team_id = test_team.id
     region_name = test_region.name
@@ -476,7 +443,6 @@ def test_list_teams_for_sales_unreachable_endpoints_logging(
     client,
     admin_token,
     test_team,
-    test_product,
     test_region,
     test_ai_key,
     db,
@@ -486,9 +452,6 @@ def test_list_teams_for_sales_unreachable_endpoints_logging(
     When calling list_teams_for_sales
     Then the function should default spend to 0 and still return successful response
     """
-    # Create team-product association
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
 
     # Create a second AI key in the same region to test multiple keys
     ai_key2 = DBPrivateAIKey(
@@ -528,7 +491,6 @@ def test_list_teams_for_sales_multiple_unreachable_regions(
     client,
     admin_token,
     test_team,
-    test_product,
     test_region,
     test_ai_key,
     db,
@@ -551,10 +513,6 @@ def test_list_teams_for_sales_multiple_unreachable_regions(
     )
     db.add(region_two)
     db.commit()
-
-    # Create team-product association
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
 
     # Create AI key in second region
     ai_key2 = DBPrivateAIKey(

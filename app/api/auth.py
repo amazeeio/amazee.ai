@@ -183,7 +183,7 @@ def create_and_set_access_token(
         "httponly": True,
         "max_age": cookie_expiration,
         "expires": cookie_expiration,
-        "samesite": "none",
+        "samesite": "lax",
         "secure": True,
         "path": "/",
     }
@@ -274,8 +274,9 @@ async def logout(
     delete_settings = {
         "key": "access_token",
         "path": "/",
+        "httponly": True,
         "secure": True,
-        "samesite": "none",
+        "samesite": "lax",
     }
 
     # Only set domain if we got one from LAGOON_ROUTES
@@ -495,7 +496,7 @@ async def sign_in(
                 budget_type=BudgetType.PERIODIC,
                 region_id=sign_up_region.id,
             )
-            team = await register_team(team_data, db)
+            team = await register_team(team_data, db, current_user=None)
 
         user_data = UserCreate(
             email=sign_in_username,
@@ -748,15 +749,12 @@ async def delete_token(
 async def validate_jwt(
     request: Request,
     response: Response,
-    token: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     """
     Validate a JWT token and either refresh it or send a new validation URL.
 
-    The token can be provided either:
-    - As a query parameter: ?token=your_token
-    - In the Authorization header: Bearer your_token
+    The token must be provided in the Authorization header: Bearer your_token
 
     Returns:
     - If token is valid: A new access token with cookies set
@@ -768,12 +766,11 @@ async def validate_jwt(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    # Get token from Authorization header if not provided as parameter
-    if not token:
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
-            raise credentials_exception
-        token = auth_header.split(" ")[1]
+    # Token is read only from the Authorization header.
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise credentials_exception
+    token = auth_header.split(" ")[1]
 
     try:
         # Try to validate the token
@@ -991,7 +988,7 @@ async def generate_trial_access(
                 is_active=True,
                 budget_type=BudgetType.PERIODIC,
             )
-            team = await register_team(team_data, db)
+            team = await register_team(team_data, db, current_user=None)
             # Ensure team has limit set
             team_limit = limit_service.set_limit(
                 owner_type=OwnerType.TEAM,

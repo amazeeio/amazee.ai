@@ -72,9 +72,6 @@ class Settings(BaseSettings):
     # so a first run against a large backlog is spread over several nights
     # rather than held open for hours.
     AI_TRIAL_REAP_BATCH_SIZE: int = int(os.getenv("AI_TRIAL_REAP_BATCH_SIZE", "500"))
-    STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "sk_test_string")
-    STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "pk_test_string")
-    WEBHOOK_SIG: str = os.getenv("WEBHOOK_SIG", "whsec_test_1234567890")
     HUBSPOT_TOKEN: str = os.getenv("HUBSPOT_TOKEN", "")
     HUBSPOT_MARKETING_UPDATES_PROPERTY: str = os.getenv(
         "HUBSPOT_MARKETING_UPDATES_PROPERTY", "receive_marketing_updates"
@@ -139,6 +136,17 @@ class Settings(BaseSettings):
     )
     BUDGET_ALERT_WEBHOOK_TIMEOUT: float = float(
         os.getenv("BUDGET_ALERT_WEBHOOK_TIMEOUT", "30")
+    )
+    # Destination for the daily model EOL snapshot. Separate from the budget
+    # alert webhook: same consumer today, but a different payload on a
+    # different schedule, so one must be able to move or be switched off
+    # without touching the other. Full URL, not a base — the receiving path is
+    # MOAD's to choose.
+    MODEL_EOL_WEBHOOK_URL: str = os.getenv("MODEL_EOL_WEBHOOK_URL", "")
+    # Falls back to the existing MOAD token so a deployment that already talks
+    # to MOAD only needs the URL set.
+    MODEL_EOL_WEBHOOK_TOKEN: str = os.getenv(
+        "MODEL_EOL_WEBHOOK_TOKEN", os.getenv("MOAD_DASHBOARD_API_TOKEN", "")
     )
     BUDGET_ALERT_BATCH_SIZE: int = int(os.getenv("BUDGET_ALERT_BATCH_SIZE", "200"))
     BUDGET_ALERT_REGION_CONCURRENCY: int = int(

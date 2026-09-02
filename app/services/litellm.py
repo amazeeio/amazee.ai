@@ -501,6 +501,12 @@ class LiteLLMService:
         ``results`` rows, each containing ``date``, ``metrics`` and
         ``breakdown``.
 
+        LiteLLM paginates over the underlying per-key, per-model rows and
+        aggregates each page separately, so a day that straddles a page boundary
+        appears once per page with only that page's share of its usage. Callers
+        must fold the rows by date; reading one row as a whole day under-reports
+        it.
+
         These values come from LiteLLM's pre-aggregated daily-spend tables,
         which are keyed on whole UTC days and are independent of our
         billing-cycle spend resets — so they are a true continuous usage history
@@ -532,6 +538,17 @@ class LiteLLMService:
                     if not metadata.get("has_more"):
                         break
                     page += 1
+                else:
+                    # Returning what we have would look like a complete answer
+                    # while quietly dropping the oldest days, so refuse instead.
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=(
+                            f"LiteLLM daily activity for {endpoint} exceeded "
+                            f"{max_pages} pages of {page_size}; narrow the date "
+                            "range."
+                        ),
+                    )
             logger.info("Successfully retrieved LiteLLM daily activity")
             return results
         except httpx.HTTPStatusError as e:
@@ -1017,7 +1034,9 @@ class LiteLLMService:
                     },
                 )
                 response.raise_for_status()
-                logger.info(f"Created access group '{name}' with {len(model_names)} models in LiteLLM")
+                logger.info(
+                    f"Created access group '{name}' with {len(model_names)} models in LiteLLM"
+                )
                 return response.json()
         except httpx.HTTPStatusError as e:
             _, error_msg, _ = self._parse_http_error(e)
@@ -1040,7 +1059,9 @@ class LiteLLMService:
                     json={"access_model_names": model_names},
                 )
                 response.raise_for_status()
-                logger.info(f"Updated access group {access_group_id} to {len(model_names)} models in LiteLLM")
+                logger.info(
+                    f"Updated access group {access_group_id} to {len(model_names)} models in LiteLLM"
+                )
                 return response.json()
         except httpx.HTTPStatusError as e:
             _, error_msg, _ = self._parse_http_error(e)
@@ -1658,13 +1679,17 @@ class LiteLLMService:
             return result
         except httpx.HTTPStatusError as e:
             _, error_msg, _ = self._parse_http_error(e)
-            logger.error("Failed to update model %s in LiteLLM: %s", model_id, error_msg)
+            logger.error(
+                "Failed to update model %s in LiteLLM: %s", model_id, error_msg
+            )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to update LiteLLM model: {error_msg}",
             )
 
-    async def delete_model(self, model_id: str, deployment_ids: Optional[list[str]] = None) -> None:
+    async def delete_model(
+        self, model_id: str, deployment_ids: Optional[list[str]] = None
+    ) -> None:
         """
         Delete/deregister a model in LiteLLM.
         Sends POST /model/delete per deployment id ({"id": ...} — LiteLLM does
@@ -1684,19 +1709,32 @@ class LiteLLMService:
                         headers={"Authorization": f"Bearer {self.master_key}"},
                         json={"id": dep_id},
                     )
-                    if response.status_code >= 400 and self._is_idempotent_litellm_error(
-                        response.status_code,
-                        response.text,
-                        ["not found", "does not exist", "already deleted", "not registered"],
+                    if (
+                        response.status_code >= 400
+                        and self._is_idempotent_litellm_error(
+                            response.status_code,
+                            response.text,
+                            [
+                                "not found",
+                                "does not exist",
+                                "already deleted",
+                                "not registered",
+                            ],
+                        )
                     ):
-                        logger.info("LiteLLM model %s (id=%s) already absent; continuing", model_id, dep_id)
+                        logger.info(
+                            "LiteLLM model %s (id=%s) already absent; continuing",
+                            model_id,
+                            dep_id,
+                        )
                         continue
                     response.raise_for_status()
         except httpx.HTTPStatusError as e:
             _, error_msg, _ = self._parse_http_error(e)
-            logger.error("Failed to delete model %s from LiteLLM: %s", model_id, error_msg)
+            logger.error(
+                "Failed to delete model %s from LiteLLM: %s", model_id, error_msg
+            )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to delete LiteLLM model: {error_msg}",
             )
-

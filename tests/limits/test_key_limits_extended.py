@@ -1,16 +1,17 @@
 import pytest
 from datetime import datetime, UTC
 from fastapi import HTTPException
-from app.db.models import DBUser, DBProduct, DBTeamProduct, DBPrivateAIKey, DBTeam
-from app.core.limit_service import LimitService
+from app.db.models import DBUser, DBPrivateAIKey, DBTeam
+from app.core.limit_service import (
+    LimitService,
+    DEFAULT_KEYS_PER_USER,
+    DEFAULT_SERVICE_KEYS,
+)
 from app.schemas.limits import ResourceType, OwnerType, LimitType, UnitType, LimitSource
 
 
-def test_create_key_within_limits(db, test_team, test_product, test_region):
-    """Test creating an LLM token when within product limits"""
-    # Add product to team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
+def test_create_key_within_limits(db, test_team, test_region):
+    """Test creating an LLM token when within the default limits"""
     db.commit()
 
     # Test that check_key_limits doesn't raise an exception
@@ -18,17 +19,11 @@ def test_create_key_within_limits(db, test_team, test_product, test_region):
     limit_service.check_key_limits(test_team.id, None)
 
 
-def test_create_key_exceeding_total_limit(db, test_team, test_product, test_region):
+def test_create_key_exceeding_total_limit(db, test_team, test_region):
     """Test creating a team key when it would exceed service key limit"""
-    # Add product to team
-    test_product.service_key_count = 2  # Set a low service key limit
-    db.add(test_product)
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
-    db.commit()
 
     # Create service keys up to the limit
-    for i in range(test_product.service_key_count):
+    for i in range(DEFAULT_SERVICE_KEYS):
         limit_service = LimitService(db)
         limit_service.check_key_limits(test_team.id, None)
         key = DBPrivateAIKey(
@@ -57,11 +52,8 @@ def test_create_key_exceeding_total_limit(db, test_team, test_product, test_regi
     )
 
 
-def test_create_key_exceeding_user_limit(db, test_team, test_product, test_region):
+def test_create_key_exceeding_user_limit(db, test_team, test_region):
     """Test creating an LLM token when it would exceed user token limit"""
-    # Add product to team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
     db.commit()
 
     # Create a test user
@@ -78,7 +70,7 @@ def test_create_key_exceeding_user_limit(db, test_team, test_product, test_regio
     db.commit()
 
     # Create LLM tokens up to the user limit
-    for i in range(test_product.keys_per_user):
+    for i in range(DEFAULT_KEYS_PER_USER):
         limit_service = LimitService(db)
         limit_service.check_key_limits(test_team.id, user.id)
         key = DBPrivateAIKey(
@@ -107,17 +99,12 @@ def test_create_key_exceeding_user_limit(db, test_team, test_product, test_regio
     )
 
 
-def test_create_key_exceeding_service_key_limit(
-    db, test_team, test_product, test_region
-):
+def test_create_key_exceeding_service_key_limit(db, test_team, test_region):
     """Test creating an LLM token when it would exceed service token limit"""
-    # Add product to team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
     db.commit()
 
     # Create service LLM tokens up to the limit
-    for i in range(test_product.service_key_count):
+    for i in range(DEFAULT_SERVICE_KEYS):
         key = DBPrivateAIKey(
             name=f"Test Service Token {i}",
             database_name=f"test_db_{i}",
@@ -139,164 +126,13 @@ def test_create_key_exceeding_service_key_limit(
         limit_service.check_key_limits(test_team.id, None)
     assert exc_info.value.status_code == 402
     assert (
-        f"Team has reached the maximum service LLM key limit of {test_product.service_key_count} keys"
+        f"Team has reached the maximum service LLM key limit of {DEFAULT_SERVICE_KEYS} keys"
         in str(exc_info.value.detail)
-    )
-
-
-def test_create_key_with_default_limits(db, test_team, test_region):
-    """Test creating team keys with default limits when team has no products"""
-
-    # Create a product with a specific service key limit for testing
-    test_product = DBProduct(
-        id="prod_test_key_limit",
-        name="Test Product Key Limit",
-        user_count=3,
-        keys_per_user=2,
-        total_key_count=4,  # This is no longer used
-        service_key_count=2,  # This is what matters for team keys
-        max_budget_per_key=50.0,
-        rpm_per_key=1000,
-        vector_db_count=1,
-        vector_db_storage=100,
-        renewal_period_days=30,
-        active=True,
-        created_at=datetime.now(UTC),
-    )
-    db.add(test_product)
-
-    # Associate the product with the team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
-    db.commit()
-
-    # Create service keys up to the limit
-    for i in range(test_product.service_key_count):
-        key = DBPrivateAIKey(
-            name=f"Test Service Key {i}",
-            database_name=f"test_db_{i}",
-            database_host="localhost",
-            database_username="test_user",
-            database_password="test_pass",
-            litellm_token=f"test_token_{i}",
-            owner_id=None,  # Service key
-            team_id=test_team.id,
-            region_id=test_region.id,
-            created_at=datetime.now(UTC),
-        )
-        db.add(key)
-    db.commit()
-
-    # Test that check_key_limits raises an exception
-    with pytest.raises(HTTPException) as exc_info:
-        limit_service = LimitService(db)
-        limit_service.check_key_limits(test_team.id, None)
-    assert exc_info.value.status_code == 402
-    assert (
-        f"Team has reached the maximum service LLM key limit of {test_product.service_key_count} keys"
-        in str(exc_info.value.detail)
-    )
-
-
-def test_create_key_with_multiple_products(db, test_team, test_region):
-    """Test creating LLM tokens when team has multiple products with different limits"""
-    # Create two products with different token limits
-    product1 = DBProduct(
-        id="prod_test1",
-        name="Test Product 1",
-        user_count=3,
-        keys_per_user=2,
-        total_key_count=3,
-        service_key_count=1,
-        max_budget_per_key=50.0,
-        rpm_per_key=1000,
-        vector_db_count=1,
-        vector_db_storage=100,
-        renewal_period_days=30,
-        active=True,
-        created_at=datetime.now(UTC),
-    )
-    product2 = DBProduct(
-        id="prod_test2",
-        name="Test Product 2",
-        user_count=3,
-        keys_per_user=3,
-        total_key_count=5,
-        service_key_count=5,
-        max_budget_per_key=50.0,
-        rpm_per_key=1000,
-        vector_db_count=1,
-        vector_db_storage=100,
-        renewal_period_days=30,
-        active=True,
-        created_at=datetime.now(UTC),
-    )
-    db.add(product1)
-    db.add(product2)
-    db.commit()
-
-    # Add both products to team
-    team_product1 = DBTeamProduct(team_id=test_team.id, product_id=product1.id)
-    team_product2 = DBTeamProduct(team_id=test_team.id, product_id=product2.id)
-    db.add(team_product1)
-    db.add(team_product2)
-    db.commit()
-
-    # Create LLM tokens up to the higher total token limit (5)
-    for i in range(5):
-        limit_service = LimitService(db)
-        limit_service.check_key_limits(test_team.id, None)
-        key = DBPrivateAIKey(
-            name=f"Test Token {i}",
-            database_name=f"test_db_{i}",
-            database_host="localhost",
-            database_username="test_user",
-            database_password="test_pass",
-            litellm_token=f"test_token_{i}",  # Add LLM token
-            owner_id=None,
-            team_id=test_team.id,
-            region_id=test_region.id,
-            created_at=datetime.now(UTC),
-        )
-        db.add(key)
-        db.commit()
-
-    # Test that check_key_limits raises an exception
-    with pytest.raises(HTTPException) as exc_info:
-        limit_service = LimitService(db)
-        limit_service.check_key_limits(test_team.id, None)
-    assert exc_info.value.status_code == 402
-    # Now that fallback creates a limit, subsequent calls use LimitService which returns generic message
-    assert "Entity has reached their maximum number of AI keys" in str(
-        exc_info.value.detail
     )
 
 
 def test_create_key_with_multiple_users_default_limits(db, test_team, test_region):
     """Test creating user keys when team has multiple users"""
-
-    # Create a product with a specific key limit for testing
-    test_product = DBProduct(
-        id="prod_test_multi_user_limit",
-        name="Test Product Multi User Limit",
-        user_count=3,
-        keys_per_user=1,  # Each user can have 1 key
-        total_key_count=3,  # This is no longer used
-        service_key_count=2,
-        max_budget_per_key=50.0,
-        rpm_per_key=1000,
-        vector_db_count=1,
-        vector_db_storage=100,
-        renewal_period_days=30,
-        active=True,
-        created_at=datetime.now(UTC),
-    )
-    db.add(test_product)
-
-    # Associate the product with the team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
-    db.commit()
 
     # Create two users
     user1 = DBUser(
@@ -346,35 +182,13 @@ def test_create_key_with_multiple_users_default_limits(db, test_team, test_regio
         )  # Try to create another key for user1
     assert exc_info.value.status_code == 402
     assert (
-        f"User has reached the maximum LLM key limit of {test_product.keys_per_user} keys"
+        f"User has reached the maximum LLM key limit of {DEFAULT_KEYS_PER_USER} keys"
         in str(exc_info.value.detail)
     )
 
 
 def test_create_key_with_mixed_service_and_user_keys(db, test_team, test_region):
     """Test creating keys when team has a mix of service and user keys"""
-    # Create a product with service key limit of 1 and user key limit of 1
-    product = DBProduct(
-        id="prod_test",
-        name="Test Product",
-        user_count=3,
-        keys_per_user=1,  # Each user can have 1 key
-        total_key_count=3,  # This is no longer used
-        service_key_count=1,  # Team can have 1 service key
-        max_budget_per_key=50.0,
-        rpm_per_key=1000,
-        vector_db_count=1,
-        vector_db_storage=100,
-        renewal_period_days=30,
-        active=True,
-        created_at=datetime.now(UTC),
-    )
-    db.add(product)
-    db.commit()
-
-    # Add product to team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=product.id)
-    db.add(team_product)
     db.commit()
 
     # Create two users
@@ -400,20 +214,22 @@ def test_create_key_with_mixed_service_and_user_keys(db, test_team, test_region)
     db.add(user2)
     db.commit()
 
-    # Create one service key (hits the service key limit)
-    service_key = DBPrivateAIKey(
-        name="Test Service Key",
-        database_name="test_service_db",
-        database_host="localhost",
-        database_username="test_user",
-        database_password="test_pass",
-        litellm_token="test_service_token",
-        owner_id=None,  # Service key has no owner
-        team_id=test_team.id,
-        region_id=test_region.id,
-        created_at=datetime.now(UTC),
-    )
-    db.add(service_key)
+    # Fill the team's service key allowance
+    for i in range(DEFAULT_SERVICE_KEYS):
+        db.add(
+            DBPrivateAIKey(
+                name=f"Test Service Key {i}",
+                database_name=f"test_service_db_{i}",
+                database_host="localhost",
+                database_username="test_user",
+                database_password="test_pass",
+                litellm_token=f"test_service_token_{i}",
+                owner_id=None,  # Service keys have no owner
+                team_id=test_team.id,
+                region_id=test_region.id,
+                created_at=datetime.now(UTC),
+            )
+        )
 
     # Create one key for user1 (hits the user key limit for user1)
     user1_key = DBPrivateAIKey(
@@ -439,7 +255,7 @@ def test_create_key_with_mixed_service_and_user_keys(db, test_team, test_region)
         )  # Try to create another service key
     assert exc_info.value.status_code == 402
     assert (
-        f"Team has reached the maximum service LLM key limit of {product.service_key_count} keys"
+        f"Team has reached the maximum service LLM key limit of {DEFAULT_SERVICE_KEYS} keys"
         in str(exc_info.value.detail)
     )
 
@@ -508,15 +324,12 @@ def test_check_key_limits_with_limit_service_at_capacity(db, test_team):
     )
 
 
-def test_check_key_limits_fallback_creates_limit(db, test_team, test_product):
+def test_check_key_limits_fallback_creates_limit(db, test_team):
     """
-    GIVEN: A team with no limits in the new service but with products
+    GIVEN: A team with no limits in the new service
     WHEN: Checking key limits
     THEN: The fallback code runs and creates a new limit in the service
     """
-    # Add product to team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
     db.commit()
 
     # Verify no limit exists in the service initially
@@ -543,22 +356,16 @@ def test_check_key_limits_fallback_creates_limit(db, test_team, test_product):
     ]
     assert len(key_limits) == 1
     key_limit = key_limits[0]
-    # The fallback should correctly use service_key_count (not total_key_count)
-    assert key_limit.max_value == test_product.service_key_count  # Should be 2, not 10
+    assert key_limit.max_value == DEFAULT_SERVICE_KEYS
     assert key_limit.current_value == 1.0  # Should be 1 after the increment
 
 
-def test_check_key_limits_fallback_creates_user_limit(
-    db, test_team, test_product, test_team_user
-):
+def test_check_key_limits_fallback_creates_user_limit(db, test_team, test_team_user):
     """
-    GIVEN: A team with no limits in the new service but with products
+    GIVEN: A team with no limits in the new service
     WHEN: Checking key limits for a specific user
     THEN: The fallback code runs and creates user-level limits in the service
     """
-    # Add product to team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
     db.commit()
 
     # Verify no limit exists in the service initially
@@ -584,6 +391,5 @@ def test_check_key_limits_fallback_creates_user_limit(
     ]
     assert len(key_limits) == 1
     key_limit = key_limits[0]
-    # The fallback should correctly use product values
-    assert key_limit.max_value == test_product.keys_per_user  # Should be 2
+    assert key_limit.max_value == DEFAULT_KEYS_PER_USER
     assert key_limit.current_value == 1.0  # Should be 1 after the increment

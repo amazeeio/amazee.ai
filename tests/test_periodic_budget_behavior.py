@@ -25,7 +25,8 @@ from app.db.models import (
     DBPeriodicPayment,
 )
 from app.schemas.models import BudgetType
-from app.core.worker import apply_billing_cycle_for_team, apply_product_for_team
+from app.core.worker import apply_billing_cycle_for_team
+from app.core.limit_service import DEFAULT_MAX_SPEND
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────────
@@ -104,7 +105,6 @@ async def test_periodic_team_uses_31d_duration(
     mock_litellm_class,
     db,
     test_team,
-    test_product,
     test_region,
 ):
     """PERIODIC teams must always use a fixed 31-day budget duration,
@@ -143,7 +143,6 @@ async def test_pool_subscription_team_uses_31d_duration(
     mock_get_keys,
     mock_litellm_class,
     db,
-    test_product,
     test_region,
 ):
     """POOL subscription teams go through apply_billing_cycle_for_team and
@@ -163,8 +162,11 @@ async def test_pool_subscription_team_uses_31d_duration(
     mock_litellm.update_team_budget = AsyncMock()
     mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 0.0}})
 
-    await apply_product_for_team(
-        db, "cus_pool_duration", test_product.id, datetime.now(UTC)
+    await _apply_periodic_cycle(
+        db,
+        team,
+        test_region,
+        budget_cents=int(round(DEFAULT_MAX_SPEND * 100)),
     )
 
     team_call = mock_litellm.update_team_budget.await_args
@@ -184,7 +186,6 @@ async def test_periodic_team_compounds_max_budget(
     mock_litellm_class,
     db,
     test_team,
-    test_product,
     test_region,
 ):
     """PERIODIC webhook resets key spend to 0; max_budget = desired_remaining = monthly_cap + topup."""
@@ -228,11 +229,10 @@ async def test_periodic_compounding_stops_on_get_team_info_failure(
     mock_litellm_class,
     db,
     test_team,
-    test_product,
     test_region,
 ):
-    """When get_team_info fails, apply_product_for_team must abort the sync
-    (break out of the region loop), NOT continue with a flat cap.
+    """When get_team_info fails, apply_billing_cycle_for_team must abort the
+    sync, NOT continue with a flat cap.
 
     The payment record must be left as sync_failed so a future retry
     process can pick it up. No update_team_budget or set_key_restrictions
@@ -301,7 +301,6 @@ async def test_periodic_team_resets_key_spend_to_zero(
     mock_litellm_class,
     db,
     test_team,
-    test_product,
     test_region,
 ):
     """PERIODIC teams must pass spend=0.0 to set_key_restrictions so that
@@ -343,7 +342,6 @@ async def test_pool_subscription_team_resets_key_spend(
     mock_get_keys,
     mock_litellm_class,
     db,
-    test_product,
     test_region,
 ):
     """POOL subscription teams go through apply_billing_cycle_for_team and
@@ -366,8 +364,11 @@ async def test_pool_subscription_team_resets_key_spend(
     mock_litellm.set_key_restrictions = AsyncMock()
     mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 0.0}})
 
-    await apply_product_for_team(
-        db, "cus_pool_no_reset", test_product.id, datetime.now(UTC)
+    await _apply_periodic_cycle(
+        db,
+        team,
+        test_region,
+        budget_cents=int(round(DEFAULT_MAX_SPEND * 100)),
     )
 
     # Every key must have been called with spend=0.0 (reset on cycle)
@@ -580,11 +581,10 @@ async def test_periodic_payment_sync_status_updated_on_success(
     mock_litellm_class,
     db,
     test_team,
-    test_product,
     test_region,
 ):
-    """When apply_product_for_team succeeds, the payment record's sync_status
-    must be set to 'success'."""
+    """When apply_billing_cycle_for_team succeeds, the payment record's
+    sync_status must be set to 'success'."""
     test_team.stripe_customer_id = "cus_sync_success"
     db.commit()
 
@@ -633,11 +633,10 @@ async def test_periodic_payment_sync_status_updated_on_key_failure(
     mock_litellm_class,
     db,
     test_team,
-    test_product,
     test_region,
 ):
-    """When some keys fail during apply_product_for_team, the payment record
-    must be set to 'sync_failed' with error details."""
+    """When some keys fail during apply_billing_cycle_for_team, the payment
+    record must be set to 'sync_failed' with error details."""
     test_team.stripe_customer_id = "cus_sync_partial_fail"
     db.commit()
 

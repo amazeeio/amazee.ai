@@ -1,16 +1,13 @@
 import pytest
 from datetime import datetime, UTC
 from fastapi import HTTPException
-from app.db.models import DBUser, DBProduct, DBTeamProduct, DBTeam, DBLimitedResource
-from app.core.limit_service import LimitService
+from app.db.models import DBUser, DBTeam, DBLimitedResource
+from app.core.limit_service import LimitService, DEFAULT_USER_COUNT
 from app.schemas.limits import ResourceType, OwnerType, LimitType, UnitType, LimitSource
 
 
-def test_add_user_within_product_limit(db, test_team, test_product):
-    """Test adding a user when within product user limit"""
-    # Add product to team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
+def test_add_user_within_default_limit(db, test_team):
+    """Test adding a user when within the default user limit"""
     db.commit()
 
     # Test that check_team_user_limit doesn't raise an exception
@@ -18,15 +15,12 @@ def test_add_user_within_product_limit(db, test_team, test_product):
     limit_service.check_team_user_limit(test_team.id)
 
 
-def test_add_user_exceeding_product_limit(db, test_team, test_product):
-    """Test adding a user when it would exceed product user limit"""
-    # Add product to team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
+def test_add_user_exceeding_default_limit(db, test_team):
+    """Test adding a user when it would exceed the default user limit"""
     db.commit()
 
     # Create and add users up to the limit
-    for i in range(test_product.user_count):
+    for i in range(DEFAULT_USER_COUNT):
         user = DBUser(
             email=f"user{i}@example.com",
             hashed_password="hashed_password",
@@ -45,196 +39,9 @@ def test_add_user_exceeding_product_limit(db, test_team, test_product):
         limit_service.check_team_user_limit(test_team.id)
     assert exc_info.value.status_code == 402
     assert (
-        f"Team has reached the maximum user limit of {test_product.user_count} users"
+        f"Team has reached the maximum user limit of {DEFAULT_USER_COUNT} users"
         in str(exc_info.value.detail)
     )
-
-
-def test_add_user_with_default_limit(db, test_team):
-    """Test adding users with default limit when team has no products"""
-    from app.db.models import DBProduct, DBTeamProduct
-
-    # Create a product with a specific user limit for testing
-    test_product = DBProduct(
-        id="prod_test_user_limit",
-        name="Test Product User Limit",
-        user_count=3,  # Specific limit for testing
-        keys_per_user=2,
-        total_key_count=10,
-        service_key_count=2,
-        max_budget_per_key=50.0,
-        rpm_per_key=1000,
-        vector_db_count=1,
-        vector_db_storage=100,
-        renewal_period_days=30,
-        active=True,
-        created_at=datetime.now(UTC),
-    )
-    db.add(test_product)
-
-    # Associate the product with the team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
-    db.commit()
-
-    # Create and add users up to the limit
-    for i in range(test_product.user_count):
-        user = DBUser(
-            email=f"user{i}@example.com",
-            hashed_password="hashed_password",
-            is_active=True,
-            is_admin=False,
-            role="user",
-            team_id=test_team.id,
-            created_at=datetime.now(UTC),
-        )
-        db.add(user)
-    db.commit()
-
-    # Test that check_team_user_limit raises an exception
-    with pytest.raises(HTTPException) as exc_info:
-        limit_service = LimitService(db)
-        limit_service.check_team_user_limit(test_team.id)
-    assert exc_info.value.status_code == 402
-    assert (
-        f"Team has reached the maximum user limit of {test_product.user_count} users"
-        in str(exc_info.value.detail)
-    )
-
-
-def test_add_user_with_one_product(db, test_team):
-    """Test adding users when team has multiple products with different limits"""
-    # Create two products with different user limits
-    product1 = DBProduct(
-        id="prod_test1",
-        name="Test Product 1",
-        user_count=3,
-        keys_per_user=2,
-        total_key_count=10,
-        service_key_count=2,
-        max_budget_per_key=50.0,
-        rpm_per_key=1000,
-        vector_db_count=1,
-        vector_db_storage=100,
-        renewal_period_days=30,
-        active=True,
-        created_at=datetime.now(UTC),
-    )
-    product2 = DBProduct(
-        id="prod_test2",
-        name="Test Product 2",
-        user_count=5,
-        keys_per_user=2,
-        total_key_count=10,
-        service_key_count=2,
-        max_budget_per_key=50.0,
-        rpm_per_key=1000,
-        vector_db_count=1,
-        vector_db_storage=100,
-        renewal_period_days=30,
-        active=True,
-        created_at=datetime.now(UTC),
-    )
-    db.add(product1)
-    db.add(product2)
-    db.commit()
-
-    # Add product to team
-    team_product1 = DBTeamProduct(team_id=test_team.id, product_id=product1.id)
-    db.add(team_product1)
-    db.commit()
-
-    # Create and add users up to the higher limit (5)
-    for i in range(3):
-        user = DBUser(
-            email=f"user{i}@example.com",
-            hashed_password="hashed_password",
-            is_active=True,
-            is_admin=False,
-            role="user",
-            team_id=test_team.id,
-            created_at=datetime.now(UTC),
-        )
-        db.add(user)
-    db.commit()
-
-    # Test that check_team_user_limit raises an exception
-    with pytest.raises(HTTPException) as exc_info:
-        limit_service = LimitService(db)
-        limit_service.check_team_user_limit(test_team.id)
-    assert exc_info.value.status_code == 402
-    assert (
-        f"Team has reached the maximum user limit of {product1.user_count} users"
-        in str(exc_info.value.detail)
-    )
-
-
-def test_add_user_with_multiple_products(db, test_team):
-    """Test adding users when team has multiple products with different limits"""
-    # Create two products with different user limits
-    product1 = DBProduct(
-        id="prod_test1",
-        name="Test Product 1",
-        user_count=3,
-        keys_per_user=2,
-        total_key_count=10,
-        service_key_count=2,
-        max_budget_per_key=50.0,
-        rpm_per_key=1000,
-        vector_db_count=1,
-        vector_db_storage=100,
-        renewal_period_days=30,
-        active=True,
-        created_at=datetime.now(UTC),
-    )
-    product2 = DBProduct(
-        id="prod_test2",
-        name="Test Product 2",
-        user_count=5,
-        keys_per_user=2,
-        total_key_count=10,
-        service_key_count=2,
-        max_budget_per_key=50.0,
-        rpm_per_key=1000,
-        vector_db_count=1,
-        vector_db_storage=100,
-        renewal_period_days=30,
-        active=True,
-        created_at=datetime.now(UTC),
-    )
-    db.add(product1)
-    db.add(product2)
-    db.commit()
-
-    # Add both products to team
-    team_product1 = DBTeamProduct(team_id=test_team.id, product_id=product1.id)
-    team_product2 = DBTeamProduct(team_id=test_team.id, product_id=product2.id)
-    db.add(team_product1)
-    db.add(team_product2)
-    db.commit()
-
-    # Create and add users up to the higher product limit (5) since fallback now works correctly
-    for i in range(5):
-        limit_service = LimitService(db)
-        limit_service.check_team_user_limit(test_team.id)
-        user = DBUser(
-            email=f"user{i}@example.com",
-            hashed_password="hashed_password",
-            is_active=True,
-            is_admin=False,
-            role="user",
-            team_id=test_team.id,
-            created_at=datetime.now(UTC),
-        )
-        db.add(user)
-        db.commit()
-
-    # Test that check_team_user_limit raises an exception
-    with pytest.raises(HTTPException) as exc_info:
-        limit_service = LimitService(db)
-        limit_service.check_team_user_limit(test_team.id)
-    assert exc_info.value.status_code == 402
-    assert "Team has reached their maximum user limit" in str(exc_info.value.detail)
 
 
 def test_check_team_user_limit_with_limit_service(db, test_team):
@@ -303,15 +110,12 @@ def test_check_team_user_limit_with_limit_service_at_capacity(db, test_team):
     assert "Team has reached their maximum user limit" in str(exc_info.value.detail)
 
 
-def test_check_team_user_limit_fallback_creates_limit(db, test_team, test_product):
+def test_check_team_user_limit_fallback_creates_limit(db, test_team):
     """
-    GIVEN: A team with no limits in the new service but with products
+    GIVEN: A team with no limits in the new service
     WHEN: Checking team user limits
     THEN: The fallback code runs and creates a new limit in the service
     """
-    # Add product to team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
     db.commit()
 
     # Verify no limit exists in the service initially
@@ -338,8 +142,7 @@ def test_check_team_user_limit_fallback_creates_limit(db, test_team, test_produc
     ]
     assert len(user_limits) == 1
     user_limit = user_limits[0]
-    # The fallback now correctly uses product values after fixing the query
-    assert user_limit.max_value == test_product.user_count  # Should be 5
+    assert user_limit.max_value == DEFAULT_USER_COUNT
     assert user_limit.current_value == 1.0  # Should be 1 after the increment
 
 
@@ -420,9 +223,7 @@ def test_user_override_supersedes_team_limit(db, test_team, test_team_user):
     assert user_limits[0].limited_by == LimitSource.MANUAL
 
 
-def test_user_limits_not_included_in_team_limits(
-    db, test_team, test_team_user, test_product
-):
+def test_user_limits_not_included_in_team_limits(db, test_team, test_team_user):
     """
     GIVEN: A team with a user with an override
     WHEN: We call get_team_limits

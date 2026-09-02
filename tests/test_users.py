@@ -4,8 +4,6 @@ from app.db.models import (
     DBSpendCap,
     DBUser,
     DBTeam,
-    DBProduct,
-    DBTeamProduct,
     DBTeamRegion,
     DBPrivateAIKey,
     DBLimitedResource,
@@ -776,6 +774,162 @@ def test_get_user_spend_includes_team_member_region_max_budget(
 
 
 @patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_get_user_spend_reports_member_cap_in_region_without_keys(
+    mock_get_team_info, client, admin_token, db
+):
+    """A cap set before the member has a key must still be readable.
+
+    Region inclusion is otherwise gated on key existence, which made a
+    successful cap write unreadable until the member created a key.
+    """
+    team = DBTeam(
+        name="Capless Team",
+        admin_email="capless-team@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    region_with_cap = DBRegion(
+        name="region-cap",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="http://litellm.cap",
+        litellm_api_key="kc",
+        is_active=True,
+        is_dedicated=False,
+    )
+    region_without_cap = DBRegion(
+        name="region-nocap",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="http://litellm.nocap",
+        litellm_api_key="kn",
+        is_active=True,
+        is_dedicated=False,
+    )
+    user = DBUser(
+        email="dave+1@example.com",
+        hashed_password=get_password_hash("pw"),
+        is_active=True,
+        is_admin=False,
+        team=team,
+    )
+    db.add_all([team, region_with_cap, region_without_cap, user])
+    db.commit()
+    db.refresh(team)
+    db.refresh(region_with_cap)
+    db.refresh(region_without_cap)
+    db.refresh(user)
+    db.add_all(
+        [
+            DBTeamRegion(team_id=team.id, region_id=region_with_cap.id),
+            DBTeamRegion(team_id=team.id, region_id=region_without_cap.id),
+        ]
+    )
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=region_with_cap.id,
+            team_id=team.id,
+            user_id=user.id,
+            max_budget=10.0,
+            budget_duration="1mo",
+        )
+    )
+    db.commit()
+
+    # The team exists in LiteLLM (it is created with the region association),
+    # it just has no keys for this member yet.
+    mock_get_team_info.return_value = {"keys": []}
+
+    response = client.get(
+        "/users/spend?email=dave@example.com",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    regions = data["teams"][0]["regions"]
+    # Only the cap-bearing region is reported: a keyless region without a cap
+    # stays omitted.
+    assert len(regions) == 1
+    assert regions[0]["region_name"] == "region-cap"
+    assert regions[0]["max_budget"] == 10.0
+    assert regions[0]["spend"] == 0.0
+    assert regions[0]["status"] == "ok"
+    assert mock_get_team_info.await_count == 1
+
+
+@patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_get_user_spend_reports_member_cap_when_litellm_team_missing(
+    mock_get_team_info, client, admin_token, db
+):
+    """A 404 from LiteLLM drops the region — unless a cap is configured."""
+    team = DBTeam(
+        name="Missing Team",
+        admin_email="missing-team@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    region = DBRegion(
+        name="region-missing",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="http://litellm.missing",
+        litellm_api_key="km",
+        is_active=True,
+        is_dedicated=False,
+    )
+    user = DBUser(
+        email="erin+1@example.com",
+        hashed_password=get_password_hash("pw"),
+        is_active=True,
+        is_admin=False,
+        team=team,
+    )
+    db.add_all([team, region, user])
+    db.commit()
+    db.refresh(team)
+    db.refresh(region)
+    db.refresh(user)
+    db.add(DBTeamRegion(team_id=team.id, region_id=region.id))
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=region.id,
+            team_id=team.id,
+            user_id=user.id,
+            max_budget=25.0,
+            budget_duration="1mo",
+        )
+    )
+    db.commit()
+
+    mock_get_team_info.side_effect = HTTPException(
+        status_code=500,
+        detail="Failed to get LiteLLM team info: Status 404: team not found",
+    )
+
+    response = client.get(
+        "/users/spend?email=erin@example.com",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    regions = data["teams"][0]["regions"]
+    assert len(regions) == 1
+    assert regions[0]["max_budget"] == 25.0
+    assert regions[0]["spend"] == 0.0
+    assert regions[0]["status"] == "ok"
+
+
+@patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
 def test_get_user_spend_unavailable_region_not_cached(
     mock_get_team_info, client, admin_token, db
 ):
@@ -1117,29 +1271,18 @@ def test_create_user_with_limits_enabled(client, team_admin_token, test_team, db
     WHEN: the team tries to create another user
     THEN: a 402 payment required is returned
     """
-    # Create a product with a specific user limit for testing
-    user_count = 2
-    test_product = DBProduct(
-        id="prod_test_user_limit_enabled",
-        name="Test Product User Limit Enabled",
-        user_count=user_count,  # Specific limit for testing (including existing team admin)
-        keys_per_user=2,
-        total_key_count=10,
-        service_key_count=2,
-        max_budget_per_key=50.0,
-        rpm_per_key=1000,
-        vector_db_count=1,
-        vector_db_storage=100,
-        renewal_period_days=30,
-        active=True,
-        created_at=datetime.now(UTC),
+    # Cap the team at two members (the team admin plus one)
+    LimitService(db).set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.USER,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=2,
+        current_value=1,
+        limited_by=LimitSource.MANUAL,
+        set_by="test",
     )
-    db.add(test_product)
-
-    # Associate the product with the team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
-    db.commit()
 
     # Create one more user to reach the limit (team admin already exists)
     response = client.post(
@@ -1178,24 +1321,18 @@ def test_create_user_pool_team_has_no_user_limit(
     db.add(test_team)
     db.commit()
 
-    test_product = DBProduct(
-        id="prod_test_pool_unlimited_users",
-        name="Test Product Pool Unlimited Users",
-        user_count=1,
-        keys_per_user=2,
-        total_key_count=10,
-        service_key_count=2,
-        max_budget_per_key=50.0,
-        rpm_per_key=1000,
-        vector_db_count=1,
-        vector_db_storage=100,
-        renewal_period_days=30,
-        active=True,
-        created_at=datetime.now(UTC),
+    # A one-member cap that the POOL exemption must ignore
+    LimitService(db).set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.USER,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=1,
+        current_value=1,
+        limited_by=LimitSource.MANUAL,
+        set_by="test",
     )
-    db.add(test_product)
-    db.add(DBTeamProduct(team_id=test_team.id, product_id=test_product.id))
-    db.commit()
 
     response = client.post(
         "/users/",

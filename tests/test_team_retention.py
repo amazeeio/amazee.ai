@@ -9,8 +9,6 @@ from app.db.models import (
     DBTeamRegion,
     DBUser,
     DBPrivateAIKey,
-    DBTeamProduct,
-    DBProduct,
     DBRegion,
 )
 from app.schemas.models import BudgetType
@@ -26,34 +24,6 @@ from app.core.team_service import (
     get_team_keys_by_region,
 )
 from conftest import soft_delete_team_for_test
-
-
-def test_calculate_last_team_activity_with_product_association(db: Session, test_team):
-    """
-    Given: A team with a product association
-    When: Calculating the last team activity
-    Then: Should return current time indicating the team is active
-    """
-    # Create a product and associate it with the team
-    product = DBProduct(id="test-product", name="Test Product", active=True)
-    db.add(product)
-    db.commit()
-
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=product.id,
-        created_at=datetime.now(UTC) - timedelta(days=30),
-    )
-    db.add(team_product)
-    db.commit()
-
-    # Calculate last activity
-    last_activity = _calculate_last_team_activity(db, test_team)
-
-    # Should return current time since team has products (team is active)
-    assert last_activity is not None
-    # Should be very recent (within the last few seconds)
-    assert (datetime.now(UTC) - last_activity).total_seconds() < 5
 
 
 def test_calculate_last_team_activity_with_key_usage(
@@ -169,11 +139,11 @@ def test_calculate_last_team_activity_returns_most_recent(
 
 def test_calculate_last_team_activity_no_activity(db: Session, test_team):
     """
-    Given: A team with no users, keys, or products
+    Given: A team with no users or keys
     When: Calculating the last team activity
     Then: Should return None
     """
-    # Calculate last activity for team with no users, keys, or products
+    # Calculate last activity for team with no users or keys
     last_activity = _calculate_last_team_activity(db, test_team)
 
     # Should return None since no activity found
@@ -490,34 +460,6 @@ def test_get_team_denies_deleted_access_for_non_admin(
     assert (
         response.status_code == 403
     )  # Auth layer suspends team users before endpoint logic runs
-
-
-def test_teams_with_products_never_deleted(db: Session, test_team):
-    """
-    Given: A team with product associations
-    When: Checking retention policy
-    Then: Team should never be considered for deletion regardless of other activity
-    """
-    # Create a product and associate it with the team
-    product = DBProduct(id="test-product", name="Test Product", active=True)
-    db.add(product)
-    db.commit()
-
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=product.id,
-        created_at=datetime.now(UTC) - timedelta(days=100),  # Very old
-    )
-    db.add(team_product)
-    db.commit()
-
-    # Calculate last activity
-    last_activity = _calculate_last_team_activity(db, test_team)
-
-    # Should return current time since team has products (team is considered active)
-    assert last_activity is not None
-    # Should be very recent (within the last few seconds)
-    assert (datetime.now(UTC) - last_activity).total_seconds() < 5
 
 
 def test_teams_with_recent_key_usage_not_deleted(db: Session, test_team, test_region):

@@ -29,7 +29,6 @@ import {
 } from "@/components/ui/tooltip";
 import { useTeams } from "@/hooks/use-teams";
 import { PrivateAIKey } from "@/types/private-ai-key";
-import { Product } from "@/types/product";
 import { Region } from "@/types/region";
 import { SpendInfo } from "@/types/spend";
 import { Team } from "@/types/team";
@@ -46,7 +45,6 @@ interface TeamExpansionRowProps {
   onEdit: (team: Team) => void;
   onAddUser: (teamId: string) => void;
   onCreateUser: (teamId: string) => void;
-  onSubscribe: (teamId: string) => void;
 }
 
 export function TeamExpansionRow({
@@ -57,7 +55,6 @@ export function TeamExpansionRow({
   onEdit,
   onAddUser,
   onCreateUser,
-  onSubscribe,
 }: TeamExpansionRowProps) {
   const {
     removeUserFromTeam,
@@ -68,8 +65,6 @@ export function TeamExpansionRow({
     isRestoring,
     deleteTeam,
     isDeleting,
-    cancelSubscription,
-    isCancelingSubscription,
     resetLimits,
     isResettingLimits,
   } = useTeams(false, { enabled: false });
@@ -81,16 +76,6 @@ export function TeamExpansionRow({
         const response = await get(
           `/teams/${teamId}?include_deleted=${includeDeleted}`,
         );
-        return response.json();
-      },
-      enabled: isExpanded,
-    });
-
-  const { data: teamProducts = [], isLoading: isLoadingTeamProducts } =
-    useQuery<Product[]>({
-      queryKey: ["team-products", teamId],
-      queryFn: async () => {
-        const response = await get(`/products?team_id=${teamId}`);
         return response.json();
       },
       enabled: isExpanded,
@@ -190,8 +175,6 @@ export function TeamExpansionRow({
 
   const isTeamExpired = (team: Team): boolean => {
     if (team.is_always_free) return false;
-    if (team.products && team.products.some((product) => product.active))
-      return false;
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
     const createdAt = new Date(team.created_at);
@@ -219,7 +202,6 @@ export function TeamExpansionRow({
                   <TabsList>
                     <TabsTrigger value="details">Team Details</TabsTrigger>
                     <TabsTrigger value="users">Users</TabsTrigger>
-                    <TabsTrigger value="products">Products</TabsTrigger>
                     <TabsTrigger value="shared-keys">Shared Keys</TabsTrigger>
                     <TabsTrigger value="limits">Limits</TabsTrigger>
                   </TabsList>
@@ -370,12 +352,6 @@ export function TeamExpansionRow({
                               </Button>
                               <Button
                                 variant="outline"
-                                onClick={() => onSubscribe(expandedTeam.id)}
-                              >
-                                Subscribe to Product
-                              </Button>
-                              <Button
-                                variant="outline"
                                 onClick={() => extendTrial(expandedTeam.id)}
                                 disabled={isExtendingTrial}
                               >
@@ -490,98 +466,6 @@ export function TeamExpansionRow({
                         </p>
                       </div>
                     )}
-                  </TabsContent>
-                  <TabsContent value="products" className="mt-4">
-                    <div className="space-y-4">
-                      {isLoadingTeamProducts ? (
-                        <div className="flex justify-center items-center py-8">
-                          <Loader2 className="h-8 w-8 animate-spin" />
-                        </div>
-                      ) : teamProducts.length > 0 ? (
-                        <div className="rounded-md border">
-                          <Table>
-                            <TableHeader>
-                              <TableRow>
-                                <TableHead>Name</TableHead>
-                                <TableHead>User Count</TableHead>
-                                <TableHead>Keys/User</TableHead>
-                                <TableHead>Total Keys</TableHead>
-                                <TableHead>Service Keys</TableHead>
-                                <TableHead>Budget/Key</TableHead>
-                                <TableHead>RPM/Key</TableHead>
-                                <TableHead>Vector DBs</TableHead>
-                                <TableHead>Storage (GiB)</TableHead>
-                                <TableHead>Renewal (Days)</TableHead>
-                                <TableHead>Status</TableHead>
-                                <TableHead className="text-right">
-                                  Actions
-                                </TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {teamProducts.map((product) => (
-                                <TableRow key={product.id}>
-                                  <TableCell>{product.name}</TableCell>
-                                  <TableCell>{product.user_count}</TableCell>
-                                  <TableCell>{product.keys_per_user}</TableCell>
-                                  <TableCell>
-                                    {product.total_key_count}
-                                  </TableCell>
-                                  <TableCell>
-                                    {product.service_key_count}
-                                  </TableCell>
-                                  <TableCell>
-                                    ${product.max_budget_per_key.toFixed(2)}
-                                  </TableCell>
-                                  <TableCell>{product.rpm_per_key}</TableCell>
-                                  <TableCell>
-                                    {product.vector_db_count}
-                                  </TableCell>
-                                  <TableCell>
-                                    {product.vector_db_storage}
-                                  </TableCell>
-                                  <TableCell>
-                                    {product.renewal_period_days}
-                                  </TableCell>
-                                  <TableCell>
-                                    <Badge
-                                      variant={
-                                        product.active
-                                          ? "default"
-                                          : "destructive"
-                                      }
-                                    >
-                                      {product.active ? "Active" : "Inactive"}
-                                    </Badge>
-                                  </TableCell>
-                                  <TableCell className="text-right">
-                                    <DeleteConfirmationDialog
-                                      title="Cancel Subscription"
-                                      description={`Are you sure you want to cancel the subscription to "${product.name}"? This action cannot be undone and will immediately remove access to this product.`}
-                                      triggerText="Cancel"
-                                      onConfirm={() =>
-                                        cancelSubscription({
-                                          teamId: expandedTeam.id,
-                                          productId: product.id,
-                                        })
-                                      }
-                                      isLoading={isCancelingSubscription}
-                                      size="sm"
-                                    />
-                                  </TableCell>
-                                </TableRow>
-                              ))}
-                            </TableBody>
-                          </Table>
-                        </div>
-                      ) : (
-                        <div className="text-center py-8 border rounded-md">
-                          <p className="text-muted-foreground">
-                            No products associated with this team.
-                          </p>
-                        </div>
-                      )}
-                    </div>
                   </TabsContent>
                   <TabsContent value="shared-keys" className="mt-4">
                     <div className="space-y-4">
