@@ -49,6 +49,13 @@ environments:
         schedule: "*/5 * * * *"
         command: python scripts/trigger_model_reconcile_job.py
         service: backend
+      # Upstream EOL dates change a handful of times a year, so daily is ample.
+      # Runs after the catalog's own apply window so a model added today is
+      # already in the models table when the scan looks for it.
+      - name: scan-model-eol
+        schedule: "40 6 * * *"
+        command: python scripts/trigger_eol_scan_job.py
+        service: backend
     routes:
       - backend:
         - api.amazee.ai:
@@ -106,6 +113,13 @@ environments:
       - name: reconcile-model-sync
         schedule: "*/5 * * * *"
         command: python scripts/trigger_model_reconcile_job.py
+        service: backend
+      # Upstream EOL dates change a handful of times a year, so daily is ample.
+      # Runs after the catalog's own apply window so a model added today is
+      # already in the models table when the scan looks for it.
+      - name: scan-model-eol
+        schedule: "40 6 * * *"
+        command: python scripts/trigger_eol_scan_job.py
         service: backend
 
 tasks:

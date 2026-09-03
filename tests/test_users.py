@@ -4,8 +4,6 @@ from app.db.models import (
     DBSpendCap,
     DBUser,
     DBTeam,
-    DBProduct,
-    DBTeamProduct,
     DBTeamRegion,
     DBPrivateAIKey,
     DBLimitedResource,
@@ -626,6 +624,132 @@ def test_get_user_spend_skips_regions_without_user_keys(
     assert len(data["teams"][0]["regions"]) == 1
     assert data["teams"][0]["regions"][0]["region_name"] == "region-a"
     assert mock_get_team_info.await_count == 1
+
+
+@patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_get_user_spend_reports_region_without_credentials_as_unavailable(
+    mock_get_team_info, client, admin_token, db
+):
+    # One credential-less region must not fail the whole response: the results
+    # are gathered without return_exceptions.
+    team = DBTeam(
+        name="No Creds Team",
+        admin_email="no-creds@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    region = DBRegion(
+        name="region-no-creds",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="http://litellm.nocreds",
+        litellm_api_key=None,
+        is_active=False,
+        is_dedicated=False,
+    )
+    user = DBUser(
+        email="dave+1@example.com",
+        hashed_password=get_password_hash("pw"),
+        is_active=True,
+        is_admin=False,
+        team=team,
+    )
+    db.add_all([team, region, user])
+    db.commit()
+    db.refresh(team)
+    db.refresh(region)
+    db.refresh(user)
+    db.add(DBTeamRegion(team_id=team.id, region_id=region.id))
+    db.commit()
+    db.add(
+        DBPrivateAIKey(
+            database_name="db_nocreds",
+            database_username="u_nocreds",
+            owner_id=user.id,
+            team_id=team.id,
+            region_id=region.id,
+        )
+    )
+    db.commit()
+
+    response = client.get(
+        "/users/spend?email=dave@example.com",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    regions = response.json()["teams"][0]["regions"]
+    assert [r["status"] for r in regions] == ["unavailable"]
+    mock_get_team_info.assert_not_awaited()
+
+
+@patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_get_user_spend_includes_retired_region(
+    mock_get_team_info, client, admin_token, db
+):
+    # A retired region keeps serving its existing keys. Filtering it out here
+    # silently undercounts the user's spend instead of reporting it.
+    team = DBTeam(
+        name="Retired Region Team",
+        admin_email="retired-region@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    retired_region = DBRegion(
+        name="region-retired",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="http://litellm.retired",
+        litellm_api_key="kr",
+        is_active=False,
+        is_dedicated=False,
+    )
+    user = DBUser(
+        email="carol+1@example.com",
+        hashed_password=get_password_hash("pw"),
+        is_active=True,
+        is_admin=False,
+        team=team,
+    )
+    db.add_all([team, retired_region, user])
+    db.commit()
+    db.refresh(team)
+    db.refresh(retired_region)
+    db.refresh(user)
+    db.add(DBTeamRegion(team_id=team.id, region_id=retired_region.id))
+    db.commit()
+
+    db.add(
+        DBPrivateAIKey(
+            database_name="db_retired",
+            database_username="u_retired",
+            owner_id=user.id,
+            team_id=team.id,
+            region_id=retired_region.id,
+        )
+    )
+    db.commit()
+
+    mock_get_team_info.return_value = {
+        "keys": [
+            {"metadata": {"amazeeai_user_id": str(user.id)}, "spend": 7.5},
+        ]
+    }
+
+    response = client.get(
+        "/users/spend?email=carol@example.com",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total_spend"] == 7.5
+    assert len(data["teams"][0]["regions"]) == 1
+    assert data["teams"][0]["regions"][0]["region_name"] == "region-retired"
 
 
 @patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
@@ -1273,29 +1397,18 @@ def test_create_user_with_limits_enabled(client, team_admin_token, test_team, db
     WHEN: the team tries to create another user
     THEN: a 402 payment required is returned
     """
-    # Create a product with a specific user limit for testing
-    user_count = 2
-    test_product = DBProduct(
-        id="prod_test_user_limit_enabled",
-        name="Test Product User Limit Enabled",
-        user_count=user_count,  # Specific limit for testing (including existing team admin)
-        keys_per_user=2,
-        total_key_count=10,
-        service_key_count=2,
-        max_budget_per_key=50.0,
-        rpm_per_key=1000,
-        vector_db_count=1,
-        vector_db_storage=100,
-        renewal_period_days=30,
-        active=True,
-        created_at=datetime.now(UTC),
+    # Cap the team at two members (the team admin plus one)
+    LimitService(db).set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.USER,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=2,
+        current_value=1,
+        limited_by=LimitSource.MANUAL,
+        set_by="test",
     )
-    db.add(test_product)
-
-    # Associate the product with the team
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
-    db.commit()
 
     # Create one more user to reach the limit (team admin already exists)
     response = client.post(
@@ -1334,24 +1447,18 @@ def test_create_user_pool_team_has_no_user_limit(
     db.add(test_team)
     db.commit()
 
-    test_product = DBProduct(
-        id="prod_test_pool_unlimited_users",
-        name="Test Product Pool Unlimited Users",
-        user_count=1,
-        keys_per_user=2,
-        total_key_count=10,
-        service_key_count=2,
-        max_budget_per_key=50.0,
-        rpm_per_key=1000,
-        vector_db_count=1,
-        vector_db_storage=100,
-        renewal_period_days=30,
-        active=True,
-        created_at=datetime.now(UTC),
+    # A one-member cap that the POOL exemption must ignore
+    LimitService(db).set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.USER,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=1,
+        current_value=1,
+        limited_by=LimitSource.MANUAL,
+        set_by="test",
     )
-    db.add(test_product)
-    db.add(DBTeamProduct(team_id=test_team.id, product_id=test_product.id))
-    db.commit()
 
     response = client.post(
         "/users/",

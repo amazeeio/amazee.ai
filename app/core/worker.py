@@ -8,8 +8,6 @@ from sqlalchemy import select, func, and_, or_, update as sa_update
 from app.db.models import (
     DBTeam,
     DBAuditLog,
-    DBProduct,
-    DBTeamProduct,
     DBPrivateAIKey,
     DBUser,
     DBRegion,
@@ -79,13 +77,13 @@ SUBSCRIPTION_BUDGET_TYPES = frozenset({BudgetType.PERIODIC, BudgetType.POOL})
 # Prometheus metrics
 team_freshness_days = Gauge(
     "team_freshness_days",
-    "Freshness of teams in days (since creation for teams without products, since last payment for teams with products)",
+    "Freshness of teams in days (since creation, or since last payment)",
     ["team_id", "team_name"],
 )
 
 team_expired_metric = Counter(
     "team_expired_total",
-    "Total number of teams that have expired without products",
+    "Total number of teams that have expired",
     ["team_id", "team_name"],
 )
 
@@ -1348,7 +1346,6 @@ def _monitor_team_freshness(team: DBTeam, db: Optional[Session] = None) -> int:
 def _calculate_last_team_activity(db: Session, team: DBTeam) -> Optional[datetime]:
     """
     Calculate the last activity date for a team based on:
-    - Any product association (team is active if any product exists)
     - Most recent key updated_at (indicates usage)
     - Most recent user created_at
     - Most recent key created_at
@@ -1360,16 +1357,6 @@ def _calculate_last_team_activity(db: Session, team: DBTeam) -> Optional[datetim
     Returns:
         The most recent activity date, or None if no activity found
     """
-    # Check if team has any product associations - if so, team is active
-    has_products = (
-        db.query(DBTeamProduct).filter(DBTeamProduct.team_id == team.id).first()
-        is not None
-    )
-
-    if has_products:
-        # Team has products, return current time to indicate team is active
-        return datetime.now(UTC)
-
     activity_dates = []
 
     # Check most recent key update (usage indicator)
@@ -1551,13 +1538,12 @@ def _send_retention_warning(
 def _send_expiry_notification(
     db: Session,
     team: DBTeam,
-    has_products: bool,
     should_send_notifications: bool,
     days_remaining: int,
     ses_service: Optional[SESService],
 ):
     # Check for notification conditions for teams still in the trial (only if not recently monitored)
-    if not has_products and should_send_notifications:
+    if should_send_notifications:
         # Find the admin email for the team
         try:
             admin_email = get_team_admin_email(db, team)
@@ -1637,7 +1623,7 @@ def _send_expiry_notification(
 async def monitor_teams(db: Session):
     """
     Daily monitoring task for teams that:
-    1. Posts age metrics for teams (since creation for teams without products, since last payment for teams with products)
+    1. Posts age metrics for teams (since creation, or since last payment)
     2. Sends notifications for teams approaching expiration (25-30 days)
     3. Posts metrics for expired teams (>30 days)
     4. Monitors key spend and notifies if approaching limits
@@ -1658,7 +1644,6 @@ async def monitor_teams(db: Session):
             ses_service = None
 
         logger.info(f"Found {len(teams)} teams to track")
-        limit_service = LimitService(db)
         # Shared across every team so each region is bulk-listed once per TTL
         # window instead of once per team
         key_state_cache = RegionKeyStateCache()
@@ -1666,14 +1651,6 @@ async def monitor_teams(db: Session):
             try:
                 team_label = (str(team.id), team.name)
                 current_team_labels.add(team_label)
-
-                # Check if team has any products
-                has_products = (
-                    db.query(DBTeamProduct)
-                    .filter(DBTeamProduct.team_id == team.id)
-                    .first()
-                    is not None
-                )
 
                 # Check team retention policy first (soft-delete handles key expiration internally)
                 await _check_team_retention_policy(db, team, current_time, ses_service)
@@ -1697,7 +1674,6 @@ async def monitor_teams(db: Session):
                     _send_expiry_notification(
                         db,
                         team,
-                        has_products,
                         should_send_notifications,
                         days_remaining,
                         ses_service,
@@ -1707,7 +1683,6 @@ async def monitor_teams(db: Session):
                 keys_by_region = get_team_keys_by_region(db, team.id)
                 expire_keys = False
 
-                # Expire if team trial has expired (if team has a product, expiry will be handled by Stripe)
                 # POOL teams are always exempt from trial expiration.
                 #
                 # The anonymous-trial team is exempt too. Its freshness ran
@@ -1718,8 +1693,7 @@ async def monitor_teams(db: Session):
                 # Note the two unrelated meanings of "trial" here:
                 # days_remaining is a real member's 30-day trial.
                 if (
-                    not has_products
-                    and not is_pool_team
+                    not is_pool_team
                     and not is_anonymous_trial_team(team)
                     and days_remaining <= 0
                     and should_send_notifications
@@ -1729,39 +1703,8 @@ async def monitor_teams(db: Session):
                     )
                     expire_keys = True
 
-                # Determine if we should check for renewal period updates
                 renewal_period_days = None
                 max_budget_amount = None
-                if has_products and team.last_payment:
-                    # Get budget from active limits (source of truth)
-                    team_limits = limit_service.get_team_limits(team)
-                    budget_limit = next(
-                        (
-                            limit
-                            for limit in team_limits
-                            if limit.resource == ResourceType.BUDGET
-                        ),
-                        None,
-                    )
-                    if budget_limit and not team.requires_pool_purchase_gate:
-                        max_budget_amount = budget_limit.max_value
-
-                    # Get the product with the longest renewal period (renewal period not stored in limits)
-                    active_products = (
-                        db.query(DBTeamProduct)
-                        .filter(DBTeamProduct.team_id == team.id)
-                        .all()
-                    )
-                    product_ids = [tp.product_id for tp in active_products]
-                    products = (
-                        db.query(DBProduct).filter(DBProduct.id.in_(product_ids)).all()
-                    )
-
-                    if products:
-                        max_renewal_product = max(
-                            products, key=lambda product: product.renewal_period_days
-                        )
-                        renewal_period_days = max_renewal_product.renewal_period_days
 
                 # Monitor keys and get total spend (includes renewal period updates if applicable)
                 team_total = await reconcile_team_keys(
@@ -2022,17 +1965,11 @@ async def hard_delete_expired_teams(db: Session):
                 db.query(DBUser).filter(DBUser.team_id == team.id).delete()
                 logger.info(f"Deleted {len(team_user_ids)} users for team {team.id}")
 
-                # 6. Delete team product associations
-                db.query(DBTeamProduct).filter(
-                    DBTeamProduct.team_id == team.id
-                ).delete()
-                logger.info(f"Deleted product associations for team {team.id}")
-
-                # 7. Delete team region associations
+                # 6. Delete team region associations
                 db.query(DBTeamRegion).filter(DBTeamRegion.team_id == team.id).delete()
                 logger.info(f"Deleted region associations for team {team.id}")
 
-                # 8. Write audit log before deleting the team record
+                # 7. Write audit log before deleting the team record
                 hard_delete_time = datetime.now(UTC)
                 audit_log = DBAuditLog(
                     timestamp=hard_delete_time,
@@ -2052,7 +1989,7 @@ async def hard_delete_expired_teams(db: Session):
                 )
                 db.add(audit_log)
 
-                # 9. Delete the team itself (DBTeamMetrics will be auto-deleted via cascade)
+                # 8. Delete the team itself (DBTeamMetrics will be auto-deleted via cascade)
                 db.delete(team)
 
                 # Commit after each team to avoid rolling back everything on error

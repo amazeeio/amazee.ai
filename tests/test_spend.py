@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from app.api.spend import _lock_region_or_404
 from app.core.config import settings
 from app.core.security import get_password_hash
+from app.services.litellm import LiteLLMService
 from app.db.models import (
     BudgetType,
     DBPeriodicBudgetLedgerEntry,
@@ -84,6 +85,131 @@ def test_get_team_spend_by_region(
     assert data["total_tokens"] == 220
     assert data["key_count"] == 2
     assert all(key["max_budget"] is None for key in data["keys"])
+
+
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_get_team_spend_allows_inactive_region(
+    mock_get_team_info, client, team_admin_token, test_team, test_region, db
+):
+    # A retired region keeps serving existing keys, so spend stays readable.
+    test_region.is_active = False
+    db.add(test_region)
+    db.commit()
+
+    mock_get_team_info.return_value = {
+        "team_info": {"spend": 3.0, "max_budget": 10.0},
+        "keys": [],
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["region_id"] == test_region.id
+
+
+def test_every_spend_read_allows_inactive_regions_and_no_mutation_does():
+    """Guard the read/write split structurally, not route by route.
+
+    The 404-on-retired-region bug came back once already, when a new GET route
+    was added that resolved its region active-only. A per-route test would not
+    have caught that, because a new route simply is not in the list. Walking the
+    source does catch it.
+    """
+    import ast
+    from pathlib import Path
+
+    source = Path("app/api/spend.py").read_text()
+    tree = ast.parse(source)
+
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        verbs = {
+            d.func.attr
+            for d in node.decorator_list
+            if isinstance(d, ast.Call)
+            and isinstance(d.func, ast.Attribute)
+            and isinstance(d.func.value, ast.Name)
+            and d.func.value.id == "router"
+        }
+        if not verbs:
+            continue
+        for call in ast.walk(node):
+            if not (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id == "_get_region_or_404"
+            ):
+                continue
+            relaxed = any(
+                kw.arg == "include_inactive"
+                and isinstance(kw.value, ast.Constant)
+                and kw.value.value is True
+                for kw in call.keywords
+            )
+            is_read = verbs == {"get"}
+            if is_read and not relaxed:
+                offenders.append(f"{node.name} is a read but resolves active-only")
+            if not is_read and relaxed:
+                offenders.append(f"{node.name} mutates but allows inactive regions")
+
+    assert not offenders, "; ".join(offenders)
+
+
+def test_spend_read_on_region_without_litellm_credentials_is_unavailable(
+    client, team_admin_token, test_team, test_region, db
+):
+    # A retired region can have had its credentials cleared. The read must say
+    # the region cannot answer, not raise from the LiteLLM constructor.
+    test_region.is_active = False
+    test_region.litellm_api_key = None
+    db.add(test_region)
+    db.commit()
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 503
+
+
+@patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
+def test_get_team_breakdown_allows_inactive_region(
+    mock_get_team_daily_activity, client, team_admin_token, test_team, test_region, db
+):
+    # The breakdown route is a read, so it has to survive its region retiring
+    # like every other spend read.
+    test_region.is_active = False
+    db.add(test_region)
+    db.commit()
+
+    mock_get_team_daily_activity.return_value = []
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/breakdown",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+
+
+@patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
+def test_update_team_budget_rejects_inactive_region(
+    mock_update_team_budget, client, admin_token, test_team, test_region, db
+):
+    test_region.is_active = False
+    db.add(test_region)
+    db.commit()
+
+    response = client.put(
+        f"/spend/{test_region.id}/team/{test_team.id}/budget",
+        json={"max_budget": 12.5},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 404
+    mock_update_team_budget.assert_not_awaited()
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
@@ -1016,9 +1142,7 @@ def test_team_spend_key_list_trusts_litellm_reset_over_derived_anchor(
                 "max_budget": 0.0,
                 "user_id": None,
                 "budget_duration": "31d",
-                "budget_reset_at": litellm_reset_at.isoformat().replace(
-                    "+00:00", "Z"
-                ),
+                "budget_reset_at": litellm_reset_at.isoformat().replace("+00:00", "Z"),
             }
         ],
     }
@@ -3963,3 +4087,376 @@ def test_get_key_last_used_wrong_team_id_is_404(
 
     db.delete(key)
     db.commit()
+
+
+def _breakdown_rows(hash_a: str, hash_b: str) -> list[dict]:
+    """Two days of LiteLLM team activity covering two keys and two models.
+
+    Mirrors LiteLLM's real shape: a key's total appears under
+    ``breakdown.api_keys`` and the same spend appears again, sliced by model,
+    under ``breakdown.models[*].api_key_breakdown``.
+    """
+    return [
+        {
+            "date": "2025-06-01",
+            "metrics": {"spend": 3.0, "total_tokens": 300, "api_requests": 3},
+            "breakdown": {
+                "api_keys": {
+                    hash_a: {
+                        "metrics": {
+                            "spend": 2.0,
+                            "prompt_tokens": 150,
+                            "total_tokens": 200,
+                            "api_requests": 2,
+                        },
+                        "metadata": {"key_alias": "alias-a"},
+                    },
+                    hash_b: {
+                        "metrics": {
+                            "spend": 1.0,
+                            "total_tokens": 100,
+                            "api_requests": 1,
+                        },
+                        "metadata": {"key_alias": "alias-b"},
+                    },
+                },
+                "models": {
+                    "bedrock/claude": {
+                        "metrics": {"spend": 2.5},
+                        "api_key_breakdown": {
+                            hash_a: {"metrics": {"spend": 1.5, "api_requests": 1}},
+                            hash_b: {"metrics": {"spend": 1.0, "api_requests": 1}},
+                        },
+                    },
+                    "bedrock/titan": {
+                        "metrics": {"spend": 0.5},
+                        "api_key_breakdown": {
+                            hash_a: {"metrics": {"spend": 0.5, "api_requests": 1}},
+                        },
+                    },
+                },
+            },
+        },
+        {
+            "date": "2025-06-02",
+            "metrics": {"spend": 1.0, "total_tokens": 50, "api_requests": 1},
+            "breakdown": {
+                "api_keys": {
+                    hash_a: {
+                        "metrics": {
+                            "spend": 1.0,
+                            "total_tokens": 50,
+                            "api_requests": 1,
+                        },
+                        "metadata": {"key_alias": "alias-a"},
+                    },
+                },
+                "models": {
+                    "bedrock/claude": {
+                        "metrics": {"spend": 1.0},
+                        "api_key_breakdown": {
+                            hash_a: {"metrics": {"spend": 1.0, "api_requests": 1}},
+                        },
+                    },
+                },
+            },
+        },
+    ]
+
+
+@patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
+def test_team_spend_breakdown_groups_by_user_key_and_model(
+    mock_activity, client, team_admin_token, test_team, test_team_user, test_region, db
+):
+    user_key = DBPrivateAIKey(
+        name="user-key",
+        litellm_token="sk-user-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+    )
+    service_key = DBPrivateAIKey(
+        name="service-key",
+        litellm_token="sk-service-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add_all([user_key, service_key])
+    db.commit()
+
+    mock_activity.return_value = _breakdown_rows(
+        LiteLLMService.hash_token("sk-user-token"),
+        LiteLLMService.hash_token("sk-service-token"),
+    )
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/breakdown",
+        params={"start_date": "2025-06-01", "end_date": "2025-06-02"},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    # Team total is the sum of every visible key, across both days.
+    assert data["totals"]["spend"] == 4.0
+    assert data["totals"]["request_count"] == 4
+
+    assert len(data["users"]) == 1
+    user = data["users"][0]
+    assert user["user_id"] == test_team_user.id
+    assert user["email"] == test_team_user.email
+    assert user["spend"] == 3.0
+
+    assert len(user["keys"]) == 1
+    key = user["keys"][0]
+    assert key["key_id"] == user_key.id
+    assert key["key_name"] == "user-key"
+    assert key["spend"] == 3.0
+    # Ordered by descending spend; the per-model split sums to the key total.
+    assert [m["model"] for m in key["models"]] == ["bedrock/claude", "bedrock/titan"]
+    assert sum(m["spend"] for m in key["models"]) == 3.0
+
+    # A team-owned key has no person behind it, so it sits beside the users.
+    assert len(data["service_keys"]) == 1
+    assert data["service_keys"][0]["key_id"] == service_key.id
+    assert data["service_keys"][0]["spend"] == 1.0
+
+
+@patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
+def test_team_spend_breakdown_member_sees_only_own_keys(
+    mock_activity,
+    client,
+    team_key_creator_token,
+    test_team,
+    test_team_key_creator,
+    test_region,
+    db,
+):
+    own_key = DBPrivateAIKey(
+        name="own-key",
+        litellm_token="sk-own-token",
+        region_id=test_region.id,
+        owner_id=test_team_key_creator.id,
+    )
+    service_key = DBPrivateAIKey(
+        name="service-key",
+        litellm_token="sk-service-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add_all([own_key, service_key])
+    db.commit()
+
+    mock_activity.return_value = _breakdown_rows(
+        LiteLLMService.hash_token("sk-own-token"),
+        LiteLLMService.hash_token("sk-service-token"),
+    )
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/breakdown",
+        headers={"Authorization": f"Bearer {team_key_creator_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    # The service key is invisible, and the totals must not leak its spend.
+    assert data["service_keys"] == []
+    assert data["totals"]["spend"] == 3.0
+    assert [u["user_id"] for u in data["users"]] == [test_team_key_creator.id]
+
+
+@patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
+def test_team_spend_breakdown_keeps_keys_we_no_longer_hold(
+    mock_activity, client, team_admin_token, test_team, test_region, db
+):
+    """A key deleted inside the range still has spend; drop it and totals lie."""
+    mock_activity.return_value = _breakdown_rows(
+        "hash-of-deleted-a", "hash-of-deleted-b"
+    )
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/breakdown",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["users"] == []
+    # An unknown owner is not the same as a team-owned key, so these must not
+    # be mislabelled as service keys.
+    assert data["service_keys"] == []
+    assert data["totals"]["spend"] == 4.0
+    assert {k["key_id"] for k in data["unattributed_keys"]} == {None}
+    assert sorted(k["key_name"] for k in data["unattributed_keys"]) == [
+        "alias-a",
+        "alias-b",
+    ]
+
+
+@patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
+def test_team_spend_breakdown_key_seen_only_in_model_split(
+    mock_activity, client, team_admin_token, test_team, test_team_user, test_region, db
+):
+    """LiteLLM may report a key only inside the per-model breakdown.
+
+    Reading the key total from `breakdown.api_keys` alone would then score it
+    at zero and drop its spend from the user and team totals.
+    """
+    key = DBPrivateAIKey(
+        name="model-only-key",
+        litellm_token="sk-model-only",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+    )
+    db.add(key)
+    db.commit()
+
+    hashed = LiteLLMService.hash_token("sk-model-only")
+    mock_activity.return_value = [
+        {
+            "date": "2025-06-01",
+            "metrics": {"spend": 2.0, "api_requests": 2},
+            "breakdown": {
+                "api_keys": {},
+                "models": {
+                    "bedrock/claude": {
+                        "metrics": {"spend": 2.0},
+                        "api_key_breakdown": {
+                            hashed: {"metrics": {"spend": 2.0, "api_requests": 2}},
+                        },
+                    },
+                },
+            },
+        },
+    ]
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/breakdown",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["totals"]["spend"] == 2.0
+    assert data["users"][0]["keys"][0]["spend"] == 2.0
+    assert data["users"][0]["keys"][0]["request_count"] == 2
+
+
+@patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
+def test_team_spend_breakdown_member_never_sees_unattributed(
+    mock_activity,
+    client,
+    team_key_creator_token,
+    test_team,
+    test_team_key_creator,
+    test_region,
+    db,
+):
+    own_key = DBPrivateAIKey(
+        name="own-key",
+        litellm_token="sk-own-token",
+        region_id=test_region.id,
+        owner_id=test_team_key_creator.id,
+    )
+    db.add(own_key)
+    db.commit()
+
+    mock_activity.return_value = _breakdown_rows(
+        LiteLLMService.hash_token("sk-own-token"),
+        "hash-of-a-key-we-no-longer-hold",
+    )
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/breakdown",
+        headers={"Authorization": f"Bearer {team_key_creator_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    # Ownership of a stale key cannot be checked, so it must not reach a member.
+    assert data["unattributed_keys"] == []
+    assert data["totals"]["spend"] == 3.0
+
+
+@patch("app.api.spend.LiteLLMService.get_daily_activity", new_callable=AsyncMock)
+def test_key_daily_activity_folds_dates_split_across_pages(
+    mock_get_daily_activity, client, team_admin_token, test_team_user, test_region, db
+):
+    """LiteLLM aggregates each page on its own, so one day can arrive twice.
+
+    Emitting both would show the caller two partial days for the same date.
+    """
+    key = DBPrivateAIKey(
+        name="paged-activity-key",
+        litellm_token="sk-paged-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team_user.team_id,
+    )
+    db.add(key)
+    db.commit()
+
+    # 2025-06-01 straddles a page boundary and comes back as two partial rows.
+    mock_get_daily_activity.return_value = [
+        {
+            "date": "2025-06-01",
+            "metrics": {
+                "spend": 2.0,
+                "prompt_tokens": 100,
+                "total_tokens": 120,
+                "api_requests": 2,
+            },
+            "breakdown": {
+                "models": {
+                    "bedrock/claude": {"metrics": {"spend": 2.0, "api_requests": 2}},
+                },
+            },
+        },
+        {
+            "date": "2025-06-02",
+            "metrics": {"spend": 5.0, "total_tokens": 500, "api_requests": 5},
+        },
+        {
+            "date": "2025-06-01",
+            "metrics": {
+                "spend": 1.5,
+                "prompt_tokens": 50,
+                "total_tokens": 60,
+                "api_requests": 1,
+            },
+            "breakdown": {
+                "models": {
+                    "bedrock/claude": {"metrics": {"spend": 1.0, "api_requests": 1}},
+                    "bedrock/titan": {"metrics": {"spend": 0.5}},
+                },
+            },
+        },
+    ]
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/daily-activity",
+        params={
+            "start_date": "2025-06-01",
+            "end_date": "2025-06-02",
+            "include_breakdown": "true",
+        },
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    rows = response.json()["activity"]
+
+    assert [r["date"] for r in rows] == ["2025-06-01", "2025-06-02"]
+    first = rows[0]
+    assert first["spend"] == 3.5
+    assert first["prompt_tokens"] == 150
+    assert first["total_tokens"] == 180
+    assert first["request_count"] == 3
+
+    # The model split is folded the same way, still ordered by descending spend.
+    assert [m["model"] for m in first["breakdown"]] == [
+        "bedrock/claude",
+        "bedrock/titan",
+    ]
+    assert first["breakdown"][0]["spend"] == 3.0
+    assert first["breakdown"][0]["request_count"] == 3
+    assert first["breakdown"][1]["spend"] == 0.5
+    # Folded rows still add up to what LiteLLM reported for the range.
+    assert sum(r["spend"] for r in rows) == 8.5
