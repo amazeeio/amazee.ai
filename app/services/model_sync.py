@@ -72,16 +72,8 @@ def _is_masked_param(key: str) -> bool:
     return bool(segments & _PROXY_MASKED_SEGMENTS) and "cost" not in segments
 
 
-def _live_params(deployments: list[dict]) -> dict | None:
-    """The union of the deployments' litellm_params, or None when the entries
-    carry none at all (nothing to compare against)."""
-    with_params = [e for e in deployments if isinstance(e.get("litellm_params"), dict)]
-    if not with_params:
-        return None
-    merged: dict = {}
-    for entry in with_params:
-        merged.update(entry["litellm_params"])
-    return merged
+def _params_of(deployments: list[dict]) -> list[dict]:
+    return [e["litellm_params"] for e in deployments if isinstance(e.get("litellm_params"), dict)]
 
 
 def _sent_params(desired: dict) -> dict:
@@ -92,16 +84,17 @@ def _sent_params(desired: dict) -> dict:
 def stale_param_keys(deployments: list[dict], desired: dict) -> set[str]:
     """Keys live on the proxy that the catalog no longer sends. /model/update
     merges, so these survive every update until the deployment is recreated."""
-    live = _live_params(deployments)
-    if live is None:
-        return set()
+    sent = set(_sent_params(desired)) | {"model"}
     # LiteLLM stores its own boolean flags (GenericLiteLLMParams defaults such
     # as use_in_pass_through) on every deployment as False, and the set grows
     # with each release. Treat any unsent False as LiteLLM's own; the cost is
     # that a dropped catalog key whose value was false is left in place, which
-    # is what LiteLLM would default it to anyway.
-    injected = {k for k, v in live.items() if v is False}
-    return set(live) - set(_sent_params(desired)) - {"model"} - injected
+    # is what LiteLLM would default it to anyway. Judge each deployment on its
+    # own so a duplicate holding False cannot hide a truthy value on another.
+    stale: set[str] = set()
+    for live in _params_of(deployments):
+        stale |= {k for k, v in live.items() if k not in sent and v is not False}
+    return stale
 
 
 def _value_comparable(key: str, value) -> bool:
@@ -115,7 +108,7 @@ def _value_comparable(key: str, value) -> bool:
 def params_drifted(deployments: list[dict], desired: dict) -> bool:
     """True when the proxy's params differ from the catalog's for a comparable
     key: a stale key, a missing key, or a changed non-secret value."""
-    if _live_params(deployments) is None:
+    if not _params_of(deployments):
         return False
     stale = stale_param_keys(deployments, desired)
     if stale:
@@ -123,10 +116,7 @@ def params_drifted(deployments: list[dict], desired: dict) -> bool:
         return True
     # Every deployment under the name must match; a duplicate that kept an
     # old value is drift too.
-    for entry in deployments:
-        live = entry.get("litellm_params")
-        if not isinstance(live, dict):
-            continue
+    for live in _params_of(deployments):
         for key, value in _sent_params(desired).items():
             if key in _PROXY_STRIPPED_PARAM_KEYS:
                 continue

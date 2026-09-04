@@ -792,6 +792,14 @@ def test_params_drifted_ignores_stripped_and_masked_values():
     # A dropped key that is truthy is stale even when boolean; False is LiteLLM's own default.
     assert stale_param_keys([{"litellm_params": {"rpm": 10, "drop_params": True}}], desired) == {"drop_params"}
     assert stale_param_keys([{"litellm_params": {"rpm": 10, "drop_params": False}}], desired) == set()
+    # A duplicate deployment holding False must not hide a truthy stale value on another.
+    assert stale_param_keys(
+        [
+            {"litellm_params": {"rpm": 10, "drop_params": True}},
+            {"litellm_params": {"rpm": 10, "drop_params": False}},
+        ],
+        desired,
+    ) == {"drop_params"}
 
 
 @patch("app.services.model_sync.LiteLLMService")
