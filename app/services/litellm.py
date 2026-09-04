@@ -1612,6 +1612,24 @@ class LiteLLMService:
                 detail=f"Failed to add LiteLLM model: {error_msg}",
             )
 
+    async def get_model_deployments(self, model_id: str) -> list[dict]:
+        """
+        The live /model/info entries registered under a public model_name,
+        one per deployment (each with model_info.id and litellm_params).
+        """
+        info = await self.get_model_info()
+        entries = info.get("data") or []
+        if not isinstance(entries, list):
+            return []
+        return [
+            entry
+            for entry in entries
+            if isinstance(entry, dict)
+            and entry.get("model_name") == model_id
+            and isinstance(entry.get("model_info"), dict)
+            and entry["model_info"].get("id")
+        ]
+
     async def get_model_deployment_ids(self, model_id: str) -> list[str]:
         """
         Resolve the LiteLLM deployment id(s) for a public model_name.
@@ -1619,18 +1637,7 @@ class LiteLLMService:
         and /model/new allows duplicate model_names — so callers must resolve
         ids first to upsert/delete correctly.
         """
-        info = await self.get_model_info()
-        entries = info.get("data") or []
-        if not isinstance(entries, list):
-            return []
-        return [
-            entry["model_info"]["id"]
-            for entry in entries
-            if isinstance(entry, dict)
-            and entry.get("model_name") == model_id
-            and isinstance(entry.get("model_info"), dict)
-            and entry["model_info"].get("id")
-        ]
+        return [entry["model_info"]["id"] for entry in await self.get_model_deployments(model_id)]
 
     async def update_model(
         self,
