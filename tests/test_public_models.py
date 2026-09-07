@@ -278,17 +278,17 @@ def test_public_models_pricing_falls_back_to_default_margin(client, db):
         data = response.json()
         region_data = next(r for r in data if r["region"] == "ca-central-1")
         pricing = region_data["models"][0]["pricing"]
-        assert pricing["input_cost_per_token"] == pytest.approx(0.000006)
-        assert pricing["output_cost_per_token"] == pytest.approx(0.000018)
-        assert pricing["input_cost_per_million_tokens"] == pytest.approx(6.0)
-        assert pricing["output_cost_per_million_tokens"] == pytest.approx(18.0)
+        assert pricing["input_cost_per_token"] == pytest.approx(0.0000055)
+        assert pricing["output_cost_per_token"] == pytest.approx(0.0000165)
+        assert pricing["input_cost_per_million_tokens"] == pytest.approx(5.5)
+        assert pricing["output_cost_per_million_tokens"] == pytest.approx(16.5)
         assert pricing["cache_creation_input_cost_per_million_tokens"] == pytest.approx(
-            7.5
+            6.875
         )
         assert pricing[
             "cache_creation_input_cost_above_1hr_per_million_tokens"
-        ] == pytest.approx(12.0)
-        assert pricing["cache_read_input_cost_per_million_tokens"] == pytest.approx(0.6)
+        ] == pytest.approx(11.0)
+        assert pricing["cache_read_input_cost_per_million_tokens"] == pytest.approx(0.55)
 
 
 def test_public_models_pricing_missing_values(client, db):
