@@ -41,7 +41,10 @@ protected_router = APIRouter(tags=["models"])
 _CACHE_TTL = timedelta(hours=1)
 _REGION_TIMEOUT = 10.0  # seconds per-region request
 _REGION_SEMAPHORE = asyncio.Semaphore(10)  # max concurrent region requests
-_DEFAULT_PUBLIC_MODEL_PROFIT_MARGIN = 0.2
+# Used only when a region's margin lookup fails or returns no "global" key.
+# Keep in step with cost_margin_config.global in the cluster config: if the two
+# drift, a failed lookup quietly prices that region at the wrong margin.
+_DEFAULT_PUBLIC_MODEL_PROFIT_MARGIN = 0.1
 _cache_lock = asyncio.Lock()
 _dedicated_cache_lock = asyncio.Lock()
 _models_cache: dict[str, Any] = {
