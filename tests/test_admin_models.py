@@ -125,7 +125,7 @@ def test_sync_model_narrow_exception_handling_connection_refused(mock_litellm_cl
     from app.services.model_sync import sync_model_to_region_task
 
     mock_instance = MagicMock()
-    mock_instance.get_model_deployment_ids = AsyncMock(return_value=[])
+    mock_instance.get_model_deployments = AsyncMock(return_value=[])
     mock_instance.add_model = AsyncMock(side_effect=Exception("Connection refused"))
     mock_instance.update_model = AsyncMock()
     mock_litellm_class.return_value = mock_instance
@@ -166,7 +166,7 @@ def test_sync_model_existing_deployment_updates(mock_litellm_class, db, test_reg
     from app.services.model_sync import sync_model_to_region_task
 
     mock_instance = MagicMock()
-    mock_instance.get_model_deployment_ids = AsyncMock(return_value=["dep-123"])
+    mock_instance.get_model_deployments = AsyncMock(return_value=[{"model_info": {"id": "dep-123"}}])
     mock_instance.add_model = AsyncMock()
     mock_instance.update_model = AsyncMock(return_value={"status": "success"})
     mock_instance.list_access_groups = AsyncMock(return_value=[])
@@ -212,7 +212,7 @@ def test_sync_model_poisoned_session_never_commits_stale_synced(mock_litellm_cla
     from app.db.database import get_db as real_get_db
 
     mock_instance = MagicMock()
-    mock_instance.get_model_deployment_ids = AsyncMock(return_value=[])
+    mock_instance.get_model_deployments = AsyncMock(return_value=[])
     mock_instance.add_model = AsyncMock(return_value={"status": "success"})
     mock_instance.list_access_groups = AsyncMock(return_value=[])
     mock_litellm_class.return_value = mock_instance
@@ -336,7 +336,7 @@ def test_sync_error_scrubs_override_credentials(mock_litellm_class, db, test_reg
     db.commit()
 
     mock_instance = MagicMock()
-    mock_instance.get_model_deployment_ids = AsyncMock(return_value=[])
+    mock_instance.get_model_deployments = AsyncMock(return_value=[])
     mock_instance.add_model = AsyncMock(
         side_effect=Exception(
             "422: payload rejected: aws_secret_access_key=sk-base-secret99 api_key=sk-override-secret99"
@@ -546,7 +546,7 @@ def test_reconcile_restores_models_deleted_behind_our_back(mock_litellm_class, d
     mock_instance = MagicMock()
     mock_instance.get_model_info = AsyncMock(return_value={"data": []})
     mock_instance.get_router_settings = AsyncMock(return_value=_router_settings_with_map({}))
-    mock_instance.get_model_deployment_ids = AsyncMock(return_value=[])
+    mock_instance.get_model_deployments = AsyncMock(return_value=[])
     mock_instance.add_model = AsyncMock(return_value={})
     mock_instance.list_access_groups = AsyncMock(return_value=[])
     mock_litellm_class.return_value = mock_instance
@@ -667,3 +667,191 @@ def test_admin_get_model_redacts_credentials(client, admin_token, db):
     assert "sk-super-secret" not in response.text
     assert "hdr-secret" not in response.text
     assert "PRIVATE KEY" not in response.text
+
+
+@patch("app.services.model_sync.LiteLLMService")
+def test_sync_recreates_deployment_when_catalog_drops_a_param(mock_litellm_class, db, test_region):
+    """/model/update merges, so a key the catalog removed survives it. The sync
+    must register a fresh deployment first (name stays available) and then
+    delete the old ids."""
+    from app.services.model_sync import sync_model_to_region_task
+
+    order: list[str] = []
+    mock_instance = MagicMock()
+    mock_instance.get_model_deployments = AsyncMock(
+        return_value=[
+            {
+                "model_name": "test/drop-key",
+                "litellm_params": {"model": "test/drop-key", "timeout": 600},
+                "model_info": {"id": "dep-old", "db_model": True},
+            }
+        ]
+    )
+    mock_instance.add_model = AsyncMock(side_effect=lambda *a, **k: order.append("add_model"))
+    mock_instance.delete_model = AsyncMock(side_effect=lambda *a, **k: order.append("delete_model"))
+    mock_instance.update_model = AsyncMock()
+    mock_instance.list_access_groups = AsyncMock(return_value=[])
+    mock_litellm_class.return_value = mock_instance
+
+    m = DBModel(model_id="test/drop-key", display_name="Drop Key", provider="test", type="chat")
+    db.add(m)
+    db.commit()
+    assoc = DBModelRegion(
+        model_id=m.id, region_id=test_region.id, is_active=True, sync_status="pending"
+    )
+    db.add(assoc)
+    db.commit()
+
+    import asyncio
+    asyncio.run(sync_model_to_region_task(m.id, test_region.id))
+
+    db.refresh(assoc)
+    assert assoc.sync_status == "synced"
+    mock_instance.update_model.assert_not_called()
+    mock_instance.add_model.assert_called_once_with("test/drop-key", {}, access_groups=[])
+    mock_instance.delete_model.assert_called_once_with("test/drop-key", ["dep-old"])
+    assert order == ["add_model", "delete_model"]
+
+
+@patch("app.services.model_sync.LiteLLMService")
+def test_reconcile_flags_stale_proxy_params_as_drift(mock_litellm_class, db, test_region):
+    """A deployment present by name but carrying params the catalog no longer
+    has is drift, and the repair recreates it."""
+    from app.services.model_sync import reconcile_region_models
+
+    m = DBModel(
+        model_id="test/stale-params",
+        display_name="Stale Params",
+        provider="test",
+        type="chat",
+        litellm_params={"api_key": "sk-secret", "rpm": 10},
+    )
+    db.add(m)
+    db.commit()
+    db.add(
+        DBModelRegion(
+            model_id=m.id, region_id=test_region.id, is_active=True, sync_status="synced"
+        )
+    )
+    db.commit()
+
+    live = {
+        "model_name": "test/stale-params",
+        # api_key is stripped by /model/info and must not count as missing.
+        "litellm_params": {"model": "test/stale-params", "rpm": 10, "timeout": 600},
+        "model_info": {"id": "d1", "db_model": True},
+    }
+    mock_instance = MagicMock()
+    mock_instance.get_model_info = AsyncMock(return_value={"data": [live]})
+    mock_instance.get_model_deployments = AsyncMock(return_value=[live])
+    mock_instance.get_router_settings = AsyncMock(return_value=_router_settings_with_map({}))
+    mock_instance.add_model = AsyncMock()
+    mock_instance.update_model = AsyncMock()
+    mock_instance.delete_model = AsyncMock()
+    mock_instance.list_access_groups = AsyncMock(return_value=[])
+    mock_litellm_class.return_value = mock_instance
+
+    import asyncio
+    result = asyncio.run(reconcile_region_models(db, test_region))
+
+    assert result == {"models_resynced": 1, "alias_map_rewritten": False}
+    mock_instance.add_model.assert_called_once()
+    mock_instance.delete_model.assert_called_once_with("test/stale-params", ["d1"])
+    mock_instance.update_model.assert_not_called()
+
+
+def test_params_drifted_ignores_stripped_and_masked_values():
+    from app.services.model_sync import params_drifted, stale_param_keys
+
+    desired = {
+        "api_key": "sk-secret",
+        "azure_ad_token": "tok",
+        "api_base": "os.environ/BASE",
+        "extra_headers": {"x-api-key": "h"},
+        "rpm": 10,
+        "tpm": None,
+    }
+    live = [
+        {
+            "litellm_params": {
+                "model": "m",
+                "azure_ad_token": "to********",
+                "api_base": "https://resolved",
+                "extra_headers": {"x-api-key": "h****"},
+                "rpm": 10,
+            }
+        }
+    ]
+    assert stale_param_keys(live, desired) == set()
+    assert params_drifted(live, desired) is False
+    # A second deployment under the same name that kept an old value is drift.
+    assert params_drifted(live + [{"litellm_params": {"model": "m", "rpm": 5}}], desired)
+    # A changed plain value is drift; a stale key is drift.
+    assert params_drifted([{"litellm_params": {"model": "m", "azure_ad_token": "x", "rpm": 20}}], desired)
+    assert stale_param_keys([{"litellm_params": {"rpm": 10, "timeout": 1}}], desired) == {"timeout"}
+    # A dropped key that is truthy is stale even when boolean; False is LiteLLM's own default.
+    assert stale_param_keys([{"litellm_params": {"rpm": 10, "drop_params": True}}], desired) == {"drop_params"}
+    assert stale_param_keys([{"litellm_params": {"rpm": 10, "drop_params": False}}], desired) == set()
+    # A duplicate deployment holding False must not hide a truthy stale value on another.
+    assert stale_param_keys(
+        [
+            {"litellm_params": {"rpm": 10, "drop_params": True}},
+            {"litellm_params": {"rpm": 10, "drop_params": False}},
+        ],
+        desired,
+    ) == {"drop_params"}
+
+
+@patch("app.services.model_sync.LiteLLMService")
+def test_sync_keeps_deployment_when_only_proxy_owned_keys_differ(mock_litellm_class, db, test_region):
+    """Keys LiteLLM injects by itself are not stale; the deployment is updated
+    in place so model_info.id is preserved."""
+    from app.services.model_sync import sync_model_to_region_task
+
+    live_params = {
+        "model": "test/keep-id",
+        "rpm": 10,
+        "use_in_pass_through": False,
+        "allow_client_keepalive_override": False,
+    }
+    mock_instance = MagicMock()
+    mock_instance.get_model_deployments = AsyncMock(
+        return_value=[
+            {
+                "model_name": "test/keep-id",
+                "litellm_params": live_params,
+                "model_info": {"id": "dep-keep", "db_model": True},
+            }
+        ]
+    )
+    mock_instance.add_model = AsyncMock()
+    mock_instance.delete_model = AsyncMock()
+    mock_instance.update_model = AsyncMock(return_value={})
+    mock_instance.list_access_groups = AsyncMock(return_value=[])
+    mock_litellm_class.return_value = mock_instance
+
+    m = DBModel(
+        model_id="test/keep-id",
+        display_name="Keep Id",
+        provider="test",
+        type="chat",
+        litellm_params={"rpm": 10},
+    )
+    db.add(m)
+    db.commit()
+    assoc = DBModelRegion(
+        model_id=m.id, region_id=test_region.id, is_active=True, sync_status="pending"
+    )
+    db.add(assoc)
+    db.commit()
+
+    import asyncio
+    asyncio.run(sync_model_to_region_task(m.id, test_region.id))
+
+    db.refresh(assoc)
+    assert assoc.sync_status == "synced"
+    mock_instance.update_model.assert_called_once_with(
+        "test/keep-id", {"rpm": 10}, ["dep-keep"], access_groups=[]
+    )
+    mock_instance.add_model.assert_not_called()
+    mock_instance.delete_model.assert_not_called()
