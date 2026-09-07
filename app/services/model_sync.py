@@ -54,6 +54,81 @@ def effective_litellm_params(
     return {**dict(model.litellm_params or {}), **override}, None
 
 
+# /model/info strips credentials and masks any key whose name segment reads
+# like a secret, so those keys can never be compared against the catalog.
+_PROXY_STRIPPED_PARAM_KEYS = {
+    "api_key",
+    "client_secret",
+    "vertex_credentials",
+    "vertex_ai_credentials",
+    "aws_access_key_id",
+    "aws_secret_access_key",
+}
+_PROXY_MASKED_SEGMENTS = {"password", "secret", "key", "token"}
+
+
+def _is_masked_param(key: str) -> bool:
+    segments = set(key.lower().replace("-", "_").split("_"))
+    return bool(segments & _PROXY_MASKED_SEGMENTS) and "cost" not in segments
+
+
+def _params_of(deployments: list[dict]) -> list[dict]:
+    return [e["litellm_params"] for e in deployments if isinstance(e.get("litellm_params"), dict)]
+
+
+def _sent_params(desired: dict) -> dict:
+    # LiteLLM never stores a None value, so it can never be seen live.
+    return {k: v for k, v in desired.items() if v is not None}
+
+
+def stale_param_keys(deployments: list[dict], desired: dict) -> set[str]:
+    """Keys live on the proxy that the catalog no longer sends. /model/update
+    merges, so these survive every update until the deployment is recreated."""
+    sent = set(_sent_params(desired)) | {"model"}
+    # LiteLLM stores its own boolean flags (GenericLiteLLMParams defaults such
+    # as use_in_pass_through) on every deployment as False, and the set grows
+    # with each release. Treat any unsent False as LiteLLM's own; the cost is
+    # that a dropped catalog key whose value was false is left in place, which
+    # is what LiteLLM would default it to anyway. Judge each deployment on its
+    # own so a duplicate holding False cannot hide a truthy value on another.
+    stale: set[str] = set()
+    for live in _params_of(deployments):
+        stale |= {k for k, v in live.items() if k not in sent and v is not False}
+    return stale
+
+
+def _value_comparable(key: str, value) -> bool:
+    # Masked values, nested dicts (masked per sub-key) and os.environ/ refs
+    # (resolved before /model/info reports them) never match the catalog.
+    if _is_masked_param(key) or isinstance(value, dict):
+        return False
+    return not (isinstance(value, str) and value.startswith("os.environ/"))
+
+
+def params_drifted(deployments: list[dict], desired: dict) -> bool:
+    """True when the proxy's params differ from the catalog's for a comparable
+    key: a stale key, a missing key, or a changed non-secret value."""
+    if not _params_of(deployments):
+        return False
+    stale = stale_param_keys(deployments, desired)
+    if stale:
+        logger.info(f"Params drift: stale keys {sorted(stale)} on the proxy")
+        return True
+    # Every deployment under the name must match; a duplicate that kept an
+    # old value is drift too.
+    for live in _params_of(deployments):
+        for key, value in _sent_params(desired).items():
+            if key in _PROXY_STRIPPED_PARAM_KEYS:
+                continue
+            if key not in live:
+                logger.info(f"Params drift: '{key}' missing on the proxy")
+                return True
+            if _value_comparable(key, value) and live[key] != value:
+                logger.info(f"Params drift: '{key}' differs on the proxy")
+                return True
+    return False
+
+
 def region_model_group_alias_map(db, region_id: int) -> dict[str, str]:
     """The full desired ``model_group_alias`` map for one region's proxy:
     every active alias with an active target deployment in that region.
@@ -137,6 +212,15 @@ async def reconcile_region_models(db, region: DBRegion) -> dict:
         drifted = (desired and model.model_id not in all_names) or (
             not desired and model.model_id in db_names
         )
+        if desired and not drifted and model.model_id in db_names:
+            params, error = effective_litellm_params(db, model, region.id)
+            deployments = [
+                e
+                for e in entries
+                if e.get("model_name") == model.model_id
+                and (e.get("model_info") or {}).get("db_model")
+            ]
+            drifted = error is None and params_drifted(deployments, params)
         if drifted:
             assoc.sync_status = "pending"
             assoc.updated_at = datetime.now(UTC)
@@ -334,7 +418,11 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
             # resolve existing deployment ids first and upsert accordingly,
             # instead of add-then-catch-conflict (which would silently create
             # duplicates).
-            deployment_ids = await litellm_service.get_model_deployment_ids(model.model_id)
+            deployments = await litellm_service.get_model_deployments(model.model_id)
+            deployment_ids = [entry["model_info"]["id"] for entry in deployments]
+            # Only DB-registered deployments are ours to compare and replace; a
+            # same-named config-file entry would otherwise look stale forever.
+            db_deployments = [d for d in deployments if d["model_info"].get("db_model")]
             # Base params + per-region override, or the alias target's params.
             params, resolve_error = effective_litellm_params(db, model, region_id)
             pushed_params = params
@@ -348,7 +436,23 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
             # that are deployed to this region. Always sent (possibly []) so
             # removing a model from its last group clears the tags on the proxy.
             access_groups = model_access_group_slugs(db, model.id, region_id)
-            if deployment_ids:
+            stale_keys = stale_param_keys(db_deployments, params)
+            if stale_keys:
+                # /model/update merges into the stored params, so a key the
+                # catalog dropped can only go away by recreating the
+                # deployment. Register the replacement before deleting the
+                # old ids so the model name is never unavailable.
+                logger.info(
+                    f"Recreating model '{model.model_id}' in region '{region.name}' "
+                    f"to drop stale params {sorted(stale_keys)} (deployments: {deployment_ids})"
+                )
+                await litellm_service.add_model(
+                    model.model_id, params, access_groups=access_groups
+                )
+                await litellm_service.delete_model(
+                    model.model_id, [d["model_info"]["id"] for d in db_deployments]
+                )
+            elif deployment_ids:
                 logger.info(f"Updating model '{model.model_id}' in region '{region.name}' (deployments: {deployment_ids})")
                 await litellm_service.update_model(
                     model.model_id, params, deployment_ids, access_groups=access_groups

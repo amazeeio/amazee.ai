@@ -466,7 +466,7 @@ def test_model_sync_pushes_access_groups(mock_service_cls, client, db, test_regi
     model_pk, region_pk, model_key = model.id, test_region.id, model.model_id
 
     instance = mock_service_cls.return_value
-    instance.get_model_deployment_ids = AsyncMock(return_value=[])
+    instance.get_model_deployments = AsyncMock(return_value=[])
     instance.add_model = AsyncMock(return_value={})
     instance.list_access_groups = AsyncMock(return_value=[])
     instance.create_access_group = AsyncMock(return_value={})
@@ -508,7 +508,7 @@ def test_model_sync_reconciles_access_group_entities(mock_service_cls, client, d
     model_key = model.model_id
 
     instance = mock_service_cls.return_value
-    instance.get_model_deployment_ids = AsyncMock(return_value=[])
+    instance.get_model_deployments = AsyncMock(return_value=[])
     instance.add_model = AsyncMock(return_value={})
     instance.list_access_groups = AsyncMock(
         return_value=[
