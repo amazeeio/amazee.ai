@@ -84,6 +84,11 @@ async def test_reconcile_registers_and_deregisters_catalog_model(
     db.refresh(assoc)
     assert assoc.sync_status == "synced", assoc.sync_error
 
+    # A second sweep must be a no-op: keys the proxy injects on its own must
+    # not read as params drift, or every deployment is recreated each sweep.
+    result = await reconcile_region_models(db, litellm_region)
+    assert result["models_resynced"] == 0
+
     # Deactivate in the catalog -> reconcile must deregister on the proxy.
     assoc.is_active = False
     assoc.sync_status = "synced"  # simulate drift: proxy still has it

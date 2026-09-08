@@ -1,8 +1,8 @@
 fastapi==0.141.1
-uvicorn==0.52.0
-sqlalchemy==2.0.51
-pydantic==2.13.4
-pydantic-settings==2.14.2
+uvicorn==0.52.4
+sqlalchemy==2.0.52
+pydantic==2.13.5
+pydantic-settings==2.15.0
 python-jose[cryptography]==3.5.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.3.0
@@ -10,10 +10,10 @@ python-multipart==0.0.32
 asyncpg==0.31.0
 psycopg2-binary==2.9.12
 requests==2.34.2
-python-dotenv==1.2.2
-alembic==1.18.5
-boto3==1.43.59
-markdown==3.10.2
+python-dotenv==1.2.3
+alembic==1.19.1
+boto3==1.43.83
+markdown==3.10.3
 email-validator==2.3.0
 prometheus-client==0.26.0
 prometheus-fastapi-instrumentator==8.1.0
