@@ -145,7 +145,7 @@ Returns a JSON array of region objects, each containing its model catalog.
 
 Margin source:
 - The endpoint reads each region's LiteLLM `GET /config/cost_margin_config` and uses `values.global`.
-- If `values.global` is missing or cannot be fetched, it falls back to `0.2` (20%).
+- If `values.global` is missing or cannot be fetched, it falls back to `0.1` (10%).
 
 ## Caching
 
