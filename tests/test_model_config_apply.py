@@ -248,20 +248,34 @@ def test_apply_prune_force_bypasses_eol_gate(mock_svc, client, admin_token, db, 
     assert _apply(client, admin_token, payload).status_code == 200
     _announce_eol(db, "claude-sonnet", datetime(2099, 1, 1, tzinfo=UTC))
 
-    pruned = _payload(test_region.name)
-    pruned["models"] = [m for m in pruned["models"] if m["model_id"] == "claude-sonnet"]
-    pruned["models"][0]["access_groups"] = ["default-models"]
-    pruned["prune"] = True
-    pruned["force"] = True
+    # Drop both the future-EOL model and the never-announced alias.
+    pruned = {
+        "prune": True,
+        "force": True,
+        "access_groups": _payload(test_region.name)["access_groups"],
+        "models": [
+            {
+                "model_id": "placeholder",
+                "display_name": "Placeholder",
+                "provider": "test",
+                "type": "chat",
+                "access_groups": ["default-models"],
+            }
+        ],
+    }
     res = _apply(client, admin_token, pruned)
     assert res.status_code == 200
     changes = res.json()["changes"]
     assert not [c for c in changes if c["action"] == "prune_blocked"]
-    pruned_chat = [c for c in changes if c["action"] == "prune" and c["key"] == "chat"]
-    assert pruned_chat and "forced" in pruned_chat[0]["detail"]
-    alias = db.query(DBModel).filter_by(model_id="chat").one()
-    db.refresh(alias)
-    assert alias.is_active_globally is False
+    forced = {c["key"]: c["detail"] for c in changes if c["action"] == "prune"}
+    assert forced == {
+        "claude-sonnet": "forced: eol gate bypassed",  # future EOL
+        "chat": "forced: eol gate bypassed",  # never announced
+    }
+    for model_id in ("claude-sonnet", "chat"):
+        row = db.query(DBModel).filter_by(model_id=model_id).one()
+        db.refresh(row)
+        assert row.is_active_globally is False
 
     # force without prune changes nothing.
     unforced = _payload(test_region.name)
