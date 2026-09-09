@@ -280,6 +280,13 @@ def test_apply_prune_force_bypasses_eol_gate(
         assert row.is_active_globally is False
         assert f"Forced prune of model '{model_id}'" in caplog.text  # audit trail
 
+    # A dry run reports the forced prune but leaves no audit-log trace.
+    caplog.clear()
+    res = _apply(client, admin_token, {**pruned, "dry_run": True})
+    assert res.status_code == 200
+    assert [c for c in res.json()["changes"] if c["action"] == "prune"]
+    assert "Forced prune" not in caplog.text
+
     # force without prune changes nothing.
     unforced = _payload(test_region.name)
     unforced["force"] = True
