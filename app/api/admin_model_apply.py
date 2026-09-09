@@ -526,9 +526,10 @@ async def apply_model_config(
                 unmanaged_models.append(model.model_id)
                 continue
             if model.is_active_globally:
-                if not gate_open:
+                if not gate_open and not req.dry_run:
                     # No audit trail on this endpoint: the response detail and
                     # the Actions comment are both deletable, the log is not.
+                    # Dry runs roll back, so they must not leave a trace here.
                     logger.warning(
                         f"Forced prune of model '{model.model_id}' by user "
                         f"{current_user.id} ({current_user.email}): eol gate bypassed "
