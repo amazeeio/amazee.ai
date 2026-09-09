@@ -241,7 +241,9 @@ def test_apply_prune_blocked_before_eol(mock_svc, client, admin_token, db, test_
 
 
 @patch("app.services.model_sync.LiteLLMService")
-def test_apply_prune_force_bypasses_eol_gate(mock_svc, client, admin_token, db, test_region):
+def test_apply_prune_force_bypasses_eol_gate(
+    mock_svc, client, admin_token, db, test_region, caplog
+):
     """force=True is the deliberate escape hatch: prune deactivates models with
     no announced (or a future) upstream_eol and labels the change as forced."""
     payload = _payload(test_region.name)
@@ -276,6 +278,7 @@ def test_apply_prune_force_bypasses_eol_gate(mock_svc, client, admin_token, db, 
         row = db.query(DBModel).filter_by(model_id=model_id).one()
         db.refresh(row)
         assert row.is_active_globally is False
+        assert f"Forced prune of model '{model_id}'" in caplog.text  # audit trail
 
     # force without prune changes nothing.
     unforced = _payload(test_region.name)
