@@ -1428,6 +1428,11 @@ class ApplyConfigRequest(BaseModel):
     # prune=True deactivates catalog models absent from the payload (soft —
     # never hard-deletes). Access groups are never pruned automatically.
     prune: bool = False
+    # force=True lets prune bypass the sunset-protocol EOL gate (#427): models
+    # absent from the payload are deactivated even with no announced or
+    # unexpired upstream_eol. Meaningless without prune. For emergencies only —
+    # the catalog exposes it as an explicit workflow_dispatch checkbox.
+    force: bool = False
     access_groups: List[ApplyAccessGroupSpec] = Field(default_factory=list)
     models: List[ApplyModelSpec] = Field(default_factory=list)
 
