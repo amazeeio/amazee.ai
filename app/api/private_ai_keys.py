@@ -1256,42 +1256,51 @@ async def _provision_lock(db: Session, base_email: str, region_id: int):
 
     The lock lives on a dedicated connection, not on the request session,
     because ``_pin_user_to_key_team`` commits mid-flow: a lock taken on ``db``
-    would end with that commit, or stay behind on a pooled connection. The
-    transaction here releases it on commit, rollback, exception or close.
+    would end with that commit, or stay behind on a pooled connection. Closing
+    the connection at the end rolls the transaction back, which releases the
+    lock; nothing is written, so there is nothing to commit.
 
-    Acquisition runs in a thread because the wait blocks for up to
-    ``PROVISION_LOCK_TIMEOUT`` and must not stall the event loop. The wait uses
+    The connection checkout, the transaction and the lock wait all run in a
+    thread, so neither an exhausted pool nor a wait of up to
+    ``PROVISION_LOCK_TIMEOUT`` can stall the event loop. The thread comes from
     asyncio's default executor, so more concurrent waiters than its thread count
     queue behind each other.
     """
     key = f"{base_email}:{region_id}"
 
-    def acquire(conn):
-        # SET takes no bind parameter, so the timeout is formatted in.
-        conn.execute(text(f"SET LOCAL lock_timeout = '{PROVISION_LOCK_TIMEOUT}'"))
-        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": key})
+    def acquire():
+        conn = db.get_bind().connect()
+        try:
+            conn.begin()
+            # SET takes no bind parameter, so the timeout is formatted in.
+            conn.execute(text(f"SET LOCAL lock_timeout = '{PROVISION_LOCK_TIMEOUT}'"))
+            conn.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": key}
+            )
+        except Exception:
+            conn.close()
+            raise
+        return conn
 
-    with db.get_bind().connect() as conn:
-        with conn.begin():
-            try:
-                # ponytail: a cancel during the wait rolls back on the loop thread
-                # while the worker still holds the psycopg2 connection;
-                # shutdown-only stall. Move connect/begin/acquire into the thread
-                # if it ever matters.
-                await asyncio.to_thread(acquire, conn)
-            except OperationalError as exc:
-                if getattr(exc.orig, "pgcode", None) != "55P03":
-                    raise
-                logger.info(
-                    "[drupal-attribution] lock wait timed out for %s + region %s",
-                    base_email,
-                    region_id,
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Key provisioning already in progress, please retry.",
-                ) from exc
-            yield
+    try:
+        conn = await asyncio.to_thread(acquire)
+    except OperationalError as exc:
+        if getattr(exc.orig, "pgcode", None) != "55P03":
+            raise
+        logger.info(
+            "[drupal-attribution] lock wait timed out for %s + region %s",
+            base_email,
+            region_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Key provisioning already in progress, please retry.",
+        ) from exc
+
+    try:
+        yield
+    finally:
+        conn.close()
 
 
 async def _delegate_to_moad(
