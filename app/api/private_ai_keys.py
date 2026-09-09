@@ -64,6 +64,10 @@ FAKE_ID = -1
 # How long a provisioning request waits for the lock of a concurrent request.
 PROVISION_LOCK_TIMEOUT = "30s"
 
+# 64 bits of the md5, because hashtext is only 32 bits wide: a collision there
+# makes an unrelated request wait for the whole lock timeout.
+PROVISION_LOCK_KEY_SQL = "('x' || left(md5(:key), 16))::bit(64)::bigint"
+
 
 def _validate_permissions_and_get_ownership_info(
     owner_id: Optional[int],
@@ -1275,7 +1279,8 @@ async def _provision_lock(db: Session, base_email: str, region_id: int):
             # SET takes no bind parameter, so the timeout is formatted in.
             conn.execute(text(f"SET LOCAL lock_timeout = '{PROVISION_LOCK_TIMEOUT}'"))
             conn.execute(
-                text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": key}
+                text(f"SELECT pg_advisory_xact_lock({PROVISION_LOCK_KEY_SQL})"),
+                {"key": key},
             )
         except Exception:
             conn.close()
