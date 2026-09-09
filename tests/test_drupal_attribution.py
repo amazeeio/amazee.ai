@@ -5,11 +5,19 @@ POST /private-ai-keys delegates to moad by default (no header = Drupal).
 When X-Amazee-Source: frontend is present the direct creation path is used.
 """
 
+import asyncio
 from unittest.mock import patch, MagicMock, AsyncMock
 
-from app.db.models import DBPrivateAIKey, DBUser, DBTeam
+import pytest
+from fastapi import HTTPException
+from sqlalchemy import text
+
+from app.api.private_ai_keys import _delegate_to_moad
+from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam
 from app.core.security import get_password_hash
 from app.core.roles import UserRole
+from app.schemas.models import PrivateAIKeyCreate
+from tests.conftest import TestingSessionLocal, engine
 
 EMAIL = "test-drupal@example.com"
 
@@ -408,3 +416,247 @@ def test_get_user_by_email_falls_back_to_tagged_row(db):
     found = get_user_by_email(db, "legacy+newsletter@example.com")
     assert found is not None
     assert found.id == legacy.id
+
+
+# ---------------------------------------------------------------------------
+# 8. Advisory lock: overlapping provisioning requests are serialized
+# ---------------------------------------------------------------------------
+
+
+def _seed_key(session, name, token, region_id, team_id=None):
+    key = DBPrivateAIKey(
+        name=name,
+        litellm_token=token,
+        litellm_api_url="http://test-llm",
+        database_name=f"db-{token}",
+        database_host="host",
+        database_username="u",
+        database_password="p",
+        region_id=region_id,
+        team_id=team_id,
+    )
+    session.add(key)
+    session.commit()
+    session.refresh(key)
+    return key
+
+
+def _moad_client(post):
+    """Build the patched httpx.AsyncClient mock with a given ``post`` mock."""
+    mock_http = AsyncMock()
+    mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+    mock_http.__aexit__ = AsyncMock(return_value=False)
+    mock_http.post = post
+    return mock_http
+
+
+def _lock_key(email, region_id):
+    return f"{email.lower()}:{region_id}"
+
+
+@pytest.mark.asyncio
+@patch("app.api.private_ai_keys.settings")
+async def test_concurrent_provisioning_calls_moad_once(mock_settings, db, test_region):
+    """Two overlapping requests provision once and return the same key.
+
+    The loser waits on the advisory lock, then re-reads committed state and
+    finds the winner's key instead of calling moad a second time (which moad
+    would reject with a duplicate alias).
+    """
+    mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+    mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+
+    user = _make_user(db)
+    team = DBTeam(name="moad-team", admin_email=user.email, is_active=True)
+    db.add(team)
+    db.commit()
+    db.refresh(team)
+
+    litellm_token = "drupal-key-conc"
+
+    async def slow_provision(*args, **kwargs):
+        # Hold the lock long enough for the second request to start waiting,
+        # then create the key the way moad's callback would.
+        await asyncio.sleep(0.3)
+        writer = TestingSessionLocal()
+        try:
+            _seed_key(writer, "test-key", litellm_token, test_region.id, team.id)
+        finally:
+            writer.close()
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"llm": {"token": litellm_token}}
+        return response
+
+    post = AsyncMock(side_effect=slow_provision)
+
+    second_session = TestingSessionLocal()
+    try:
+        user_in_second_session = second_session.get(DBUser, user.id)
+        request = PrivateAIKeyCreate(region_id=test_region.id, name="test-key")
+        with patch("httpx.AsyncClient", return_value=_moad_client(post)):
+            first, second = await asyncio.gather(
+                _delegate_to_moad(request, user, db),
+                _delegate_to_moad(request, user_in_second_session, second_session),
+            )
+    finally:
+        second_session.close()
+
+    assert post.await_count == 1
+    assert first.id == second.id
+
+
+@pytest.mark.asyncio
+@patch("app.api.private_ai_keys.settings")
+async def test_lock_held_elsewhere_returns_503_and_skips_moad(
+    mock_settings, monkeypatch, db, test_region
+):
+    """A request that cannot get the lock in time returns 503 and skips moad."""
+    mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+    mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+    monkeypatch.setattr("app.api.private_ai_keys.PROVISION_LOCK_TIMEOUT", "100ms")
+
+    user = _make_user(db)
+    post = AsyncMock()
+
+    holder = engine.connect()
+    try:
+        holder_tx = holder.begin()
+        holder.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+            {"key": _lock_key(user.email, test_region.id)},
+        )
+        request = PrivateAIKeyCreate(region_id=test_region.id, name="test-key")
+        with patch("httpx.AsyncClient", return_value=_moad_client(post)):
+            with pytest.raises(HTTPException) as exc_info:
+                await _delegate_to_moad(request, user, db)
+        holder_tx.rollback()
+    finally:
+        holder.close()
+
+    assert exc_info.value.status_code == 503
+    assert (
+        exc_info.value.detail == "Key provisioning already in progress, please retry."
+    )
+    post.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("app.api.private_ai_keys.settings")
+async def test_lock_released_after_moad_failure(mock_settings, db, test_region):
+    """A failed provisioning frees the lock so a retry can proceed."""
+    mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+    mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+
+    user = _make_user(db)
+    response = MagicMock()
+    response.status_code = 500
+    response.text = "boom"
+    post = AsyncMock(return_value=response)
+
+    request = PrivateAIKeyCreate(region_id=test_region.id, name="test-key")
+    with patch("httpx.AsyncClient", return_value=_moad_client(post)):
+        with pytest.raises(HTTPException) as exc_info:
+            await _delegate_to_moad(request, user, db)
+    assert exc_info.value.status_code == 502
+
+    conn = engine.connect()
+    try:
+        acquired = conn.execute(
+            text("SELECT pg_try_advisory_lock(hashtext(:key))"),
+            {"key": _lock_key(user.email, test_region.id)},
+        ).scalar()
+        conn.execute(
+            text("SELECT pg_advisory_unlock(hashtext(:key))"),
+            {"key": _lock_key(user.email, test_region.id)},
+        )
+    finally:
+        conn.close()
+    assert acquired is True
+
+
+@pytest.mark.asyncio
+@patch("app.api.private_ai_keys.settings")
+async def test_different_region_does_not_contend(
+    mock_settings, monkeypatch, db, test_region
+):
+    """The lock is per region: a busy region does not block another one."""
+    mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+    mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+    monkeypatch.setattr("app.api.private_ai_keys.PROVISION_LOCK_TIMEOUT", "100ms")
+
+    user = _make_user(db)
+    other_region = DBRegion(
+        name="test-region-2",
+        label="Test Region 2",
+        postgres_host="amazee-test-postgres",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="https://test-litellm.com",
+        litellm_api_key="test-litellm-key",
+        is_active=True,
+    )
+    db.add(other_region)
+    db.commit()
+    db.refresh(other_region)
+    _seed_key(db, "pre-seeded-key", "drupal-key-other-region", other_region.id)
+
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {"llm": {"token": "drupal-key-other-region"}}
+    post = AsyncMock(return_value=response)
+
+    holder = engine.connect()
+    try:
+        holder_tx = holder.begin()
+        holder.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+            {"key": _lock_key(user.email, test_region.id)},
+        )
+        request = PrivateAIKeyCreate(region_id=other_region.id, name="test-key")
+        with patch("httpx.AsyncClient", return_value=_moad_client(post)):
+            result = await _delegate_to_moad(request, user, db)
+        holder_tx.rollback()
+    finally:
+        holder.close()
+
+    assert result.litellm_token == "drupal-key-other-region"
+    post.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("app.api.private_ai_keys.settings")
+async def test_name_bypass_still_provisions_under_lock(mock_settings, db, test_region):
+    """A different requested name still bypasses idempotency under the lock."""
+    mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+    mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+
+    user = _make_user(db)
+    team = DBTeam(name="moad-team", admin_email=user.email, is_active=True)
+    db.add(team)
+    db.commit()
+    db.refresh(team)
+    _seed_key(db, "other-name", "existing-token", test_region.id, team.id)
+
+    new_token = "drupal-key-new"
+
+    async def provision(*args, **kwargs):
+        writer = TestingSessionLocal()
+        try:
+            _seed_key(writer, "test-key", new_token, test_region.id, team.id)
+        finally:
+            writer.close()
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"llm": {"token": new_token}}
+        return response
+
+    post = AsyncMock(side_effect=provision)
+
+    request = PrivateAIKeyCreate(region_id=test_region.id, name="test-key")
+    with patch("httpx.AsyncClient", return_value=_moad_client(post)):
+        result = await _delegate_to_moad(request, user, db)
+
+    post.assert_called_once()
+    assert result.litellm_token == new_token
