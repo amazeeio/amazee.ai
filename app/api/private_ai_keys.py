@@ -1253,6 +1253,12 @@ async def extend_token_life(
         )
 
 
+def _close_orphaned_connection(fut: asyncio.Future) -> None:
+    # The awaiting request was cancelled; release what the thread acquired.
+    if not fut.cancelled() and fut.exception() is None:
+        fut.result().close()
+
+
 @asynccontextmanager
 async def _provision_lock(db: Session, base_email: str, region_id: int):
     """
@@ -1268,7 +1274,8 @@ async def _provision_lock(db: Session, base_email: str, region_id: int):
     thread, so neither an exhausted pool nor a wait of up to
     ``PROVISION_LOCK_TIMEOUT`` can stall the event loop. The thread comes from
     asyncio's default executor, so more concurrent waiters than its thread count
-    queue behind each other.
+    queue behind each other. A cancelled request still gets its connection
+    closed, once the thread it left behind finishes.
     """
     key = f"{base_email}:{region_id}"
 
@@ -1287,8 +1294,12 @@ async def _provision_lock(db: Session, base_email: str, region_id: int):
             raise
         return conn
 
+    fut = asyncio.ensure_future(asyncio.to_thread(acquire))
     try:
-        conn = await asyncio.to_thread(acquire)
+        conn = await asyncio.shield(fut)
+    except asyncio.CancelledError:
+        fut.add_done_callback(_close_orphaned_connection)
+        raise
     except OperationalError as exc:
         if getattr(exc.orig, "pgcode", None) != "55P03":
             raise
