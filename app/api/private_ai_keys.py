@@ -1260,7 +1260,9 @@ async def _provision_lock(db: Session, base_email: str, region_id: int):
     transaction here releases it on commit, rollback, exception or close.
 
     Acquisition runs in a thread because the wait blocks for up to
-    ``PROVISION_LOCK_TIMEOUT`` and must not stall the event loop.
+    ``PROVISION_LOCK_TIMEOUT`` and must not stall the event loop. The wait uses
+    asyncio's default executor, so more concurrent waiters than its thread count
+    queue behind each other.
     """
     key = f"{base_email}:{region_id}"
 
@@ -1272,6 +1274,10 @@ async def _provision_lock(db: Session, base_email: str, region_id: int):
     with db.get_bind().connect() as conn:
         with conn.begin():
             try:
+                # ponytail: a cancel during the wait rolls back on the loop thread
+                # while the worker still holds the psycopg2 connection;
+                # shutdown-only stall. Move connect/begin/acquire into the thread
+                # if it ever matters.
                 await asyncio.to_thread(acquire, conn)
             except OperationalError as exc:
                 if getattr(exc.orig, "pgcode", None) != "55P03":
