@@ -32,7 +32,7 @@ from sqlalchemy.orm import Session
 
 from app.api.admin_models import _contains_sentinel, _merge_credential_sentinels
 from app.core.config import catalog_manages
-from app.core.security import get_role_min_system_admin
+from app.core.security import get_current_user_from_auth, get_role_min_system_admin
 from app.db.database import get_db
 from app.db.models import (
     DBModel,
@@ -378,7 +378,10 @@ async def apply_model_config(
     req: ApplyConfigRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user: DBUser = Depends(get_role_min_system_admin),
+    _role: str = Depends(get_role_min_system_admin),
+    # get_role_min_system_admin returns the effective role, not the user; the
+    # forced-prune audit log needs the actor. FastAPI resolves the user once.
+    current_user: DBUser = Depends(get_current_user_from_auth),
 ):
     """Apply a full desired-state model config (see module docstring)."""
     _validate_specs(req)
@@ -508,7 +511,8 @@ async def apply_model_config(
             # (app/services/model_eol.py), the same column /public/models
             # publishes, so what we announced is what gates the removal.
             eol = _tz(model.upstream_eol)
-            if model.is_active_globally and (not eol or eol > datetime.now(UTC)):
+            gate_open = eol is not None and eol <= datetime.now(UTC)
+            if model.is_active_globally and not gate_open and not req.force:
                 changes.append(
                     ApplyChange(
                         entity="model",
@@ -522,8 +526,24 @@ async def apply_model_config(
                 unmanaged_models.append(model.model_id)
                 continue
             if model.is_active_globally:
+                if not gate_open and not req.dry_run:
+                    # No audit trail on this endpoint: the response detail and
+                    # the Actions comment are both deletable, the log is not.
+                    # Dry runs roll back, so they must not leave a trace here.
+                    logger.warning(
+                        f"Forced prune of model '{model.model_id}' by user "
+                        f"{current_user.id} ({current_user.email}): eol gate bypassed "
+                        f"(upstream_eol={eol.date() if eol else None})"
+                    )
                 model.is_active_globally = False
-                changes.append(ApplyChange(entity="model", key=model.model_id, action="prune"))
+                changes.append(
+                    ApplyChange(
+                        entity="model",
+                        key=model.model_id,
+                        action="prune",
+                        detail=None if gate_open else "forced: eol gate bypassed",
+                    )
+                )
             for assoc in db.query(DBModelRegion).filter_by(model_id=model.id).all():
                 if assoc.is_active and assoc.region_id in managed_ids:
                     assoc.is_active = False

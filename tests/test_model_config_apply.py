@@ -241,6 +241,60 @@ def test_apply_prune_blocked_before_eol(mock_svc, client, admin_token, db, test_
 
 
 @patch("app.services.model_sync.LiteLLMService")
+def test_apply_prune_force_bypasses_eol_gate(
+    mock_svc, client, admin_token, db, test_region, caplog
+):
+    """force=True is the deliberate escape hatch: prune deactivates models with
+    no announced (or a future) upstream_eol and labels the change as forced."""
+    payload = _payload(test_region.name)
+    assert _apply(client, admin_token, payload).status_code == 200
+    _announce_eol(db, "claude-sonnet", datetime(2099, 1, 1, tzinfo=UTC))
+
+    # Drop both the future-EOL model and the never-announced alias.
+    pruned = {
+        "prune": True,
+        "force": True,
+        "access_groups": _payload(test_region.name)["access_groups"],
+        "models": [
+            {
+                "model_id": "placeholder",
+                "display_name": "Placeholder",
+                "provider": "test",
+                "type": "chat",
+                "access_groups": ["default-models"],
+            }
+        ],
+    }
+    # A dry run reports the forced prunes but leaves no audit-log trace.
+    res = _apply(client, admin_token, {**pruned, "dry_run": True})
+    assert res.status_code == 200
+    assert len([c for c in res.json()["changes"] if c["action"] == "prune"]) == 2
+    assert "Forced prune" not in caplog.text
+
+    res = _apply(client, admin_token, pruned)
+    assert res.status_code == 200
+    changes = res.json()["changes"]
+    assert not [c for c in changes if c["action"] == "prune_blocked"]
+    forced = {c["key"]: c["detail"] for c in changes if c["action"] == "prune"}
+    assert forced == {
+        "claude-sonnet": "forced: eol gate bypassed",  # future EOL
+        "chat": "forced: eol gate bypassed",  # never announced
+    }
+    for model_id in ("claude-sonnet", "chat"):
+        row = db.query(DBModel).filter_by(model_id=model_id).one()
+        db.refresh(row)
+        assert row.is_active_globally is False
+        assert f"Forced prune of model '{model_id}'" in caplog.text  # audit trail
+
+    # force without prune changes nothing.
+    unforced = _payload(test_region.name)
+    unforced["force"] = True
+    res = _apply(client, admin_token, unforced)
+    assert res.status_code == 200
+    assert not [c for c in res.json()["changes"] if c["action"] in ("prune", "prune_blocked")]
+
+
+@patch("app.services.model_sync.LiteLLMService")
 def test_apply_prune_ignores_catalog_eol_columns(
     mock_svc, client, admin_token, db, test_region
 ):
