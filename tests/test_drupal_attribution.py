@@ -660,3 +660,56 @@ async def test_name_bypass_still_provisions_under_lock(mock_settings, db, test_r
 
     post.assert_called_once()
     assert result.litellm_token == new_token
+
+
+@pytest.mark.asyncio
+@patch("app.api.private_ai_keys.settings")
+async def test_cancelled_request_releases_lock(mock_settings, db, test_region):
+    """A request cancelled while waiting for the lock does not leak it.
+
+    The thread it left behind acquires the lock anyway, so the connection must
+    be closed when the thread finishes; otherwise every later request for this
+    user and region would time out with a 503.
+    """
+    mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+    mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+
+    user = _make_user(db)
+    post = AsyncMock()
+    request = PrivateAIKeyCreate(region_id=test_region.id, name="test-key")
+
+    holder = engine.connect()
+    try:
+        holder_tx = holder.begin()
+        holder.execute(
+            text(f"SELECT pg_advisory_xact_lock({PROVISION_LOCK_KEY_SQL})"),
+            {"key": _lock_key(user.email, test_region.id)},
+        )
+        with patch("httpx.AsyncClient", return_value=_moad_client(post)):
+            task = asyncio.create_task(_delegate_to_moad(request, user, db))
+            # Let the task reach the lock wait inside the thread.
+            await asyncio.sleep(0.2)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        # The orphaned thread now gets the lock; its connection must be closed.
+        holder_tx.rollback()
+        await asyncio.sleep(0.5)
+    finally:
+        holder.close()
+
+    conn = engine.connect()
+    try:
+        acquired = conn.execute(
+            text(f"SELECT pg_try_advisory_lock({PROVISION_LOCK_KEY_SQL})"),
+            {"key": _lock_key(user.email, test_region.id)},
+        ).scalar()
+        conn.execute(
+            text(f"SELECT pg_advisory_unlock({PROVISION_LOCK_KEY_SQL})"),
+            {"key": _lock_key(user.email, test_region.id)},
+        )
+    finally:
+        conn.close()
+
+    assert acquired is True
+    post.assert_not_called()
