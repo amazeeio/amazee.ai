@@ -12,7 +12,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import text
 
-from app.api.private_ai_keys import _delegate_to_moad
+from app.api.private_ai_keys import PROVISION_LOCK_KEY_SQL, _delegate_to_moad
 from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam
 from app.core.security import get_password_hash
 from app.core.roles import UserRole
@@ -523,7 +523,7 @@ async def test_lock_held_elsewhere_returns_503_and_skips_moad(
     try:
         holder_tx = holder.begin()
         holder.execute(
-            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+            text(f"SELECT pg_advisory_xact_lock({PROVISION_LOCK_KEY_SQL})"),
             {"key": _lock_key(user.email, test_region.id)},
         )
         request = PrivateAIKeyCreate(region_id=test_region.id, name="test-key")
@@ -563,11 +563,11 @@ async def test_lock_released_after_moad_failure(mock_settings, db, test_region):
     conn = engine.connect()
     try:
         acquired = conn.execute(
-            text("SELECT pg_try_advisory_lock(hashtext(:key))"),
+            text(f"SELECT pg_try_advisory_lock({PROVISION_LOCK_KEY_SQL})"),
             {"key": _lock_key(user.email, test_region.id)},
         ).scalar()
         conn.execute(
-            text("SELECT pg_advisory_unlock(hashtext(:key))"),
+            text(f"SELECT pg_advisory_unlock({PROVISION_LOCK_KEY_SQL})"),
             {"key": _lock_key(user.email, test_region.id)},
         )
     finally:
@@ -611,7 +611,7 @@ async def test_different_region_does_not_contend(
     try:
         holder_tx = holder.begin()
         holder.execute(
-            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+            text(f"SELECT pg_advisory_xact_lock({PROVISION_LOCK_KEY_SQL})"),
             {"key": _lock_key(user.email, test_region.id)},
         )
         request = PrivateAIKeyCreate(region_id=other_region.id, name="test-key")
