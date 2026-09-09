@@ -2,9 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from fastapi import status
+import asyncio
 import logging
+from contextlib import asynccontextmanager
 
 import httpx
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from app.db.database import get_db
 from app.core.dependencies import get_limit_service
@@ -56,6 +60,9 @@ logger = logging.getLogger(__name__)
 
 # Fake ID for resources not stored in the database
 FAKE_ID = -1
+
+# How long a provisioning request waits for the lock of a concurrent request.
+PROVISION_LOCK_TIMEOUT = "30s"
 
 
 def _validate_permissions_and_get_ownership_info(
@@ -1242,6 +1249,45 @@ async def extend_token_life(
         )
 
 
+@asynccontextmanager
+async def _provision_lock(db: Session, base_email: str, region_id: int):
+    """
+    Serialize moad provisioning for one user identity and region.
+
+    The lock lives on a dedicated connection, not on the request session,
+    because ``_pin_user_to_key_team`` commits mid-flow: a lock taken on ``db``
+    would end with that commit, or stay behind on a pooled connection. The
+    transaction here releases it on commit, rollback, exception or close.
+
+    Acquisition runs in a thread because the wait blocks for up to
+    ``PROVISION_LOCK_TIMEOUT`` and must not stall the event loop.
+    """
+    key = f"{base_email}:{region_id}"
+
+    def acquire(conn):
+        # SET takes no bind parameter, so the timeout is formatted in.
+        conn.execute(text(f"SET LOCAL lock_timeout = '{PROVISION_LOCK_TIMEOUT}'"))
+        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": key})
+
+    with db.get_bind().connect() as conn:
+        with conn.begin():
+            try:
+                await asyncio.to_thread(acquire, conn)
+            except OperationalError as exc:
+                if getattr(exc.orig, "pgcode", None) != "55P03":
+                    raise
+                logger.info(
+                    "[drupal-attribution] lock wait timed out for %s + region %s",
+                    base_email,
+                    region_id,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Key provisioning already in progress, please retry.",
+                ) from exc
+            yield
+
+
 async def _delegate_to_moad(
     private_ai_key: PrivateAIKeyCreate,
     current_user: DBUser,
@@ -1270,6 +1316,20 @@ async def _delegate_to_moad(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Key provisioning service is not configured.",
         )
+
+    base_email = normalize_email_for_lookup(current_user.email).lower()
+    async with _provision_lock(db, base_email, private_ai_key.region_id):
+        # A concurrent request may have provisioned and pinned while we waited.
+        db.refresh(current_user)
+        return await _provision_via_moad(private_ai_key, current_user, db)
+
+
+async def _provision_via_moad(
+    private_ai_key: PrivateAIKeyCreate,
+    current_user: DBUser,
+    db: Session,
+) -> PrivateAIKey:
+    """Runs under ``_provision_lock``; see ``_delegate_to_moad``."""
 
     # Idempotency: if the user's team already has a key for this region,
     # return it instead of provisioning a new one. This matches the
