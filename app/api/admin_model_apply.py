@@ -508,7 +508,8 @@ async def apply_model_config(
             # (app/services/model_eol.py), the same column /public/models
             # publishes, so what we announced is what gates the removal.
             eol = _tz(model.upstream_eol)
-            if model.is_active_globally and (not eol or eol > datetime.now(UTC)):
+            gate_open = eol is not None and eol <= datetime.now(UTC)
+            if model.is_active_globally and not gate_open and not req.force:
                 changes.append(
                     ApplyChange(
                         entity="model",
@@ -523,7 +524,14 @@ async def apply_model_config(
                 continue
             if model.is_active_globally:
                 model.is_active_globally = False
-                changes.append(ApplyChange(entity="model", key=model.model_id, action="prune"))
+                changes.append(
+                    ApplyChange(
+                        entity="model",
+                        key=model.model_id,
+                        action="prune",
+                        detail=None if gate_open else "forced: eol gate bypassed",
+                    )
+                )
             for assoc in db.query(DBModelRegion).filter_by(model_id=model.id).all():
                 if assoc.is_active and assoc.region_id in managed_ids:
                     assoc.is_active = False
