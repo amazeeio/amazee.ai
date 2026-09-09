@@ -241,6 +241,37 @@ def test_apply_prune_blocked_before_eol(mock_svc, client, admin_token, db, test_
 
 
 @patch("app.services.model_sync.LiteLLMService")
+def test_apply_prune_force_bypasses_eol_gate(mock_svc, client, admin_token, db, test_region):
+    """force=True is the deliberate escape hatch: prune deactivates models with
+    no announced (or a future) upstream_eol and labels the change as forced."""
+    payload = _payload(test_region.name)
+    assert _apply(client, admin_token, payload).status_code == 200
+    _announce_eol(db, "claude-sonnet", datetime(2099, 1, 1, tzinfo=UTC))
+
+    pruned = _payload(test_region.name)
+    pruned["models"] = [m for m in pruned["models"] if m["model_id"] == "claude-sonnet"]
+    pruned["models"][0]["access_groups"] = ["default-models"]
+    pruned["prune"] = True
+    pruned["force"] = True
+    res = _apply(client, admin_token, pruned)
+    assert res.status_code == 200
+    changes = res.json()["changes"]
+    assert not [c for c in changes if c["action"] == "prune_blocked"]
+    pruned_chat = [c for c in changes if c["action"] == "prune" and c["key"] == "chat"]
+    assert pruned_chat and "forced" in pruned_chat[0]["detail"]
+    alias = db.query(DBModel).filter_by(model_id="chat").one()
+    db.refresh(alias)
+    assert alias.is_active_globally is False
+
+    # force without prune changes nothing.
+    unforced = _payload(test_region.name)
+    unforced["force"] = True
+    res = _apply(client, admin_token, unforced)
+    assert res.status_code == 200
+    assert not [c for c in res.json()["changes"] if c["action"] in ("prune", "prune_blocked")]
+
+
+@patch("app.services.model_sync.LiteLLMService")
 def test_apply_prune_ignores_catalog_eol_columns(
     mock_svc, client, admin_token, db, test_region
 ):
