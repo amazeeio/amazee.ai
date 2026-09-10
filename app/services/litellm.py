@@ -290,6 +290,30 @@ class LiteLLMService:
                 detail=f"Failed to delete LiteLLM key: {error_msg}",
             )
 
+    async def delete_team(self, team_id: str) -> bool:
+        """Delete a LiteLLM team"""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/team/delete",
+                    json={"team_ids": [team_id]},
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                )
+
+                # Treat 404 (team not found) as success
+                if response.status_code == 404:
+                    return True
+
+                response.raise_for_status()
+                return True
+        except httpx.HTTPStatusError as e:
+            status_code, error_msg, _ = self._parse_http_error(e)
+            logger.error(f"Error deleting LiteLLM team: {error_msg}")
+            raise HTTPException(
+                status_code=status_code,
+                detail=f"Failed to delete LiteLLM team: {error_msg}",
+            )
+
     async def get_key_info(self, litellm_token: str) -> dict:
         """Get information about a LiteLLM API key"""
         try:
