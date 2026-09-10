@@ -483,13 +483,17 @@ async def _elapsed_period_spend_cents(
     period_start: datetime,
     litellm_service: "LiteLLMService | None",
     lite_team_id: str | None,
-    team_info_resp: dict | None,
 ) -> int:
     """Return the spend of the period that just ended, in cents.
 
     Used when the live LiteLLM team counter can no longer be trusted. The
     window runs from the previous snapshot's period_start up to the new one,
     which is the period whose spend was never debited from the ledger.
+
+    Raises when the spend logs cannot be read, so the caller fails and is
+    retried. The per-key counters are deliberately not used as a fallback:
+    keys reset on cycles of their own, so their sum is not this window's
+    spend, and a wrong debit on the ledger is permanent.
     """
     row = (
         db.query(DBTeamSpendPeriod.period_start)
@@ -502,25 +506,16 @@ async def _elapsed_period_spend_cents(
         .first()
     )
     window_start = row[0] if row else None
-    if litellm_service is not None and lite_team_id and window_start is not None:
-        try:
-            total = await litellm_service.get_team_spend_in_range(
-                lite_team_id, window_start, period_start
-            )
-            return max(0, int(round(float(total) * 100)))
-        except Exception as exc:
-            logger.warning(
-                "Failed to read LiteLLM spend logs for team_id=%s region_id=%s, "
-                "falling back to the per-key counters: %s",
-                team.id,
-                region.id,
-                str(exc),
-            )
-    # Second fallback: the keys reset on the same schedule as the team, so
-    # their counters cover the same window the team counter lost.
-    keys = (team_info_resp or {}).get("keys") or []
-    key_total = sum(float(k.get("spend") or 0.0) for k in keys if isinstance(k, dict))
-    return max(0, int(round(key_total * 100)))
+    if litellm_service is None or not lite_team_id or window_start is None:
+        raise RuntimeError(
+            f"Cannot read the elapsed period spend for team_id={team.id} "
+            f"region_id={region.id}: no LiteLLM connection or no earlier "
+            "spend period to open the window"
+        )
+    total = await litellm_service.get_team_spend_in_range(
+        lite_team_id, window_start, period_start
+    )
+    return max(0, int(round(float(total) * 100)))
 
 
 async def _sync_periodic_ledger_for_period(
@@ -539,7 +534,6 @@ async def _sync_periodic_ledger_for_period(
 
     litellm_service = None
     lite_team_id = None
-    team_info_resp = None
     litellm_cycle_active = False
     try:
         litellm_service = LiteLLMService(
@@ -610,7 +604,6 @@ async def _sync_periodic_ledger_for_period(
                 period_start=period_start,
                 litellm_service=litellm_service,
                 lite_team_id=lite_team_id,
-                team_info_resp=team_info_resp,
             )
         allocate_period_spend_fifo(
             db,
