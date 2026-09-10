@@ -19,6 +19,7 @@ from app.db.models import (
     DBUser,
 )
 from app.schemas.models import BudgetType
+from app.services.litellm import LiteLLMService
 
 
 @pytest.mark.asyncio
@@ -147,6 +148,8 @@ async def test_apply_billing_cycle_for_team_recreates_missing_litellm_team(
     test_team,
     test_region,
 ):
+    user = DBUser(email="recreate-member@example.com", team_id=test_team.id)
+    db.add(user)
     payment = DBPeriodicPayment(
         team_id=test_team.id,
         stripe_payment_id="pay_sync_missing_team",
@@ -190,10 +193,16 @@ async def test_apply_billing_cycle_for_team_recreates_missing_litellm_team(
     assert payment.sync_status == "success"
     assert mock_litellm.create_team.await_args.kwargs["models"] == ["group-a"]
     # Users and memberships are rebuilt with the team, or it would accept no key.
-    assert mock_litellm.create_user.await_count == db.query(DBUser).filter(
-        DBUser.team_id == test_team.id
-    ).count()
-    assert mock_litellm.add_team_member.await_count == mock_litellm.create_user.await_count
+    lite_team_id = LiteLLMService.format_team_id(test_region.name, test_team.id)
+    mock_litellm.create_user.assert_awaited_once_with(
+        user_id=str(user.id),
+        user_email=user.email,
+        auto_create_key=False,
+    )
+    mock_litellm.add_team_member.assert_awaited_once_with(
+        team_id=lite_team_id,
+        user_id=str(user.id),
+    )
     # Spend on a fresh team is zero, so the full budget is applied.
     assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 100.0
 
