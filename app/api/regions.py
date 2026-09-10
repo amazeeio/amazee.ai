@@ -335,6 +335,49 @@ async def update_region(
     for secret_field in ("postgres_admin_password", "litellm_api_key"):
         if not update_data.get(secret_field):
             update_data.pop(secret_field, None)
+
+    # Live-verify connections only when their settings actually change, so
+    # legacy regions with unreachable-from-here values stay editable.
+    def effective(field: str):
+        return update_data.get(field, getattr(db_region, field))
+
+    def changed(*fields: str) -> bool:
+        return any(effective(f) != getattr(db_region, f) for f in fields)
+
+    # A new destination must come with its own secret: the stored one is never
+    # readable via the API, so probing a new host with it would leak it there.
+    if changed("litellm_api_url") and "litellm_api_key" not in update_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="litellm_api_key is required when litellm_api_url changes",
+        )
+    if (
+        changed("postgres_host", "postgres_port", "postgres_admin_user")
+        and "postgres_admin_password" not in update_data
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="postgres_admin_password is required when the postgres host, "
+            "port, or admin user changes",
+        )
+
+    if changed("litellm_api_url", "litellm_api_key"):
+        await validate_litellm_endpoint(
+            effective("litellm_api_url"), effective("litellm_api_key")
+        )
+    if changed(
+        "postgres_host",
+        "postgres_port",
+        "postgres_admin_user",
+        "postgres_admin_password",
+    ):
+        await validate_database_connection(
+            effective("postgres_host"),
+            effective("postgres_port"),
+            effective("postgres_admin_user"),
+            effective("postgres_admin_password"),
+        )
+
     for field, value in update_data.items():
         setattr(db_region, field, value)
 
