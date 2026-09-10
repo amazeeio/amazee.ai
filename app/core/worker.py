@@ -651,7 +651,6 @@ async def apply_billing_cycle_for_team(
 
         team_max_budget = per_region_budget
         current_team_spend = 0.0
-        team_recreated = False
         try:
             try:
                 team_info_resp = await litellm_service.get_team_info(lite_team_id)
@@ -675,7 +674,6 @@ async def apply_billing_cycle_for_team(
                     db.query(DBUser).filter(DBUser.team_id == team.id).all(),
                 )
                 team_info_resp = {}
-                team_recreated = True
             team_info = team_info_resp.get("team_info", team_info_resp)
             current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
 
@@ -839,12 +837,11 @@ async def apply_billing_cycle_for_team(
                     try:
                         await litellm_service.set_key_restrictions(**restrictions)
                     except HTTPException as restriction_error:
-                        if not (
-                            team_recreated and restriction_error.status_code == 404
-                        ):
+                        if restriction_error.status_code != 404:
                             raise
-                        # The keys went with the old team, so mint this one again
-                        # under its stored token before applying its limits.
+                        # LiteLLM lost a key row we own, with its team or on its
+                        # own. Rebuild it under the same token so clients keep
+                        # working and the limits below have something to apply to.
                         owner = (
                             db.query(DBUser)
                             .filter(DBUser.id == key.owner_id)
@@ -853,7 +850,7 @@ async def apply_billing_cycle_for_team(
                             else None
                         )
                         logger.warning(
-                            "Key %s missing after recreating team %s; recreating it",
+                            "Key %s missing from LiteLLM team %s; recreating it",
                             key.id,
                             lite_team_id,
                         )
