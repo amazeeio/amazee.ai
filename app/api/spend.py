@@ -1575,7 +1575,11 @@ async def get_key_spend_alias(
                     current_cycle_start(f"{duration_days}d", anchor, now) or anchor
                 )
                 budget_reset_at = period_start + timedelta(days=duration_days)
-        elif team_for_key is not None and period_start is None:
+        elif (
+            team_for_key is not None
+            and period_start is None
+            and configured_key_cap is None
+        ):
             # No LiteLLM cycle on the key, so fall back to the team's ledger
             # window, the same one the team spend endpoint reports. Only while
             # a subscription is active: the anchor-based window can end in the
