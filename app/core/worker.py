@@ -1896,6 +1896,34 @@ async def hard_delete_expired_teams(db: Session):
                             f"Failed to delete keys from region {region.name}: {str(region_error)}"
                         )
 
+                # Delete the LiteLLM team in every region it can still exist in.
+                # Read the associations now, they are removed further down.
+                regions_with_team = {region.id: region for region in keys_by_region}
+                for region in (
+                    db.query(DBRegion)
+                    .join(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
+                    .filter(DBTeamRegion.team_id == team.id)
+                    .all()
+                ):
+                    regions_with_team.setdefault(region.id, region)
+
+                for region in regions_with_team.values():
+                    try:
+                        litellm_service = LiteLLMService(
+                            api_url=region.litellm_api_url,
+                            api_key=region.litellm_api_key,
+                        )
+                        await litellm_service.delete_team(
+                            LiteLLMService.format_team_id(region.name, team.id)
+                        )
+                        logger.info(
+                            f"Deleted LiteLLM team for team {team.id} in region {region.name}"
+                        )
+                    except Exception as team_error:
+                        logger.error(
+                            f"Failed to delete LiteLLM team for team {team.id} in region {region.name}: {str(team_error)}"
+                        )
+
                 # Delete keys from database
                 # Collect key IDs first so we can clean up spend_caps that reference them
                 team_key_ids = (
