@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from app.main import app
+import app.core.limit_service as limit_service
 from app.db.database import get_db
 from app.db.models import Base, DBRegion, DBUser, DBTeam, DBTeamRegion
 from app.core.security import get_password_hash
@@ -68,6 +69,14 @@ _ALL_TABLES = ", ".join(f'"{t.name}"' for t in Base.metadata.sorted_tables)
 
 @pytest.fixture
 def db(_schema):
+    # A budget propagation thread from the previous test runs on its own DB
+    # session and can still hold locks, which deadlocks the TRUNCATE below.
+    # Wait for it, then clear the global: a shut-down executor rejects new
+    # submits, and the app only builds a new one when the global is None.
+    if limit_service._budget_propagation_executor is not None:
+        limit_service._budget_propagation_executor.shutdown(wait=True)
+        limit_service._budget_propagation_executor = None
+
     # Truncate on setup (not teardown) so rows leaked outside the fixture's
     # session — e.g. via the app's own SessionLocal — can't poison this test.
     with engine.connect() as conn:
