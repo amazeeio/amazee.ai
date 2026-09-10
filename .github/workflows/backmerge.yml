@@ -53,4 +53,7 @@ jobs:
             echo "Reusing pull request #$NUMBER"
           fi
 
-          gh pr merge "$NUMBER" --auto --merge
+          # gh exits non-zero when auto-merge is already on, and when the pull
+          # request can be merged right now. Neither is worth failing the job.
+          gh pr merge "$NUMBER" --auto --merge ||
+            echo "Could not set auto-merge on #$NUMBER, see the error above"
