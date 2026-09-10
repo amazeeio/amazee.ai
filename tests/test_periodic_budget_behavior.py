@@ -329,7 +329,7 @@ async def test_periodic_team_resets_key_spend_to_zero(
     assert mock_litellm.set_key_restrictions.call_count == 2
     for call in mock_litellm.set_key_restrictions.call_args_list:
         assert call.kwargs["spend"] == 0.0
-        assert call.kwargs["duration"] is None
+        assert call.kwargs["duration"] == "31d"
         assert call.kwargs["budget_duration"] is None
 
 
@@ -378,7 +378,7 @@ async def test_pool_subscription_team_resets_key_spend(
     assert mock_litellm.set_key_restrictions.call_count == 2
     for call in mock_litellm.set_key_restrictions.call_args_list:
         assert call.kwargs["spend"] == 0.0
-        assert call.kwargs["duration"] is None
+        assert call.kwargs["duration"] == "31d"
         assert call.kwargs["budget_duration"] is None
 
 

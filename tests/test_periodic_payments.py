@@ -138,7 +138,7 @@ async def test_apply_billing_cycle_for_team_updates_sync_status_success(
     assert key_kwargs["budget_amount"] == 100.0
     assert key_kwargs["spend"] == 0.0
     assert key_kwargs["rpm_limit"] == 1000
-    assert key_kwargs["duration"] is None
+    assert key_kwargs["duration"] == "31d"
     assert key_kwargs["budget_duration"] is None
 
 
@@ -202,7 +202,7 @@ async def test_apply_billing_cycle_for_team_keeps_key_spend_cap_and_duration(
     key_kwargs = mock_litellm.set_key_restrictions.await_args.kwargs
     assert key_kwargs["budget_amount"] == 25.0
     assert key_kwargs["budget_duration"] == "7d"
-    assert key_kwargs["duration"] is None
+    assert key_kwargs["duration"] == "31d"
     assert (
         mock_litellm.update_team_budget.await_args.kwargs["clear_budget_duration"]
         is True
@@ -1880,7 +1880,7 @@ async def test_pool_team_billing_cycle_clears_duration_and_resets_spend(
 
     key_call = mock_litellm.set_key_restrictions.await_args
     assert key_call.kwargs["spend"] == 0.0
-    assert key_call.kwargs["duration"] is None
+    assert key_call.kwargs["duration"] == "31d"
     assert key_call.kwargs["budget_duration"] is None
 
 

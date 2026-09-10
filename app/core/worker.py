@@ -76,6 +76,10 @@ FIRST_EMAIL_DAYS_LEFT = 7
 SECOND_EMAIL_DAYS_LEFT = 5
 TRIAL_OVER_DAYS = 30
 
+# A key is created with a 30-day expiry and the billing cycle is the only thing
+# that renews it. This is key expiry, not a LiteLLM budget cycle.
+KEY_EXPIRY_EXTENSION = "31d"
+
 # Budget types that support subscription cycles (PERIODIC and POOL).
 # Used to gate cycle/ledger/drift functions that were originally PERIODIC-only.
 SUBSCRIPTION_BUDGET_TYPES = frozenset({BudgetType.PERIODIC, BudgetType.POOL})
@@ -877,11 +881,11 @@ async def apply_billing_cycle_for_team(
                     if team.requires_pool_purchase_gate:
                         # POOL: key max_budget must be set only when an explicit key cap exists.
                         # Otherwise keep key max_budget null and enforce at team level.
-                        # No key expiry change and no key budget cycle unless
-                        # an explicit key cap defines one.
+                        # Renew the key's expiry for the coming period; no key
+                        # budget cycle unless an explicit key cap defines one.
                         restrictions = dict(
                             litellm_token=key.litellm_token,
-                            duration=None,
+                            duration=KEY_EXPIRY_EXTENSION,
                             budget_duration=(
                                 key_cap_duration if key_spend_cap is not None else None
                             ),
@@ -900,11 +904,11 @@ async def apply_billing_cycle_for_team(
                             if key_spend_cap is not None
                             else per_region_budget
                         )
-                        # No key expiry change and no key budget cycle unless
-                        # an explicit key cap defines one.
+                        # Renew the key's expiry for the coming period; no key
+                        # budget cycle unless an explicit key cap defines one.
                         restrictions = dict(
                             litellm_token=key.litellm_token,
-                            duration=None,
+                            duration=KEY_EXPIRY_EXTENSION,
                             budget_duration=(
                                 key_cap_duration if key_spend_cap is not None else None
                             ),
@@ -951,16 +955,18 @@ async def apply_billing_cycle_for_team(
 
                     if team.requires_pool_purchase_gate:
                         logger.info(
-                            "Updated POOL key %s limits in LiteLLM: key_cap=%s, key_cap_duration=%s, rpm=%s, spend_reset=True",
+                            "Updated POOL key %s limits in LiteLLM: expiry=%s, key_cap=%s, key_cap_duration=%s, rpm=%s, spend_reset=True",
                             key.id,
+                            KEY_EXPIRY_EXTENSION,
                             key_spend_cap,
                             key_cap_duration,
                             max_rpm_limit,
                         )
                     else:
                         logger.info(
-                            "Updated key %s limits in LiteLLM: budget=%s, key_cap_duration=%s, rpm=%s, spend_reset=True",
+                            "Updated key %s limits in LiteLLM: expiry=%s, budget=%s, key_cap_duration=%s, rpm=%s, spend_reset=True",
                             key.id,
+                            KEY_EXPIRY_EXTENSION,
                             effective_key_budget,
                             key_cap_duration,
                             max_rpm_limit,
