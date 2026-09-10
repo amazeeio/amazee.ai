@@ -17,6 +17,7 @@ from app.db.models import (
     DBRegion,
     DBSpendCap,
     DBTeam,
+    DBTeamSpendPeriod,
     DBUser,
 )
 from app.schemas.models import BudgetType
@@ -1544,6 +1545,144 @@ def test_subscription_deactivate_fifo_debits_topup_on_cancellation(
         f"Expected key budget_amount ~{topup_remaining}, got {actual_key_budget}."
     )
     assert mock_litellm.set_key_restrictions.await_args.kwargs["duration"] is None
+
+
+def _seed_deactivate_period(db, team, region, *, baseline_spend):
+    """Active subscription period plus an older snapshot as the baseline."""
+    period_start = datetime.now(UTC) - timedelta(days=5)
+    period_end = datetime.now(UTC) + timedelta(days=26)
+    sub_entry = DBPeriodicBudgetLedgerEntry(
+        team_id=team.id,
+        region_id=region.id,
+        entry_type="subscription",
+        source_invoice_id="in_cancel_logs_sub",
+        amount_cents=10000,
+        consumed_cents=0,
+        purchased_at=period_start,
+        effective_period_start=period_start,
+        effective_period_end=period_end,
+        expires_at=period_end,
+        is_active=True,
+    )
+    db.add(sub_entry)
+    db.add(
+        DBTeamSpendPeriod(
+            team_id=team.id,
+            region_id=region.id,
+            budget_type=team.budget_type,
+            period_start=period_start - timedelta(days=31),
+            period_end=period_start,
+            total_spend=baseline_spend,
+            source="test",
+        )
+    )
+    db.commit()
+    return sub_entry, period_start
+
+
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+@patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_uses_spend_logs_when_counter_dropped(
+    mock_litellm_class,
+    mock_record_payment,
+    _mock_capture_spend,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """A counter below the stored baseline settles from the spend logs."""
+    sub_entry, period_start = _seed_deactivate_period(
+        db, test_team, test_region, baseline_spend=50.0
+    )
+    mock_record_payment.return_value = 991
+
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={"team_info": {"spend": 2.0, "max_budget": 100.0}}
+    )
+    mock_litellm.get_team_spend_in_range = AsyncMock(return_value=40.0)
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    response = client.post(
+        "/billing/subscription/deactivate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_cancel_logs_drop",
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+            "reason": "cancelled",
+        },
+    )
+
+    assert response.status_code == 200
+    db.refresh(sub_entry)
+    assert sub_entry.consumed_cents == 4000
+    mock_litellm.get_team_spend_in_range.assert_awaited_once()
+    args = mock_litellm.get_team_spend_in_range.await_args.args
+    assert args[1] == period_start
+
+
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+@patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_uses_spend_logs_when_litellm_still_has_a_cycle(
+    mock_litellm_class,
+    mock_record_payment,
+    _mock_capture_spend,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """A team that still carries a LiteLLM cycle settles from the spend logs,
+    even when the counter reads above the baseline."""
+    sub_entry, period_start = _seed_deactivate_period(
+        db, test_team, test_region, baseline_spend=50.0
+    )
+    mock_record_payment.return_value = 992
+
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={
+            "team_info": {
+                "spend": 60.0,
+                "max_budget": 100.0,
+                "budget_duration": "31d",
+            }
+        }
+    )
+    mock_litellm.get_team_spend_in_range = AsyncMock(return_value=40.0)
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    response = client.post(
+        "/billing/subscription/deactivate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_cancel_logs_cycle",
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+            "reason": "cancelled",
+        },
+    )
+
+    assert response.status_code == 200
+    db.refresh(sub_entry)
+    # Live minus baseline would be 1000 cents; the logs win.
+    assert sub_entry.consumed_cents == 4000
+    mock_litellm.get_team_spend_in_range.assert_awaited_once()
+    assert mock_litellm.get_team_spend_in_range.await_args.args[1] == period_start
 
 
 def test_subscription_deactivate_endpoint_idempotent(
