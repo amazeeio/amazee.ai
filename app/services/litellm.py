@@ -847,7 +847,7 @@ class LiteLLMService:
     async def set_key_restrictions(
         self,
         litellm_token: str,
-        duration: str,
+        duration: Optional[str],
         budget_amount: float,
         rpm_limit: int,
         budget_duration: Optional[str] = None,
@@ -857,17 +857,21 @@ class LiteLLMService:
         """Set the restrictions for a LiteLLM API key.
 
         Args:
+            duration: New key expiry. None leaves the current expiry alone,
+                      because /key/update reads duration as a new expires
+                      timestamp, not as a budget cycle.
             spend: When provided, overrides the key's spend counter
                    (e.g. 0.0 to reset spend at billing cycle start).
         """
         try:
             request_data = {
                 "key": litellm_token,
-                "duration": duration,
                 "budget_duration": budget_duration,
                 "max_budget": budget_amount,
                 "rpm_limit": rpm_limit,
             }
+            if duration is not None:
+                request_data["duration"] = duration
             if spend is not None:
                 request_data["spend"] = spend
             if blocked is not None:
