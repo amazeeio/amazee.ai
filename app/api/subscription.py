@@ -126,9 +126,7 @@ async def subscription_cycle(
         )
 
     period_start = datetime.now(UTC)
-    # Safety-net: Stripe cycles are 30d. The 31d budget_duration on LiteLLM
-    # auto-expires budget if a webhook is missed. On cancellation, Stripe sends
-    # customer.subscription.deleted which handles explicit cleanup.
+    # 31 days, so a 30-day Stripe cycle always lands before the period ends.
     period_end = period_start + timedelta(days=31)
 
     is_first_cycle = (
@@ -358,15 +356,41 @@ async def subscription_deactivate(
                 team_info = team_info_resp.get("team_info", team_info_resp)
                 current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
                 current_spend_cents = int(round(current_team_spend * 100))
+                litellm_cycle_active = bool(team_info.get("budget_duration"))
                 spend_baseline_cents = _previous_period_spend_baseline_cents(
                     db,
                     team_id=team.id,
                     region_id=region.id,
                     current_period_start=active_subscription_period.effective_period_start,
                 )
-                incremental_spend_cents = max(
-                    0, current_spend_cents - spend_baseline_cents
-                )
+                if (
+                    not litellm_cycle_active
+                    and current_spend_cents >= spend_baseline_cents
+                ):
+                    incremental_spend_cents = current_spend_cents - spend_baseline_cents
+                else:
+                    # The counter cannot be trusted: it either already dropped
+                    # below our snapshot, or LiteLLM still runs a cycle on this
+                    # team and can reset it at any midnight. The spend logs
+                    # survive a reset, so read this period from them.
+                    logger.warning(
+                        "LiteLLM team spend counter is not trustworthy on "
+                        "cancellation for team_id=%s region_id=%s: live=%s cents, "
+                        "baseline=%s cents, litellm_cycle_active=%s",
+                        team.id,
+                        region.id,
+                        current_spend_cents,
+                        spend_baseline_cents,
+                        litellm_cycle_active,
+                    )
+                    logged_spend = await litellm_service.get_team_spend_in_range(
+                        lite_team_id,
+                        active_subscription_period.effective_period_start,
+                        datetime.now(UTC),
+                    )
+                    incremental_spend_cents = max(
+                        0, int(round(float(logged_spend) * 100))
+                    )
                 if incremental_spend_cents > 0:
                     allocate_period_spend_fifo(
                         db,
