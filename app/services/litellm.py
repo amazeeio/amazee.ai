@@ -166,6 +166,7 @@ class LiteLLMService:
         apply_limits: bool = True,
         blocked: Optional[bool] = None,
         allowed_routes: Optional[list[str]] = None,
+        key: Optional[str] = None,
     ) -> str:
         """Create a new API key for LiteLLM
 
@@ -173,6 +174,8 @@ class LiteLLMService:
             allowed_routes: Restrict the key to these LiteLLM routes (exact
                 paths, wildcards or route-group names such as
                 ``llm_api_routes``). None means no route restriction.
+            key: Reuse this key value instead of letting LiteLLM mint one, so a
+                token we already store keeps working after the key is rebuilt.
         """
         try:
             logger.info(
@@ -207,6 +210,8 @@ class LiteLLMService:
             request_data["key_alias"] = clean_alias
             request_data["metadata"] = metadata
             request_data["team_id"] = team_id
+            if key:
+                request_data["key"] = key
             if blocked is not None:
                 request_data["blocked"] = blocked
             if allowed_routes:
@@ -288,6 +293,30 @@ class LiteLLMService:
                 if hasattr(e, "response") and e.response is not None
                 else status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to delete LiteLLM key: {error_msg}",
+            )
+
+    async def delete_team(self, team_id: str) -> bool:
+        """Delete a LiteLLM team"""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/team/delete",
+                    json={"team_ids": [team_id]},
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                )
+
+                # Treat 404 (team not found) as success
+                if response.status_code == 404:
+                    return True
+
+                response.raise_for_status()
+                return True
+        except httpx.HTTPStatusError as e:
+            status_code, error_msg, _ = self._parse_http_error(e)
+            logger.error(f"Error deleting LiteLLM team: {error_msg}")
+            raise HTTPException(
+                status_code=status_code,
+                detail=f"Failed to delete LiteLLM team: {error_msg}",
             )
 
     async def get_key_info(self, litellm_token: str) -> dict:
@@ -851,15 +880,10 @@ class LiteLLMService:
                 )
                 response.raise_for_status()
         except httpx.HTTPStatusError as e:
-            error_msg = str(e)
-            if hasattr(e, "response") and e.response is not None:
-                try:
-                    error_details = e.response.json()
-                    error_msg = f"Status {e.response.status_code}: {error_details}"
-                except ValueError:
-                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            # Callers branch on the upstream status, a missing key must stay a 404.
+            status_code, error_msg, _ = self._parse_http_error(e)
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=status_code,
                 detail=f"Failed to set LiteLLM key restrictions: {error_msg}",
             )
 
@@ -917,15 +941,10 @@ class LiteLLMService:
                 response.raise_for_status()
                 return response.json()
         except httpx.HTTPStatusError as e:
-            error_msg = str(e)
-            if hasattr(e, "response") and e.response is not None:
-                try:
-                    error_details = e.response.json()
-                    error_msg = f"Status {e.response.status_code}: {error_details}"
-                except ValueError:
-                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            # Callers branch on the upstream status, a missing team must stay a 404.
+            status_code, error_msg, _ = self._parse_http_error(e)
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=status_code,
                 detail=f"Failed to get LiteLLM team info: {error_msg}",
             )
 

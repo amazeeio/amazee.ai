@@ -199,6 +199,63 @@ async def soft_delete_team(
     logger.info(f"Successfully soft-deleted team {team.id} ({team.name})")
 
 
+async def reprovision_litellm_team(
+    db: Session,
+    team: DBTeam,
+    region: DBRegion,
+    litellm_service: LiteLLMService,
+    team_users: list[DBUser],
+) -> None:
+    """Ensure the LiteLLM team and its user memberships exist in one region.
+
+    Idempotent. Raises when the team or any of its users could not be
+    provisioned, so the caller can record the region as failed. Every user is
+    attempted even after one fails, because they are independent.
+    """
+    lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+
+    try:
+        await litellm_service.create_team(
+            team_id=lite_team_id,
+            team_alias=lite_team_id,
+            models=effective_team_group_slugs(db, team.id, region),
+        )
+        logger.info(
+            f"Re-provisioned LiteLLM team {lite_team_id} in region {region.name}"
+        )
+    except Exception as team_error:
+        logger.error(
+            f"Failed to re-provision LiteLLM team in region {region.name}: {str(team_error)}"
+        )
+        raise
+
+    failed_user_ids: list[int] = []
+    for user in team_users:
+        try:
+            await litellm_service.create_user(
+                user_id=str(user.id),
+                user_email=user.email,
+                auto_create_key=False,
+            )
+            await litellm_service.add_team_member(
+                team_id=lite_team_id,
+                user_id=str(user.id),
+            )
+            logger.info(
+                f"Re-provisioned LiteLLM user {user.id} in team {lite_team_id} region {region.name}"
+            )
+        except Exception as user_error:
+            logger.error(
+                f"Failed to re-provision LiteLLM user {user.id} in region {region.name}: {str(user_error)}"
+            )
+            failed_user_ids.append(user.id)
+
+    if failed_user_ids:
+        raise RuntimeError(
+            f"Failed to re-provision LiteLLM users {failed_user_ids} in region {region.name}"
+        )
+
+
 async def restore_soft_deleted_team(db: Session, team: DBTeam) -> dict:
     """
     Restore a soft-deleted team with full cascade behavior.
@@ -240,60 +297,16 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> dict:
 
     # Re-provision LiteLLM: ensure team and user objects exist in each region
     for region in allowed_regions:
-        region_failed = False
         try:
             litellm_service = LiteLLMService(
                 api_url=region.litellm_api_url, api_key=region.litellm_api_key
             )
-            lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
-
-            # Ensure the LiteLLM team exists (idempotent)
-            try:
-                await litellm_service.create_team(
-                    team_id=lite_team_id,
-                    team_alias=lite_team_id,
-                    models=effective_team_group_slugs(db, team.id, region),
-                )
-                logger.info(
-                    f"Re-provisioned LiteLLM team {lite_team_id} in region {region.name}"
-                )
-            except Exception as team_error:
-                logger.error(
-                    f"Failed to re-provision LiteLLM team in region {region.name}: {str(team_error)}"
-                )
-                region_failed = True
-                continue
-
-            # Ensure each user exists in LiteLLM and is a member of the team (idempotent)
-            for user in team_users:
-                try:
-                    await litellm_service.create_user(
-                        user_id=str(user.id),
-                        user_email=user.email,
-                        auto_create_key=False,
-                    )
-                    await litellm_service.add_team_member(
-                        team_id=lite_team_id,
-                        user_id=str(user.id),
-                    )
-                    logger.info(
-                        f"Re-provisioned LiteLLM user {user.id} in team {lite_team_id} region {region.name}"
-                    )
-                except Exception as user_error:
-                    logger.error(
-                        f"Failed to re-provision LiteLLM user {user.id} in region {region.name}: {str(user_error)}"
-                    )
-                    region_failed = True
+            await reprovision_litellm_team(db, team, region, litellm_service, team_users)
         except Exception as region_error:
             logger.error(
                 f"Failed to re-provision LiteLLM team/users in region {region.name}: {str(region_error)}"
             )
-            region_failed = True
-        finally:
-            # `continue` inside the inner try skips code after the try/except block,
-            # so use finally to ensure failed regions are always recorded.
-            if region_failed:
-                failed_regions.append(region.name)
+            failed_regions.append(region.name)
 
     # Un-expire all keys for the team in LiteLLM
     try:
