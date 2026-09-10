@@ -1760,6 +1760,19 @@ async def test_sync_periodic_ledger_uses_spend_logs_when_litellm_counter_drops(
 
     now = datetime.now(UTC)
     previous_start = now - timedelta(days=30)
+    # Two earlier snapshots, as a team has from its third cycle on: the newest
+    # one is the window start.
+    db.add(
+        DBTeamSpendPeriod(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            budget_type=test_team.budget_type,
+            period_start=now - timedelta(days=60),
+            period_end=previous_start,
+            total_spend=20.0,
+            source="test",
+        )
+    )
     db.add(
         DBTeamSpendPeriod(
             team_id=test_team.id,
@@ -1814,6 +1827,7 @@ async def test_sync_periodic_ledger_uses_spend_logs_when_litellm_counter_drops(
     mock_litellm.get_team_spend_in_range.assert_awaited_once()
     args = mock_litellm.get_team_spend_in_range.await_args.args
     assert args[0] == "test_region_team"
+    assert args[1] == previous_start
     assert args[2] == now
     assert "dropped below the stored snapshot" in caplog.text
 

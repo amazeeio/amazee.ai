@@ -491,7 +491,7 @@ async def _elapsed_period_spend_cents(
     window runs from the previous snapshot's period_start up to the new one,
     which is the period whose spend was never debited from the ledger.
     """
-    window_start = (
+    row = (
         db.query(DBTeamSpendPeriod.period_start)
         .filter(
             DBTeamSpendPeriod.team_id == team.id,
@@ -499,8 +499,9 @@ async def _elapsed_period_spend_cents(
             DBTeamSpendPeriod.period_start < period_start,
         )
         .order_by(DBTeamSpendPeriod.period_start.desc())
-        .scalar()
+        .first()
     )
+    window_start = row[0] if row else None
     if litellm_service is not None and lite_team_id and window_start is not None:
         try:
             total = await litellm_service.get_team_spend_in_range(
