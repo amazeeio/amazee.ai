@@ -716,9 +716,6 @@ async def apply_billing_cycle_for_team(
         limit_service = LimitService(db)
         _, _, max_rpm_limit = limit_service.get_token_restrictions(team.id)
         per_region_budget = budget_cents / 100.0
-        # LiteLLM must not run a budget cycle of its own for this team: the
-        # ledger owns the period, and a LiteLLM reset would drop the team spend
-        # counter and hide a real period's spend from the ledger.
         keys = get_team_region_litellm_keys(db, team_id=team.id, region_id=region.id)
 
         litellm_service = LiteLLMService(
@@ -823,6 +820,9 @@ async def apply_billing_cycle_for_team(
 
         if not sync_errors:
             try:
+                # LiteLLM must not run a budget cycle of its own for this
+                # team: the ledger owns the period, and a LiteLLM reset would
+                # drop the team spend counter and hide real spend from it.
                 await litellm_service.update_team_budget(
                     team_id=lite_team_id,
                     max_budget=team_max_budget,
@@ -879,6 +879,8 @@ async def apply_billing_cycle_for_team(
                     if team.requires_pool_purchase_gate:
                         # POOL: key max_budget must be set only when an explicit key cap exists.
                         # Otherwise keep key max_budget null and enforce at team level.
+                        # No key expiry change and no key budget cycle unless
+                        # an explicit key cap defines one.
                         restrictions = dict(
                             litellm_token=key.litellm_token,
                             duration=None,
@@ -900,6 +902,8 @@ async def apply_billing_cycle_for_team(
                             if key_spend_cap is not None
                             else per_region_budget
                         )
+                        # No key expiry change and no key budget cycle unless
+                        # an explicit key cap defines one.
                         restrictions = dict(
                             litellm_token=key.litellm_token,
                             duration=None,
