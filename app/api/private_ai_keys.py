@@ -25,6 +25,7 @@ from app.schemas.models import (
 )
 from app.db.postgres import PostgresManager
 from app.db.models import (
+    DBAuditLog,
     DBPrivateAIKey,
     DBRegion,
     DBUser,
@@ -1054,6 +1055,23 @@ async def delete_private_ai_key(
 
     # Remove dependent spend cap rows before deleting key row (FK spend_caps.key_id -> ai_tokens.id)
     db.query(DBSpendCap).filter(DBSpendCap.key_id == private_ai_key.id).delete()
+
+    # The audit row shares the delete's transaction, so it cannot outlive a rollback.
+    db.add(
+        DBAuditLog(
+            event_type="private_ai_key.delete",
+            resource_type="private_ai_key",
+            resource_id=str(key_id),
+            action="delete",
+            user_id=current_user.id,
+            request_source="api",
+            details={
+                "team_id": private_ai_key.team_id,
+                "region_id": private_ai_key.region_id,
+                "key_name": private_ai_key.name,
+            },
+        )
+    )
 
     # Remove the private AI key record from the application database
     db.delete(private_ai_key)

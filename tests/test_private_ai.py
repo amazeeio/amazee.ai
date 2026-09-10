@@ -3,6 +3,7 @@ from unittest.mock import patch, Mock, AsyncMock
 import pytest
 
 from app.db.models import (
+    DBAuditLog,
     DBPrivateAIKey,
     DBPeriodicBudgetLedgerEntry,
     DBPoolPurchase,
@@ -222,6 +223,25 @@ def test_delete_private_ai_key(
     # Verify the key was removed from the database
     deleted_key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
     assert deleted_key is None
+
+    # Verify the delete was audited
+    audit_rows = (
+        db.query(DBAuditLog)
+        .filter(
+            DBAuditLog.resource_type == "private_ai_key",
+            DBAuditLog.resource_id == str(key_id),
+        )
+        .all()
+    )
+    assert len(audit_rows) == 1
+    audit = audit_rows[0]
+    assert audit.event_type == "private_ai_key.delete"
+    assert audit.action == "delete"
+    assert audit.user_id == test_user.id
+    assert audit.request_source == "api"
+    assert audit.details["key_name"] == "Test Key to Delete"
+    assert audit.details["region_id"] == test_region.id
+    assert audit.details["team_id"] is None
 
 
 @patch("httpx.AsyncClient")

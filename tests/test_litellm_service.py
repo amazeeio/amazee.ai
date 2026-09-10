@@ -105,6 +105,30 @@ def test_create_key_with_email_fallback(
 
 
 @patch("httpx.AsyncClient")
+def test_create_key_reuses_a_given_key_value(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    """A caller-chosen key value is sent, so a stored token survives a rebuild."""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.create_key(
+            email="test@example.com",
+            name="Test Key",
+            user_id=123,
+            team_id="team-456",
+            key="sk-fixed",
+        )
+    )
+
+    assert mock_httpx_post_client.post.call_args.kwargs["json"]["key"] == "sk-fixed"
+
+
+@patch("httpx.AsyncClient")
 def test_create_key_can_create_blocked_key(
     mock_client_class, test_region, mock_httpx_post_client
 ):
@@ -231,6 +255,59 @@ def test_delete_key_failure(mock_client_class, test_region, mock_httpx_failure_c
 
     assert exc_info.value.status_code == 500
     assert "Failed to delete LiteLLM key" in exc_info.value.detail
+
+
+@patch("httpx.AsyncClient")
+def test_delete_team_success(mock_client_class, test_region, mock_httpx_post_client):
+    """Test successful team deletion"""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    result = asyncio.run(service.delete_team("test-team"))
+
+    assert result is True
+    mock_httpx_post_client.post.assert_called_once_with(
+        f"{test_region.litellm_api_url}/team/delete",
+        json={"team_ids": ["test-team"]},
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+    )
+
+
+@patch("httpx.AsyncClient")
+def test_delete_team_not_found(
+    mock_client_class, test_region, mock_httpx_failure_client
+):
+    """Test team deletion when the team is gone (should return True)"""
+    mock_client_class.return_value = mock_httpx_failure_client(404, "Not Found")
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    result = asyncio.run(service.delete_team("non-existent-team"))
+
+    assert result is True
+
+
+@patch("httpx.AsyncClient")
+def test_delete_team_failure(mock_client_class, test_region, mock_httpx_failure_client):
+    """Test team deletion failure"""
+    mock_client_class.return_value = mock_httpx_failure_client(
+        500, "Internal Server Error"
+    )
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(service.delete_team("test-team"))
+
+    assert exc_info.value.status_code == 500
+    assert "Failed to delete LiteLLM team" in exc_info.value.detail
 
 
 @patch("httpx.AsyncClient")
@@ -1485,3 +1562,30 @@ def test_get_daily_activity_refuses_to_return_partial_history(
     assert exc.value.status_code == 500
     assert "exceeded" in str(exc.value.detail)
     assert mock_client.get.call_count == 100
+
+
+@patch("httpx.AsyncClient")
+def test_get_team_info_surfaces_upstream_status(mock_client_class, test_region):
+    """A missing team must reach the caller as a 404, not a flat 500."""
+    mock_response = Mock()
+    mock_response.status_code = 404
+    mock_response.json.return_value = {"error": "team not found"}
+    mock_response.raise_for_status.side_effect = HTTPStatusError(
+        "Not Found", request=None, response=mock_response
+    )
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(service.get_team_info("missing-team"))
+
+    assert exc_info.value.status_code == 404
+    assert "Failed to get LiteLLM team info" in exc_info.value.detail
