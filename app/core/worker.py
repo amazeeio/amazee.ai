@@ -1932,13 +1932,19 @@ async def hard_delete_expired_teams(db: Session):
                             f"Failed to delete keys from region {region.name}: {str(region_error)}"
                         )
 
-                # Delete the LiteLLM team in every region it can still exist in.
-                # Read the associations now, they are removed further down.
-                regions_with_team = {region.id: region for region in keys_by_region}
+                # Delete the LiteLLM team in every active region it can still
+                # exist in. Read the associations now, they are removed further
+                # down. An inactive region is unreachable, so there is nothing
+                # to delete and nothing to wait for.
+                regions_with_team = {
+                    region.id: region
+                    for region in keys_by_region
+                    if region.is_active
+                }
                 for region in (
                     db.query(DBRegion)
                     .join(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
-                    .filter(DBTeamRegion.team_id == team.id)
+                    .filter(DBTeamRegion.team_id == team.id, DBRegion.is_active.is_(True))
                     .all()
                 ):
                     regions_with_team.setdefault(region.id, region)
@@ -1956,9 +1962,13 @@ async def hard_delete_expired_teams(db: Session):
                             f"Deleted LiteLLM team for team {team.id} in region {region.name}"
                         )
                     except Exception as team_error:
+                        # Dropping the local rows now would leave an orphan team
+                        # nothing can reach again, so keep them and retry on the
+                        # next run.
                         logger.error(
-                            f"Failed to delete LiteLLM team for team {team.id} in region {region.name}: {str(team_error)}"
+                            f"Failed to delete LiteLLM team for team {team.id} in region {region.name}: {str(team_error)}; will retry"
                         )
+                        raise
 
                 # Delete keys from database
                 # Collect key IDs first so we can clean up spend_caps that reference them
