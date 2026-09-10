@@ -456,6 +456,59 @@ class LiteLLMService:
                 detail=f"Failed to list LiteLLM keys: {error_msg}",
             )
 
+    async def get_team_spend_in_range(
+        self, team_id: str, start: datetime, end: datetime
+    ) -> float:
+        """Sum a team's spend from LiteLLM's spend logs over a time window.
+
+        The team's live ``spend`` counter is reset whenever LiteLLM runs a
+        budget cycle on it, so it cannot be trusted to show what a past period
+        cost. The spend logs survive that reset and are the only per-request
+        record of it. Returns dollars.
+        """
+        page_size = 100
+        total = 0.0
+        page = 1
+        start_date = start.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        end_date = end.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            async with httpx.AsyncClient() as client:
+                while True:
+                    response = await client.get(
+                        f"{self.api_url}/spend/logs/v2",
+                        headers={"Authorization": f"Bearer {self.master_key}"},
+                        params={
+                            "team_id": team_id,
+                            "start_date": start_date,
+                            "end_date": end_date,
+                            "page": page,
+                            "page_size": page_size,
+                        },
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    rows = [r for r in (data.get("data") or []) if isinstance(r, dict)]
+                    for row in rows:
+                        total += float(row.get("spend") or 0.0)
+                    # Stop on a short or empty page; total_pages is only a
+                    # secondary check, since it is not always present.
+                    if len(rows) < page_size:
+                        break
+                    total_pages = data.get("total_pages") or 0
+                    if total_pages and page >= total_pages:
+                        break
+                    page += 1
+            return total
+        except httpx.HTTPStatusError as e:
+            status_code, error_msg, _ = self._parse_http_error(e)
+            logger.error(
+                "Error getting LiteLLM spend logs for team %s: %s", team_id, error_msg
+            )
+            raise HTTPException(
+                status_code=status_code,
+                detail=f"Failed to get LiteLLM team spend logs: {error_msg}",
+            )
+
     async def get_key_last_used(self, litellm_token: str) -> Optional[datetime]:
         """Return the timestamp a key was last used, or ``None`` if never used.
 
