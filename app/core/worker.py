@@ -1940,19 +1940,14 @@ async def hard_delete_expired_teams(db: Session):
                             f"Failed to delete keys from region {region.name}: {str(region_error)}"
                         )
 
-                # Delete the LiteLLM team in every active region it can still
-                # exist in. Read the associations now, they are removed further
-                # down. An inactive region is unreachable, so there is nothing
-                # to delete and nothing to wait for.
-                regions_with_team = {
-                    region.id: region
-                    for region in keys_by_region
-                    if region.is_active
-                }
+                # Delete the LiteLLM team in every region it can still exist in,
+                # inactive ones included: they can still serve keys. Read the
+                # associations now, they are removed further down.
+                regions_with_team = {region.id: region for region in keys_by_region}
                 for region in (
                     db.query(DBRegion)
                     .join(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
-                    .filter(DBTeamRegion.team_id == team.id, DBRegion.is_active.is_(True))
+                    .filter(DBTeamRegion.team_id == team.id)
                     .all()
                 ):
                     regions_with_team.setdefault(region.id, region)
@@ -1970,6 +1965,13 @@ async def hard_delete_expired_teams(db: Session):
                             f"Deleted LiteLLM team for team {team.id} in region {region.name}"
                         )
                     except Exception as team_error:
+                        if not region.is_active:
+                            # An inactive region may be decommissioned for good,
+                            # so it must not hold the deletion back forever.
+                            logger.error(
+                                f"Failed to delete LiteLLM team for team {team.id} in inactive region {region.name}: {str(team_error)}; continuing"
+                            )
+                            continue
                         # Dropping the local rows now would leave an orphan team
                         # nothing can reach again, so keep them and retry on the
                         # next run.
