@@ -475,6 +475,53 @@ def _previous_period_spend_baseline_cents(
     return int(round(float(row[0]) * 100))
 
 
+async def _elapsed_period_spend_cents(
+    db: Session,
+    *,
+    team: DBTeam,
+    region: DBRegion,
+    period_start: datetime,
+    litellm_service: "LiteLLMService | None",
+    lite_team_id: str | None,
+    team_info_resp: dict | None,
+) -> int:
+    """Return the spend of the period that just ended, in cents.
+
+    Used when the live LiteLLM team counter can no longer be trusted. The
+    window runs from the previous snapshot's period_start up to the new one,
+    which is the period whose spend was never debited from the ledger.
+    """
+    window_start = (
+        db.query(DBTeamSpendPeriod.period_start)
+        .filter(
+            DBTeamSpendPeriod.team_id == team.id,
+            DBTeamSpendPeriod.region_id == region.id,
+            DBTeamSpendPeriod.period_start < period_start,
+        )
+        .order_by(DBTeamSpendPeriod.period_start.desc())
+        .scalar()
+    )
+    if litellm_service is not None and lite_team_id and window_start is not None:
+        try:
+            total = await litellm_service.get_team_spend_in_range(
+                lite_team_id, window_start, period_start
+            )
+            return max(0, int(round(float(total) * 100)))
+        except Exception as exc:
+            logger.warning(
+                "Failed to read LiteLLM spend logs for team_id=%s region_id=%s, "
+                "falling back to the per-key counters: %s",
+                team.id,
+                region.id,
+                str(exc),
+            )
+    # Second fallback: the keys reset on the same schedule as the team, so
+    # their counters cover the same window the team counter lost.
+    keys = (team_info_resp or {}).get("keys") or []
+    key_total = sum(float(k.get("spend") or 0.0) for k in keys if isinstance(k, dict))
+    return max(0, int(round(key_total * 100)))
+
+
 async def _sync_periodic_ledger_for_period(
     *,
     db: Session,
@@ -489,6 +536,9 @@ async def _sync_periodic_ledger_for_period(
     if team.budget_type not in SUBSCRIPTION_BUDGET_TYPES:
         return
 
+    litellm_service = None
+    lite_team_id = None
+    team_info_resp = None
     try:
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
@@ -532,7 +582,30 @@ async def _sync_periodic_ledger_for_period(
             region_id=region.id,
             current_period_start=period_start,
         )
-        incremental_spend_cents = max(0, spend_cents - spend_baseline_cents)
+        if spend_cents >= spend_baseline_cents:
+            incremental_spend_cents = spend_cents - spend_baseline_cents
+        else:
+            # LiteLLM resets the team counter when it runs a budget cycle of
+            # its own, which puts the live counter below our snapshot and
+            # hides a whole period of spend. The spend logs survive that
+            # reset, so read the elapsed period from them instead.
+            logger.warning(
+                "LiteLLM team spend counter dropped below the stored snapshot "
+                "for team_id=%s region_id=%s: live=%s cents, baseline=%s cents",
+                team.id,
+                region.id,
+                spend_cents,
+                spend_baseline_cents,
+            )
+            incremental_spend_cents = await _elapsed_period_spend_cents(
+                db,
+                team=team,
+                region=region,
+                period_start=period_start,
+                litellm_service=litellm_service,
+                lite_team_id=lite_team_id,
+                team_info_resp=team_info_resp,
+            )
         allocate_period_spend_fifo(
             db,
             team_id=team.id,
