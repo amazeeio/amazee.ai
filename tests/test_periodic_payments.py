@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.core.config import settings
 from app.core.worker import (
     _record_periodic_payment_direct,
     apply_billing_cycle_for_team,
@@ -597,19 +596,17 @@ def test_subscription_deactivate_endpoint_success(
         "idempotent": False,
     }
     mock_litellm.update_team_budget.assert_awaited_once()
-    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 7.0
-    assert (
-        mock_litellm.update_team_budget.await_args.kwargs["budget_duration"]
-        == f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
-    )
-    assert mock_litellm.update_team_budget.await_args.kwargs["spend"] == 0.0
+    team_kwargs = mock_litellm.update_team_budget.await_args.kwargs
+    assert team_kwargs["max_budget"] == 0.0
+    assert team_kwargs.get("budget_duration") is None
+    assert team_kwargs["clear_budget_duration"] is True
+    assert "spend" not in team_kwargs
     mock_litellm.set_key_restrictions.assert_awaited_once()
-    assert mock_litellm.set_key_restrictions.await_args.kwargs["budget_amount"] == 0.0
-    assert (
-        mock_litellm.set_key_restrictions.await_args.kwargs["budget_duration"]
-        == f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
-    )
-    assert mock_litellm.set_key_restrictions.await_args.kwargs["spend"] == 0.0
+    key_kwargs = mock_litellm.set_key_restrictions.await_args.kwargs
+    assert key_kwargs["budget_amount"] == 0.0
+    assert key_kwargs["duration"] is None
+    assert key_kwargs["budget_duration"] is None
+    assert key_kwargs["spend"] == 0.0
 
 
 @patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
@@ -673,19 +670,17 @@ def test_subscription_deactivate_preserves_active_topup_budget(
     assert response.status_code == 200
     assert response.json()["payment_id"] == 654
     mock_litellm.update_team_budget.assert_awaited_once()
-    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 10.0
-    assert (
-        mock_litellm.update_team_budget.await_args.kwargs["budget_duration"]
-        == f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
-    )
-    assert mock_litellm.update_team_budget.await_args.kwargs["spend"] == 0.0
+    team_kwargs = mock_litellm.update_team_budget.await_args.kwargs
+    assert team_kwargs["max_budget"] == 10.0
+    assert team_kwargs.get("budget_duration") is None
+    assert team_kwargs["clear_budget_duration"] is True
+    assert "spend" not in team_kwargs
     mock_litellm.set_key_restrictions.assert_awaited_once()
-    assert mock_litellm.set_key_restrictions.await_args.kwargs["budget_amount"] == 4.0
-    assert (
-        mock_litellm.set_key_restrictions.await_args.kwargs["budget_duration"]
-        == f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
-    )
-    assert mock_litellm.set_key_restrictions.await_args.kwargs["spend"] == 0.0
+    key_kwargs = mock_litellm.set_key_restrictions.await_args.kwargs
+    assert key_kwargs["budget_amount"] == 4.0
+    assert key_kwargs["duration"] is None
+    assert key_kwargs["budget_duration"] is None
+    assert key_kwargs["spend"] == 0.0
 
 
 @patch(
@@ -885,6 +880,11 @@ def test_subscription_deactivate_fifo_debits_topup_on_cancellation(
 
     mock_litellm.update_team_budget.assert_awaited_once()
     assert mock_litellm.get_team_info.await_count == 1
+    assert "spend" not in mock_litellm.update_team_budget.await_args.kwargs
+    assert (
+        mock_litellm.update_team_budget.await_args.kwargs["clear_budget_duration"]
+        is True
+    )
     actual_max_budget = mock_litellm.update_team_budget.await_args.kwargs["max_budget"]
     assert abs(actual_max_budget - expected_max_budget) < 0.01, (
         f"Expected max_budget ~{expected_max_budget}, got {actual_max_budget}. "
@@ -898,6 +898,7 @@ def test_subscription_deactivate_fifo_debits_topup_on_cancellation(
     assert abs(actual_key_budget - topup_remaining) < 0.01, (
         f"Expected key budget_amount ~{topup_remaining}, got {actual_key_budget}."
     )
+    assert mock_litellm.set_key_restrictions.await_args.kwargs["duration"] is None
 
 
 def test_subscription_deactivate_endpoint_idempotent(
