@@ -36,7 +36,7 @@ jobs:
         run: |
           git fetch --quiet origin main dev
 
-          # Most pushes to main are the back-merge itself, or already on dev.
+          # A push to main that dev already contains has nothing to carry back.
           if [ -z "$(git rev-list origin/dev..origin/main)" ]; then
             echo "dev already contains main"
             exit 0
