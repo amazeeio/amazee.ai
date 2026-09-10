@@ -3441,11 +3441,10 @@ def test_team_spend_reports_ledger_window_when_litellm_has_no_cycle(
 
 
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
-def test_team_spend_period_fields_fall_back_to_team_anchor_when_no_budget(
+def test_team_spend_period_fields_null_when_no_budget(
     mock_get_team_info, client, admin_token, test_team, test_region, db
 ):
-    """With no LiteLLM window, the reported window comes from our own records:
-    the team anchor, since this team has no subscription entry either."""
+    """When LiteLLM has no budget set, period fields should be null."""
     key = DBPrivateAIKey(
         name="no-budget-key",
         litellm_token="no-budget-token",
@@ -3480,15 +3479,12 @@ def test_team_spend_period_fields_fall_back_to_team_anchor_when_no_budget(
     )
     assert response.status_code == 200
     data = response.json()
-    anchor = (test_team.last_payment or test_team.created_at).astimezone(UTC)
-    expected_start = anchor.isoformat().replace("+00:00", "Z")
-    expected_end = (anchor + timedelta(days=31)).isoformat().replace("+00:00", "Z")
-    assert data["budget_duration"] == "31d"
-    assert data["period_start"] == expected_start
-    assert data["budget_reset_at"] == expected_end
-    assert data["keys"][0]["budget_duration"] == "31d"
-    assert data["keys"][0]["period_start"] == expected_start
-    assert data["keys"][0]["budget_reset_at"] == expected_end
+    assert data["budget_duration"] is None
+    assert data["budget_reset_at"] is None
+    assert data["period_start"] is None
+    assert data["keys"][0]["budget_duration"] is None
+    assert data["keys"][0]["budget_reset_at"] is None
+    assert data["keys"][0]["period_start"] is None
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
