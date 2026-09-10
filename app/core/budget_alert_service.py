@@ -1065,20 +1065,28 @@ async def evaluate_region(
                 )
             )
 
-        # The entity total covers every key LiteLLM attributes to the team, including
-        # any we do not have a row for. A gap means our key table is out of sync, and
-        # the team percentage would be understated, so it is worth saying so.
-        entity_total = _sum_from(entity_days.get(lite_team_id), since)
-        if entity_total - team_spend > 0.01:
-            logger.warning(
-                "Team %s region %s: LiteLLM attributes %.4f but our keys account for "
-                "%.4f; %.4f of spend belongs to keys missing from ai_tokens",
-                team.id,
-                region.id,
-                entity_total,
-                team_spend,
-                entity_total - team_spend,
+        # A gap means our key table is out of sync and the team percentage would be
+        # understated, so it is worth saying so. The entity figure cannot answer that:
+        # it keeps the spend of deleted keys forever, so only spend LiteLLM can still
+        # tie to a live key counts. With no key on either side there is nothing to
+        # compare, and the leftover entity spend is history, not a gap.
+        tracked = set(exact_keys) | {
+            LiteLLMService.hash_token(key.litellm_token) for key in db_keys
+        }
+        if tracked:
+            attributed_total = sum(
+                _sum_from(key_days.get(hashed), since) for hashed in tracked
             )
+            if attributed_total - team_spend > 0.01:
+                logger.warning(
+                    "Team %s region %s: LiteLLM attributes %.4f but our keys account "
+                    "for %.4f; %.4f of spend belongs to keys missing from ai_tokens",
+                    team.id,
+                    region.id,
+                    attributed_total,
+                    team_spend,
+                    attributed_total - team_spend,
+                )
 
         subjects.append(
             _Subject(
