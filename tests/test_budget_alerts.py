@@ -12,6 +12,7 @@ counters are lifetime totals a top-up never resets, so they are never the
 numerator.
 """
 
+import logging
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
@@ -286,6 +287,43 @@ async def test_team_total_comes_from_keys_not_the_entity_figure(db, region):
     event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
     assert event.spend == 55.0
     assert event.threshold_pct == 50
+
+
+@pytest.mark.asyncio
+async def test_orphan_team_spend_with_no_keys_is_not_a_gap(db, region, caplog):
+    """A team with no keys left has history, not a gap.
+
+    LiteLLM keeps the spend of deleted keys on the team counter forever, so
+    comparing it against our key table would warn on every sweep.
+    """
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=10_000)
+    lite = f"{region.name}_{team.id}"
+
+    with caplog.at_level(logging.WARNING):
+        with _patch_litellm(_active(lite, spend=12.0), []):
+            await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    assert "missing from ai_tokens" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_untracked_live_key_spend_still_warns(db, region, caplog):
+    """A key LiteLLM still lists but ai_tokens does not have is a real gap."""
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=10_000)
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+
+    rows = _active(lite, spend=65.0, keys={"sk-a": 55.0, "sk-b": 10.0})
+
+    with caplog.at_level(logging.WARNING):
+        with _patch_litellm(rows, [_key_state("sk-a"), _key_state("sk-b")]):
+            result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    assert "missing from ai_tokens" in caplog.text
+    event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
+    assert event.spend == 55.0
 
 
 @pytest.mark.asyncio
