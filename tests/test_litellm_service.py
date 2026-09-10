@@ -1485,3 +1485,30 @@ def test_get_daily_activity_refuses_to_return_partial_history(
     assert exc.value.status_code == 500
     assert "exceeded" in str(exc.value.detail)
     assert mock_client.get.call_count == 100
+
+
+@patch("httpx.AsyncClient")
+def test_get_team_info_surfaces_upstream_status(mock_client_class, test_region):
+    """A missing team must reach the caller as a 404, not a flat 500."""
+    mock_response = Mock()
+    mock_response.status_code = 404
+    mock_response.json.return_value = {"error": "team not found"}
+    mock_response.raise_for_status.side_effect = HTTPStatusError(
+        "Not Found", request=None, response=mock_response
+    )
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(service.get_team_info("missing-team"))
+
+    assert exc_info.value.status_code == 404
+    assert "Failed to get LiteLLM team info" in exc_info.value.detail
