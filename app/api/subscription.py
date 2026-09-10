@@ -423,6 +423,19 @@ async def subscription_deactivate(
             # team that still has paid credit. Write nothing and let the caller
             # retry the whole deactivation.
             db.rollback()
+            _write_audit_log(
+                db,
+                "subscription.deactivate",
+                "deactivate",
+                str(team.id),
+                502,
+                {
+                    "transaction_id": request.transaction_id,
+                    "region_id": request.region_id,
+                    "reason": request.reason,
+                    "outcome": "spend_read_failed",
+                },
+            )
             raise HTTPException(
                 status_code=502,
                 detail="Cannot read LiteLLM team spend; deactivation must be retried",

@@ -9,6 +9,7 @@ from app.core.worker import (
     reconcile_periodic_team_budget_drift,
 )
 from app.db.models import (
+    DBAuditLog,
     DBPeriodicBudgetLedgerEntry,
     DBPeriodicPayment,
     DBPrivateAIKey,
@@ -772,6 +773,15 @@ def test_subscription_deactivate_fails_when_spend_read_fails(
         .filter(DBPeriodicPayment.payment_type == "deactivation")
         .count()
         == 0
+    )
+    assert (
+        db.query(DBAuditLog)
+        .filter(
+            DBAuditLog.event_type == "subscription.deactivate",
+            DBAuditLog.details["outcome"].as_string() == "spend_read_failed",
+        )
+        .count()
+        == 1
     )
     db.refresh(sub_entry)
     assert sub_entry.is_active is True
