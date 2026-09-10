@@ -31,7 +31,11 @@ from app.core.trial_cleanup import (
 )
 from app.db.postgres import PostgresManager
 from app.schemas.models import BudgetType
-from app.services.litellm import LiteLLMService, hash_litellm_token
+from app.services.litellm import (
+    INFERENCE_ONLY_ROUTES,
+    LiteLLMService,
+    hash_litellm_token,
+)
 from app.services.ses import SESService
 from app.core.team_service import (
     get_team_keys_by_region,
@@ -861,6 +865,13 @@ async def apply_billing_cycle_for_team(
                             team_id=lite_team_id,
                             apply_limits=False,
                             key=key.litellm_token,
+                            # Same route restriction normal provisioning applies,
+                            # or a rebuilt trial key would come back unrestricted.
+                            allowed_routes=(
+                                INFERENCE_ONLY_ROUTES
+                                if is_anonymous_trial_team(team)
+                                else None
+                            ),
                         )
                         await litellm_service.set_key_restrictions(**restrictions)
 
