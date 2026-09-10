@@ -875,15 +875,10 @@ class LiteLLMService:
                 )
                 response.raise_for_status()
         except httpx.HTTPStatusError as e:
-            error_msg = str(e)
-            if hasattr(e, "response") and e.response is not None:
-                try:
-                    error_details = e.response.json()
-                    error_msg = f"Status {e.response.status_code}: {error_details}"
-                except ValueError:
-                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            # Callers branch on the upstream status, a missing key must stay a 404.
+            status_code, error_msg, _ = self._parse_http_error(e)
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=status_code,
                 detail=f"Failed to set LiteLLM key restrictions: {error_msg}",
             )
 

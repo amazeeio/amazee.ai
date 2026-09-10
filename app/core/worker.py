@@ -651,6 +651,7 @@ async def apply_billing_cycle_for_team(
 
         team_max_budget = per_region_budget
         current_team_spend = 0.0
+        team_recreated = False
         try:
             try:
                 team_info_resp = await litellm_service.get_team_info(lite_team_id)
@@ -670,6 +671,7 @@ async def apply_billing_cycle_for_team(
                     models=effective_team_group_slugs(db, team.id, region),
                 )
                 team_info_resp = {}
+                team_recreated = True
             team_info = team_info_resp.get("team_info", team_info_resp)
             current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
 
@@ -849,6 +851,20 @@ async def apply_billing_cycle_for_team(
                             max_rpm_limit,
                         )
                 except Exception as e:
+                    if (
+                        team_recreated
+                        and isinstance(e, HTTPException)
+                        and e.status_code == 404
+                    ):
+                        # The team was rebuilt from scratch, so its keys went with
+                        # the old one. A key we cannot find is expected here and
+                        # must not fail the cycle.
+                        logger.warning(
+                            "Key %s no longer exists in LiteLLM after recreating team %s; skipping",
+                            key.id,
+                            lite_team_id,
+                        )
+                        continue
                     error_msg = f"Failed to update key {key.id} in LiteLLM: {str(e)}"
                     logger.error(error_msg)
                     sync_errors.append(error_msg)
