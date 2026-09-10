@@ -465,7 +465,7 @@ async def subscription_deactivate(
         for key in keys:
             try:
                 key_cap = (
-                    db.query(DBSpendCap.max_budget)
+                    db.query(DBSpendCap.max_budget, DBSpendCap.budget_duration)
                     .filter(
                         DBSpendCap.scope == "key",
                         DBSpendCap.region_id == region.id,
@@ -476,10 +476,11 @@ async def subscription_deactivate(
                 )
                 has_key_cap = key_cap is not None and key_cap[0] is not None
                 if has_key_cap:
+                    # A cancel must not move the cap window the user picked.
                     await litellm_service.set_key_restrictions(
                         litellm_token=key.litellm_token,
                         duration=None,
-                        budget_duration="31d",
+                        budget_duration=key_cap[1],
                         budget_amount=float(key_cap[0]),
                         rpm_limit=None,
                         spend=0.0,
