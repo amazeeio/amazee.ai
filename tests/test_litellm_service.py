@@ -234,6 +234,59 @@ def test_delete_key_failure(mock_client_class, test_region, mock_httpx_failure_c
 
 
 @patch("httpx.AsyncClient")
+def test_delete_team_success(mock_client_class, test_region, mock_httpx_post_client):
+    """Test successful team deletion"""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    result = asyncio.run(service.delete_team("test-team"))
+
+    assert result is True
+    mock_httpx_post_client.post.assert_called_once_with(
+        f"{test_region.litellm_api_url}/team/delete",
+        json={"team_ids": ["test-team"]},
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+    )
+
+
+@patch("httpx.AsyncClient")
+def test_delete_team_not_found(
+    mock_client_class, test_region, mock_httpx_failure_client
+):
+    """Test team deletion when the team is gone (should return True)"""
+    mock_client_class.return_value = mock_httpx_failure_client(404, "Not Found")
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    result = asyncio.run(service.delete_team("non-existent-team"))
+
+    assert result is True
+
+
+@patch("httpx.AsyncClient")
+def test_delete_team_failure(mock_client_class, test_region, mock_httpx_failure_client):
+    """Test team deletion failure"""
+    mock_client_class.return_value = mock_httpx_failure_client(
+        500, "Internal Server Error"
+    )
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(service.delete_team("test-team"))
+
+    assert exc_info.value.status_code == 500
+    assert "Failed to delete LiteLLM team" in exc_info.value.detail
+
+
+@patch("httpx.AsyncClient")
 def test_get_key_info_success(mock_client_class, test_region, mock_httpx_get_client):
     """Test successful key info retrieval"""
     mock_client_class.return_value = mock_httpx_get_client
