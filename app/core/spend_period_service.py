@@ -296,8 +296,8 @@ def resolve_team_period_window(
             return TeamPeriodWindow(
                 period_start=_as_utc(active_subscription.effective_period_start),
                 period_end=_as_utc(active_subscription.effective_period_end),
-                # Stripe cycles are 30d; LiteLLM carries 31d as the missed-webhook
-                # safety net, matching apply_billing_cycle_for_team.
+                # 31d is our reporting label for the window: a 30-day Stripe
+                # cycle plus a day of slack. LiteLLM holds no cycle of its own.
                 budget_duration="31d",
                 source="subscription_ledger",
                 active_subscription=active_subscription,
