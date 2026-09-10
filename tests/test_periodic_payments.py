@@ -1973,7 +1973,7 @@ async def test_sync_periodic_ledger_debits_counter_delta_without_a_litellm_cycle
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LiteLLMService")
-async def test_sync_periodic_ledger_falls_back_to_key_counters_when_spend_logs_fail(
+async def test_sync_periodic_ledger_raises_when_spend_logs_fail(
     mock_litellm_class,
     db,
     test_team,
@@ -2018,20 +2018,28 @@ async def test_sync_periodic_ledger_falls_back_to_key_counters_when_spend_logs_f
     )
     mock_litellm.get_team_spend_in_range = AsyncMock(side_effect=Exception("boom"))
 
-    await _sync_periodic_ledger_for_period(
-        db=db,
-        team=test_team,
-        region=test_region,
-        period_start=now,
-        period_end=now + timedelta(days=31),
-        amount_cents=10000,
-        source_payment_id=None,
-        source_invoice_id="inv_new",
-    )
+    with pytest.raises(Exception, match="boom"):
+        await _sync_periodic_ledger_for_period(
+            db=db,
+            team=test_team,
+            region=test_region,
+            period_start=now,
+            period_end=now + timedelta(days=31),
+            amount_cents=10000,
+            source_payment_id=None,
+            source_invoice_id="inv_new",
+        )
 
+    # Nothing settled: a retry must find the ledger untouched.
     previous_entry = (
         db.query(DBPeriodicBudgetLedgerEntry)
         .filter(DBPeriodicBudgetLedgerEntry.source_invoice_id == "inv_prev")
         .first()
     )
-    assert previous_entry.consumed_cents == 200
+    assert previous_entry.consumed_cents == 0
+    assert (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(DBPeriodicBudgetLedgerEntry.source_invoice_id == "inv_new")
+        .first()
+        is None
+    )
