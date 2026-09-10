@@ -365,7 +365,7 @@ def _amazee_team_id_from_litellm(entity_id: str, region_name: str) -> int | None
 
 async def _exact_team_key_state(
     service: LiteLLMService, lite_team_id: str
-) -> dict[str, dict]:
+) -> dict[str, dict] | None:
     """Current per-key ``spend``/``max_budget`` for one team, keyed by hashed token.
 
     Supplies the ``max_budget`` a key is measured against when our ``spend_caps``
@@ -373,12 +373,15 @@ async def _exact_team_key_state(
     is never read: LiteLLM's key counters are lifetime totals that a top-up does
     not reset, so they cannot be divided by a budget that excludes expired
     entries. Spend always comes from the daily-activity rows.
+
+    Returns ``None`` when the fetch fails, so a caller can tell "LiteLLM lists no
+    keys" apart from "we do not know which keys LiteLLM lists".
     """
     try:
         keys = await service.list_keys_for_team(lite_team_id)
     except Exception as exc:
         logger.warning("Could not fetch exact key state for %s: %s", lite_team_id, exc)
-        return {}
+        return None
     return {
         str(key.get("token")): key
         for key in keys
@@ -959,7 +962,7 @@ async def evaluate_region(
 
         for db_key in db_keys:
             hashed = LiteLLMService.hash_token(db_key.litellm_token)
-            key_state = exact_keys.get(hashed)
+            key_state = (exact_keys or {}).get(hashed)
             litellm_max_budget = (
                 key_state.get("max_budget") if key_state is not None else None
             )
@@ -1070,9 +1073,19 @@ async def evaluate_region(
         # it keeps the spend of deleted keys forever, so only spend LiteLLM can still
         # tie to a live key counts. With no key on either side there is nothing to
         # compare, and the leftover entity spend is history, not a gap.
-        tracked = set(exact_keys) | {
-            LiteLLMService.hash_token(key.litellm_token) for key in db_keys
-        }
+        if exact_keys is None:
+            # Without the key list an empty set of untracked keys is unknowable,
+            # not a fact, so a missing-key warning here would be guesswork.
+            logger.debug(
+                "Team %s region %s: skipping key reconciliation, key list unavailable",
+                team.id,
+                region.id,
+            )
+            tracked = set()
+        else:
+            tracked = set(exact_keys) | {
+                LiteLLMService.hash_token(key.litellm_token) for key in db_keys
+            }
         if tracked:
             attributed_total = sum(
                 _sum_from(key_days.get(hashed), since) for hashed in tracked

@@ -327,6 +327,29 @@ async def test_untracked_live_key_spend_still_warns(db, region, caplog):
 
 
 @pytest.mark.asyncio
+async def test_key_list_failure_skips_the_reconciliation_warning(db, region, caplog):
+    """A failed key list is not evidence that every key is tracked."""
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=10_000)
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+
+    with caplog.at_level(logging.WARNING):
+        with patch.multiple(
+            "app.core.budget_alert_service.LiteLLMService",
+            get_all_team_daily_activity=AsyncMock(
+                return_value=_active(lite, spend=65.0, keys={"sk-a": 55.0, "sk-b": 10.0})
+            ),
+            list_keys_for_team=AsyncMock(side_effect=Exception("litellm down")),
+        ):
+            result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    assert "missing from ai_tokens" not in caplog.text
+    event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
+    assert event.spend == 55.0
+
+
+@pytest.mark.asyncio
 async def test_team_cap_tightens_the_denominator(db, region):
     """An operator team cap lowers the budget, so the same spend crosses higher."""
     team = _make_team(db)
