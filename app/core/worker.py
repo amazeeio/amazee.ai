@@ -76,6 +76,10 @@ FIRST_EMAIL_DAYS_LEFT = 7
 SECOND_EMAIL_DAYS_LEFT = 5
 TRIAL_OVER_DAYS = 30
 
+# A key is created with a 30-day expiry and the billing cycle is the only thing
+# that renews it. This is key expiry, not a LiteLLM budget cycle.
+KEY_EXPIRY_EXTENSION = "31d"
+
 # Budget types that support subscription cycles (PERIODIC and POOL).
 # Used to gate cycle/ledger/drift functions that were originally PERIODIC-only.
 SUBSCRIPTION_BUDGET_TYPES = frozenset({BudgetType.PERIODIC, BudgetType.POOL})
@@ -475,6 +479,49 @@ def _previous_period_spend_baseline_cents(
     return int(round(float(row[0]) * 100))
 
 
+async def _elapsed_period_spend_cents(
+    db: Session,
+    *,
+    team: DBTeam,
+    region: DBRegion,
+    period_start: datetime,
+    litellm_service: "LiteLLMService | None",
+    lite_team_id: str | None,
+) -> int:
+    """Return the spend of the period that just ended, in cents.
+
+    Used when the live LiteLLM team counter can no longer be trusted. The
+    window runs from the previous snapshot's period_start up to the new one,
+    which is the period whose spend was never debited from the ledger.
+
+    Raises when the spend logs cannot be read, so the caller fails and is
+    retried. The per-key counters are deliberately not used as a fallback:
+    keys reset on cycles of their own, so their sum is not this window's
+    spend, and a wrong debit on the ledger is permanent.
+    """
+    row = (
+        db.query(DBTeamSpendPeriod.period_start)
+        .filter(
+            DBTeamSpendPeriod.team_id == team.id,
+            DBTeamSpendPeriod.region_id == region.id,
+            DBTeamSpendPeriod.period_start < period_start,
+        )
+        .order_by(DBTeamSpendPeriod.period_start.desc())
+        .first()
+    )
+    window_start = row[0] if row else None
+    if litellm_service is None or not lite_team_id or window_start is None:
+        raise RuntimeError(
+            f"Cannot read the elapsed period spend for team_id={team.id} "
+            f"region_id={region.id}: no LiteLLM connection or no earlier "
+            "spend period to open the window"
+        )
+    total = await litellm_service.get_team_spend_in_range(
+        lite_team_id, window_start, period_start
+    )
+    return max(0, int(round(float(total) * 100)))
+
+
 async def _sync_periodic_ledger_for_period(
     *,
     db: Session,
@@ -489,6 +536,9 @@ async def _sync_periodic_ledger_for_period(
     if team.budget_type not in SUBSCRIPTION_BUDGET_TYPES:
         return
 
+    litellm_service = None
+    lite_team_id = None
+    litellm_cycle_active = False
     try:
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
@@ -497,6 +547,7 @@ async def _sync_periodic_ledger_for_period(
         team_info_resp = await litellm_service.get_team_info(lite_team_id)
         team_info = team_info_resp.get("team_info", team_info_resp)
         snapshot_total_spend = float(team_info.get("spend", 0.0) or 0.0)
+        litellm_cycle_active = bool(team_info.get("budget_duration"))
     except Exception:
         snapshot = await fetch_team_spend_snapshot_for_region(
             db=db, team=team, region=region
@@ -532,7 +583,32 @@ async def _sync_periodic_ledger_for_period(
             region_id=region.id,
             current_period_start=period_start,
         )
-        incremental_spend_cents = max(0, spend_cents - spend_baseline_cents)
+        if not litellm_cycle_active and spend_cents >= spend_baseline_cents:
+            incremental_spend_cents = spend_cents - spend_baseline_cents
+        else:
+            # The counter is not trustworthy: it either already dropped below
+            # our snapshot, or LiteLLM still runs a budget cycle on this team
+            # and can reset it at any midnight, with usage climbing back above
+            # the snapshot before we look. The spend logs survive a reset, so
+            # read the elapsed period from them instead.
+            logger.warning(
+                "LiteLLM team spend counter is not trustworthy for team_id=%s "
+                "region_id=%s: live=%s cents, baseline=%s cents, "
+                "litellm_cycle_active=%s",
+                team.id,
+                region.id,
+                spend_cents,
+                spend_baseline_cents,
+                litellm_cycle_active,
+            )
+            incremental_spend_cents = await _elapsed_period_spend_cents(
+                db,
+                team=team,
+                region=region,
+                period_start=period_start,
+                litellm_service=litellm_service,
+                lite_team_id=lite_team_id,
+            )
         allocate_period_spend_fifo(
             db,
             team_id=team.id,
@@ -642,10 +718,6 @@ async def apply_billing_cycle_for_team(
         limit_service = LimitService(db)
         _, _, max_rpm_limit = limit_service.get_token_restrictions(team.id)
         per_region_budget = budget_cents / 100.0
-        # Safety-net: Stripe cycles are 30d. The 31d budget_duration on LiteLLM
-        # auto-expires budget if a webhook is missed. On cancellation, Stripe sends
-        # customer.subscription.deleted which handles explicit cleanup.
-        budget_duration = "31d"
         keys = get_team_region_litellm_keys(db, team_id=team.id, region_id=region.id)
 
         litellm_service = LiteLLMService(
@@ -750,16 +822,18 @@ async def apply_billing_cycle_for_team(
 
         if not sync_errors:
             try:
+                # LiteLLM must not run a budget cycle of its own for this
+                # team: the ledger owns the period, and a LiteLLM reset would
+                # drop the team spend counter and hide real spend from it.
                 await litellm_service.update_team_budget(
                     team_id=lite_team_id,
                     max_budget=team_max_budget,
-                    budget_duration=budget_duration,
+                    clear_budget_duration=True,
                 )
                 logger.info(
-                    "Updated team %s budget to %s (duration=%s) in region %s",
+                    "Updated team %s budget to %s in region %s",
                     team.id,
                     team_max_budget,
-                    budget_duration,
                     region.name,
                 )
                 if keys:
@@ -807,12 +881,14 @@ async def apply_billing_cycle_for_team(
                     if team.requires_pool_purchase_gate:
                         # POOL: key max_budget must be set only when an explicit key cap exists.
                         # Otherwise keep key max_budget null and enforce at team level.
+                        # Renew the key's expiry for the coming period; no key
+                        # budget cycle unless an explicit key cap defines one.
                         restrictions = dict(
                             litellm_token=key.litellm_token,
-                            duration=budget_duration,
-                            # Keep POOL key windows aligned with team cycle window
-                            # even when no explicit key cap exists.
-                            budget_duration=budget_duration,
+                            duration=KEY_EXPIRY_EXTENSION,
+                            budget_duration=(
+                                key_cap_duration if key_spend_cap is not None else None
+                            ),
                             budget_amount=(
                                 float(key_spend_cap)
                                 if key_spend_cap is not None
@@ -828,10 +904,14 @@ async def apply_billing_cycle_for_team(
                             if key_spend_cap is not None
                             else per_region_budget
                         )
+                        # Renew the key's expiry for the coming period; no key
+                        # budget cycle unless an explicit key cap defines one.
                         restrictions = dict(
                             litellm_token=key.litellm_token,
-                            duration=budget_duration,
-                            budget_duration=budget_duration,
+                            duration=KEY_EXPIRY_EXTENSION,
+                            budget_duration=(
+                                key_cap_duration if key_spend_cap is not None else None
+                            ),
                             budget_amount=effective_key_budget,
                             rpm_limit=max_rpm_limit,
                             spend=0.0,
@@ -847,9 +927,7 @@ async def apply_billing_cycle_for_team(
                         # own. Rebuild it under the same token so clients keep
                         # working and the limits below have something to apply to.
                         owner = (
-                            db.query(DBUser)
-                            .filter(DBUser.id == key.owner_id)
-                            .first()
+                            db.query(DBUser).filter(DBUser.id == key.owner_id).first()
                             if key.owner_id
                             else None
                         )
@@ -877,19 +955,20 @@ async def apply_billing_cycle_for_team(
 
                     if team.requires_pool_purchase_gate:
                         logger.info(
-                            "Updated POOL key %s limits in LiteLLM: duration=%s, key_cap=%s, key_cap_duration=%s, rpm=%s, spend_reset=True",
+                            "Updated POOL key %s limits in LiteLLM: expiry=%s, key_cap=%s, key_cap_duration=%s, rpm=%s, spend_reset=True",
                             key.id,
-                            budget_duration,
+                            KEY_EXPIRY_EXTENSION,
                             key_spend_cap,
                             key_cap_duration,
                             max_rpm_limit,
                         )
                     else:
                         logger.info(
-                            "Updated key %s limits in LiteLLM: duration=%s, budget=%s, rpm=%s, spend_reset=True",
+                            "Updated key %s limits in LiteLLM: expiry=%s, budget=%s, key_cap_duration=%s, rpm=%s, spend_reset=True",
                             key.id,
-                            budget_duration,
+                            KEY_EXPIRY_EXTENSION,
                             effective_key_budget,
+                            key_cap_duration,
                             max_rpm_limit,
                         )
                 except Exception as e:
