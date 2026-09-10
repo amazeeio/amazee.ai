@@ -689,6 +689,100 @@ def test_subscription_deactivate_preserves_active_topup_budget(
 )
 @patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
 @patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_fails_when_spend_read_fails(
+    mock_litellm_class,
+    mock_record_payment,
+    mock_capture_spend,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """With top-up left and no readable spend, deactivate must write nothing."""
+    period_start = datetime.now(UTC) - timedelta(days=5)
+    period_end = datetime.now(UTC) + timedelta(days=26)
+    sub_entry = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="subscription",
+        source_payment_id=None,
+        source_invoice_id="in_spend_read_fails",
+        stripe_payment_id=None,
+        amount_cents=1000,
+        consumed_cents=0,
+        purchased_at=period_start,
+        effective_period_start=period_start,
+        effective_period_end=period_end,
+        expires_at=period_end,
+        rolled_over_from_id=None,
+        is_active=True,
+    )
+    db.add(sub_entry)
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            source_payment_id=None,
+            source_invoice_id=None,
+            stripe_payment_id="pi_topup_spend_read_fails",
+            amount_cents=500,
+            consumed_cents=0,
+            purchased_at=datetime.now(UTC) - timedelta(days=1),
+            effective_period_start=None,
+            effective_period_end=None,
+            expires_at=datetime.now(UTC) + timedelta(days=30),
+            rolled_over_from_id=None,
+            is_active=True,
+        )
+    )
+    db.add(
+        DBPrivateAIKey(
+            name="spend-read-fails-key",
+            litellm_token="spend-read-fails-token",
+            region_id=test_region.id,
+            team_id=test_team.id,
+        )
+    )
+    db.commit()
+
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(side_effect=Exception("boom"))
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    response = client.post(
+        "/billing/subscription/deactivate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_deactivate_spend_read_fails",
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+            "reason": "cancelled",
+        },
+    )
+
+    assert response.status_code == 502
+    mock_litellm.update_team_budget.assert_not_awaited()
+    mock_litellm.set_key_restrictions.assert_not_awaited()
+    mock_record_payment.assert_not_awaited()
+    assert (
+        db.query(DBPeriodicPayment)
+        .filter(DBPeriodicPayment.payment_type == "deactivation")
+        .count()
+        == 0
+    )
+    db.refresh(sub_entry)
+    assert sub_entry.is_active is True
+
+
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+@patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
+@patch("app.api.subscription.LiteLLMService")
 def test_subscription_deactivate_captures_snapshot_before_reset(
     mock_litellm_class,
     mock_record_payment,
