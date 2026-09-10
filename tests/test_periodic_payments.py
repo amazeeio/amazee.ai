@@ -1669,3 +1669,142 @@ async def test_pool_team_billing_cycle_uses_31d_and_resets_spend(
     key_call = mock_litellm.set_key_restrictions.await_args
     assert key_call.kwargs["spend"] == 0.0
     assert key_call.kwargs["budget_duration"] == "31d"
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LiteLLMService")
+async def test_sync_periodic_ledger_uses_spend_logs_when_litellm_counter_drops(
+    mock_litellm_class,
+    db,
+    test_team,
+    test_region,
+    caplog,
+):
+    from app.core.periodic_budget_ledger_service import add_subscription_entry
+    from app.core.worker import _sync_periodic_ledger_for_period
+    from app.db.models import DBTeamSpendPeriod
+
+    now = datetime.now(UTC)
+    previous_start = now - timedelta(days=30)
+    db.add(
+        DBTeamSpendPeriod(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            budget_type=test_team.budget_type,
+            period_start=previous_start,
+            period_end=now,
+            total_spend=50.0,
+            source="test",
+        )
+    )
+    add_subscription_entry(
+        db,
+        team_id=test_team.id,
+        region_id=test_region.id,
+        amount_cents=10000,
+        purchased_at=previous_start,
+        period_start=previous_start,
+        period_end=now,
+        source_payment_id=None,
+        source_invoice_id="inv_prev",
+    )
+    db.commit()
+
+    mock_litellm_class.format_team_id.return_value = "test_region_team"
+    mock_litellm = mock_litellm_class.return_value
+    # The team counter was reset by LiteLLM, so it now reads far below the
+    # stored snapshot of 50.0.
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={"team_info": {"spend": 2.0}, "keys": []}
+    )
+    mock_litellm.get_team_spend_in_range = AsyncMock(return_value=40.0)
+
+    with caplog.at_level("WARNING"):
+        await _sync_periodic_ledger_for_period(
+            db=db,
+            team=test_team,
+            region=test_region,
+            period_start=now,
+            period_end=now + timedelta(days=31),
+            amount_cents=10000,
+            source_payment_id=None,
+            source_invoice_id="inv_new",
+        )
+
+    previous_entry = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(DBPeriodicBudgetLedgerEntry.source_invoice_id == "inv_prev")
+        .first()
+    )
+    assert previous_entry.consumed_cents == 4000
+    mock_litellm.get_team_spend_in_range.assert_awaited_once()
+    args = mock_litellm.get_team_spend_in_range.await_args.args
+    assert args[0] == "test_region_team"
+    assert args[2] == now
+    assert "dropped below the stored snapshot" in caplog.text
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LiteLLMService")
+async def test_sync_periodic_ledger_falls_back_to_key_counters_when_spend_logs_fail(
+    mock_litellm_class,
+    db,
+    test_team,
+    test_region,
+):
+    from app.core.periodic_budget_ledger_service import add_subscription_entry
+    from app.core.worker import _sync_periodic_ledger_for_period
+    from app.db.models import DBTeamSpendPeriod
+
+    now = datetime.now(UTC)
+    previous_start = now - timedelta(days=30)
+    db.add(
+        DBTeamSpendPeriod(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            budget_type=test_team.budget_type,
+            period_start=previous_start,
+            period_end=now,
+            total_spend=50.0,
+            source="test",
+        )
+    )
+    add_subscription_entry(
+        db,
+        team_id=test_team.id,
+        region_id=test_region.id,
+        amount_cents=10000,
+        purchased_at=previous_start,
+        period_start=previous_start,
+        period_end=now,
+        source_payment_id=None,
+        source_invoice_id="inv_prev",
+    )
+    db.commit()
+
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={
+            "team_info": {"spend": 2.0},
+            "keys": [{"spend": 1.5}, {"spend": 0.5}],
+        }
+    )
+    mock_litellm.get_team_spend_in_range = AsyncMock(side_effect=Exception("boom"))
+
+    await _sync_periodic_ledger_for_period(
+        db=db,
+        team=test_team,
+        region=test_region,
+        period_start=now,
+        period_end=now + timedelta(days=31),
+        amount_cents=10000,
+        source_payment_id=None,
+        source_invoice_id="inv_new",
+    )
+
+    previous_entry = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(DBPeriodicBudgetLedgerEntry.source_invoice_id == "inv_prev")
+        .first()
+    )
+    assert previous_entry.consumed_cents == 200
