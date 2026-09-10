@@ -105,6 +105,30 @@ def test_create_key_with_email_fallback(
 
 
 @patch("httpx.AsyncClient")
+def test_create_key_reuses_a_given_key_value(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    """A caller-chosen key value is sent, so a stored token survives a rebuild."""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.create_key(
+            email="test@example.com",
+            name="Test Key",
+            user_id=123,
+            team_id="team-456",
+            key="sk-fixed",
+        )
+    )
+
+    assert mock_httpx_post_client.post.call_args.kwargs["json"]["key"] == "sk-fixed"
+
+
+@patch("httpx.AsyncClient")
 def test_create_key_can_create_blocked_key(
     mock_client_class, test_region, mock_httpx_post_client
 ):

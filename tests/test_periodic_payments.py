@@ -16,6 +16,7 @@ from app.db.models import (
     DBPrivateAIKey,
     DBRegion,
     DBTeam,
+    DBUser,
 )
 from app.schemas.models import BudgetType
 
@@ -133,7 +134,7 @@ async def test_apply_billing_cycle_for_team_updates_sync_status_success(
 
 
 @pytest.mark.asyncio
-@patch("app.core.worker.effective_team_group_slugs", return_value=["group-a"])
+@patch("app.core.team_service.effective_team_group_slugs", return_value=["group-a"])
 @patch("app.core.worker.compute_active_topup_remaining", return_value=0)
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.worker.LimitService")
@@ -164,12 +165,13 @@ async def test_apply_billing_cycle_for_team_recreates_missing_litellm_team(
         999.0,
         1000,
     )
-    lite_team_id = mock_litellm_class.format_team_id.return_value
     mock_litellm = mock_litellm_class.return_value
     mock_litellm.get_team_info = AsyncMock(
         side_effect=HTTPException(status_code=404, detail="Team not found")
     )
     mock_litellm.create_team = AsyncMock()
+    mock_litellm.create_user = AsyncMock()
+    mock_litellm.add_team_member = AsyncMock()
     mock_litellm.update_team_budget = AsyncMock()
     mock_litellm.set_key_restrictions = AsyncMock()
 
@@ -186,21 +188,22 @@ async def test_apply_billing_cycle_for_team_recreates_missing_litellm_team(
     assert errors == []
     db.refresh(payment)
     assert payment.sync_status == "success"
-    mock_litellm.create_team.assert_awaited_once_with(
-        team_id=lite_team_id,
-        team_alias=lite_team_id,
-        models=["group-a"],
-    )
+    assert mock_litellm.create_team.await_args.kwargs["models"] == ["group-a"]
+    # Users and memberships are rebuilt with the team, or it would accept no key.
+    assert mock_litellm.create_user.await_count == db.query(DBUser).filter(
+        DBUser.team_id == test_team.id
+    ).count()
+    assert mock_litellm.add_team_member.await_count == mock_litellm.create_user.await_count
     # Spend on a fresh team is zero, so the full budget is applied.
     assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 100.0
 
 
 @pytest.mark.asyncio
-@patch("app.core.worker.effective_team_group_slugs", return_value=["group-a"])
+@patch("app.core.team_service.effective_team_group_slugs", return_value=["group-a"])
 @patch("app.core.worker.compute_active_topup_remaining", return_value=0)
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.worker.LimitService")
-async def test_apply_billing_cycle_for_team_skips_keys_lost_with_the_team(
+async def test_apply_billing_cycle_for_team_rebuilds_keys_lost_with_the_team(
     mock_limit_service,
     mock_litellm_class,
     _mock_topup,
@@ -209,7 +212,7 @@ async def test_apply_billing_cycle_for_team_skips_keys_lost_with_the_team(
     test_team,
     test_region,
 ):
-    """A recreated team has no keys, so key updates 404 and must not fail the cycle."""
+    """A recreated team has no keys, so each key is minted again under its token."""
     key = DBPrivateAIKey(
         name="lost-key",
         litellm_token="lost-token",
@@ -235,12 +238,91 @@ async def test_apply_billing_cycle_for_team_skips_keys_lost_with_the_team(
         999.0,
         1000,
     )
+    lite_team_id = mock_litellm_class.format_team_id.return_value
     mock_litellm = mock_litellm_class.return_value
     mock_litellm.get_team_info = AsyncMock(
         side_effect=HTTPException(status_code=404, detail="Team not found")
     )
     mock_litellm.create_team = AsyncMock()
+    mock_litellm.create_user = AsyncMock()
+    mock_litellm.add_team_member = AsyncMock()
     mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.create_key = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock(
+        side_effect=[HTTPException(status_code=404, detail="Key not found"), None]
+    )
+
+    errors = await apply_billing_cycle_for_team(
+        db=db,
+        team_id=test_team.id,
+        budget_cents=10000,
+        region_id=test_region.id,
+        period_start=datetime.now(UTC),
+        period_end=datetime.now(UTC) + timedelta(days=31),
+        source_payment_id=payment.id,
+    )
+
+    assert errors == []
+    mock_litellm.create_key.assert_awaited_once()
+    create_kwargs = mock_litellm.create_key.await_args.kwargs
+    assert create_kwargs["key"] == "lost-token"
+    assert create_kwargs["team_id"] == lite_team_id
+    assert create_kwargs["apply_limits"] is False
+    assert mock_litellm.set_key_restrictions.await_count == 2
+    db.refresh(payment)
+    assert payment.sync_status == "success"
+
+
+@pytest.mark.asyncio
+@patch("app.core.team_service.effective_team_group_slugs", return_value=["group-a"])
+@patch("app.core.worker.compute_active_topup_remaining", return_value=0)
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.worker.LimitService")
+async def test_apply_billing_cycle_for_team_fails_when_key_rebuild_fails(
+    mock_limit_service,
+    mock_litellm_class,
+    _mock_topup,
+    _mock_slugs,
+    db,
+    test_team,
+    test_region,
+):
+    """A key we cannot rebuild leaves the team broken, so the sync must say so."""
+    db.add(
+        DBPrivateAIKey(
+            name="lost-key",
+            litellm_token="lost-token",
+            region_id=test_region.id,
+            team_id=test_team.id,
+        )
+    )
+    payment = DBPeriodicPayment(
+        team_id=test_team.id,
+        stripe_payment_id="pay_sync_key_rebuild_failed",
+        amount_cents=10000,
+        currency="usd",
+        payment_type="subscription",
+        status="completed",
+        sync_status="pending",
+        payment_date=datetime.now(UTC),
+    )
+    db.add(payment)
+    db.commit()
+
+    mock_limit_service.return_value.get_token_restrictions.return_value = (
+        31,
+        999.0,
+        1000,
+    )
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        side_effect=HTTPException(status_code=404, detail="Team not found")
+    )
+    mock_litellm.create_team = AsyncMock()
+    mock_litellm.create_user = AsyncMock()
+    mock_litellm.add_team_member = AsyncMock()
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.create_key = AsyncMock(side_effect=Exception("litellm down"))
     mock_litellm.set_key_restrictions = AsyncMock(
         side_effect=HTTPException(status_code=404, detail="Key not found")
     )
@@ -255,11 +337,9 @@ async def test_apply_billing_cycle_for_team_skips_keys_lost_with_the_team(
         source_payment_id=payment.id,
     )
 
-    assert errors == []
-    mock_litellm.create_team.assert_awaited_once()
-    mock_litellm.set_key_restrictions.assert_awaited_once()
+    assert len(errors) == 1
     db.refresh(payment)
-    assert payment.sync_status == "success"
+    assert payment.sync_status == "sync_failed"
 
 
 @pytest.mark.asyncio

@@ -35,6 +35,7 @@ from app.services.litellm import LiteLLMService, hash_litellm_token
 from app.services.ses import SESService
 from app.core.team_service import (
     get_team_keys_by_region,
+    reprovision_litellm_team,
     get_team_region_litellm_keys,
     is_anonymous_trial_team,
     soft_delete_team,
@@ -63,7 +64,6 @@ from app.core.periodic_budget_ledger_service import (
     materialize_topup_rollovers,
 )
 from app.core.email import normalize_email_for_lookup
-from app.services.access_groups import effective_team_group_slugs
 from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
@@ -665,10 +665,14 @@ async def apply_billing_cycle_for_team(
                     lite_team_id,
                     region.name,
                 )
-                await litellm_service.create_team(
-                    team_id=lite_team_id,
-                    team_alias=lite_team_id,
-                    models=effective_team_group_slugs(db, team.id, region),
+                # The team took its users and memberships with it, so rebuild
+                # them too; a bare team would accept no key.
+                await reprovision_litellm_team(
+                    db,
+                    team,
+                    region,
+                    litellm_service,
+                    db.query(DBUser).filter(DBUser.team_id == team.id).all(),
                 )
                 team_info_resp = {}
                 team_recreated = True
@@ -797,20 +801,16 @@ async def apply_billing_cycle_for_team(
                     key_spend_cap = key_cap_row[0] if key_cap_row else None
                     key_cap_duration = key_cap_row[1] if key_cap_row else None
 
+                    effective_key_budget = None
                     if team.requires_pool_purchase_gate:
                         # POOL: key max_budget must be set only when an explicit key cap exists.
                         # Otherwise keep key max_budget null and enforce at team level.
-                        await litellm_service.set_key_restrictions(
+                        restrictions = dict(
                             litellm_token=key.litellm_token,
                             duration=budget_duration,
                             # Keep POOL key windows aligned with team cycle window
                             # even when no explicit key cap exists.
-                            budget_duration=(
-                                # POOL key caps use 31d windows aligned with cycle semantics.
-                                budget_duration
-                                if key_spend_cap is not None
-                                else budget_duration
-                            ),
+                            budget_duration=budget_duration,
                             budget_amount=(
                                 float(key_spend_cap)
                                 if key_spend_cap is not None
@@ -820,6 +820,54 @@ async def apply_billing_cycle_for_team(
                             spend=0.0,
                             blocked=False,
                         )
+                    else:
+                        effective_key_budget = (
+                            float(key_spend_cap)
+                            if key_spend_cap is not None
+                            else per_region_budget
+                        )
+                        restrictions = dict(
+                            litellm_token=key.litellm_token,
+                            duration=budget_duration,
+                            budget_duration=budget_duration,
+                            budget_amount=effective_key_budget,
+                            rpm_limit=max_rpm_limit,
+                            spend=0.0,
+                            blocked=False,
+                        )
+
+                    try:
+                        await litellm_service.set_key_restrictions(**restrictions)
+                    except HTTPException as restriction_error:
+                        if not (
+                            team_recreated and restriction_error.status_code == 404
+                        ):
+                            raise
+                        # The keys went with the old team, so mint this one again
+                        # under its stored token before applying its limits.
+                        owner = (
+                            db.query(DBUser)
+                            .filter(DBUser.id == key.owner_id)
+                            .first()
+                            if key.owner_id
+                            else None
+                        )
+                        logger.warning(
+                            "Key %s missing after recreating team %s; recreating it",
+                            key.id,
+                            lite_team_id,
+                        )
+                        await litellm_service.create_key(
+                            email=owner.email if owner else team.admin_email or "",
+                            name=key.name,
+                            user_id=key.owner_id,
+                            team_id=lite_team_id,
+                            apply_limits=False,
+                            key=key.litellm_token,
+                        )
+                        await litellm_service.set_key_restrictions(**restrictions)
+
+                    if team.requires_pool_purchase_gate:
                         logger.info(
                             "Updated POOL key %s limits in LiteLLM: duration=%s, key_cap=%s, key_cap_duration=%s, rpm=%s, spend_reset=True",
                             key.id,
@@ -829,20 +877,6 @@ async def apply_billing_cycle_for_team(
                             max_rpm_limit,
                         )
                     else:
-                        effective_key_budget = (
-                            float(key_spend_cap)
-                            if key_spend_cap is not None
-                            else per_region_budget
-                        )
-                        await litellm_service.set_key_restrictions(
-                            litellm_token=key.litellm_token,
-                            duration=budget_duration,
-                            budget_duration=budget_duration,
-                            budget_amount=effective_key_budget,
-                            rpm_limit=max_rpm_limit,
-                            spend=0.0,
-                            blocked=False,
-                        )
                         logger.info(
                             "Updated key %s limits in LiteLLM: duration=%s, budget=%s, rpm=%s, spend_reset=True",
                             key.id,
@@ -851,20 +885,6 @@ async def apply_billing_cycle_for_team(
                             max_rpm_limit,
                         )
                 except Exception as e:
-                    if (
-                        team_recreated
-                        and isinstance(e, HTTPException)
-                        and e.status_code == 404
-                    ):
-                        # The team was rebuilt from scratch, so its keys went with
-                        # the old one. A key we cannot find is expected here and
-                        # must not fail the cycle.
-                        logger.warning(
-                            "Key %s no longer exists in LiteLLM after recreating team %s; skipping",
-                            key.id,
-                            lite_team_id,
-                        )
-                        continue
                     error_msg = f"Failed to update key {key.id} in LiteLLM: {str(e)}"
                     logger.error(error_msg)
                     sync_errors.append(error_msg)

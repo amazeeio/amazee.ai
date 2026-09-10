@@ -166,6 +166,7 @@ class LiteLLMService:
         apply_limits: bool = True,
         blocked: Optional[bool] = None,
         allowed_routes: Optional[list[str]] = None,
+        key: Optional[str] = None,
     ) -> str:
         """Create a new API key for LiteLLM
 
@@ -173,6 +174,8 @@ class LiteLLMService:
             allowed_routes: Restrict the key to these LiteLLM routes (exact
                 paths, wildcards or route-group names such as
                 ``llm_api_routes``). None means no route restriction.
+            key: Reuse this key value instead of letting LiteLLM mint one, so a
+                token we already store keeps working after the key is rebuilt.
         """
         try:
             logger.info(
@@ -207,6 +210,8 @@ class LiteLLMService:
             request_data["key_alias"] = clean_alias
             request_data["metadata"] = metadata
             request_data["team_id"] = team_id
+            if key:
+                request_data["key"] = key
             if blocked is not None:
                 request_data["blocked"] = blocked
             if allowed_routes:
