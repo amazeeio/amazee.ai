@@ -540,6 +540,7 @@ async def _sync_periodic_ledger_for_period(
     litellm_service = None
     lite_team_id = None
     team_info_resp = None
+    litellm_cycle_active = False
     try:
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
@@ -548,6 +549,7 @@ async def _sync_periodic_ledger_for_period(
         team_info_resp = await litellm_service.get_team_info(lite_team_id)
         team_info = team_info_resp.get("team_info", team_info_resp)
         snapshot_total_spend = float(team_info.get("spend", 0.0) or 0.0)
+        litellm_cycle_active = bool(team_info.get("budget_duration"))
     except Exception:
         snapshot = await fetch_team_spend_snapshot_for_region(
             db=db, team=team, region=region
@@ -583,20 +585,23 @@ async def _sync_periodic_ledger_for_period(
             region_id=region.id,
             current_period_start=period_start,
         )
-        if spend_cents >= spend_baseline_cents:
+        if not litellm_cycle_active and spend_cents >= spend_baseline_cents:
             incremental_spend_cents = spend_cents - spend_baseline_cents
         else:
-            # LiteLLM resets the team counter when it runs a budget cycle of
-            # its own, which puts the live counter below our snapshot and
-            # hides a whole period of spend. The spend logs survive that
-            # reset, so read the elapsed period from them instead.
+            # The counter is not trustworthy: it either already dropped below
+            # our snapshot, or LiteLLM still runs a budget cycle on this team
+            # and can reset it at any midnight, with usage climbing back above
+            # the snapshot before we look. The spend logs survive a reset, so
+            # read the elapsed period from them instead.
             logger.warning(
-                "LiteLLM team spend counter dropped below the stored snapshot "
-                "for team_id=%s region_id=%s: live=%s cents, baseline=%s cents",
+                "LiteLLM team spend counter is not trustworthy for team_id=%s "
+                "region_id=%s: live=%s cents, baseline=%s cents, "
+                "litellm_cycle_active=%s",
                 team.id,
                 region.id,
                 spend_cents,
                 spend_baseline_cents,
+                litellm_cycle_active,
             )
             incremental_spend_cents = await _elapsed_period_spend_cents(
                 db,
