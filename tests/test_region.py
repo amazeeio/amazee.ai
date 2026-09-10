@@ -318,6 +318,7 @@ def test_update_region_unreachable_database_rejected(
             "postgres_host": "unreachable-host",
             "postgres_port": test_region.postgres_port,
             "postgres_admin_user": test_region.postgres_admin_user,
+            "postgres_admin_password": "new-password",
             "litellm_api_url": test_region.litellm_api_url,
             "is_active": True,
             "is_dedicated": False,
@@ -326,16 +327,61 @@ def test_update_region_unreachable_database_rejected(
 
     assert response.status_code == 400
     assert "Database connection validation failed" in response.json()["detail"]
-    # Only the changed connection is verified; stored password is reused.
+    # Only the changed connection is verified.
     mock_validate_db.assert_called_once_with(
         "unreachable-host",
         test_region.postgres_port,
         test_region.postgres_admin_user,
-        test_region.postgres_admin_password,
+        "new-password",
     )
     mock_validate_litellm.assert_not_called()
     db.refresh(test_region)
     assert test_region.postgres_host == original_host
+
+
+@patch("app.api.regions.validate_litellm_endpoint")
+@patch("app.api.regions.validate_database_connection")
+def test_update_region_new_destination_requires_new_secret(
+    mock_validate_db, mock_validate_litellm, client, admin_token, test_region, db
+):
+    """
+    Given an existing region
+    When an admin changes a connection destination but leaves its secret blank
+    Then the update is rejected before any probe, so the stored secret is
+    never sent to the new destination
+    """
+    base = {
+        "name": test_region.name,
+        "postgres_host": test_region.postgres_host,
+        "postgres_port": test_region.postgres_port,
+        "postgres_admin_user": test_region.postgres_admin_user,
+        "litellm_api_url": test_region.litellm_api_url,
+        "is_active": True,
+        "is_dedicated": False,
+    }
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    response = client.put(
+        f"/regions/{test_region.id}",
+        headers=headers,
+        json={**base, "postgres_host": "attacker-host", "postgres_admin_password": ""},
+    )
+    assert response.status_code == 400
+    assert "postgres_admin_password is required" in response.json()["detail"]
+
+    response = client.put(
+        f"/regions/{test_region.id}",
+        headers=headers,
+        json={**base, "litellm_api_url": "https://attacker-litellm.com"},
+    )
+    assert response.status_code == 400
+    assert "litellm_api_key is required" in response.json()["detail"]
+
+    mock_validate_db.assert_not_called()
+    mock_validate_litellm.assert_not_called()
+    db.refresh(test_region)
+    assert test_region.postgres_host == base["postgres_host"]
+    assert test_region.litellm_api_url == base["litellm_api_url"]
 
 
 @patch("app.api.regions.validate_litellm_endpoint")
