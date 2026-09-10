@@ -3374,10 +3374,78 @@ def test_team_spend_includes_period_fields_for_periodic_team(
 
 
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
-def test_team_spend_period_fields_null_when_no_budget(
+def test_team_spend_reports_ledger_window_when_litellm_has_no_cycle(
     mock_get_team_info, client, admin_token, test_team, test_region, db
 ):
-    """When LiteLLM has no budget set, period fields should be null."""
+    """After a billing cycle LiteLLM holds no budget_duration, so the window
+    must come from the active subscription ledger entry."""
+    from app.core.periodic_budget_ledger_service import add_subscription_entry
+
+    key = DBPrivateAIKey(
+        name="ledger-window-key",
+        litellm_token="ledger-window-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+
+    period_start = datetime.now(UTC) - timedelta(days=2)
+    period_end = period_start + timedelta(days=31)
+    add_subscription_entry(
+        db,
+        team_id=test_team.id,
+        region_id=test_region.id,
+        amount_cents=10000,
+        purchased_at=period_start,
+        period_start=period_start,
+        period_end=period_end,
+        source_payment_id=None,
+        source_invoice_id="inv_ledger_window",
+    )
+    db.commit()
+
+    mock_get_team_info.return_value = {
+        "team_info": {
+            "spend": 4.0,
+            "max_budget": 104.0,
+            "budget_duration": None,
+            "budget_reset_at": None,
+        },
+        "keys": [
+            {
+                "metadata": {"amazeeai_private_ai_key_name": key.name},
+                "user_id": None,
+                "spend": 4.0,
+                "max_budget": None,
+                "budget_duration": None,
+                "budget_reset_at": None,
+            }
+        ],
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    expected_start = period_start.isoformat().replace("+00:00", "Z")
+    expected_end = period_end.isoformat().replace("+00:00", "Z")
+    assert data["budget_duration"] == "31d"
+    assert data["period_start"] == expected_start
+    assert data["budget_reset_at"] == expected_end
+    assert data["keys"][0]["budget_duration"] == "31d"
+    assert data["keys"][0]["period_start"] == expected_start
+    assert data["keys"][0]["budget_reset_at"] == expected_end
+
+
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_team_spend_period_fields_fall_back_to_team_anchor_when_no_budget(
+    mock_get_team_info, client, admin_token, test_team, test_region, db
+):
+    """With no LiteLLM window, the reported window comes from our own records:
+    the team anchor, since this team has no subscription entry either."""
     key = DBPrivateAIKey(
         name="no-budget-key",
         litellm_token="no-budget-token",
@@ -3412,12 +3480,15 @@ def test_team_spend_period_fields_null_when_no_budget(
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["budget_duration"] is None
-    assert data["budget_reset_at"] is None
-    assert data["period_start"] is None
-    assert data["keys"][0]["budget_duration"] is None
-    assert data["keys"][0]["budget_reset_at"] is None
-    assert data["keys"][0]["period_start"] is None
+    anchor = (test_team.last_payment or test_team.created_at).astimezone(UTC)
+    expected_start = anchor.isoformat().replace("+00:00", "Z")
+    expected_end = (anchor + timedelta(days=31)).isoformat().replace("+00:00", "Z")
+    assert data["budget_duration"] == "31d"
+    assert data["period_start"] == expected_start
+    assert data["budget_reset_at"] == expected_end
+    assert data["keys"][0]["budget_duration"] == "31d"
+    assert data["keys"][0]["period_start"] == expected_start
+    assert data["keys"][0]["budget_reset_at"] == expected_end
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
