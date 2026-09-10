@@ -335,6 +335,32 @@ async def update_region(
     for secret_field in ("postgres_admin_password", "litellm_api_key"):
         if not update_data.get(secret_field):
             update_data.pop(secret_field, None)
+
+    # Live-verify connections only when their settings actually change, so
+    # legacy regions with unreachable-from-here values stay editable.
+    def effective(field: str):
+        return update_data.get(field, getattr(db_region, field))
+
+    def changed(*fields: str) -> bool:
+        return any(effective(f) != getattr(db_region, f) for f in fields)
+
+    if changed("litellm_api_url", "litellm_api_key"):
+        await validate_litellm_endpoint(
+            effective("litellm_api_url"), effective("litellm_api_key")
+        )
+    if changed(
+        "postgres_host",
+        "postgres_port",
+        "postgres_admin_user",
+        "postgres_admin_password",
+    ):
+        await validate_database_connection(
+            effective("postgres_host"),
+            effective("postgres_port"),
+            effective("postgres_admin_user"),
+            effective("postgres_admin_password"),
+        )
+
     for field, value in update_data.items():
         setattr(db_region, field, value)
 
