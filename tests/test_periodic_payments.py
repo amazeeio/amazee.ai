@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi import HTTPException
 
+from app.core.config import settings
 from app.core.worker import (
     _record_periodic_payment_direct,
     apply_billing_cycle_for_team,
@@ -617,7 +618,6 @@ async def test_apply_billing_cycle_for_team_rebuilds_a_trial_key_inference_only(
         mock_litellm.create_key.await_args.kwargs["allowed_routes"]
         == INFERENCE_ONLY_ROUTES
     )
-
 
 
 @pytest.mark.asyncio
