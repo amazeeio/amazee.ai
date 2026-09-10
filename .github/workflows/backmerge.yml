@@ -1,0 +1,56 @@
+name: Back-merge main into dev
+
+# After a release pull request merges, main carries the merge commit and the
+# version bump that dev does not have. Someone had to remember to open the
+# main -> dev pull request; when nobody did, the two branches drifted. This
+# workflow opens it instead.
+#
+# The default token cannot approve its own pull request, so one human approval
+# is still needed. Auto-merge does the rest.
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+# Two pushes at once would each try to open the same pull request.
+concurrency:
+  group: backmerge-main-dev
+  cancel-in-progress: false
+
+jobs:
+  backmerge:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read        # read the branches to compare them
+      pull-requests: write  # open the back-merge pull request and set auto-merge
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Open or reuse the back-merge pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch --quiet origin main dev
+
+          # Most pushes to main are the back-merge itself, or already on dev.
+          if [ -z "$(git rev-list origin/dev..origin/main)" ]; then
+            echo "dev already contains main"
+            exit 0
+          fi
+
+          NUMBER=$(gh pr list --base dev --head main --state open --json number --jq '.[0].number')
+          if [ -z "$NUMBER" ]; then
+            URL=$(gh pr create --base dev --head main \
+              --title "Back-merge main into dev" \
+              --body "Carries the release commits from main back to dev, so the two branches do not drift.")
+            NUMBER=${URL##*/}
+            echo "Opened pull request #$NUMBER"
+          else
+            echo "Reusing pull request #$NUMBER"
+          fi
+
+          gh pr merge "$NUMBER" --auto --merge
