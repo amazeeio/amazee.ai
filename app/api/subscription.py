@@ -403,7 +403,6 @@ async def subscription_deactivate(
             / 100.0
         )
 
-        projected_team_max_budget = topup_remaining_dollars
         if current_team_spend is None:
             try:
                 team_info_resp = await litellm_service.get_team_info(lite_team_id)
@@ -419,7 +418,16 @@ async def subscription_deactivate(
             # No top-up left: block every key in the team, whatever the spend
             # counter says now or later.
             projected_team_max_budget = 0.0
-        elif current_team_spend is not None:
+        elif current_team_spend is None:
+            # A cap without the recorded spend would sit below it and block a
+            # team that still has paid credit. Write nothing and let the caller
+            # retry the whole deactivation.
+            db.rollback()
+            raise HTTPException(
+                status_code=502,
+                detail="Cannot read LiteLLM team spend; deactivation must be retried",
+            )
+        else:
             # /team/update ignores spend, so the cap has to cover the spend
             # already recorded for the remaining top-up to be requestable.
             projected_team_max_budget = current_team_spend + topup_remaining_dollars
