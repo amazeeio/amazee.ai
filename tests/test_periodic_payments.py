@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.core.config import settings
 from app.core.worker import (
@@ -129,6 +130,69 @@ async def test_apply_billing_cycle_for_team_updates_sync_status_success(
     assert mock_litellm.set_key_restrictions.await_args.kwargs["budget_amount"] == 100.0
     assert mock_litellm.set_key_restrictions.await_args.kwargs["spend"] == 0.0
     assert mock_litellm.set_key_restrictions.await_args.kwargs["rpm_limit"] == 1000
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.effective_team_group_slugs", return_value=["group-a"])
+@patch("app.core.worker.compute_active_topup_remaining", return_value=0)
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.worker.LimitService")
+async def test_apply_billing_cycle_for_team_recreates_missing_litellm_team(
+    mock_limit_service,
+    mock_litellm_class,
+    _mock_topup,
+    _mock_slugs,
+    db,
+    test_team,
+    test_region,
+):
+    payment = DBPeriodicPayment(
+        team_id=test_team.id,
+        stripe_payment_id="pay_sync_missing_team",
+        amount_cents=10000,
+        currency="usd",
+        payment_type="subscription",
+        status="completed",
+        sync_status="pending",
+        payment_date=datetime.now(UTC),
+    )
+    db.add(payment)
+    db.commit()
+
+    mock_limit_service.return_value.get_token_restrictions.return_value = (
+        31,
+        999.0,
+        1000,
+    )
+    lite_team_id = mock_litellm_class.format_team_id.return_value
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        side_effect=HTTPException(status_code=404, detail="Team not found")
+    )
+    mock_litellm.create_team = AsyncMock()
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    errors = await apply_billing_cycle_for_team(
+        db=db,
+        team_id=test_team.id,
+        budget_cents=10000,
+        region_id=test_region.id,
+        period_start=datetime.now(UTC),
+        period_end=datetime.now(UTC) + timedelta(days=31),
+        source_payment_id=payment.id,
+    )
+
+    assert errors == []
+    db.refresh(payment)
+    assert payment.sync_status == "success"
+    mock_litellm.create_team.assert_awaited_once_with(
+        team_id=lite_team_id,
+        team_alias=lite_team_id,
+        models=["group-a"],
+    )
+    # Spend on a fresh team is zero, so the full budget is applied.
+    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 100.0
 
 
 @pytest.mark.asyncio

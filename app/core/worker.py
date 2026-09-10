@@ -63,6 +63,8 @@ from app.core.periodic_budget_ledger_service import (
     materialize_topup_rollovers,
 )
 from app.core.email import normalize_email_for_lookup
+from app.services.access_groups import effective_team_group_slugs
+from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
@@ -650,7 +652,24 @@ async def apply_billing_cycle_for_team(
         team_max_budget = per_region_budget
         current_team_spend = 0.0
         try:
-            team_info_resp = await litellm_service.get_team_info(lite_team_id)
+            try:
+                team_info_resp = await litellm_service.get_team_info(lite_team_id)
+            except HTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+                # The team was removed on the LiteLLM side; recreate it so the
+                # budget update below has something to attach to.
+                logger.info(
+                    "LiteLLM team %s missing in region %s, recreating it",
+                    lite_team_id,
+                    region.name,
+                )
+                await litellm_service.create_team(
+                    team_id=lite_team_id,
+                    team_alias=lite_team_id,
+                    models=effective_team_group_slugs(db, team.id, region),
+                )
+                team_info_resp = {}
             team_info = team_info_resp.get("team_info", team_info_resp)
             current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
 
