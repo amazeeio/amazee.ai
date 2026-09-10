@@ -787,6 +787,18 @@ async def test_hard_delete_defers_when_team_delete_fails(
     When: Running the hard delete job
     Then: Should keep the team so the next run can retry the LiteLLM cleanup
     """
+    db.add(
+        DBLimitedResource(
+            owner_id=test_team.id,
+            owner_type=OwnerType.TEAM,
+            resource=ResourceType.USER,
+            unit=UnitType.COUNT,
+            max_value=10.0,
+            current_value=5.0,
+            limit_type=LimitType.CONTROL_PLANE,
+            limited_by=LimitSource.DEFAULT,
+        )
+    )
     soft_delete_team_for_test(
         db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
     )
@@ -800,6 +812,16 @@ async def test_hard_delete_defers_when_team_delete_fails(
     await hard_delete_expired_teams(db)
 
     assert db.query(DBTeam).filter(DBTeam.id == team_id).first() is not None
+    # The rows deleted before the failure are rolled back, not half-removed.
+    assert (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == team_id,
+        )
+        .count()
+        == 1
+    )
 
 
 @patch("app.core.worker.LiteLLMService")
