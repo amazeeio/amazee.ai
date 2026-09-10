@@ -14,6 +14,7 @@ from app.db.models import (
     DBPeriodicPayment,
     DBPrivateAIKey,
     DBRegion,
+    DBSpendCap,
     DBTeam,
 )
 from app.schemas.models import BudgetType
@@ -608,6 +609,65 @@ def test_subscription_deactivate_endpoint_success(
     assert key_kwargs["duration"] is None
     assert key_kwargs["budget_duration"] is None
     assert key_kwargs["spend"] == 0.0
+
+
+@patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_keeps_key_cap_duration(
+    mock_litellm_class,
+    mock_record_payment,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    key = DBPrivateAIKey(
+        name="deactivate-capped-key",
+        litellm_token="deactivate-capped-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=None,
+            key_id=key.id,
+            max_budget=25.0,
+            budget_duration="1mo",
+        )
+    )
+    db.commit()
+
+    mock_record_payment.return_value = 322
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={"team_info": {"spend": 7.0, "max_budget": 20.0}}
+    )
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    response = client.post(
+        "/billing/subscription/deactivate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_deactivate_key_cap",
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+            "reason": "cancelled",
+        },
+    )
+
+    assert response.status_code == 200
+    mock_litellm.set_key_restrictions.assert_awaited_once()
+    key_kwargs = mock_litellm.set_key_restrictions.await_args.kwargs
+    assert key_kwargs["budget_amount"] == 25.0
+    assert key_kwargs["budget_duration"] == "1mo"
+    assert key_kwargs["duration"] is None
 
 
 @patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
