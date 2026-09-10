@@ -53,7 +53,18 @@ jobs:
             echo "Reusing pull request #$NUMBER"
           fi
 
-          # gh exits non-zero when auto-merge is already on, and when the pull
-          # request can be merged right now. Neither is worth failing the job.
-          gh pr merge "$NUMBER" --auto --merge ||
-            echo "Could not set auto-merge on #$NUMBER, see the error above"
+          # gh refuses when auto-merge is already on, which is fine, so check the
+          # pull request afterwards instead of trusting the exit code. Anything
+          # else, a permission or API error, must fail here: a silent green job
+          # would leave dev behind again.
+          # Known case: a pull request that is already approved and green is
+          # refused too, with no auto-merge request, so this fails and a human
+          # merges it by hand.
+          if ! gh pr merge "$NUMBER" --auto --merge; then
+            STATE=$(gh pr view "$NUMBER" --json state,autoMergeRequest \
+              --jq 'if .state == "MERGED" or .autoMergeRequest != null then "ok" else "missing" end')
+            if [ "$STATE" != "ok" ]; then
+              echo "::error::auto-merge is not enabled on pull request #$NUMBER"
+              exit 1
+            fi
+          fi
