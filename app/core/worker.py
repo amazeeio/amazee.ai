@@ -715,10 +715,9 @@ async def apply_billing_cycle_for_team(
         limit_service = LimitService(db)
         _, _, max_rpm_limit = limit_service.get_token_restrictions(team.id)
         per_region_budget = budget_cents / 100.0
-        # Safety-net: Stripe cycles are 30d. The 31d budget_duration on LiteLLM
-        # auto-expires budget if a webhook is missed. On cancellation, Stripe sends
-        # customer.subscription.deleted which handles explicit cleanup.
-        budget_duration = "31d"
+        # LiteLLM must not run a budget cycle of its own for this team: the
+        # ledger owns the period, and a LiteLLM reset would drop the team spend
+        # counter and hide a real period's spend from the ledger.
         keys = get_team_region_litellm_keys(db, team_id=team.id, region_id=region.id)
 
         litellm_service = LiteLLMService(
@@ -826,13 +825,12 @@ async def apply_billing_cycle_for_team(
                 await litellm_service.update_team_budget(
                     team_id=lite_team_id,
                     max_budget=team_max_budget,
-                    budget_duration=budget_duration,
+                    clear_budget_duration=True,
                 )
                 logger.info(
-                    "Updated team %s budget to %s (duration=%s) in region %s",
+                    "Updated team %s budget to %s in region %s",
                     team.id,
                     team_max_budget,
-                    budget_duration,
                     region.name,
                 )
                 if keys:
@@ -882,10 +880,10 @@ async def apply_billing_cycle_for_team(
                         # Otherwise keep key max_budget null and enforce at team level.
                         restrictions = dict(
                             litellm_token=key.litellm_token,
-                            duration=budget_duration,
-                            # Keep POOL key windows aligned with team cycle window
-                            # even when no explicit key cap exists.
-                            budget_duration=budget_duration,
+                            duration=None,
+                            budget_duration=(
+                                key_cap_duration if key_spend_cap is not None else None
+                            ),
                             budget_amount=(
                                 float(key_spend_cap)
                                 if key_spend_cap is not None
@@ -903,8 +901,10 @@ async def apply_billing_cycle_for_team(
                         )
                         restrictions = dict(
                             litellm_token=key.litellm_token,
-                            duration=budget_duration,
-                            budget_duration=budget_duration,
+                            duration=None,
+                            budget_duration=(
+                                key_cap_duration if key_spend_cap is not None else None
+                            ),
                             budget_amount=effective_key_budget,
                             rpm_limit=max_rpm_limit,
                             spend=0.0,
@@ -920,9 +920,7 @@ async def apply_billing_cycle_for_team(
                         # own. Rebuild it under the same token so clients keep
                         # working and the limits below have something to apply to.
                         owner = (
-                            db.query(DBUser)
-                            .filter(DBUser.id == key.owner_id)
-                            .first()
+                            db.query(DBUser).filter(DBUser.id == key.owner_id).first()
                             if key.owner_id
                             else None
                         )
@@ -950,19 +948,18 @@ async def apply_billing_cycle_for_team(
 
                     if team.requires_pool_purchase_gate:
                         logger.info(
-                            "Updated POOL key %s limits in LiteLLM: duration=%s, key_cap=%s, key_cap_duration=%s, rpm=%s, spend_reset=True",
+                            "Updated POOL key %s limits in LiteLLM: key_cap=%s, key_cap_duration=%s, rpm=%s, spend_reset=True",
                             key.id,
-                            budget_duration,
                             key_spend_cap,
                             key_cap_duration,
                             max_rpm_limit,
                         )
                     else:
                         logger.info(
-                            "Updated key %s limits in LiteLLM: duration=%s, budget=%s, rpm=%s, spend_reset=True",
+                            "Updated key %s limits in LiteLLM: budget=%s, key_cap_duration=%s, rpm=%s, spend_reset=True",
                             key.id,
-                            budget_duration,
                             effective_key_budget,
+                            key_cap_duration,
                             max_rpm_limit,
                         )
                 except Exception as e:

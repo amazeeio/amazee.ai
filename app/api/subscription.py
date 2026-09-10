@@ -126,9 +126,7 @@ async def subscription_cycle(
         )
 
     period_start = datetime.now(UTC)
-    # Safety-net: Stripe cycles are 30d. The 31d budget_duration on LiteLLM
-    # auto-expires budget if a webhook is missed. On cancellation, Stripe sends
-    # customer.subscription.deleted which handles explicit cleanup.
+    # 31 days, so a 30-day Stripe cycle always lands before the period ends.
     period_end = period_start + timedelta(days=31)
 
     is_first_cycle = (

@@ -4,8 +4,8 @@ Tests for PERIODIC team budget behaviour introduced by the
 extended to cover POOL subscription teams (AI-398).
 
 Key behaviours under test:
-1. PERIODIC teams use a fixed 31-day budget duration (not days_left_in_period)
-2. POOL subscription teams use 31d duration (same as PERIODIC, via billing cycle)
+1. PERIODIC teams set no LiteLLM budget_duration and clear an existing one
+2. POOL subscription teams set none either (same as PERIODIC, via billing cycle)
 3. PERIODIC teams compound max_budget = accumulated_spend + monthly_cap
 4. Compounding falls back to flat cap when get_team_info fails
 5. PERIODIC teams reset key spend to 0 on each webhook
@@ -92,14 +92,14 @@ def _make_keys(db, team, region, count=2):
     return keys
 
 
-# ─── 1. PERIODIC teams use 31d duration ───────────────────────────────────
+# ─── 1. PERIODIC teams set no LiteLLM budget_duration ─────────────────────
 
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.worker.get_team_keys_by_region")
 @patch("app.core.worker.LimitService")
-async def test_periodic_team_uses_31d_duration(
+async def test_periodic_team_sets_no_litellm_budget_duration(
     mock_limit_service,
     mock_get_keys,
     mock_litellm_class,
@@ -107,12 +107,12 @@ async def test_periodic_team_uses_31d_duration(
     test_team,
     test_region,
 ):
-    """PERIODIC teams must always use a fixed 31-day budget duration,
-    regardless of days_left_in_period from the limit service."""
+    """PERIODIC teams must not get a LiteLLM budget cycle: the ledger owns the
+    period, so any stored budget_duration is cleared instead."""
     test_team.stripe_customer_id = "cus_periodic_31d"
     db.commit()
 
-    # Limit service returns 15 days left — PERIODIC must still use 31d
+    # Limit service returns 15 days left — no LiteLLM cycle is set either way
     mock_limit_service.return_value.get_token_restrictions.return_value = (
         15,
         100.0,
@@ -126,19 +126,19 @@ async def test_periodic_team_uses_31d_duration(
 
     await _apply_periodic_cycle(db, test_team, test_region)
 
-    # Team-level budget must use 31d
     team_call = mock_litellm.update_team_budget.await_args
-    assert team_call.kwargs["budget_duration"] == "31d"
+    assert "budget_duration" not in team_call.kwargs
+    assert team_call.kwargs["clear_budget_duration"] is True
 
 
-# ─── 2. POOL subscription teams use 31d duration (same as PERIODIC) ──────
+# ─── 2. POOL subscription teams set no budget_duration either ────────────
 
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.worker.get_team_keys_by_region")
 @patch("app.core.worker.LimitService")
-async def test_pool_subscription_team_uses_31d_duration(
+async def test_pool_subscription_team_sets_no_litellm_budget_duration(
     mock_limit_service,
     mock_get_keys,
     mock_litellm_class,
@@ -146,7 +146,7 @@ async def test_pool_subscription_team_uses_31d_duration(
     test_region,
 ):
     """POOL subscription teams go through apply_billing_cycle_for_team and
-    therefore use the same fixed 31d budget_duration as PERIODIC teams."""
+    therefore get no LiteLLM budget_duration either, like PERIODIC teams."""
     team = _make_pool_team(db, "Pool Duration Team", region=test_region)
     team.stripe_customer_id = "cus_pool_duration"
     db.commit()
@@ -170,7 +170,8 @@ async def test_pool_subscription_team_uses_31d_duration(
     )
 
     team_call = mock_litellm.update_team_budget.await_args
-    assert team_call.kwargs["budget_duration"] == "31d"
+    assert "budget_duration" not in team_call.kwargs
+    assert team_call.kwargs["clear_budget_duration"] is True
 
 
 # ─── 3. PERIODIC teams compound max_budget ────────────────────────────────
@@ -328,6 +329,8 @@ async def test_periodic_team_resets_key_spend_to_zero(
     assert mock_litellm.set_key_restrictions.call_count == 2
     for call in mock_litellm.set_key_restrictions.call_args_list:
         assert call.kwargs["spend"] == 0.0
+        assert call.kwargs["duration"] is None
+        assert call.kwargs["budget_duration"] is None
 
 
 # ─── 6. POOL subscription teams reset key spend to 0 on cycle ─────────────
@@ -375,6 +378,8 @@ async def test_pool_subscription_team_resets_key_spend(
     assert mock_litellm.set_key_restrictions.call_count == 2
     for call in mock_litellm.set_key_restrictions.call_args_list:
         assert call.kwargs["spend"] == 0.0
+        assert call.kwargs["duration"] is None
+        assert call.kwargs["budget_duration"] is None
 
 
 # ─── 7. Spend API: PERIODIC team total_spend = sum of key spends ──────────

@@ -126,13 +126,85 @@ async def test_apply_billing_cycle_for_team_updates_sync_status_success(
     db.refresh(payment)
     assert payment.sync_status == "success"
     mock_litellm.update_team_budget.assert_awaited_once()
-    assert mock_litellm.update_team_budget.await_args.kwargs["budget_duration"] == "31d"
-    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 100.0
-    assert "spend" not in mock_litellm.update_team_budget.await_args.kwargs
+    team_kwargs = mock_litellm.update_team_budget.await_args.kwargs
+    assert "budget_duration" not in team_kwargs
+    assert team_kwargs["clear_budget_duration"] is True
+    assert team_kwargs["max_budget"] == 100.0
+    assert "spend" not in team_kwargs
     mock_litellm.set_key_restrictions.assert_awaited_once()
-    assert mock_litellm.set_key_restrictions.await_args.kwargs["budget_amount"] == 100.0
-    assert mock_litellm.set_key_restrictions.await_args.kwargs["spend"] == 0.0
-    assert mock_litellm.set_key_restrictions.await_args.kwargs["rpm_limit"] == 1000
+    key_kwargs = mock_litellm.set_key_restrictions.await_args.kwargs
+    assert key_kwargs["budget_amount"] == 100.0
+    assert key_kwargs["spend"] == 0.0
+    assert key_kwargs["rpm_limit"] == 1000
+    assert key_kwargs["duration"] is None
+    assert key_kwargs["budget_duration"] is None
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.compute_active_topup_remaining", return_value=0)
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.worker.LimitService")
+async def test_apply_billing_cycle_for_team_keeps_key_spend_cap_and_duration(
+    mock_limit_service,
+    mock_litellm_class,
+    _mock_topup,
+    db,
+    test_team,
+    test_region,
+):
+    """A key with an explicit DBSpendCap keeps its own cap and budget cycle."""
+    from app.db.models import DBSpendCap
+
+    key = DBPrivateAIKey(
+        name="capped-key",
+        litellm_token="capped-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+    db.refresh(key)
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            key_id=key.id,
+            max_budget=25.0,
+            budget_duration="7d",
+        )
+    )
+    db.commit()
+
+    mock_limit_service.return_value.get_token_restrictions.return_value = (
+        31,
+        999.0,
+        1000,
+    )
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 0.0}})
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    now = datetime.now(UTC)
+    errors = await apply_billing_cycle_for_team(
+        db=db,
+        team_id=test_team.id,
+        budget_cents=10000,
+        region_id=test_region.id,
+        period_start=now,
+        period_end=now + timedelta(days=31),
+    )
+
+    assert errors == []
+    mock_litellm.set_key_restrictions.assert_awaited_once()
+    key_kwargs = mock_litellm.set_key_restrictions.await_args.kwargs
+    assert key_kwargs["budget_amount"] == 25.0
+    assert key_kwargs["budget_duration"] == "7d"
+    assert key_kwargs["duration"] is None
+    assert (
+        mock_litellm.update_team_budget.await_args.kwargs["clear_budget_duration"]
+        is True
+    )
 
 
 @pytest.mark.asyncio
@@ -1615,15 +1687,15 @@ async def test_pool_team_drift_reconciliation_returns_result(
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.worker.get_team_region_litellm_keys")
 @patch("app.core.worker.LimitService")
-async def test_pool_team_billing_cycle_uses_31d_and_resets_spend(
+async def test_pool_team_billing_cycle_clears_duration_and_resets_spend(
     mock_limit_service,
     mock_get_keys,
     mock_litellm_class,
     db,
     test_region,
 ):
-    """apply_billing_cycle_for_team must work for POOL teams, using 31d duration
-    and resetting key spend to 0.0, exactly like PERIODIC teams."""
+    """apply_billing_cycle_for_team must work for POOL teams: no LiteLLM budget
+    cycle on the team or its keys, key spend reset to 0.0, like PERIODIC."""
     pool_team = _make_pool_team(db, "Pool Cycle Direct")
 
     key = DBPrivateAIKey(
@@ -1661,14 +1733,16 @@ async def test_pool_team_billing_cycle_uses_31d_and_resets_spend(
 
     assert errors == []
     team_call = mock_litellm.update_team_budget.await_args
-    assert team_call.kwargs["budget_duration"] == "31d"
+    assert "budget_duration" not in team_call.kwargs
+    assert team_call.kwargs["clear_budget_duration"] is True
     # Team spend is non-resettable in LiteLLM, so projected max_budget is:
     # current_spend + current_cycle_remaining = 5.0 + 30.0
     assert team_call.kwargs["max_budget"] == 35.0
 
     key_call = mock_litellm.set_key_restrictions.await_args
     assert key_call.kwargs["spend"] == 0.0
-    assert key_call.kwargs["budget_duration"] == "31d"
+    assert key_call.kwargs["duration"] is None
+    assert key_call.kwargs["budget_duration"] is None
 
 
 @pytest.mark.asyncio
