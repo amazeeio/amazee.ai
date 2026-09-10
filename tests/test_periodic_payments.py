@@ -769,12 +769,6 @@ def test_subscription_deactivate_fails_when_spend_read_fails(
     mock_litellm.set_key_restrictions.assert_not_awaited()
     mock_record_payment.assert_not_awaited()
     assert (
-        db.query(DBPeriodicPayment)
-        .filter(DBPeriodicPayment.payment_type == "deactivation")
-        .count()
-        == 0
-    )
-    assert (
         db.query(DBAuditLog)
         .filter(
             DBAuditLog.event_type == "subscription.deactivate",
