@@ -1119,17 +1119,20 @@ async def get_team_spend(
 
     elif team_period_start is None:
         # LiteLLM holds no budget cycle for these teams, so its team_info
-        # carries no window at all. The ledger owns the period; report that.
+        # carries no window at all. The subscription ledger owns the period.
+        # Only that source is reported: the anchor-based fallback window is
+        # never rolled forward, so it can end in the past.
         team_window = resolve_team_period_window(db, team, region_id)
-        team_budget_duration = team_window.budget_duration
-        team_budget_reset_at = team_window.period_end
-        team_period_start = team_window.period_start
-        for item in items:
-            # Uncapped keys share the team window; a capped key keeps its own.
-            if item.max_budget is None and item.period_start is None:
-                item.budget_duration = team_budget_duration
-                item.budget_reset_at = team_budget_reset_at
-                item.period_start = team_period_start
+        if team_window.source == "subscription_ledger":
+            team_budget_duration = team_window.budget_duration
+            team_budget_reset_at = team_window.period_end
+            team_period_start = team_window.period_start
+            for item in items:
+                # Uncapped keys share the team window; a capped key keeps its own.
+                if item.max_budget is None and item.period_start is None:
+                    item.budget_duration = team_budget_duration
+                    item.budget_reset_at = team_budget_reset_at
+                    item.period_start = team_period_start
 
     if team.budget_type != BudgetType.POOL:
         periodic_budget_view = None
@@ -1574,11 +1577,14 @@ async def get_key_spend_alias(
                 budget_reset_at = period_start + timedelta(days=duration_days)
         elif team_for_key is not None and period_start is None:
             # No LiteLLM cycle on the key, so fall back to the team's ledger
-            # window, the same one the team spend endpoint reports.
+            # window, the same one the team spend endpoint reports. Only while
+            # a subscription is active: the anchor-based window can end in the
+            # past.
             team_window = resolve_team_period_window(db, team_for_key, region_id)
-            info["budget_duration"] = team_window.budget_duration
-            budget_reset_at = team_window.period_end
-            period_start = team_window.period_start
+            if team_window.source == "subscription_ledger":
+                info["budget_duration"] = team_window.budget_duration
+                budget_reset_at = team_window.period_end
+                period_start = team_window.period_start
         return PrivateAIKeySpend.model_validate(
             {
                 "spend": info.get("spend", 0.0),
