@@ -1946,6 +1946,23 @@ def test_update_key_budget_endpoint_forces_monthly_duration(
     assert cap.budget_duration == "1mo"
 
 
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_update_key_budget_endpoint_rejects_budget_duration_in_body(
+    mock_update_key_budget,
+    client,
+    admin_token,
+    test_region,
+):
+    """A body budget_duration is a 422, never a silently dropped field."""
+    response = client.put(
+        f"/spend/{test_region.id}/key/999/budget",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"max_budget": 5.0, "budget_duration": "1mo"},
+    )
+    assert response.status_code == 422
+    mock_update_key_budget.assert_not_awaited()
+
+
 @patch("app.api.spend.invalidate_user_spend_cache")
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
