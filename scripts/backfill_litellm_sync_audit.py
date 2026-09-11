@@ -246,9 +246,10 @@ class AuditRunner:
                             async with semaphore:
                                 await service.update_key_budget(
                                     litellm_token=key.litellm_token,
-                                    budget_duration="1mo",
+                                    budget_duration=None,
                                     max_budget=0.0,
                                     clear_max_budget=False,
+                                    clear_budget_duration=True,
                                 )
                             return None
                         except Exception as exc:

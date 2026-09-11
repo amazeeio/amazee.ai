@@ -575,11 +575,12 @@ async def extend_team_trial(team_id: int, db: Session = Depends(get_db)):
             try:
                 if is_pool_team:
                     # Extend key life to the pool horizon and clear any stale
-                    # per-key budget so the team-level pool governs spend —
+                    # per-key budget so the team-level pool governs spend,
                     # unless an explicit operator key cap is configured, which
-                    # is preserved. Without clearing, a key previously clobbered
-                    # by the old trial path stays capped at DEFAULT_MAX_SPEND
-                    # even while the pool has credit (issue #631).
+                    # is preserved. Without clearing, a key capped by an older
+                    # trial path stays stuck at DEFAULT_MAX_SPEND while the
+                    # pool still has credit. The key never keeps a LiteLLM
+                    # budget_duration: the ledger owns the cap cycle.
                     configured_cap = key_cap_map.get(key.id)
                     if configured_cap is None:
                         await litellm_service.update_key_budget(
@@ -593,8 +594,10 @@ async def extend_team_trial(team_id: int, db: Session = Depends(get_db)):
                     else:
                         await litellm_service.update_key_budget(
                             litellm_token=key.litellm_token,
+                            budget_duration=None,
                             max_budget=configured_cap,
                             clear_max_budget=False,
+                            clear_budget_duration=True,
                             blocked=False,
                         )
                     await litellm_service.update_key_duration(

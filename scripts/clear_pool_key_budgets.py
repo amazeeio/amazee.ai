@@ -18,7 +18,6 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.core.config import settings
 from app.db.database import SessionLocal
 from app.db.models import DBPrivateAIKey, DBTeam, DBUser, DBRegion
 from app.schemas.models import BudgetType
@@ -77,16 +76,18 @@ async def run(dry_run: bool) -> int:
                 total_scanned += 1
                 if dry_run:
                     print(
-                        f"[DRY-RUN] key_id={key.id} region={region.name} -> max_budget=null"
+                        f"[DRY-RUN] key_id={key.id} region={region.name} "
+                        "-> max_budget=null, budget_duration=null"
                     )
                     continue
 
                 try:
-                    await service.update_budget(
+                    await service.update_key_budget(
                         litellm_token=key.litellm_token,
-                        budget_duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
-                        budget_amount=None,
-                        include_max_budget=True,
+                        budget_duration=None,
+                        max_budget=None,
+                        clear_max_budget=True,
+                        clear_budget_duration=True,
                     )
                     total_updated += 1
                     print(f"[OK] key_id={key.id} region={region.name}")

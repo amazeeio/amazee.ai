@@ -67,6 +67,7 @@ from app.core.periodic_budget_ledger_service import (
     expire_subscription_entries,
     materialize_topup_rollovers,
 )
+from app.core.pool_budget_service import team_gate_locked
 from app.core.email import normalize_email_for_lookup
 from fastapi import HTTPException
 
@@ -866,7 +867,7 @@ async def apply_billing_cycle_for_team(
             for key in keys:
                 try:
                     key_cap_row = (
-                        db.query(DBSpendCap.max_budget, DBSpendCap.budget_duration)
+                        db.query(DBSpendCap.max_budget)
                         .filter(
                             DBSpendCap.scope == "key",
                             DBSpendCap.region_id == region.id,
@@ -875,20 +876,17 @@ async def apply_billing_cycle_for_team(
                         .first()
                     )
                     key_spend_cap = key_cap_row[0] if key_cap_row else None
-                    key_cap_duration = key_cap_row[1] if key_cap_row else None
 
                     effective_key_budget = None
                     if team.requires_pool_purchase_gate:
                         # POOL: key max_budget must be set only when an explicit key cap exists.
                         # Otherwise keep key max_budget null and enforce at team level.
-                        # Renew the key's expiry for the coming period; no key
-                        # budget cycle unless an explicit key cap defines one.
+                        # The renewal is the key cap reset, so LiteLLM gets no
+                        # cycle of its own.
                         restrictions = dict(
                             litellm_token=key.litellm_token,
                             duration=KEY_EXPIRY_EXTENSION,
-                            budget_duration=(
-                                key_cap_duration if key_spend_cap is not None else None
-                            ),
+                            budget_duration=None,
                             budget_amount=(
                                 float(key_spend_cap)
                                 if key_spend_cap is not None
@@ -904,14 +902,12 @@ async def apply_billing_cycle_for_team(
                             if key_spend_cap is not None
                             else per_region_budget
                         )
-                        # Renew the key's expiry for the coming period; no key
-                        # budget cycle unless an explicit key cap defines one.
+                        # The renewal is the key cap reset, so LiteLLM gets no
+                        # cycle of its own.
                         restrictions = dict(
                             litellm_token=key.litellm_token,
                             duration=KEY_EXPIRY_EXTENSION,
-                            budget_duration=(
-                                key_cap_duration if key_spend_cap is not None else None
-                            ),
+                            budget_duration=None,
                             budget_amount=effective_key_budget,
                             rpm_limit=max_rpm_limit,
                             spend=0.0,
@@ -955,20 +951,18 @@ async def apply_billing_cycle_for_team(
 
                     if team.requires_pool_purchase_gate:
                         logger.info(
-                            "Updated POOL key %s limits in LiteLLM: expiry=%s, key_cap=%s, key_cap_duration=%s, rpm=%s, spend_reset=True",
+                            "Updated POOL key %s limits in LiteLLM: expiry=%s, key_cap=%s, rpm=%s, spend_reset=True",
                             key.id,
                             KEY_EXPIRY_EXTENSION,
                             key_spend_cap,
-                            key_cap_duration,
                             max_rpm_limit,
                         )
                     else:
                         logger.info(
-                            "Updated key %s limits in LiteLLM: expiry=%s, budget=%s, key_cap_duration=%s, rpm=%s, spend_reset=True",
+                            "Updated key %s limits in LiteLLM: expiry=%s, budget=%s, rpm=%s, spend_reset=True",
                             key.id,
                             KEY_EXPIRY_EXTENSION,
                             effective_key_budget,
-                            key_cap_duration,
                             max_rpm_limit,
                         )
                 except Exception as e:
@@ -1167,29 +1161,35 @@ async def _resolve_key_state(
     return key_info.get("info", {}) or {}
 
 
+def _same_budget_amount(current: float | None, expected: float | None) -> bool:
+    """Compare two key budgets without letting float noise trigger a rewrite."""
+    if current is None or expected is None:
+        return current is None and expected is None
+    return round(float(current), 4) == round(float(expected), 4)
+
+
 async def reconcile_team_keys(
     db: Session,
     team: DBTeam,
     keys_by_region: Dict[DBRegion, List[DBPrivateAIKey]],
     expire_keys: bool,
-    renewal_period_days: Optional[int] = None,
-    max_budget_amount: Optional[float] = None,
     key_state_cache: Optional["RegionKeyStateCache"] = None,
 ) -> float:
     """
-    Monitor spend for all keys in a team across different regions and optionally update keys after renewal period.
+    Monitor spend for all keys in a team across different regions and repair drifted key caps.
 
     Key state is read from a bulk ``/key/list`` snapshot rather than one
-    ``/key/info`` call per key. Every key is still visited and every existing
-    budget/duration/expiry correction still applies - only the reads are
-    batched, and writes are issued exactly as before for keys that drifted.
+    ``/key/info`` call per key, so the reads are batched while every key is
+    still visited.
+
+    The hourly run repairs each key cap against ``spend_caps`` and clears any
+    LiteLLM key ``budget_duration``: the ledger owns the cap cycle. Key expiry
+    is never touched here.
 
     Args:
         team: The team to monitor keys for
         keys_by_region: Dictionary mapping regions to lists of keys
         expire_keys: Whether to expire keys (set duration to 0)
-        renewal_period_days: Optional renewal period in days. If provided, will check for and update keys renewed within the last hour.
-        max_budget_amount: Optional maximum budget amount. If provided, will update the budget amount for the keys.
         key_state_cache: Shared snapshot cache. Callers reconciling more than
             one team must pass a single instance so each region is listed once
             per TTL window; when omitted a private cache is used.
@@ -1202,7 +1202,6 @@ async def reconcile_team_keys(
     team_total = 0
     total_by_user = defaultdict(float)
     service_key_total = 0
-    current_time = datetime.now(UTC)
 
     # Monitor keys for each region
     for region, keys in keys_by_region.items():
@@ -1214,6 +1213,25 @@ async def reconcile_team_keys(
 
             # One bulk listing per region, shared across every team in this run
             snapshot = await key_state_cache.get(region, litellm_service)
+
+            # Expected key caps for this region, read once per team and region.
+            cap_map = {
+                int(cap_key_id): float(cap_value)
+                for cap_key_id, cap_value in db.query(
+                    DBSpendCap.key_id, DBSpendCap.max_budget
+                )
+                .filter(
+                    DBSpendCap.scope == "key",
+                    DBSpendCap.region_id == region.id,
+                    DBSpendCap.key_id.isnot(None),
+                    DBSpendCap.max_budget.isnot(None),
+                    DBSpendCap.key_id.in_([k.id for k in keys]),
+                )
+                .all()
+            }
+            is_pool = team.budget_type == BudgetType.POOL
+            # One gate lookup per team and region, never per key.
+            gate_locked = team_gate_locked(db, team, region.id)
 
             # Writes are queued here and run concurrently in batches of
             # KEY_WRITE_BATCH. Issuing them inline costs one round-trip per key,
@@ -1261,107 +1279,42 @@ async def reconcile_team_keys(
                                 ),
                             )
                         )
-                    else:
-                        # Each drifted field is tracked on its own so the write
-                        # carries only what actually drifted. Reads come from a
-                        # snapshot that can be minutes old, so a write that also
-                        # sends unrelated fields could overwrite a change made
-                        # after the snapshot was taken.
-                        needs_update = False
-                        new_budget_amount: Optional[float] = None
-                        new_budget_duration: Optional[str] = None
-                        extend_key_life = False
+                    elif not gate_locked and (is_pool or key.id in cap_map):
+                        # Only keys whose cycle the ledger owns: every POOL key,
+                        # and any key with a cap row. A PERIODIC key without a
+                        # cap row still relies on LiteLLM's own budget cycle
+                        # (trial keys), so it is left alone.
+                        expected_max = cap_map.get(key.id)
+                        expected_defined = expected_max is not None or is_pool
+                        current_duration = info.get("budget_duration")
+                        current_max = info.get("max_budget")
+                        max_drifted = expected_defined and not _same_budget_amount(
+                            current_max, expected_max
+                        )
 
-                        current_max_budget = info.get("max_budget")
-                        # If the budget amount mis-matches, always update that field
-                        if (
-                            max_budget_amount is not None
-                            and current_max_budget != max_budget_amount
-                        ):
-                            new_budget_amount = max_budget_amount
-                            needs_update = True
+                        if current_duration is not None or max_drifted:
                             logger.info(
-                                f"Key {key.id} has incorrect budget of {current_max_budget}, will change to {max_budget_amount}"
+                                "Key %s cap drifted: budget_duration=%s -> None, "
+                                "max_budget=%s -> %s",
+                                key.id,
+                                current_duration,
+                                current_max,
+                                expected_max if max_drifted else "unchanged",
                             )
-
-                        current_budget_duration = info.get("budget_duration")
-                        # If budget_duration is None, always update it
-                        if (
-                            current_budget_duration is None
-                            and renewal_period_days is not None
-                        ):
-                            new_budget_duration = f"{renewal_period_days}d"
-                            needs_update = True
-                            logger.info(
-                                f"Key {key.id} budget update triggered by None budget_duration"
-                            )
-                        # If budget_duration is "0d", always update it (fix for expired keys)
-                        elif (
-                            current_budget_duration == "0d"
-                            and renewal_period_days is not None
-                        ):
-                            new_budget_duration = f"{renewal_period_days}d"
-                            needs_update = True
-                            logger.info(
-                                f"Key {key.id} budget update triggered by 0d duration (expired key fix)"
-                            )
-
-                        expiry_date = info.get("expires")
-                        if expiry_date and renewal_period_days is not None:
-                            parsed_expiry_date = datetime.fromisoformat(
-                                expiry_date.replace("Z", "+00:00")
-                            )
-                            this_month = current_time + timedelta(days=30)
-                            if parsed_expiry_date <= this_month:
-                                new_budget_duration = f"{renewal_period_days}d"
-                                extend_key_life = True
-                                needs_update = True
-                                logger.info(
-                                    f"Key {key.id} expires at {expiry_date}, updating to extend life."
-                                )
-
-                        if needs_update:
-                            logger.info(
-                                f"Key {key.id} budget update triggered: changing from {current_budget_duration}, {current_max_budget} to {new_budget_duration or current_budget_duration}, {max_budget_amount}"
-                            )
-
-                            if extend_key_life:
-                                # update_budget also resets the key's duration to
-                                # 365d, which is the whole point when the key is
-                                # close to expiring. budget_duration is always set
-                                # on this path, so nothing is sent as null.
-                                pending_writes.append(
-                                    (
-                                        key.id,
-                                        partial(
-                                            litellm_service.update_budget,
-                                            key.litellm_token,
-                                            new_budget_duration,
-                                            budget_amount=new_budget_amount,
+                            pending_writes.append(
+                                (
+                                    key.id,
+                                    partial(
+                                        litellm_service.update_key_budget,
+                                        key.litellm_token,
+                                        budget_duration=None,
+                                        clear_budget_duration=True,
+                                        max_budget=expected_max,
+                                        clear_max_budget=(
+                                            expected_defined and expected_max is None
                                         ),
-                                    )
+                                    ),
                                 )
-                            else:
-                                # Budget-only drift: leave duration/expiry alone and
-                                # send no field we did not mean to change. LiteLLM
-                                # reads a null budget_duration as "clear it", so
-                                # passing None here would wipe the reset period and
-                                # the next run would write it back - a flap.
-                                pending_writes.append(
-                                    (
-                                        key.id,
-                                        partial(
-                                            litellm_service.update_key_budget,
-                                            key.litellm_token,
-                                            budget_duration=new_budget_duration,
-                                            max_budget=new_budget_amount,
-                                        ),
-                                    )
-                                )
-                            logger.info(f"Queued key {key.id} budget update")
-                        else:
-                            logger.info(
-                                f"Key {key.id} budget settings already match the expected values, no update needed"
                             )
 
                     # Add to team total
@@ -1845,17 +1798,12 @@ async def monitor_teams(db: Session):
                     )
                     expire_keys = True
 
-                renewal_period_days = None
-                max_budget_amount = None
-
-                # Monitor keys and get total spend (includes renewal period updates if applicable)
+                # Monitor keys and get total spend (also repairs drifted key caps)
                 team_total = await reconcile_team_keys(
                     db,
                     team,
                     keys_by_region,
                     expire_keys,
-                    renewal_period_days,
-                    max_budget_amount,
                     key_state_cache=key_state_cache,
                 )
 

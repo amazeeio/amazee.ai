@@ -154,7 +154,7 @@ async def test_apply_billing_cycle_for_team_keeps_key_spend_cap_and_duration(
     test_team,
     test_region,
 ):
-    """A key with an explicit DBSpendCap keeps its own cap and budget cycle."""
+    """A key with an explicit DBSpendCap keeps its own cap; the cycle reset is ours."""
     from app.db.models import DBSpendCap
 
     key = DBPrivateAIKey(
@@ -201,7 +201,7 @@ async def test_apply_billing_cycle_for_team_keeps_key_spend_cap_and_duration(
     mock_litellm.set_key_restrictions.assert_awaited_once()
     key_kwargs = mock_litellm.set_key_restrictions.await_args.kwargs
     assert key_kwargs["budget_amount"] == 25.0
-    assert key_kwargs["budget_duration"] == "7d"
+    assert key_kwargs["budget_duration"] is None
     assert key_kwargs["duration"] == "31d"
     assert (
         mock_litellm.update_team_budget.await_args.kwargs["clear_budget_duration"]
@@ -1154,7 +1154,7 @@ def test_subscription_deactivate_keeps_key_cap_duration(
     mock_litellm.set_key_restrictions.assert_awaited_once()
     key_kwargs = mock_litellm.set_key_restrictions.await_args.kwargs
     assert key_kwargs["budget_amount"] == 25.0
-    assert key_kwargs["budget_duration"] == "1mo"
+    assert key_kwargs["budget_duration"] is None
     assert key_kwargs["duration"] is None
 
 
