@@ -259,9 +259,9 @@ async def _sync_pool_key_effective_budgets(
     In both cases the team has at least one historical purchase record, so keys
     are always unblocked (blocked=False). Budget enforcement is handled by
     max_budget, not the blocked flag.
-    - No configured key cap → clear key max_budget and budget_duration
-      so the key inherits the team budget.
-    - Configured key cap → set key max_budget to the configured value.
+
+    A purchase starts a new cap period, so key spend is reset to zero. Expiry
+    sync only re-applies or clears the cap.
     """
     keys = get_team_region_litellm_keys(
         db,
@@ -292,6 +292,7 @@ async def _sync_pool_key_effective_budgets(
         try:
             async with semaphore:
                 configured_cap = cap_map.get(key.id)
+                spend_reset = 0.0 if purchased_total > 0 else None
                 if configured_cap is None:
                     # No user-defined key cap — clear both max_budget
                     # and budget_duration so no stale duration remains.
@@ -302,14 +303,17 @@ async def _sync_pool_key_effective_budgets(
                         clear_max_budget=True,
                         clear_budget_duration=True,
                         blocked=False,
+                        spend=spend_reset,
                     )
                 else:
                     await service.update_key_budget(
                         litellm_token=key.litellm_token,
-                        budget_duration=MONTHLY_BUDGET_DURATION,
+                        budget_duration=None,
                         max_budget=configured_cap,
                         clear_max_budget=False,
+                        clear_budget_duration=True,
                         blocked=False,
+                        spend=spend_reset,
                     )
                 if purchased_total > 0:
                     # A purchase extends the key's expiry to match the credit's
