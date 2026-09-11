@@ -866,7 +866,7 @@ async def apply_billing_cycle_for_team(
             for key in keys:
                 try:
                     key_cap_row = (
-                        db.query(DBSpendCap.max_budget, DBSpendCap.budget_duration)
+                        db.query(DBSpendCap.max_budget)
                         .filter(
                             DBSpendCap.scope == "key",
                             DBSpendCap.region_id == region.id,
@@ -875,20 +875,17 @@ async def apply_billing_cycle_for_team(
                         .first()
                     )
                     key_spend_cap = key_cap_row[0] if key_cap_row else None
-                    key_cap_duration = key_cap_row[1] if key_cap_row else None
 
                     effective_key_budget = None
                     if team.requires_pool_purchase_gate:
                         # POOL: key max_budget must be set only when an explicit key cap exists.
                         # Otherwise keep key max_budget null and enforce at team level.
-                        # Renew the key's expiry for the coming period; no key
-                        # budget cycle unless an explicit key cap defines one.
+                        # The renewal is the key cap reset, so LiteLLM gets no
+                        # cycle of its own.
                         restrictions = dict(
                             litellm_token=key.litellm_token,
                             duration=KEY_EXPIRY_EXTENSION,
-                            budget_duration=(
-                                key_cap_duration if key_spend_cap is not None else None
-                            ),
+                            budget_duration=None,
                             budget_amount=(
                                 float(key_spend_cap)
                                 if key_spend_cap is not None
@@ -904,14 +901,12 @@ async def apply_billing_cycle_for_team(
                             if key_spend_cap is not None
                             else per_region_budget
                         )
-                        # Renew the key's expiry for the coming period; no key
-                        # budget cycle unless an explicit key cap defines one.
+                        # The renewal is the key cap reset, so LiteLLM gets no
+                        # cycle of its own.
                         restrictions = dict(
                             litellm_token=key.litellm_token,
                             duration=KEY_EXPIRY_EXTENSION,
-                            budget_duration=(
-                                key_cap_duration if key_spend_cap is not None else None
-                            ),
+                            budget_duration=None,
                             budget_amount=effective_key_budget,
                             rpm_limit=max_rpm_limit,
                             spend=0.0,
@@ -955,20 +950,18 @@ async def apply_billing_cycle_for_team(
 
                     if team.requires_pool_purchase_gate:
                         logger.info(
-                            "Updated POOL key %s limits in LiteLLM: expiry=%s, key_cap=%s, key_cap_duration=%s, rpm=%s, spend_reset=True",
+                            "Updated POOL key %s limits in LiteLLM: expiry=%s, key_cap=%s, rpm=%s, spend_reset=True",
                             key.id,
                             KEY_EXPIRY_EXTENSION,
                             key_spend_cap,
-                            key_cap_duration,
                             max_rpm_limit,
                         )
                     else:
                         logger.info(
-                            "Updated key %s limits in LiteLLM: expiry=%s, budget=%s, key_cap_duration=%s, rpm=%s, spend_reset=True",
+                            "Updated key %s limits in LiteLLM: expiry=%s, budget=%s, rpm=%s, spend_reset=True",
                             key.id,
                             KEY_EXPIRY_EXTENSION,
                             effective_key_budget,
-                            key_cap_duration,
                             max_rpm_limit,
                         )
                 except Exception as e:
