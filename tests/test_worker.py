@@ -2,6 +2,7 @@ import asyncio
 import pytest
 from app.db.models import (
     DBPrivateAIKey,
+    DBSpendCap,
     DBTeam,
     DBTeamMetrics,
     DBLimitedResource,
@@ -32,10 +33,6 @@ from app.schemas.limits import (
     LimitType,
 )
 from unittest.mock import AsyncMock, patch, Mock
-
-# Values reconcile_team_keys is driven with in these tests
-RENEWAL_PERIOD_DAYS = 30
-MAX_BUDGET_PER_KEY = 50.0
 
 
 def test_get_snapshot_remaining_cents_scopes_to_current_period(
@@ -944,712 +941,224 @@ async def test_monitor_teams_does_not_include_renewal_period_check_when_not_pass
     mock_limit_instance.set_team_limits.assert_called_with(test_team)
 
 
-@pytest.mark.asyncio
-@patch("app.core.worker.LiteLLMService")
-async def test_reconcile_team_keys_with_renewal_period_updates(
-    mock_litellm,
-    db,
-    test_team,
-    test_region,
-    test_team_user,
-    test_team_key_creator,
-):
-    """
-    Test that reconcile_team_keys updates keys after renewal period when LiteLLM has reset their budget within the last hour.
-
-    Given: A team with keys that have had their budget reset within the last hour
-    When: reconcile_team_keys is called with renewal_period_days
-    Then: The budget_duration should be updated to match the renewal period
-    """
-    # Setup test data
-    test_team.last_payment = datetime.now(UTC) - timedelta(
-        days=35
-    )  # 35 days ago (past 30-day renewal period)
-    db.add(test_team)
-
-    # Create keys for the team
-    team_key = DBPrivateAIKey(
+def _reconcile_key(db, team, region, token="team_token_123"):
+    key = DBPrivateAIKey(
         name="Team Key",
-        litellm_token="team_token_123",
-        region=test_region,
-        team_id=test_team.id,
+        litellm_token=token,
+        region=region,
+        team_id=team.id,
     )
-    db.add(team_key)
+    db.add(key)
+    db.commit()
+    db.refresh(key)
+    return key
 
-    user_key = DBPrivateAIKey(
-        name="User Key",
-        litellm_token="user_token_456",
-        region=test_region,
-        owner_id=test_team_user.id,
+
+def _purchased_pool_team(db, team, region):
+    team.budget_type = BudgetType.POOL
+    db.add(team)
+    db.add(
+        DBPoolPurchase(
+            team_id=team.id,
+            region_id=region.id,
+            amount_cents=5000,
+            currency="usd",
+            purchased_at=datetime.now(UTC),
+            stripe_payment_id=f"pi_reconcile_{team.id}_{region.id}",
+            created_at=datetime.now(UTC),
+        )
     )
-    db.add(user_key)
-
     db.commit()
 
-    # Setup mock LiteLLM service
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_repairs_capped_pool_key(
+    mock_litellm, db, test_team, test_region
+):
+    """A capped key with a stale duration and a wrong amount is repaired once."""
+    _purchased_pool_team(db, test_team, test_region)
+    key = _reconcile_key(db, test_team, test_region)
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            key_id=key.id,
+            max_budget=25.0,
+        )
+    )
+    db.commit()
+
     mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock()
+    mock_instance.get_key_info = AsyncMock(
+        return_value={
+            "info": {
+                "key_alias": "team_key",
+                "spend": 1.0,
+                "max_budget": 10.0,
+                "budget_duration": "1mo",
+            }
+        }
+    )
     mock_instance.update_budget = AsyncMock()
     mock_instance.update_key_budget = AsyncMock()
 
-    # Mock key info responses - both keys have different budget amounts, triggering updates
-    mock_instance.get_key_info.side_effect = [
-        # Team key - different budget amount triggers update
-        {
-            "info": {
-                "budget_reset_at": (datetime.now(UTC) + timedelta(days=30)).isoformat(),
-                "key_alias": "team_key",
-                "spend": 0.0,
-                "max_budget": 100.0,  # Different from expected (50.0)
-                "budget_duration": "15d",
-            }
-        },
-        # User key - different budget amount triggers update
-        {
-            "info": {
-                "budget_reset_at": (datetime.now(UTC) + timedelta(days=30)).isoformat(),
-                "key_alias": "user_key",
-                "spend": 5.0,
-                "max_budget": 25.0,  # Different from expected (50.0)
-                "budget_duration": "15d",
-            }
-        },
-    ]
-
-    # Get keys by region
     keys_by_region = get_team_keys_by_region(db, test_team.id)
+    await reconcile_team_keys(db, test_team, keys_by_region, False)
 
-    # Call the combined function with renewal period days and budget amount
-    team_total = await reconcile_team_keys(
-        db,
-        test_team,
-        keys_by_region,
-        False,
-        RENEWAL_PERIOD_DAYS,
-        MAX_BUDGET_PER_KEY,
-    )
-
-    # Verify LiteLLM service was initialized correctly
-    mock_litellm.assert_called_once_with(
-        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
-    )
-
-    # Verify get_key_info was called for both keys
-    assert mock_instance.get_key_info.call_count == 2
-
-    # Only the budget amount drifted, so the write must go through
-    # update_key_budget, which leaves duration/expiry alone.
-    assert mock_instance.update_key_budget.call_count == 2
-    mock_instance.update_budget.assert_not_called()
-
-    # Check the first call (team key)
-    first_call = mock_instance.update_key_budget.call_args_list[0]
-    assert (
-        first_call[0][0] == "team_token_123"
-    )  # First positional argument should be litellm_token
-    assert first_call[1]["max_budget"] == MAX_BUDGET_PER_KEY
-    # budget_duration is not None and nothing else drifted, so it must not be sent
-    assert first_call[1]["budget_duration"] is None
-
-    # Check the second call (user key)
-    second_call = mock_instance.update_key_budget.call_args_list[1]
-    assert (
-        second_call[0][0] == "user_token_456"
-    )  # First positional argument should be litellm_token
-    assert second_call[1]["max_budget"] == MAX_BUDGET_PER_KEY
-    # budget_duration is not None and nothing else drifted, so it must not be sent
-    assert second_call[1]["budget_duration"] is None
-
-    # Verify team total spend is calculated correctly
-    assert team_total == 5.0  # 0.0 + 5.0
+    mock_instance.update_key_budget.assert_awaited_once()
+    call = mock_instance.update_key_budget.await_args
+    assert call.args[0] == key.litellm_token
+    assert call.kwargs["budget_duration"] is None
+    assert call.kwargs["clear_budget_duration"] is True
+    assert call.kwargs["max_budget"] == 25.0
+    assert call.kwargs["clear_max_budget"] is False
+    assert "spend" not in call.kwargs
+    mock_instance.update_budget.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LiteLLMService")
-async def test_reconcile_team_keys_with_renewal_period_updates_no_renewal(
-    mock_litellm, db, test_team, test_region, test_team_user, test_team_key_creator
+async def test_reconcile_team_keys_clears_uncapped_pool_key(
+    mock_litellm, db, test_team, test_region
 ):
-    """
-    Test that reconcile_team_keys updates budget_duration with no renewal period given.
+    """An uncapped POOL key is enforced at team level, so its budget is cleared."""
+    _purchased_pool_team(db, test_team, test_region)
+    key = _reconcile_key(db, test_team, test_region)
 
-    Given: A team with keys that have had their budget reset within the last hour
-    When: reconcile_team_keys is called with renewal_period_days
-    Then: The budget_duration should be updated but budget_amount should not be set
-    """
-    # Setup test data
-    test_team.last_payment = datetime.now(UTC) - timedelta(
-        days=35
-    )  # 35 days ago (past 30-day renewal period)
-    db.add(test_team)
-
-    # Create keys for the team
-    team_key = DBPrivateAIKey(
-        name="Team Key",
-        litellm_token="team_token_123",
-        region=test_region,
-        team_id=test_team.id,
-    )
-    db.add(team_key)
-
-    user_key = DBPrivateAIKey(
-        name="User Key",
-        litellm_token="user_token_456",
-        region=test_region,
-        owner_id=test_team_user.id,
-    )
-    db.add(user_key)
-
-    db.commit()
-
-    # Setup mock LiteLLM service
     mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock()
+    mock_instance.get_key_info = AsyncMock(
+        return_value={
+            "info": {
+                "key_alias": "team_key",
+                "spend": 0.0,
+                "max_budget": 5.0,
+                "budget_duration": "30d",
+            }
+        }
+    )
     mock_instance.update_budget = AsyncMock()
     mock_instance.update_key_budget = AsyncMock()
 
-    # Mock key info responses - both keys have None budget_duration, triggering updates
-    mock_instance.get_key_info.side_effect = [
-        # Team key - None budget_duration triggers update
-        {
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+    await reconcile_team_keys(db, test_team, keys_by_region, False)
+
+    mock_instance.update_key_budget.assert_awaited_once()
+    call = mock_instance.update_key_budget.await_args
+    assert call.args[0] == key.litellm_token
+    assert call.kwargs["budget_duration"] is None
+    assert call.kwargs["clear_budget_duration"] is True
+    assert call.kwargs["max_budget"] is None
+    assert call.kwargs["clear_max_budget"] is True
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_leaves_gated_never_purchased_team_alone(
+    mock_litellm, db, test_team, test_region
+):
+    """The zero budget and its gate duration are all that block a key here."""
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    db.add(test_team)
+    db.commit()
+    _reconcile_key(db, test_team, test_region)
+
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock(
+        return_value={
             "info": {
-                "budget_reset_at": (datetime.now(UTC) + timedelta(days=30)).isoformat(),
                 "key_alias": "team_key",
                 "spend": 0.0,
-                "max_budget": 100.0,
-                "budget_duration": None,  # None triggers update
+                "max_budget": 0.0,
+                "budget_duration": "365d",
             }
-        },
-        # User key - None budget_duration triggers update
-        {
+        }
+    )
+    mock_instance.update_budget = AsyncMock()
+    mock_instance.update_key_budget = AsyncMock()
+
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+    await reconcile_team_keys(db, test_team, keys_by_region, False)
+
+    mock_instance.update_key_budget.assert_not_awaited()
+    mock_instance.update_budget.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_leaves_correct_key_alone(
+    mock_litellm, db, test_team, test_region
+):
+    """No duration and the cap already in place means no write."""
+    _purchased_pool_team(db, test_team, test_region)
+    key = _reconcile_key(db, test_team, test_region)
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            key_id=key.id,
+            max_budget=25.0,
+        )
+    )
+    db.commit()
+
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock(
+        return_value={
             "info": {
-                "budget_reset_at": (datetime.now(UTC) + timedelta(days=30)).isoformat(),
-                "key_alias": "user_key",
-                "spend": 5.0,
+                "key_alias": "team_key",
+                "spend": 3.0,
+                "max_budget": 25.0,
+                "budget_duration": None,
+            }
+        }
+    )
+    mock_instance.update_budget = AsyncMock()
+    mock_instance.update_key_budget = AsyncMock()
+
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+    await reconcile_team_keys(db, test_team, keys_by_region, False)
+
+    mock_instance.update_key_budget.assert_not_awaited()
+    mock_instance.update_budget.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_periodic_key_keeps_its_amount(
+    mock_litellm, db, test_team, test_region
+):
+    """A PERIODIC key without a cap row carries the cycle's amount; only the
+    duration is cleared."""
+    key = _reconcile_key(db, test_team, test_region)
+
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock(
+        return_value={
+            "info": {
+                "key_alias": "team_key",
+                "spend": 2.0,
                 "max_budget": 50.0,
-                "budget_duration": None,  # None triggers update
+                "budget_duration": "1mo",
             }
-        },
-    ]
-
-    # Get keys by region
-    keys_by_region = get_team_keys_by_region(db, test_team.id)
-
-    # Call the combined function with renewal period days (no budget amount)
-    team_total = await reconcile_team_keys(
-        db, test_team, keys_by_region, False, 30, None
-    )  # Use default 30 days, no budget amount
-
-    # Verify LiteLLM service was initialized correctly
-    mock_litellm.assert_called_once_with(
-        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+        }
     )
-
-    # Verify get_key_info was called for both keys
-    assert mock_instance.get_key_info.call_count == 2
-
-    # Only budget_duration drifted, so the key's expiry must not be touched
-    assert mock_instance.update_key_budget.call_count == 2
-    mock_instance.update_budget.assert_not_called()
-
-    # Check the first call (team key)
-    first_call = mock_instance.update_key_budget.call_args_list[0]
-    assert (
-        first_call[0][0] == "team_token_123"
-    )  # First positional argument should be litellm_token
-    assert first_call[1]["budget_duration"] == "30d"
-    # Should not have a budget amount
-    assert first_call[1]["max_budget"] is None
-
-    # Check the second call (user key)
-    second_call = mock_instance.update_key_budget.call_args_list[1]
-    assert (
-        second_call[0][0] == "user_token_456"
-    )  # First positional argument should be litellm_token
-    assert second_call[1]["budget_duration"] == "30d"
-    # Should not have a budget amount
-    assert second_call[1]["max_budget"] is None
-
-    # Verify team total spend is calculated correctly
-    assert team_total == 5.0  # 0.0 + 5.0
-
-
-@pytest.mark.asyncio
-@patch("app.core.worker.LiteLLMService")
-async def test_reconcile_team_keys_none_budget_duration_handled(
-    mock_litellm,
-    db,
-    test_team,
-    test_region,
-    test_team_user,
-    test_team_key_creator,
-):
-    """
-    Test that reconcile_team_keys handles None budget_duration gracefully.
-
-    Given: A team with keys where budget_duration is None
-    When: reconcile_team_keys is called with renewal_period_days
-    Then: The function should not error and should handle None budget_duration gracefully
-    """
-    # Setup test data
-    test_team.last_payment = datetime.now(UTC) - timedelta(
-        days=35
-    )  # 35 days ago (past 30-day renewal period)
-    db.add(test_team)
-
-    # Create a key for the team
-    team_key = DBPrivateAIKey(
-        name="Team Key",
-        litellm_token="team_token_123",
-        region=test_region,
-        team_id=test_team.id,
-    )
-    db.add(team_key)
-    db.commit()
-
-    # Setup mock LiteLLM service
-    mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock()
     mock_instance.update_budget = AsyncMock()
     mock_instance.update_key_budget = AsyncMock()
 
-    current_time = datetime.now(UTC)
-
-    # Mock key info response - budget_duration is None, but spend is non-zero
-    mock_instance.get_key_info.return_value = {
-        "info": {
-            "budget_reset_at": (current_time + timedelta(days=30)).isoformat(),
-            "key_alias": "team_key",
-            "spend": 10.0,  # Non-zero spend
-            "max_budget": 100.0,
-            "budget_duration": None,  # None budget_duration
-        }
-    }
-
-    # Get keys by region
     keys_by_region = get_team_keys_by_region(db, test_team.id)
+    await reconcile_team_keys(db, test_team, keys_by_region, False)
 
-    # Call the function with renewal period days
-    team_total = await reconcile_team_keys(
-        db,
-        test_team,
-        keys_by_region,
-        False,
-        RENEWAL_PERIOD_DAYS,
-        MAX_BUDGET_PER_KEY,
-    )
-
-    # Verify a write was issued because budget_duration is None (forces update)
-    assert mock_instance.update_key_budget.call_count == 1
-    mock_instance.update_budget.assert_not_called()
-    update_call = mock_instance.update_key_budget.call_args
-    assert (
-        update_call[0][0] == "team_token_123"
-    )  # First positional argument should be litellm_token
-    assert update_call[1]["budget_duration"] == f"{RENEWAL_PERIOD_DAYS}d"
-    assert update_call[1]["max_budget"] == MAX_BUDGET_PER_KEY
-
-    # Verify team total spend is calculated correctly
-    assert team_total == 10.0
-
-
-@pytest.mark.asyncio
-@patch("app.core.worker.LiteLLMService")
-async def test_reconcile_team_keys_zero_duration_renewal(
-    mock_litellm,
-    db,
-    test_team,
-    test_region,
-    test_team_user,
-    test_team_key_creator,
-):
-    """
-    Test that reconcile_team_keys properly renews keys with "0d" duration.
-
-    Given: A key that has been incorrectly set to "0d" duration
-    When: reconcile_team_keys is called with renewal_period_days
-    Then: The key should be updated to the correct duration
-    """
-    # Setup test data
-    test_team.last_payment = datetime.now(UTC) - timedelta(
-        days=35
-    )  # 35 days ago (past 30-day renewal period)
-    db.add(test_team)
-
-    # Create a key for the team
-    team_key = DBPrivateAIKey(
-        name="Team Key",
-        litellm_token="team_token_123",
-        region=test_region,
-        team_id=test_team.id,
-    )
-    db.add(team_key)
-    db.commit()
-
-    # Setup mock LiteLLM service
-    mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock()
-    mock_instance.update_budget = AsyncMock()
-    mock_instance.update_key_budget = AsyncMock()
-
-    current_time = datetime.now(UTC)
-
-    # Mock key info response - key has "0d" duration (expired due to bug)
-    mock_instance.get_key_info.return_value = {
-        "info": {
-            "budget_reset_at": (
-                current_time - timedelta(days=2)
-            ).isoformat(),  # Reset time in the past
-            "key_alias": "team_key",
-            "spend": 10.0,
-            "max_budget": 100.0,
-            "budget_duration": "0d",  # Expired key due to bug
-        }
-    }
-
-    # Get keys by region
-    keys_by_region = get_team_keys_by_region(db, test_team.id)
-
-    # Call the function with renewal period days
-    team_total = await reconcile_team_keys(
-        db,
-        test_team,
-        keys_by_region,
-        False,
-        RENEWAL_PERIOD_DAYS,
-        MAX_BUDGET_PER_KEY,
-    )
-
-    # Verify a write was issued to fix the "0d" duration
-    assert mock_instance.update_key_budget.call_count == 1
-    mock_instance.update_budget.assert_not_called()
-    update_call = mock_instance.update_key_budget.call_args
-    assert (
-        update_call[0][0] == "team_token_123"
-    )  # First positional argument should be litellm_token
-    assert update_call[1]["budget_duration"] == f"{RENEWAL_PERIOD_DAYS}d"
-    assert update_call[1]["max_budget"] == MAX_BUDGET_PER_KEY
-
-    # Verify team total spend is calculated correctly
-    assert team_total == 10.0
-
-
-@pytest.mark.asyncio
-@patch("app.core.worker.LiteLLMService")
-async def test_reconcile_team_keys_update_budget_parameter_issue(
-    mock_litellm,
-    db,
-    test_team,
-    test_region,
-    test_team_user,
-    test_team_key_creator,
-):
-    """
-    Test that update_budget is called with correct parameters when budget amount needs updating.
-
-    GIVEN: A team with keys that have different budget amounts
-    WHEN: reconcile_team_keys is called with renewal period and budget amount
-    THEN: the write should be called with litellm_token as first positional argument, not as keyword argument
-    """
-
-    # Create a key for the team
-    team_key = DBPrivateAIKey(
-        name="Team Key",
-        litellm_token="team_token_123",
-        region=test_region,
-        team_id=test_team.id,
-    )
-    db.add(team_key)
-    db.commit()
-
-    # Mock LiteLLM service
-    mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock()
-    mock_instance.update_budget = AsyncMock()
-    mock_instance.update_key_budget = AsyncMock()
-
-    # Mock key info response - different budget amount triggers update
-    mock_instance.get_key_info.return_value = {
-        "info": {
-            "budget_reset_at": (datetime.now(UTC) + timedelta(days=30)).isoformat(),
-            "key_alias": "test_key",
-            "spend": 0.0,
-            "max_budget": 27.0,  # Different from expected (120.0)
-            "budget_duration": "30d",
-        }
-    }
-
-    # Get keys by region
-    keys_by_region = get_team_keys_by_region(db, test_team.id)
-
-    # Call the function with renewal period days and budget amount
-    await reconcile_team_keys(
-        db,
-        test_team,
-        keys_by_region,
-        False,
-        RENEWAL_PERIOD_DAYS,
-        MAX_BUDGET_PER_KEY,
-    )
-
-    # Only the budget amount drifted, so duration/expiry must be left alone
-    assert mock_instance.update_key_budget.call_count == 1
-    mock_instance.update_budget.assert_not_called()
-
-    # Check that litellm_token is passed as first positional argument, not as keyword
-    call_args = mock_instance.update_key_budget.call_args
-    # After the fix, litellm_token should be the first positional argument
-    assert (
-        call_args[0][0] == "team_token_123"
-    )  # First positional argument should be litellm_token
-    assert (
-        call_args[1]["max_budget"] == MAX_BUDGET_PER_KEY
-    )  # max_budget as keyword argument
-    # A healthy budget_duration must not be sent, since null clears it in LiteLLM
-    assert call_args[1]["budget_duration"] is None
-
-
-@pytest.mark.asyncio
-@patch("app.core.worker.LiteLLMService")
-async def test_reconcile_team_keys_expiry_within_next_month(
-    mock_litellm,
-    db,
-    test_team,
-    test_region,
-    test_team_user,
-    test_team_key_creator,
-):
-    """
-    Test that reconcile_team_keys updates keys that expire within the next month.
-
-    Given: A key that expires within the next 30 days
-    When: reconcile_team_keys is called with renewal_period_days
-    Then: The key should be updated to the renewal period duration
-    """
-    # Setup test data
-    test_team.last_payment = datetime.now(UTC) - timedelta(
-        days=35
-    )  # 35 days ago (past 30-day renewal period)
-    db.add(test_team)
-
-    # Create a key for the team
-    team_key = DBPrivateAIKey(
-        name="Team Key",
-        litellm_token="team_token_123",
-        region=test_region,
-        team_id=test_team.id,
-    )
-    db.add(team_key)
-    db.commit()
-
-    # Setup mock LiteLLM service
-    mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock()
-    mock_instance.update_budget = AsyncMock()
-    mock_instance.update_key_budget = AsyncMock()
-
-    current_time = datetime.now(UTC)
-    # Set expiry date to 15 days from now (within the 30-day window)
-    expiry_date = current_time + timedelta(days=15)
-
-    # Mock key info response - key expires within next month
-    mock_instance.get_key_info.return_value = {
-        "info": {
-            "budget_reset_at": (current_time - timedelta(days=2)).isoformat(),
-            "key_alias": "team_key",
-            "spend": 10.0,
-            "max_budget": MAX_BUDGET_PER_KEY,  # Use the same budget amount to avoid Rule 1 trigger
-            "budget_duration": "30d",
-            "expires": expiry_date.isoformat(),
-        }
-    }
-
-    # Get keys by region
-    keys_by_region = get_team_keys_by_region(db, test_team.id)
-
-    # Call the function with renewal period days
-    team_total = await reconcile_team_keys(
-        db,
-        test_team,
-        keys_by_region,
-        False,
-        RENEWAL_PERIOD_DAYS,
-        MAX_BUDGET_PER_KEY,
-    )
-
-    # Verify update_budget was called to update the duration for expiring key
-    assert mock_instance.update_budget.call_count == 1
-    update_call = mock_instance.update_budget.call_args
-    assert (
-        update_call[0][0] == "team_token_123"
-    )  # First positional argument should be litellm_token
-    assert (
-        update_call[0][1] == f"{RENEWAL_PERIOD_DAYS}d"
-    )  # Second positional argument should be budget_duration
-    # When updating for expiry reasons, budget_amount should be None since we're only updating duration
-    assert update_call[1]["budget_amount"] is None
-
-    # Verify team total spend is calculated correctly
-    assert team_total == 10.0
-
-
-@pytest.mark.asyncio
-@patch("app.core.worker.LiteLLMService")
-async def test_reconcile_team_keys_expired_key(
-    mock_litellm,
-    db,
-    test_team,
-    test_region,
-    test_team_user,
-    test_team_key_creator,
-):
-    """
-    Test that reconcile_team_keys updates keys that are already expired.
-
-    Given: A key that has already expired
-    When: reconcile_team_keys is called with renewal_period_days
-    Then: The key should be updated to the renewal period duration
-    """
-    # Setup test data
-    test_team.last_payment = datetime.now(UTC) - timedelta(
-        days=35
-    )  # 35 days ago (past 30-day renewal period)
-    db.add(test_team)
-
-    # Create a key for the team
-    team_key = DBPrivateAIKey(
-        name="Team Key",
-        litellm_token="team_token_123",
-        region=test_region,
-        team_id=test_team.id,
-    )
-    db.add(team_key)
-    db.commit()
-
-    # Setup mock LiteLLM service
-    mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock()
-    mock_instance.update_budget = AsyncMock()
-    mock_instance.update_key_budget = AsyncMock()
-
-    current_time = datetime.now(UTC)
-    # Set expiry date to 5 days ago (already expired)
-    expiry_date = current_time - timedelta(days=5)
-
-    # Mock key info response - key is already expired
-    mock_instance.get_key_info.return_value = {
-        "info": {
-            "budget_reset_at": (current_time - timedelta(days=2)).isoformat(),
-            "key_alias": "team_key",
-            "spend": 10.0,
-            "max_budget": MAX_BUDGET_PER_KEY,  # Use the same budget amount to avoid Rule 1 trigger
-            "budget_duration": "30d",
-            "expires": expiry_date.isoformat(),
-        }
-    }
-
-    # Get keys by region
-    keys_by_region = get_team_keys_by_region(db, test_team.id)
-
-    # Call the function with renewal period days
-    team_total = await reconcile_team_keys(
-        db,
-        test_team,
-        keys_by_region,
-        False,
-        RENEWAL_PERIOD_DAYS,
-        MAX_BUDGET_PER_KEY,
-    )
-
-    # Verify update_budget was called to update the duration for expired key
-    assert mock_instance.update_budget.call_count == 1
-    update_call = mock_instance.update_budget.call_args
-    assert (
-        update_call[0][0] == "team_token_123"
-    )  # First positional argument should be litellm_token
-    assert (
-        update_call[0][1] == f"{RENEWAL_PERIOD_DAYS}d"
-    )  # Second positional argument should be budget_duration
-    # When updating for expiry reasons, budget_amount should be None since we're only updating duration
-    assert update_call[1]["budget_amount"] is None
-
-    # Verify team total spend is calculated correctly
-    assert team_total == 10.0
-
-
-@pytest.mark.asyncio
-@patch("app.core.worker.LiteLLMService")
-async def test_reconcile_team_keys_expiry_beyond_next_month(
-    mock_litellm,
-    db,
-    test_team,
-    test_region,
-    test_team_user,
-    test_team_key_creator,
-):
-    """
-    Test that reconcile_team_keys does not update keys that expire beyond the next month.
-
-    Given: A key that expires beyond the next 30 days
-    When: reconcile_team_keys is called with renewal_period_days
-    Then: The key should not be updated for expiry reasons
-    """
-    # Setup test data
-    test_team.last_payment = datetime.now(UTC) - timedelta(
-        days=35
-    )  # 35 days ago (past 30-day renewal period)
-    db.add(test_team)
-
-    # Create a key for the team
-    team_key = DBPrivateAIKey(
-        name="Team Key",
-        litellm_token="team_token_123",
-        region=test_region,
-        team_id=test_team.id,
-    )
-    db.add(team_key)
-    db.commit()
-
-    # Setup mock LiteLLM service
-    mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock()
-    mock_instance.update_budget = AsyncMock()
-    mock_instance.update_key_budget = AsyncMock()
-
-    current_time = datetime.now(UTC)
-    # Set expiry date to 45 days from now (beyond the 30-day window)
-    expiry_date = current_time + timedelta(days=45)
-
-    # Mock key info response - key expires beyond next month
-    mock_instance.get_key_info.return_value = {
-        "info": {
-            "budget_reset_at": (current_time - timedelta(days=2)).isoformat(),
-            "key_alias": "team_key",
-            "spend": 10.0,
-            "max_budget": MAX_BUDGET_PER_KEY,  # Use the same budget amount to avoid Rule 1 trigger
-            "budget_duration": "30d",
-            "expires": expiry_date.isoformat(),
-        }
-    }
-
-    # Get keys by region
-    keys_by_region = get_team_keys_by_region(db, test_team.id)
-
-    # Call the function with renewal period days
-    team_total = await reconcile_team_keys(
-        db,
-        test_team,
-        keys_by_region,
-        False,
-        RENEWAL_PERIOD_DAYS,
-        MAX_BUDGET_PER_KEY,
-    )
-
-    # Verify no write was issued for expiry reasons, on either path
-    assert mock_instance.update_budget.call_count == 0
-    assert mock_instance.update_key_budget.call_count == 0
-
-    # Verify team total spend is calculated correctly
-    assert team_total == 10.0
+    mock_instance.update_key_budget.assert_awaited_once()
+    call = mock_instance.update_key_budget.await_args
+    assert call.args[0] == key.litellm_token
+    assert call.kwargs["budget_duration"] is None
+    assert call.kwargs["clear_budget_duration"] is True
+    assert call.kwargs["max_budget"] is None
+    assert call.kwargs["clear_max_budget"] is False
 
 
 @pytest.mark.asyncio
@@ -2963,74 +2472,34 @@ async def test_reconcile_team_keys_still_writes_from_snapshot_state(
         return_value={
             _Svc.hash_token("sk-team-1"): {
                 "spend": 1.0,
-                "max_budget": 25.0,  # differs from the 50.0 we pass in
+                "max_budget": 25.0,  # differs from the cap row below
                 "key_alias": "team_key",
                 "budget_duration": "30d",
             }
         }
     )
 
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            key_id=key.id,
+            max_budget=50.0,
+        )
+    )
+    db.commit()
+
     keys_by_region = get_team_keys_by_region(db, test_team.id)
-    await reconcile_team_keys(db, test_team, keys_by_region, False, 30, 50.0)
+    await reconcile_team_keys(db, test_team, keys_by_region, False)
 
     mock_instance.update_key_budget.assert_awaited_once()
     mock_instance.update_budget.assert_not_awaited()
     args = mock_instance.update_key_budget.await_args
     assert args.args[0] == "sk-team-1"
     assert args.kwargs["max_budget"] == 50.0
-    # Only the amount drifted in the snapshot, so the healthy budget_duration
-    # must not be sent along - LiteLLM reads a null as "clear it".
     assert args.kwargs["budget_duration"] is None
-
-
-@pytest.mark.asyncio
-@patch("app.core.worker.LiteLLMService")
-async def test_reconcile_team_keys_near_expiry_still_resets_duration(
-    mock_litellm, db, test_team, test_region
-):
-    """
-    Given: A snapshot key that expires within the next month
-    When: reconcile_team_keys runs off the snapshot
-    Then: The write goes through update_budget, which resets the key duration -
-          the narrow write path must not swallow the expiry extension
-    """
-    from app.services.litellm import LiteLLMService as _Svc
-
-    key = DBPrivateAIKey(
-        name="Team Key",
-        litellm_token="sk-team-1",
-        region=test_region,
-        team_id=test_team.id,
-    )
-    db.add(key)
-    db.commit()
-
-    mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock()
-    mock_instance.update_budget = AsyncMock()
-    mock_instance.update_key_budget = AsyncMock()
-    mock_instance.list_all_keys = AsyncMock(
-        return_value={
-            _Svc.hash_token("sk-team-1"): {
-                "spend": 1.0,
-                "max_budget": 50.0,  # matches, so only the expiry drifts
-                "key_alias": "team_key",
-                "budget_duration": "30d",
-                "expires": (datetime.now(UTC) + timedelta(days=5)).isoformat(),
-            }
-        }
-    )
-
-    keys_by_region = get_team_keys_by_region(db, test_team.id)
-    await reconcile_team_keys(db, test_team, keys_by_region, False, 30, 50.0)
-
-    mock_instance.update_budget.assert_awaited_once()
-    mock_instance.update_key_budget.assert_not_awaited()
-    args = mock_instance.update_budget.await_args
-    assert args.args[0] == "sk-team-1"
-    assert args.args[1] == "30d"
-    # Budget matched, so no amount is sent and the existing one is left in place
-    assert args.kwargs["budget_amount"] is None
+    assert args.kwargs["clear_budget_duration"] is True
 
 
 # ---------------------------------------------------------------------------
