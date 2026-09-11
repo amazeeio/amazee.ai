@@ -840,20 +840,11 @@ async def test_monitor_teams_metrics_always_emitted(
 @patch("app.core.worker.SESService")
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
-async def test_monitor_teams_includes_renewal_period_check(
+async def test_monitor_teams_reads_keys_and_applies_limits(
     mock_litellm, mock_ses, mock_limit_service, db, test_team, test_region
 ):
-    """
-    Test that the monitoring workflow includes renewal period checks when conditions are met.
-
-    Given: A team whose keys have passed the renewal period
-    When: The monitoring workflow runs
-    Then: The reconcile_team_keys function should be called with renewal_period_days
-    """
-    # Setup test data
-    test_team.last_payment = datetime.now(UTC) - timedelta(
-        days=35
-    )  # 35 days ago (past 30-day renewal period)
+    """monitor_teams reads every key through LiteLLM and applies team limits."""
+    test_team.last_payment = datetime.now(UTC) - timedelta(days=35)
     db.add(test_team)
 
     # Create a key for the team
@@ -879,61 +870,6 @@ async def test_monitor_teams_includes_renewal_period_check(
     # Run monitoring
     await monitor_teams(db)
 
-    # Verify that get_key_info was called (indicating the combined function ran)
-    # The function should have been called to get key info for monitoring AND renewal period checks
-    assert mock_instance.get_key_info.called
-
-    # Verify limit service was called
-    mock_limit_service.assert_called_with(db)
-    mock_limit_instance.set_team_limits.assert_called_with(test_team)
-
-
-@pytest.mark.asyncio
-@patch("app.core.worker.LimitService")
-@patch("app.core.worker.SESService")
-@patch("app.core.worker.LiteLLMService")
-@patch("app.core.config.settings.ENABLE_LIMITS", True)
-async def test_monitor_teams_does_not_include_renewal_period_check_when_not_passed(
-    mock_litellm, mock_ses, mock_limit_service, db, test_team, test_region
-):
-    """
-    Test that the monitoring workflow does not include renewal period checks when conditions are not met.
-
-    Given: A team whose renewal period hasn't passed
-    When: The monitoring workflow runs
-    Then: The reconcile_team_keys function should be called without renewal_period_days
-    """
-    # Setup test data
-    test_team.last_payment = datetime.now(UTC) - timedelta(
-        days=15
-    )  # 15 days ago (before 30-day renewal period)
-    db.add(test_team)
-
-    # Create a key for the team
-    team_key = DBPrivateAIKey(
-        name="Team Key",
-        litellm_token="team_token_123",
-        region=test_region,
-        team_id=test_team.id,
-    )
-    db.add(team_key)
-    db.commit()
-
-    # Setup mocks
-    mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock(
-        return_value={"info": {"spend": 0, "max_budget": 100, "key_alias": "test"}}
-    )
-
-    # Setup mock limit service
-    mock_limit_instance = mock_limit_service.return_value
-    mock_limit_instance.set_team_limits = Mock()
-
-    # Run monitoring
-    await monitor_teams(db)
-
-    # Verify that get_key_info was called (for monitoring) but no renewal period updates occurred
-    # Since renewal period hasn't passed, the function should still be called but without renewal checks
     assert mock_instance.get_key_info.called
 
     # Verify limit service was called
@@ -1001,7 +937,6 @@ async def test_reconcile_team_keys_repairs_capped_pool_key(
             }
         }
     )
-    mock_instance.update_budget = AsyncMock()
     mock_instance.update_key_budget = AsyncMock()
 
     keys_by_region = get_team_keys_by_region(db, test_team.id)
@@ -1015,7 +950,6 @@ async def test_reconcile_team_keys_repairs_capped_pool_key(
     assert call.kwargs["max_budget"] == 25.0
     assert call.kwargs["clear_max_budget"] is False
     assert "spend" not in call.kwargs
-    mock_instance.update_budget.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1038,7 +972,6 @@ async def test_reconcile_team_keys_clears_uncapped_pool_key(
             }
         }
     )
-    mock_instance.update_budget = AsyncMock()
     mock_instance.update_key_budget = AsyncMock()
 
     keys_by_region = get_team_keys_by_region(db, test_team.id)
@@ -1076,14 +1009,12 @@ async def test_reconcile_team_keys_leaves_gated_never_purchased_team_alone(
             }
         }
     )
-    mock_instance.update_budget = AsyncMock()
     mock_instance.update_key_budget = AsyncMock()
 
     keys_by_region = get_team_keys_by_region(db, test_team.id)
     await reconcile_team_keys(db, test_team, keys_by_region, False)
 
     mock_instance.update_key_budget.assert_not_awaited()
-    mock_instance.update_budget.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1116,14 +1047,12 @@ async def test_reconcile_team_keys_leaves_correct_key_alone(
             }
         }
     )
-    mock_instance.update_budget = AsyncMock()
     mock_instance.update_key_budget = AsyncMock()
 
     keys_by_region = get_team_keys_by_region(db, test_team.id)
     await reconcile_team_keys(db, test_team, keys_by_region, False)
 
     mock_instance.update_key_budget.assert_not_awaited()
-    mock_instance.update_budget.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -2347,7 +2276,6 @@ async def test_reconcile_team_keys_uses_snapshot_not_per_key_info(
 
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock()
-    mock_instance.update_budget = AsyncMock()
     mock_instance.update_key_budget = AsyncMock()
     mock_instance.list_all_keys = AsyncMock(
         return_value={
@@ -2406,7 +2334,6 @@ async def test_reconcile_team_keys_shares_cache_across_teams(
 
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock()
-    mock_instance.update_budget = AsyncMock()
     mock_instance.update_key_budget = AsyncMock()
     mock_instance.list_all_keys = AsyncMock(
         return_value={
@@ -2459,7 +2386,6 @@ async def test_reconcile_team_keys_still_writes_from_snapshot_state(
 
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock()
-    mock_instance.update_budget = AsyncMock()
     mock_instance.update_key_budget = AsyncMock()
     mock_instance.list_all_keys = AsyncMock(
         return_value={
@@ -2487,7 +2413,6 @@ async def test_reconcile_team_keys_still_writes_from_snapshot_state(
     await reconcile_team_keys(db, test_team, keys_by_region, False)
 
     mock_instance.update_key_budget.assert_awaited_once()
-    mock_instance.update_budget.assert_not_awaited()
     args = mock_instance.update_key_budget.await_args
     assert args.args[0] == "sk-team-1"
     assert args.kwargs["max_budget"] == 50.0
@@ -2602,7 +2527,6 @@ async def test_reconcile_team_keys_expire_writes_are_batched(
 
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock()
-    mock_instance.update_budget = AsyncMock()
     mock_instance.update_key_budget = AsyncMock()
     mock_instance.update_key_duration = AsyncMock()
     mock_instance.list_all_keys = AsyncMock(
@@ -2618,7 +2542,6 @@ async def test_reconcile_team_keys_expire_writes_are_batched(
     assert team_total == 5.0
     # One expiry write per key, and no budget writes on the expire path
     assert mock_instance.update_key_duration.await_count == 5
-    assert mock_instance.update_budget.await_count == 0
     expired = sorted(
         c.args[0] for c in mock_instance.update_key_duration.await_args_list
     )
@@ -2662,7 +2585,6 @@ async def test_reconcile_team_keys_flushes_writes_before_region_ends(
 
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock(side_effect=_read)
-    mock_instance.update_budget = AsyncMock()
     mock_instance.update_key_budget = AsyncMock()
     mock_instance.update_key_duration = AsyncMock(side_effect=_write)
     # Empty snapshot forces the per-key fallback read for every key
@@ -2709,7 +2631,6 @@ async def test_reconcile_team_keys_write_failure_does_not_lose_spend(
 
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock()
-    mock_instance.update_budget = AsyncMock()
     mock_instance.update_key_budget = AsyncMock()
     mock_instance.update_key_duration = AsyncMock(side_effect=_maybe_fail)
     mock_instance.list_all_keys = AsyncMock(
