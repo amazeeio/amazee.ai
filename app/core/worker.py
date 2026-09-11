@@ -67,7 +67,7 @@ from app.core.periodic_budget_ledger_service import (
     expire_subscription_entries,
     materialize_topup_rollovers,
 )
-from app.core.pool_budget_service import pool_team_has_ever_purchased
+from app.core.pool_budget_service import team_gate_locked
 from app.core.email import normalize_email_for_lookup
 from fastapi import HTTPException
 
@@ -1231,9 +1231,7 @@ async def reconcile_team_keys(
             }
             is_pool = team.budget_type == BudgetType.POOL
             # One gate lookup per team and region, never per key.
-            gate_locked = team.requires_pool_purchase_gate and not (
-                pool_team_has_ever_purchased(db, team.id, region.id)
-            )
+            gate_locked = team_gate_locked(db, team, region.id)
 
             # Writes are queued here and run concurrently in batches of
             # KEY_WRITE_BATCH. Issuing them inline costs one round-trip per key,
@@ -1281,14 +1279,12 @@ async def reconcile_team_keys(
                                 ),
                             )
                         )
-                    elif not gate_locked:
-                        # A gated POOL team that never purchased keeps its keys
-                        # at max_budget=0 with the 365d gate duration: that zero
-                        # is the only thing stopping inference, so leave it.
+                    elif not gate_locked and (is_pool or key.id in cap_map):
+                        # Only keys whose cycle the ledger owns: every POOL key,
+                        # and any key with a cap row. A PERIODIC key without a
+                        # cap row still relies on LiteLLM's own budget cycle
+                        # (trial keys), so it is left alone.
                         expected_max = cap_map.get(key.id)
-                        # A PERIODIC key without a cap row carries the budget the
-                        # billing cycle wrote, which the worker cannot predict,
-                        # so only the duration rule applies to it.
                         expected_defined = expected_max is not None or is_pool
                         current_duration = info.get("budget_duration")
                         current_max = info.get("max_budget")

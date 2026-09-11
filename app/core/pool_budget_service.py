@@ -98,6 +98,20 @@ def pool_team_has_ever_purchased(db: Session, team_id: int, region_id: int) -> b
     return has_pool_purchase
 
 
+def team_gate_locked(db: Session, team, region_id: int) -> bool:
+    """True while a purchase-gated team has never bought anything in the region.
+
+    Its keys then sit at max_budget=0 with the gate duration, and that zero is
+    the only thing stopping inference, so no reconcile or cleanup may touch
+    them.
+    """
+    return bool(
+        team is not None
+        and team.requires_pool_purchase_gate
+        and not pool_team_has_ever_purchased(db, team.id, region_id)
+    )
+
+
 def pool_team_budget_duration_for_enforcement(
     db: Session, team_id: int, region_id: int
 ) -> str:
