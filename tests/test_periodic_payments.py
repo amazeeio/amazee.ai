@@ -1154,7 +1154,7 @@ def test_subscription_deactivate_keeps_key_cap_duration(
     mock_litellm.set_key_restrictions.assert_awaited_once()
     key_kwargs = mock_litellm.set_key_restrictions.await_args.kwargs
     assert key_kwargs["budget_amount"] == 25.0
-    assert key_kwargs["budget_duration"] == "1mo"
+    assert key_kwargs["budget_duration"] is None
     assert key_kwargs["duration"] is None
 
 
