@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-One-off cleanup: clear the LiteLLM ``budget_duration`` on every key.
+One-off cleanup: clear the LiteLLM ``budget_duration`` on every key whose
+cycle the ledger owns (POOL keys and any key with a cap row).
 
 The hourly reconcile repairs the same drift within an hour. This script lets an
 operator do it at once and see the list of keys it touches.
@@ -17,9 +18,16 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.core.pool_budget_service import pool_team_has_ever_purchased
+from app.core.pool_budget_service import team_gate_locked
 from app.db.database import SessionLocal
-from app.db.models import DBPrivateAIKey, DBRegion, DBSpendCap, DBTeam, DBUser
+from app.db.models import (
+    BudgetType,
+    DBPrivateAIKey,
+    DBRegion,
+    DBSpendCap,
+    DBTeam,
+    DBUser,
+)
 from app.services.litellm import LiteLLMService, hash_litellm_token
 
 
@@ -44,7 +52,8 @@ async def run(apply: bool) -> int:
         cleared = 0
         skipped_gated = 0
         failed = 0
-        gate_cache: dict[tuple[int, int], bool] = {}
+        # (skip, is_pool) per team and region, so the DB is asked once per pair.
+        team_cache: dict[tuple[int, int], tuple[bool, bool]] = {}
 
         for region in session.query(DBRegion).all():
             service = LiteLLMService(
@@ -58,6 +67,15 @@ async def run(apply: bool) -> int:
                 print(f"[FAIL] region={region.name} could not list keys: {exc}")
                 continue
 
+            capped_key_ids = {
+                key_id
+                for (key_id,) in session.query(DBSpendCap.key_id).filter(
+                    DBSpendCap.scope == "key",
+                    DBSpendCap.region_id == region.id,
+                    DBSpendCap.max_budget.isnot(None),
+                )
+            }
+
             for key, team_id in _region_keys(session, region.id):
                 scanned += 1
                 info = snapshot.get(hash_litellm_token(key.litellm_token)) or {}
@@ -65,27 +83,27 @@ async def run(apply: bool) -> int:
                 if duration is None:
                     continue
 
+                gate_locked, is_pool = False, False
                 if team_id is not None:
                     cache_key = (team_id, region.id)
-                    if cache_key not in gate_cache:
+                    if cache_key not in team_cache:
                         team = (
                             session.query(DBTeam)
                             .filter(DBTeam.id == team_id)
                             .first()
                         )
-                        # A gated team that never purchased keeps its keys at a
-                        # zero budget with the gate duration; that pair is the
-                        # only thing stopping inference, so leave it alone.
-                        gate_cache[cache_key] = bool(
-                            team is not None
-                            and team.requires_pool_purchase_gate
-                            and not pool_team_has_ever_purchased(
-                                session, team_id, region.id
-                            )
+                        team_cache[cache_key] = (
+                            team_gate_locked(session, team, region.id),
+                            team is not None and team.budget_type == BudgetType.POOL,
                         )
-                    if gate_cache[cache_key]:
-                        skipped_gated += 1
-                        continue
+                    gate_locked, is_pool = team_cache[cache_key]
+                if gate_locked:
+                    skipped_gated += 1
+                    continue
+                # Same rule as the hourly reconcile: a PERIODIC key without a
+                # cap row still runs on LiteLLM's own cycle, so leave it.
+                if not is_pool and key.id not in capped_key_ids:
+                    continue
 
                 print(
                     f"key_id={key.id} region={region.name} team_id={team_id} "
