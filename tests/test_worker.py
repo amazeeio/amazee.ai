@@ -1128,12 +1128,12 @@ async def test_reconcile_team_keys_leaves_correct_key_alone(
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LiteLLMService")
-async def test_reconcile_team_keys_periodic_key_keeps_its_amount(
+async def test_reconcile_team_keys_leaves_periodic_key_without_cap_alone(
     mock_litellm, db, test_team, test_region
 ):
-    """A PERIODIC key without a cap row carries the cycle's amount; only the
-    duration is cleared."""
-    key = _reconcile_key(db, test_team, test_region)
+    """A PERIODIC key without a cap row still runs on LiteLLM's own budget
+    cycle, so the reconcile must not clear it."""
+    _reconcile_key(db, test_team, test_region)
 
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock(
@@ -1146,19 +1146,12 @@ async def test_reconcile_team_keys_periodic_key_keeps_its_amount(
             }
         }
     )
-    mock_instance.update_budget = AsyncMock()
     mock_instance.update_key_budget = AsyncMock()
 
     keys_by_region = get_team_keys_by_region(db, test_team.id)
     await reconcile_team_keys(db, test_team, keys_by_region, False)
 
-    mock_instance.update_key_budget.assert_awaited_once()
-    call = mock_instance.update_key_budget.await_args
-    assert call.args[0] == key.litellm_token
-    assert call.kwargs["budget_duration"] is None
-    assert call.kwargs["clear_budget_duration"] is True
-    assert call.kwargs["max_budget"] is None
-    assert call.kwargs["clear_max_budget"] is False
+    mock_instance.update_key_budget.assert_not_awaited()
 
 
 @pytest.mark.asyncio
