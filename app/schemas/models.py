@@ -515,10 +515,6 @@ class TrialAccessResponse(BaseModel):
     team_name: str
 
 
-class BudgetPeriodUpdate(BaseModel):
-    budget_duration: str
-
-
 class TokenDurationUpdate(BaseModel):
     """Schema for updating a token's duration"""
 
