@@ -585,6 +585,38 @@ def test_update_key_budget_can_toggle_blocked(
 
 
 @patch("httpx.AsyncClient")
+def test_update_key_budget_can_reset_spend(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.update_key_budget(
+            litellm_token="test-token",
+            max_budget=5.0,
+            budget_duration=None,
+            clear_budget_duration=True,
+            spend=0.0,
+        )
+    )
+
+    mock_httpx_post_client.post.assert_called_once_with(
+        f"{test_region.litellm_api_url}/key/update",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={
+            "key": "test-token",
+            "budget_duration": None,
+            "max_budget": 5.0,
+            "spend": 0.0,
+        },
+    )
+
+
+@patch("httpx.AsyncClient")
 def test_update_key_duration_success(
     mock_client_class, test_region, mock_httpx_post_client
 ):
