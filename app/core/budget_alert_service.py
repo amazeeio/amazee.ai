@@ -520,11 +520,9 @@ def _litellm_cycle_anchor(
 def _cap_cycle_anchor(cap_created_at: datetime | None, team: DBTeam) -> datetime | None:
     """Where a rolling ``Nd`` cap cycle is anchored.
 
-    The cap row's own ``created_at``. Setting a cap calls ``update_key_budget``
-    with the duration, which is the moment LiteLLM starts counting: it stores
-    ``budget_reset_at = that moment + N days`` and steps it on from there. An
-    amount-only change deliberately passes no duration, so the original anchor
-    survives and ``created_at`` stays the right one.
+    The cap row's own ``created_at``: the cycle runs from the moment the cap was
+    set. The ledger owns the key cap cycle and LiteLLM holds no duration on a
+    key, so only rows written before that rule may still carry one.
 
     Team creation is the wrong anchor whenever a cap was added later than the team,
     which is common: the two dates can be hundreds of days apart, and the cap's own
@@ -1029,12 +1027,12 @@ async def evaluate_region(
             if not key_budget or key_budget <= 0:
                 continue
 
-            # A cap is an allowance *per cycle*, so its percentage is measured over
-            # that cycle. Caps are written as 31d or 1mo and LiteLLM zeroes the
-            # key's spend at each boundary; dividing the team's longer cycle of
-            # spend by a one-month cap would read far above 100 % and alert on
-            # nothing. A key bounded by the pool has no cycle of its own and keeps
-            # the team's window.
+            # A cap is an allowance *per cycle*, so its percentage is measured
+            # over that cycle: dividing the team's longer stretch of spend by a
+            # one-month cap would read far above 100 % and alert on nothing.
+            # New key caps carry no duration, so only rows written earlier reach
+            # this branch. A key bounded by the pool has no cycle of its own and
+            # keeps the team's window.
             key_window = window
             key_since = since
             if cap_duration:
