@@ -2509,9 +2509,9 @@ async def clear_team_member_budget(
     summary="Update key budget",
     description=(
         "Updates key-level budget override for the specified key.\n\n"
-        "Request body accepts only `max_budget`.\n"
-        "`budget_duration` is derived server-side and returned in the response "
-        "(monthly `1mo` when set, `null` when clearing max_budget)."
+        "Request body accepts only `max_budget`; any other field is a 422.\n"
+        "`budget_duration` is always `null` for keys: the cap period is owned "
+        "by the billing ledger, not by LiteLLM."
     ),
     response_description="Updated key budget state.",
 )
@@ -2532,75 +2532,26 @@ async def update_key_budget(
     # Defence-in-depth scope gate (issue #600): enforce declared team scope
     # before the budget write, even for system-admin callers.
     enforce_declared_team_scope(key, team_id, db)
-    owner = None
-    team_for_budget_check = None
     if key.team_id is not None:
-        team_for_budget_check = (
-            db.query(DBTeam)
-            .filter(DBTeam.id == key.team_id, DBTeam.deleted_at.is_(None))
-            .first()
-        )
         _assert_team_budget_write_access(current_user, role, key.team_id)
     else:
         owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
         if not owner:
             raise HTTPException(status_code=404, detail="Key owner not found")
         _assert_user_budget_write_access(current_user, role, owner)
-        if owner.team_id is not None:
-            team_for_budget_check = (
-                db.query(DBTeam)
-                .filter(DBTeam.id == owner.team_id, DBTeam.deleted_at.is_(None))
-                .first()
-            )
 
     region = _get_region_or_404(db, region_id)
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
-    # Key cap windows for POOL teams are 31d (not calendar-month 1mo).
-    # Cap amount changes should not re-anchor/reset duration once set.
-    effective_duration = _effective_monthly_budget_duration(body.max_budget)
-    configured_key_cap_existing = _get_spend_cap_max_budget(
-        db,
-        scope="key",
-        region_id=region_id,
-        team_id=key.team_id,
-        user_id=key.owner_id,
-        key_id=key_id,
-    )
-    if (
-        team_for_budget_check is not None
-        and team_for_budget_check.budget_type == BudgetType.POOL
-    ):
-        if body.max_budget is None:
-            effective_duration = None
-        elif configured_key_cap_existing is None:
-            effective_duration = "31d"
-        else:
-            # Preserve existing key duration anchor when only cap value changes.
-            effective_duration = None
-
+    # The ledger owns the key cap period, so LiteLLM must never reset key
+    # spend on its own.
     await service.update_key_budget(
         litellm_token=key.litellm_token,
-        budget_duration=effective_duration,
+        budget_duration=None,
         max_budget=body.max_budget,
         clear_max_budget=body.max_budget is None,
-    )
-    existing_key_cap_row = (
-        db.query(DBSpendCap)
-        .filter(
-            DBSpendCap.scope == "key",
-            DBSpendCap.region_id == region_id,
-            DBSpendCap.team_id == key.team_id,
-            DBSpendCap.user_id == key.owner_id,
-            DBSpendCap.key_id == key_id,
-        )
-        .first()
-    )
-    cap_duration_to_store = (
-        effective_duration
-        if effective_duration is not None
-        else (existing_key_cap_row.budget_duration if existing_key_cap_row else None)
+        clear_budget_duration=True,
     )
 
     _upsert_spend_cap(
@@ -2611,7 +2562,7 @@ async def update_key_budget(
         user_id=key.owner_id,
         key_id=key_id,
         max_budget=body.max_budget,
-        budget_duration=cap_duration_to_store,
+        budget_duration=None,
     )
     _invalidate_key_related_user_spend_cache(db, key)
     configured_key_cap = _get_spend_cap_max_budget(

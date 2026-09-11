@@ -1895,7 +1895,7 @@ def test_get_team_spend_logs_when_litellm_key_cannot_map_to_db_key(
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
-def test_update_key_budget_endpoint_forces_monthly_duration(
+def test_update_key_budget_endpoint_sends_no_duration(
     mock_update_key_budget,
     mock_get_key_info,
     client,
@@ -1920,8 +1920,8 @@ def test_update_key_budget_endpoint_forces_monthly_duration(
             "created_at": "2026-01-01T00:00:00Z",
             "updated_at": "2026-01-02T00:00:00Z",
             "max_budget": 8.0,
-            "budget_duration": "1mo",
-            "budget_reset_at": "2026-06-01T00:00:00Z",
+            "budget_duration": None,
+            "budget_reset_at": None,
         }
     }
     response = client.put(
@@ -1930,8 +1930,12 @@ def test_update_key_budget_endpoint_forces_monthly_duration(
         json={"max_budget": 8.0},
     )
     assert response.status_code == 200
+    assert response.json()["budget_duration"] is None
     mock_update_key_budget.assert_awaited_once()
-    assert mock_update_key_budget.await_args.kwargs["budget_duration"] == "1mo"
+    kwargs = mock_update_key_budget.await_args.kwargs
+    assert kwargs["budget_duration"] is None
+    assert kwargs["clear_budget_duration"] is True
+    assert kwargs["clear_max_budget"] is False
     cap = (
         db.query(DBSpendCap)
         .filter(
@@ -1943,7 +1947,7 @@ def test_update_key_budget_endpoint_forces_monthly_duration(
     )
     assert cap is not None
     assert cap.max_budget == 8.0
-    assert cap.budget_duration == "1mo"
+    assert cap.budget_duration is None
 
 
 @patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
@@ -2770,7 +2774,7 @@ def test_update_key_budget_owner_only_key_path(
     db.add(key)
     db.commit()
     mock_get_key_info.return_value = {
-        "info": {"max_budget": 2.0, "budget_duration": "1mo"}
+        "info": {"max_budget": 2.0, "budget_duration": None}
     }
 
     response = client.put(
@@ -2779,8 +2783,74 @@ def test_update_key_budget_owner_only_key_path(
         json={"max_budget": 2.0},
     )
     assert response.status_code == 200
+    assert response.json()["budget_duration"] is None
     mock_update_key_budget.assert_awaited_once()
-    assert mock_update_key_budget.await_args.kwargs["budget_duration"] == "1mo"
+    kwargs = mock_update_key_budget.await_args.kwargs
+    assert kwargs["budget_duration"] is None
+    assert kwargs["clear_budget_duration"] is True
+    assert kwargs["clear_max_budget"] is False
+
+
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_update_key_budget_clears_stale_duration_on_pool_team(
+    mock_update_key_budget,
+    mock_get_key_info,
+    client,
+    admin_token,
+    test_team,
+    test_team_user,
+    test_region,
+    db,
+):
+    """A cap row left over with a LiteLLM duration is rewritten to null."""
+    test_team.budget_type = BudgetType.POOL
+    test_team_user.team_id = test_team.id
+    key = DBPrivateAIKey(
+        name="stale-duration-key",
+        litellm_token="stale-duration-key-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team.id,
+    )
+    db.add_all([test_team, test_team_user, key])
+    db.commit()
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=test_team_user.id,
+            key_id=key.id,
+            max_budget=10.0,
+            budget_duration="31d",
+        )
+    )
+    db.commit()
+    mock_get_key_info.return_value = {
+        "info": {"max_budget": 20.0, "budget_duration": None}
+    }
+
+    response = client.put(
+        f"/spend/{test_region.id}/key/{key.id}/budget",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"max_budget": 20.0},
+    )
+    assert response.status_code == 200, response.json()
+    kwargs = mock_update_key_budget.await_args.kwargs
+    assert kwargs["budget_duration"] is None
+    assert kwargs["clear_budget_duration"] is True
+    cap = (
+        db.query(DBSpendCap)
+        .filter(
+            DBSpendCap.scope == "key",
+            DBSpendCap.region_id == test_region.id,
+            DBSpendCap.key_id == key.id,
+        )
+        .first()
+    )
+    assert cap.max_budget == 20.0
+    assert cap.budget_duration is None
 
 
 @patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
