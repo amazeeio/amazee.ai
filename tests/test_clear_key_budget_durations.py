@@ -60,7 +60,9 @@ def _seed(db, test_region):
     return purchased_key, gated_key
 
 
-def test_clear_key_budget_durations_skips_gated_and_is_idempotent(db, test_region):
+def test_clear_key_budget_durations_skips_gated_and_is_idempotent(
+    db, test_region, monkeypatch
+):
     purchased_key, gated_key = _seed(db, test_region)
     snapshot = {
         hash_litellm_token(purchased_key.litellm_token): {"budget_duration": "1mo"},
@@ -72,8 +74,10 @@ def test_clear_key_budget_durations_skips_gated_and_is_idempotent(db, test_regio
         patch("scripts.clear_key_budget_durations.LiteLLMService") as mock_litellm,
     ):
         # The script closes the session it is given; the test fixture owns this
-        # one and still needs it after the run.
-        db.close = lambda: None
+        # one and still needs it after the run. monkeypatch restores the real
+        # close before the fixture teardown, or the session stays open in a
+        # transaction and the next test's TRUNCATE waits on its lock forever.
+        monkeypatch.setattr(db, "close", lambda: None)
         mock_instance = mock_litellm.return_value
         mock_instance.list_all_keys = AsyncMock(return_value=snapshot)
         mock_instance.update_key_budget = AsyncMock()
@@ -101,3 +105,5 @@ def test_clear_key_budget_durations_skips_gated_and_is_idempotent(db, test_regio
         mock_instance.update_key_budget.reset_mock()
         assert asyncio.run(run(apply=True)) == 0
         mock_instance.update_key_budget.assert_not_awaited()
+        # The second run only counted rows, so it left a transaction open.
+        db.rollback()
