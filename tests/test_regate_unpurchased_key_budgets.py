@@ -155,3 +155,49 @@ def test_regate_covers_user_scoped_keys(
         == key.litellm_token
     )
     assert instance.update_key_budget.await_args.kwargs["max_budget"] == 0.0
+
+
+@patch("scripts.regate_unpurchased_key_budgets.LiteLLMService")
+@patch("scripts.regate_unpurchased_key_budgets.SessionLocal")
+def test_regate_leaves_periodic_teams_alone(
+    mock_session, mock_litellm, db, test_region
+):
+    """require_purchase_for_requests defaults to true on every team.
+
+    Only a POOL team is actually gated, so a PERIODIC team's key must keep the
+    budget it is entitled to.
+    """
+    periodic = DBTeam(
+        name="regate-periodic-team",
+        budget_type=BudgetType.PERIODIC,
+        require_purchase_for_requests=True,
+    )
+    db.add(periodic)
+    db.commit()
+    key = DBPrivateAIKey(
+        name="regate-periodic-key",
+        litellm_token="sk-regate-periodic",
+        region_id=test_region.id,
+        team_id=periodic.id,
+    )
+    db.add(key)
+    db.commit()
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=periodic.id,
+            key_id=key.id,
+            max_budget=77.0,
+        )
+    )
+    db.commit()
+
+    mock_session.return_value = db
+    instance = mock_litellm.return_value
+    instance.update_key_budget = AsyncMock()
+
+    with patch.object(db, "close", lambda: None):
+        assert asyncio.run(run(apply=True)) == 0
+
+    instance.update_key_budget.assert_not_awaited()
