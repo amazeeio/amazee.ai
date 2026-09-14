@@ -62,9 +62,12 @@ def _raised_gated_keys(session):
         pair = (team_id, region_id)
         if pair not in checked:
             team = session.query(DBTeam).filter(DBTeam.id == team_id).first()
+            # requires_pool_purchase_gate, not the raw flag: that flag defaults
+            # to true on every team, so a PERIODIC team would be selected here
+            # and have a valid key zeroed.
             checked[pair] = bool(
                 team is not None
-                and team.require_purchase_for_requests
+                and team.requires_pool_purchase_gate
                 and not pool_team_has_ever_purchased(session, team_id, region_id)
             )
         if checked[pair]:
