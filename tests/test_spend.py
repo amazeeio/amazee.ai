@@ -2213,11 +2213,12 @@ def test_update_pool_key_budget_allows_setting_cap_before_first_purchase(
         json={"max_budget": 60.0},
     )
     assert response.status_code == 200, response.json()
-    # Without the no-purchase lock, the cap is applied directly to LiteLLM.
+    # The cap is accepted and stored before the first purchase, but the key
+    # stays at zero: pushing 60.0 would let one request through against the
+    # team's $0 budget. The first purchase applies the stored cap.
     mock_update_key_budget.assert_awaited_once()
-    assert mock_update_key_budget.await_args.kwargs["max_budget"] == 60.0
+    assert mock_update_key_budget.await_args.kwargs["max_budget"] == 0.0
     assert mock_update_key_budget.await_args.kwargs["clear_max_budget"] is False
-    assert response.json()["max_budget"] == 60.0
     cap = (
         db.query(DBSpendCap)
         .filter(
@@ -2277,9 +2278,10 @@ def test_update_prepaid_pool_key_budget_applies_cap_before_purchase(
         json={"max_budget": 50.0},
     )
     assert response.status_code == 200, response.json()
-    # Without the no-purchase lock, the cap is applied directly to LiteLLM.
+    # A prepaid dedicated team is gated like any other until it has purchased,
+    # so the cap is stored and the key stays at zero.
     mock_update_key_budget.assert_awaited_once()
-    assert mock_update_key_budget.await_args.kwargs["max_budget"] == 50.0
+    assert mock_update_key_budget.await_args.kwargs["max_budget"] == 0.0
     assert mock_update_key_budget.await_args.kwargs["clear_max_budget"] is False
 
 
@@ -2580,6 +2582,115 @@ def test_clear_key_budget_clears_once_pool_team_has_purchased(
     )
 
 
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_update_key_budget_keeps_the_gate_on_an_unpurchased_pool_team(
+    mock_update_key_budget,
+    mock_get_key_info,
+    client,
+    admin_token,
+    test_team,
+    test_team_user,
+    test_region,
+    db,
+):
+    """A cap set before the first purchase is stored but never sent.
+
+    Pushing it would raise the key off zero, and the team's $0 only denies
+    above zero, so one request would get through unpaid.
+    """
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    db.add(test_team)
+    key = DBPrivateAIKey(
+        name="pool-gated-cap-key",
+        litellm_token="pool-gated-cap-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+    mock_get_key_info.return_value = {
+        "info": {"max_budget": 0.0, "budget_duration": "365d"}
+    }
+
+    response = client.put(
+        f"/spend/{test_region.id}/key/{key.id}/budget",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"max_budget": 5.0},
+    )
+
+    assert response.status_code == 200
+    kwargs = mock_update_key_budget.await_args.kwargs
+    assert kwargs["max_budget"] == 0.0
+    assert kwargs["clear_max_budget"] is False
+    # The cap is still recorded, so the first purchase applies it.
+    cap = (
+        db.query(DBSpendCap)
+        .filter(DBSpendCap.scope == "key", DBSpendCap.key_id == key.id)
+        .first()
+    )
+    assert cap.max_budget == 5.0
+    assert cap.budget_duration is None
+    assert "has not purchased yet" in response.json()["note"]
+
+
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_update_key_budget_sends_the_cap_once_pool_team_has_purchased(
+    mock_update_key_budget,
+    mock_get_key_info,
+    client,
+    admin_token,
+    test_team,
+    test_team_user,
+    test_region,
+    db,
+):
+    """One purchase is enough to restore the normal set behaviour."""
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    db.add(test_team)
+    key = DBPrivateAIKey(
+        name="pool-purchased-cap-key",
+        litellm_token="pool-purchased-cap-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.add(
+        DBPoolPurchase(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            amount_cents=500,
+            currency="USD",
+            purchased_at=datetime.now(UTC),
+            stripe_payment_id=f"pool-set-{test_team.id}-{test_region.id}",
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+    mock_get_key_info.return_value = {
+        "info": {"max_budget": 5.0, "budget_duration": None}
+    }
+
+    response = client.put(
+        f"/spend/{test_region.id}/key/{key.id}/budget",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"max_budget": 5.0},
+    )
+
+    assert response.status_code == 200
+    mock_update_key_budget.assert_awaited_once_with(
+        litellm_token=key.litellm_token,
+        max_budget=5.0,
+        clear_max_budget=False,
+        clear_budget_duration=True,
+    )
+
+
 @patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
 def test_clear_team_member_budget_endpoint(
     mock_update_team_member, client, admin_token, test_team, test_team_user, test_region
@@ -2803,6 +2914,8 @@ def test_update_key_budget_clears_stale_duration_on_pool_team(
 ):
     """A cap row left over with a LiteLLM duration is rewritten to null."""
     test_team.budget_type = BudgetType.POOL
+    # Ungated, so the cap reaches LiteLLM: the gate is a separate test.
+    test_team.require_purchase_for_requests = False
     test_team_user.team_id = test_team.id
     key = DBPrivateAIKey(
         name="stale-duration-key",

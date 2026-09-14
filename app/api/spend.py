@@ -575,6 +575,35 @@ def _lock_region_or_404(db: Session, region_id: int) -> DBRegion:
     return region
 
 
+def _key_gate_locked(db: Session, key: DBPrivateAIKey, region_id: int) -> bool:
+    """True while this key's team is purchase-gated and has never bought.
+
+    Such a key sits at a zero max_budget, and that zero is the only thing
+    stopping inference: LiteLLM denies a key at spend >= max_budget but a team
+    only at spend > max_budget, so raising the key's budget lets one request
+    through against the team's $0.
+
+    The team is resolved the way key creation does it, the key's own team or
+    the owner's team for a user-scoped key, because reading only key.team_id
+    would miss a user key whose owner sits in a gated team.
+
+    Takes the region lock before the purchase check. The purchase path holds
+    the same lock and clears key gates before committing its purchase row, so
+    an unlocked read can still see "never purchased" for a team that is
+    already funded and re-gate a key the purchase just paid for.
+    """
+    team_id = key.team_id
+    if team_id is None and key.owner_id is not None:
+        team_id = db.query(DBUser.team_id).filter(DBUser.id == key.owner_id).scalar()
+    if team_id is None:
+        return False
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if team is None or not team.requires_pool_purchase_gate:
+        return False
+    _lock_region_or_404(db, region_id)
+    return not pool_team_has_ever_purchased(db, team_id, region_id)
+
+
 def _assert_team_access(current_user: DBUser, role: str, team_id: int) -> None:
     if current_user.is_admin:
         return
@@ -2544,14 +2573,26 @@ async def update_key_budget(
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
-    # The ledger owns the key cap period, so LiteLLM must never reset key
-    # spend on its own.
-    await service.update_key_budget(
-        litellm_token=key.litellm_token,
-        max_budget=body.max_budget,
-        clear_max_budget=body.max_budget is None,
-        clear_budget_duration=True,
-    )
+    # A gated team that has never purchased keeps its keys at zero, so a cap
+    # set now is stored but not pushed: writing it would lift the gate and let
+    # one request through. The first purchase applies the stored cap.
+    gate_locked = _key_gate_locked(db, key, region_id)
+    if gate_locked:
+        await service.update_key_budget(
+            litellm_token=key.litellm_token,
+            budget_duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
+            max_budget=0.0,
+            clear_max_budget=False,
+        )
+    else:
+        # The ledger owns the key cap period, so LiteLLM must never reset key
+        # spend on its own.
+        await service.update_key_budget(
+            litellm_token=key.litellm_token,
+            max_budget=body.max_budget,
+            clear_max_budget=body.max_budget is None,
+            clear_budget_duration=True,
+        )
 
     _upsert_spend_cap(
         db,
@@ -2589,7 +2630,12 @@ async def update_key_budget(
             else info.get("max_budget")
         ),
         budget_duration=info.get("budget_duration"),
-        note="If key has team_id, team/team-member budgets may take precedence during enforcement.",
+        note=(
+            "Cap stored. The team has not purchased yet, so the key stays at a "
+            "zero budget and the cap applies from the first purchase."
+            if gate_locked
+            else "If key has team_id, team/team-member budgets may take precedence during enforcement."
+        ),
     )
 
 
@@ -2656,37 +2702,10 @@ async def clear_key_budget(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
 
-    # A gated pool team that has never purchased keeps its keys at a zero
-    # max_budget, which is the only thing stopping inference: LiteLLM denies a
-    # key at spend >= max_budget but a team only at spend > max_budget, so a
-    # cleared key would pass its first request against the team's $0 budget.
-    # Re-apply the gate instead of clearing. The first purchase clears it, and
-    # from then on this endpoint behaves normally.
-    # Resolve the team the same way key creation does: the key's own team, or
-    # the owner's team for a user-scoped key. Reading only key.team_id would
-    # miss a user key whose owner sits in a gated team.
-    gate_team_id = key.team_id
-    if gate_team_id is None and key.owner_id is not None:
-        gate_team_id = (
-            db.query(DBUser.team_id).filter(DBUser.id == key.owner_id).scalar()
-        )
-    gate_team = (
-        db.query(DBTeam).filter(DBTeam.id == gate_team_id).first()
-        if gate_team_id is not None
-        else None
-    )
-
-    gate_key = False
-    if gate_team is not None and gate_team.requires_pool_purchase_gate:
-        # Serialise against a concurrent first purchase. That path clears key
-        # gates in LiteLLM before committing its purchase row, so an unlocked
-        # check can still read "never purchased" and re-gate a key the purchase
-        # just funded, leaving it unable to serve requests. Taking the same
-        # region lock means whichever runs first wins: a purchase in flight
-        # blocks this until it commits, and a clear in flight makes the purchase
-        # wait and then clear the gate itself.
-        _lock_region_or_404(db, region_id)
-        gate_key = not pool_team_has_ever_purchased(db, gate_team_id, region_id)
+    # Re-apply the gate instead of clearing, so a cleared key cannot pass its
+    # first request against the team's $0 budget. The first purchase clears
+    # it, and from then on this endpoint behaves normally.
+    gate_key = _key_gate_locked(db, key, region_id)
 
     if gate_key:
         await service.update_key_budget(
