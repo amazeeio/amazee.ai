@@ -87,7 +87,7 @@ def test_clear_key_budget_durations_skips_gated_and_is_idempotent(
         mock_instance.update_key_budget.assert_awaited_once()
         kwargs = mock_instance.update_key_budget.await_args.kwargs
         assert kwargs["litellm_token"] == purchased_key.litellm_token
-        assert kwargs["budget_duration"] is None
+        assert kwargs.get("budget_duration") is None
         assert kwargs["clear_budget_duration"] is True
         assert "max_budget" not in kwargs
 

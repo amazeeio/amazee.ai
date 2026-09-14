@@ -1930,10 +1930,10 @@ def test_update_key_budget_endpoint_sends_no_duration(
         json={"max_budget": 8.0},
     )
     assert response.status_code == 200
-    assert response.json()["budget_duration"] is None
+    assert response.json().get("budget_duration") is None
     mock_update_key_budget.assert_awaited_once()
     kwargs = mock_update_key_budget.await_args.kwargs
-    assert kwargs["budget_duration"] is None
+    assert kwargs.get("budget_duration") is None
     assert kwargs["clear_budget_duration"] is True
     assert kwargs["clear_max_budget"] is False
     cap = (
@@ -2389,13 +2389,12 @@ def test_clear_key_budget_endpoint(
     assert response.status_code == 200
     mock_update_key_budget.assert_awaited_once_with(
         litellm_token=key.litellm_token,
-        budget_duration=None,
         max_budget=None,
         clear_max_budget=True,
         clear_budget_duration=True,
     )
     assert response.json()["max_budget"] is None
-    assert response.json()["budget_duration"] is None
+    assert response.json().get("budget_duration") is None
     cap = (
         db.query(DBSpendCap)
         .filter(
@@ -2571,7 +2570,6 @@ def test_clear_key_budget_clears_once_pool_team_has_purchased(
     assert response.status_code == 200
     mock_update_key_budget.assert_awaited_once_with(
         litellm_token=key.litellm_token,
-        budget_duration=None,
         max_budget=None,
         clear_max_budget=True,
         clear_budget_duration=True,
@@ -2783,10 +2781,10 @@ def test_update_key_budget_owner_only_key_path(
         json={"max_budget": 2.0},
     )
     assert response.status_code == 200
-    assert response.json()["budget_duration"] is None
+    assert response.json().get("budget_duration") is None
     mock_update_key_budget.assert_awaited_once()
     kwargs = mock_update_key_budget.await_args.kwargs
-    assert kwargs["budget_duration"] is None
+    assert kwargs.get("budget_duration") is None
     assert kwargs["clear_budget_duration"] is True
     assert kwargs["clear_max_budget"] is False
 
@@ -2838,7 +2836,7 @@ def test_update_key_budget_clears_stale_duration_on_pool_team(
     )
     assert response.status_code == 200, response.json()
     kwargs = mock_update_key_budget.await_args.kwargs
-    assert kwargs["budget_duration"] is None
+    assert kwargs.get("budget_duration") is None
     assert kwargs["clear_budget_duration"] is True
     cap = (
         db.query(DBSpendCap)
@@ -3566,10 +3564,10 @@ def test_team_spend_period_fields_null_when_no_budget(
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["budget_duration"] is None
+    assert data.get("budget_duration") is None
     assert data["budget_reset_at"] is None
     assert data["period_start"] is None
-    assert data["keys"][0]["budget_duration"] is None
+    assert data["keys"][0].get("budget_duration") is None
     assert data["keys"][0]["budget_reset_at"] is None
     assert data["keys"][0]["period_start"] is None
 

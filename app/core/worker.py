@@ -67,7 +67,7 @@ from app.core.periodic_budget_ledger_service import (
     expire_subscription_entries,
     materialize_topup_rollovers,
 )
-from app.core.pool_budget_service import team_gate_locked
+from app.core.pool_budget_service import key_cap_map, team_gate_locked
 from app.core.email import normalize_email_for_lookup
 from fastapi import HTTPException
 
@@ -1215,20 +1215,7 @@ async def reconcile_team_keys(
             snapshot = await key_state_cache.get(region, litellm_service)
 
             # Expected key caps for this region, read once per team and region.
-            cap_map = {
-                int(cap_key_id): float(cap_value)
-                for cap_key_id, cap_value in db.query(
-                    DBSpendCap.key_id, DBSpendCap.max_budget
-                )
-                .filter(
-                    DBSpendCap.scope == "key",
-                    DBSpendCap.region_id == region.id,
-                    DBSpendCap.key_id.isnot(None),
-                    DBSpendCap.max_budget.isnot(None),
-                    DBSpendCap.key_id.in_([k.id for k in keys]),
-                )
-                .all()
-            }
+            cap_map = key_cap_map(db, region.id, [k.id for k in keys])
             is_pool = team.budget_type == BudgetType.POOL
             # One gate lookup per team and region, never per key.
             gate_locked = team_gate_locked(db, team, region.id)
@@ -1285,10 +1272,9 @@ async def reconcile_team_keys(
                         # cap row still relies on LiteLLM's own budget cycle
                         # (trial keys), so it is left alone.
                         expected_max = cap_map.get(key.id)
-                        expected_defined = expected_max is not None or is_pool
                         current_duration = info.get("budget_duration")
                         current_max = info.get("max_budget")
-                        max_drifted = expected_defined and not _same_budget_amount(
+                        max_drifted = not _same_budget_amount(
                             current_max, expected_max
                         )
 
@@ -1307,12 +1293,9 @@ async def reconcile_team_keys(
                                     partial(
                                         litellm_service.update_key_budget,
                                         key.litellm_token,
-                                        budget_duration=None,
                                         clear_budget_duration=True,
                                         max_budget=expected_max,
-                                        clear_max_budget=(
-                                            expected_defined and expected_max is None
-                                        ),
+                                        clear_max_budget=expected_max is None,
                                     ),
                                 )
                             )

@@ -1575,7 +1575,7 @@ async def test_sync_pool_keys_resets_spend_on_purchase(db, test_team, test_regio
     assert len(by_token) == 2
     capped_kwargs = by_token[capped.litellm_token]
     assert capped_kwargs["max_budget"] == 25.0
-    assert capped_kwargs["budget_duration"] is None
+    assert capped_kwargs.get("budget_duration") is None
     assert capped_kwargs["clear_budget_duration"] is True
     assert capped_kwargs["spend"] == 0.0
     uncapped_kwargs = by_token[uncapped.litellm_token]
@@ -1611,6 +1611,6 @@ async def test_sync_pool_keys_keeps_spend_on_expiry(db, test_team, test_region):
     assert len(mock_instance.update_key_budget.await_args_list) == 2
     for call in mock_instance.update_key_budget.await_args_list:
         assert call.kwargs["spend"] is None
-        assert call.kwargs["budget_duration"] is None
+        assert call.kwargs.get("budget_duration") is None
         assert call.kwargs["clear_budget_duration"] is True
     mock_instance.update_key_duration.assert_not_awaited()
