@@ -103,11 +103,6 @@ def _lock_active_region_or_404(db: Session, region_id: int) -> DBRegion:
     return region
 
 
-# PERIODIC teams use a fixed 31d rolling window so LiteLLM never self-resets
-# on a calendar boundary. Spend is reset manually on each Stripe webhook renewal.
-PERIODIC_BUDGET_DURATION = "31d"
-
-
 @router.get(
     "/region/{region_id}/teams/{team_id}/periodic-status",
     response_model=PeriodicBudgetStatusResponse,
@@ -680,10 +675,12 @@ async def purchase_periodic_topup(
         desired_remaining = (sub_remaining_cents + topup_remaining_cents) / 100.0
         new_total_budget = round(current_spend + desired_remaining, 4)
 
+        # No LiteLLM budget cycle: the ledger owns the period, and a LiteLLM
+        # reset would drop the team spend counter and hide real spend from it.
         await service.update_team_budget(
             team_id=lite_team_id,
             max_budget=new_total_budget,
-            budget_duration=PERIODIC_BUDGET_DURATION,
+            clear_budget_duration=True,
         )
         team_budget_updated = True
         if team.requires_pool_purchase_gate:

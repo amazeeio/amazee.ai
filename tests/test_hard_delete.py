@@ -250,6 +250,9 @@ async def test_hard_delete_cascades_region_associations(
 
     team_id = test_team.id
 
+    # The LiteLLM team delete is awaited, so the client must be awaitable.
+    mock_litellm.return_value = AsyncMock()
+
     # Run hard delete job
     await hard_delete_expired_teams(db)
 
@@ -544,6 +547,8 @@ async def test_hard_delete_removes_user_admin_regions(
         db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
     )
 
+    mock_litellm.return_value = AsyncMock()
+
     await hard_delete_expired_teams(db)
 
     remaining = (
@@ -625,6 +630,8 @@ async def test_hard_delete_removes_spend_caps(
     soft_delete_team_for_test(
         db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
     )
+
+    mock_litellm.return_value = AsyncMock()
 
     await hard_delete_expired_teams(db)
 
@@ -711,3 +718,163 @@ async def test_hard_delete_removes_user_spend_cache_for_normalized_email(
         .first()
     )
     assert remaining is None
+
+
+@patch("app.core.worker.LiteLLMService")
+@pytest.mark.asyncio
+async def test_hard_delete_deletes_litellm_team_per_region(
+    mock_litellm, db: Session, test_team, test_region
+):
+    """
+    Given: A soft-deleted team associated to one region and holding a key in another
+    When: Running the hard delete job
+    Then: Should delete the LiteLLM team once per region
+    """
+    other_region = DBRegion(
+        name="other-region",
+        label="Other Region",
+        postgres_host="amazee-test-postgres",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="https://other-litellm.com",
+        litellm_api_key="other-litellm-key",
+        is_active=True,
+    )
+    db.add(other_region)
+    db.commit()
+
+    # Key in a region the team has no association row for.
+    db.add(
+        DBPrivateAIKey(
+            name="other-key",
+            litellm_token="other-token",
+            team_id=test_team.id,
+            region_id=other_region.id,
+        )
+    )
+
+    soft_delete_team_for_test(
+        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
+    )
+
+    team_id = test_team.id
+
+    mock_service = AsyncMock()
+    mock_litellm.return_value = mock_service
+    mock_litellm.format_team_id.side_effect = (
+        lambda region_name, tid: f"{region_name}_{tid}"
+    )
+
+    await hard_delete_expired_teams(db)
+
+    deleted_ids = {call.args[0] for call in mock_service.delete_team.await_args_list}
+    assert deleted_ids == {
+        f"{test_region.name}_{team_id}",
+        f"{other_region.name}_{team_id}",
+    }
+    assert mock_service.delete_team.await_count == 2
+    assert db.query(DBTeam).filter(DBTeam.id == team_id).first() is None
+
+
+@patch("app.core.worker.LiteLLMService")
+@pytest.mark.asyncio
+async def test_hard_delete_defers_when_team_delete_fails(
+    mock_litellm, db: Session, test_team, test_region
+):
+    """
+    Given: A soft-deleted team whose LiteLLM team delete fails
+    When: Running the hard delete job
+    Then: Should keep the team so the next run can retry the LiteLLM cleanup
+    """
+    db.add(
+        DBLimitedResource(
+            owner_id=test_team.id,
+            owner_type=OwnerType.TEAM,
+            resource=ResourceType.USER,
+            unit=UnitType.COUNT,
+            max_value=10.0,
+            current_value=5.0,
+            limit_type=LimitType.CONTROL_PLANE,
+            limited_by=LimitSource.DEFAULT,
+        )
+    )
+    soft_delete_team_for_test(
+        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
+    )
+
+    team_id = test_team.id
+
+    mock_service = AsyncMock()
+    mock_service.delete_team.side_effect = Exception("LiteLLM API error")
+    mock_litellm.return_value = mock_service
+
+    await hard_delete_expired_teams(db)
+
+    assert db.query(DBTeam).filter(DBTeam.id == team_id).first() is not None
+    # The rows deleted before the failure are rolled back, not half-removed.
+    assert (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == team_id,
+        )
+        .count()
+        == 1
+    )
+
+
+@patch("app.core.worker.LiteLLMService")
+@pytest.mark.asyncio
+async def test_hard_delete_deletes_litellm_team_in_inactive_regions(
+    mock_litellm, db: Session, test_team, test_region
+):
+    """
+    Given: A soft-deleted team associated to an inactive region
+    When: Running the hard delete job
+    Then: Should still delete the LiteLLM team there, it can still serve keys
+    """
+    test_region.is_active = False
+    db.commit()
+
+    soft_delete_team_for_test(
+        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
+    )
+
+    team_id = test_team.id
+
+    mock_service = AsyncMock()
+    mock_litellm.return_value = mock_service
+
+    await hard_delete_expired_teams(db)
+
+    mock_service.delete_team.assert_awaited_once()
+    assert db.query(DBTeam).filter(DBTeam.id == team_id).first() is None
+
+
+@patch("app.core.worker.LiteLLMService")
+@pytest.mark.asyncio
+async def test_hard_delete_proceeds_when_inactive_region_delete_fails(
+    mock_litellm, db: Session, test_team, test_region
+):
+    """
+    Given: A soft-deleted team in an inactive region whose LiteLLM is unreachable
+    When: Running the hard delete job
+    Then: Should delete the team anyway, a decommissioned region never answers
+    """
+    test_region.is_active = False
+    db.commit()
+
+    soft_delete_team_for_test(
+        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
+    )
+
+    team_id = test_team.id
+
+    mock_service = AsyncMock()
+    mock_service.delete_team.side_effect = Exception("LiteLLM API error")
+    mock_litellm.return_value = mock_service
+
+    await hard_delete_expired_teams(db)
+
+    assert db.query(DBTeam).filter(DBTeam.id == team_id).first() is None

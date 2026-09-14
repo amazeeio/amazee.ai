@@ -31,10 +31,15 @@ from app.core.trial_cleanup import (
 )
 from app.db.postgres import PostgresManager
 from app.schemas.models import BudgetType
-from app.services.litellm import LiteLLMService, hash_litellm_token
+from app.services.litellm import (
+    INFERENCE_ONLY_ROUTES,
+    LiteLLMService,
+    hash_litellm_token,
+)
 from app.services.ses import SESService
 from app.core.team_service import (
     get_team_keys_by_region,
+    reprovision_litellm_team,
     get_team_region_litellm_keys,
     is_anonymous_trial_team,
     soft_delete_team,
@@ -63,12 +68,17 @@ from app.core.periodic_budget_ledger_service import (
     materialize_topup_rollovers,
 )
 from app.core.email import normalize_email_for_lookup
+from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
 FIRST_EMAIL_DAYS_LEFT = 7
 SECOND_EMAIL_DAYS_LEFT = 5
 TRIAL_OVER_DAYS = 30
+
+# A key is created with a 30-day expiry and the billing cycle is the only thing
+# that renews it. This is key expiry, not a LiteLLM budget cycle.
+KEY_EXPIRY_EXTENSION = "31d"
 
 # Budget types that support subscription cycles (PERIODIC and POOL).
 # Used to gate cycle/ledger/drift functions that were originally PERIODIC-only.
@@ -469,6 +479,49 @@ def _previous_period_spend_baseline_cents(
     return int(round(float(row[0]) * 100))
 
 
+async def _elapsed_period_spend_cents(
+    db: Session,
+    *,
+    team: DBTeam,
+    region: DBRegion,
+    period_start: datetime,
+    litellm_service: "LiteLLMService | None",
+    lite_team_id: str | None,
+) -> int:
+    """Return the spend of the period that just ended, in cents.
+
+    Used when the live LiteLLM team counter can no longer be trusted. The
+    window runs from the previous snapshot's period_start up to the new one,
+    which is the period whose spend was never debited from the ledger.
+
+    Raises when the spend logs cannot be read, so the caller fails and is
+    retried. The per-key counters are deliberately not used as a fallback:
+    keys reset on cycles of their own, so their sum is not this window's
+    spend, and a wrong debit on the ledger is permanent.
+    """
+    row = (
+        db.query(DBTeamSpendPeriod.period_start)
+        .filter(
+            DBTeamSpendPeriod.team_id == team.id,
+            DBTeamSpendPeriod.region_id == region.id,
+            DBTeamSpendPeriod.period_start < period_start,
+        )
+        .order_by(DBTeamSpendPeriod.period_start.desc())
+        .first()
+    )
+    window_start = row[0] if row else None
+    if litellm_service is None or not lite_team_id or window_start is None:
+        raise RuntimeError(
+            f"Cannot read the elapsed period spend for team_id={team.id} "
+            f"region_id={region.id}: no LiteLLM connection or no earlier "
+            "spend period to open the window"
+        )
+    total = await litellm_service.get_team_spend_in_range(
+        lite_team_id, window_start, period_start
+    )
+    return max(0, int(round(float(total) * 100)))
+
+
 async def _sync_periodic_ledger_for_period(
     *,
     db: Session,
@@ -483,6 +536,9 @@ async def _sync_periodic_ledger_for_period(
     if team.budget_type not in SUBSCRIPTION_BUDGET_TYPES:
         return
 
+    litellm_service = None
+    lite_team_id = None
+    litellm_cycle_active = False
     try:
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
@@ -491,6 +547,7 @@ async def _sync_periodic_ledger_for_period(
         team_info_resp = await litellm_service.get_team_info(lite_team_id)
         team_info = team_info_resp.get("team_info", team_info_resp)
         snapshot_total_spend = float(team_info.get("spend", 0.0) or 0.0)
+        litellm_cycle_active = bool(team_info.get("budget_duration"))
     except Exception:
         snapshot = await fetch_team_spend_snapshot_for_region(
             db=db, team=team, region=region
@@ -526,7 +583,32 @@ async def _sync_periodic_ledger_for_period(
             region_id=region.id,
             current_period_start=period_start,
         )
-        incremental_spend_cents = max(0, spend_cents - spend_baseline_cents)
+        if not litellm_cycle_active and spend_cents >= spend_baseline_cents:
+            incremental_spend_cents = spend_cents - spend_baseline_cents
+        else:
+            # The counter is not trustworthy: it either already dropped below
+            # our snapshot, or LiteLLM still runs a budget cycle on this team
+            # and can reset it at any midnight, with usage climbing back above
+            # the snapshot before we look. The spend logs survive a reset, so
+            # read the elapsed period from them instead.
+            logger.warning(
+                "LiteLLM team spend counter is not trustworthy for team_id=%s "
+                "region_id=%s: live=%s cents, baseline=%s cents, "
+                "litellm_cycle_active=%s",
+                team.id,
+                region.id,
+                spend_cents,
+                spend_baseline_cents,
+                litellm_cycle_active,
+            )
+            incremental_spend_cents = await _elapsed_period_spend_cents(
+                db,
+                team=team,
+                region=region,
+                period_start=period_start,
+                litellm_service=litellm_service,
+                lite_team_id=lite_team_id,
+            )
         allocate_period_spend_fifo(
             db,
             team_id=team.id,
@@ -636,10 +718,6 @@ async def apply_billing_cycle_for_team(
         limit_service = LimitService(db)
         _, _, max_rpm_limit = limit_service.get_token_restrictions(team.id)
         per_region_budget = budget_cents / 100.0
-        # Safety-net: Stripe cycles are 30d. The 31d budget_duration on LiteLLM
-        # auto-expires budget if a webhook is missed. On cancellation, Stripe sends
-        # customer.subscription.deleted which handles explicit cleanup.
-        budget_duration = "31d"
         keys = get_team_region_litellm_keys(db, team_id=team.id, region_id=region.id)
 
         litellm_service = LiteLLMService(
@@ -650,7 +728,28 @@ async def apply_billing_cycle_for_team(
         team_max_budget = per_region_budget
         current_team_spend = 0.0
         try:
-            team_info_resp = await litellm_service.get_team_info(lite_team_id)
+            try:
+                team_info_resp = await litellm_service.get_team_info(lite_team_id)
+            except HTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+                # The team was removed on the LiteLLM side; recreate it so the
+                # budget update below has something to attach to.
+                logger.info(
+                    "LiteLLM team %s missing in region %s, recreating it",
+                    lite_team_id,
+                    region.name,
+                )
+                # The team took its users and memberships with it, so rebuild
+                # them too; a bare team would accept no key.
+                await reprovision_litellm_team(
+                    db,
+                    team,
+                    region,
+                    litellm_service,
+                    db.query(DBUser).filter(DBUser.team_id == team.id).all(),
+                )
+                team_info_resp = {}
             team_info = team_info_resp.get("team_info", team_info_resp)
             current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
 
@@ -723,16 +822,18 @@ async def apply_billing_cycle_for_team(
 
         if not sync_errors:
             try:
+                # LiteLLM must not run a budget cycle of its own for this
+                # team: the ledger owns the period, and a LiteLLM reset would
+                # drop the team spend counter and hide real spend from it.
                 await litellm_service.update_team_budget(
                     team_id=lite_team_id,
                     max_budget=team_max_budget,
-                    budget_duration=budget_duration,
+                    clear_budget_duration=True,
                 )
                 logger.info(
-                    "Updated team %s budget to %s (duration=%s) in region %s",
+                    "Updated team %s budget to %s in region %s",
                     team.id,
                     team_max_budget,
-                    budget_duration,
                     region.name,
                 )
                 if keys:
@@ -776,19 +877,17 @@ async def apply_billing_cycle_for_team(
                     key_spend_cap = key_cap_row[0] if key_cap_row else None
                     key_cap_duration = key_cap_row[1] if key_cap_row else None
 
+                    effective_key_budget = None
                     if team.requires_pool_purchase_gate:
                         # POOL: key max_budget must be set only when an explicit key cap exists.
                         # Otherwise keep key max_budget null and enforce at team level.
-                        await litellm_service.set_key_restrictions(
+                        # Renew the key's expiry for the coming period; no key
+                        # budget cycle unless an explicit key cap defines one.
+                        restrictions = dict(
                             litellm_token=key.litellm_token,
-                            duration=budget_duration,
-                            # Keep POOL key windows aligned with team cycle window
-                            # even when no explicit key cap exists.
+                            duration=KEY_EXPIRY_EXTENSION,
                             budget_duration=(
-                                # POOL key caps use 31d windows aligned with cycle semantics.
-                                budget_duration
-                                if key_spend_cap is not None
-                                else budget_duration
+                                key_cap_duration if key_spend_cap is not None else None
                             ),
                             budget_amount=(
                                 float(key_spend_cap)
@@ -799,34 +898,77 @@ async def apply_billing_cycle_for_team(
                             spend=0.0,
                             blocked=False,
                         )
-                        logger.info(
-                            "Updated POOL key %s limits in LiteLLM: duration=%s, key_cap=%s, key_cap_duration=%s, rpm=%s, spend_reset=True",
-                            key.id,
-                            budget_duration,
-                            key_spend_cap,
-                            key_cap_duration,
-                            max_rpm_limit,
-                        )
                     else:
                         effective_key_budget = (
                             float(key_spend_cap)
                             if key_spend_cap is not None
                             else per_region_budget
                         )
-                        await litellm_service.set_key_restrictions(
+                        # Renew the key's expiry for the coming period; no key
+                        # budget cycle unless an explicit key cap defines one.
+                        restrictions = dict(
                             litellm_token=key.litellm_token,
-                            duration=budget_duration,
-                            budget_duration=budget_duration,
+                            duration=KEY_EXPIRY_EXTENSION,
+                            budget_duration=(
+                                key_cap_duration if key_spend_cap is not None else None
+                            ),
                             budget_amount=effective_key_budget,
                             rpm_limit=max_rpm_limit,
                             spend=0.0,
                             blocked=False,
                         )
-                        logger.info(
-                            "Updated key %s limits in LiteLLM: duration=%s, budget=%s, rpm=%s, spend_reset=True",
+
+                    try:
+                        await litellm_service.set_key_restrictions(**restrictions)
+                    except HTTPException as restriction_error:
+                        if restriction_error.status_code != 404:
+                            raise
+                        # LiteLLM lost a key row we own, with its team or on its
+                        # own. Rebuild it under the same token so clients keep
+                        # working and the limits below have something to apply to.
+                        owner = (
+                            db.query(DBUser).filter(DBUser.id == key.owner_id).first()
+                            if key.owner_id
+                            else None
+                        )
+                        logger.warning(
+                            "Key %s missing from LiteLLM team %s; recreating it",
                             key.id,
-                            budget_duration,
+                            lite_team_id,
+                        )
+                        await litellm_service.create_key(
+                            email=owner.email if owner else team.admin_email or "",
+                            name=key.name,
+                            user_id=key.owner_id,
+                            team_id=lite_team_id,
+                            apply_limits=False,
+                            key=key.litellm_token,
+                            # Same route restriction normal provisioning applies,
+                            # or a rebuilt trial key would come back unrestricted.
+                            allowed_routes=(
+                                INFERENCE_ONLY_ROUTES
+                                if is_anonymous_trial_team(team)
+                                else None
+                            ),
+                        )
+                        await litellm_service.set_key_restrictions(**restrictions)
+
+                    if team.requires_pool_purchase_gate:
+                        logger.info(
+                            "Updated POOL key %s limits in LiteLLM: expiry=%s, key_cap=%s, key_cap_duration=%s, rpm=%s, spend_reset=True",
+                            key.id,
+                            KEY_EXPIRY_EXTENSION,
+                            key_spend_cap,
+                            key_cap_duration,
+                            max_rpm_limit,
+                        )
+                    else:
+                        logger.info(
+                            "Updated key %s limits in LiteLLM: expiry=%s, budget=%s, key_cap_duration=%s, rpm=%s, spend_reset=True",
+                            key.id,
+                            KEY_EXPIRY_EXTENSION,
                             effective_key_budget,
+                            key_cap_duration,
                             max_rpm_limit,
                         )
                 except Exception as e:
@@ -1876,6 +2018,46 @@ async def hard_delete_expired_teams(db: Session):
                         logger.error(
                             f"Failed to delete keys from region {region.name}: {str(region_error)}"
                         )
+
+                # Delete the LiteLLM team in every region it can still exist in,
+                # inactive ones included: they can still serve keys. Read the
+                # associations now, they are removed further down.
+                regions_with_team = {region.id: region for region in keys_by_region}
+                for region in (
+                    db.query(DBRegion)
+                    .join(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
+                    .filter(DBTeamRegion.team_id == team.id)
+                    .all()
+                ):
+                    regions_with_team.setdefault(region.id, region)
+
+                for region in regions_with_team.values():
+                    try:
+                        litellm_service = LiteLLMService(
+                            api_url=region.litellm_api_url,
+                            api_key=region.litellm_api_key,
+                        )
+                        await litellm_service.delete_team(
+                            LiteLLMService.format_team_id(region.name, team.id)
+                        )
+                        logger.info(
+                            f"Deleted LiteLLM team for team {team.id} in region {region.name}"
+                        )
+                    except Exception as team_error:
+                        if not region.is_active:
+                            # An inactive region may be decommissioned for good,
+                            # so it must not hold the deletion back forever.
+                            logger.error(
+                                f"Failed to delete LiteLLM team for team {team.id} in inactive region {region.name}: {str(team_error)}; continuing"
+                            )
+                            continue
+                        # Dropping the local rows now would leave an orphan team
+                        # nothing can reach again, so keep them and retry on the
+                        # next run.
+                        logger.error(
+                            f"Failed to delete LiteLLM team for team {team.id} in region {region.name}: {str(team_error)}; will retry"
+                        )
+                        raise
 
                 # Delete keys from database
                 # Collect key IDs first so we can clean up spend_caps that reference them

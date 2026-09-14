@@ -4,7 +4,6 @@ from datetime import UTC, datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.periodic_budget_ledger_service import (
     allocate_period_spend_fifo,
     compute_active_topup_remaining,
@@ -127,9 +126,7 @@ async def subscription_cycle(
         )
 
     period_start = datetime.now(UTC)
-    # Safety-net: Stripe cycles are 30d. The 31d budget_duration on LiteLLM
-    # auto-expires budget if a webhook is missed. On cancellation, Stripe sends
-    # customer.subscription.deleted which handles explicit cleanup.
+    # 31 days, so a 30-day Stripe cycle always lands before the period ends.
     period_end = period_start + timedelta(days=31)
 
     is_first_cycle = (
@@ -359,15 +356,41 @@ async def subscription_deactivate(
                 team_info = team_info_resp.get("team_info", team_info_resp)
                 current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
                 current_spend_cents = int(round(current_team_spend * 100))
+                litellm_cycle_active = bool(team_info.get("budget_duration"))
                 spend_baseline_cents = _previous_period_spend_baseline_cents(
                     db,
                     team_id=team.id,
                     region_id=region.id,
                     current_period_start=active_subscription_period.effective_period_start,
                 )
-                incremental_spend_cents = max(
-                    0, current_spend_cents - spend_baseline_cents
-                )
+                if (
+                    not litellm_cycle_active
+                    and current_spend_cents >= spend_baseline_cents
+                ):
+                    incremental_spend_cents = current_spend_cents - spend_baseline_cents
+                else:
+                    # The counter cannot be trusted: it either already dropped
+                    # below our snapshot, or LiteLLM still runs a cycle on this
+                    # team and can reset it at any midnight. The spend logs
+                    # survive a reset, so read this period from them.
+                    logger.warning(
+                        "LiteLLM team spend counter is not trustworthy on "
+                        "cancellation for team_id=%s region_id=%s: live=%s cents, "
+                        "baseline=%s cents, litellm_cycle_active=%s",
+                        team.id,
+                        region.id,
+                        current_spend_cents,
+                        spend_baseline_cents,
+                        litellm_cycle_active,
+                    )
+                    logged_spend = await litellm_service.get_team_spend_in_range(
+                        lite_team_id,
+                        active_subscription_period.effective_period_start,
+                        datetime.now(UTC),
+                    )
+                    incremental_spend_cents = max(
+                        0, int(round(float(logged_spend) * 100))
+                    )
                 if incremental_spend_cents > 0:
                     allocate_period_spend_fifo(
                         db,
@@ -403,12 +426,7 @@ async def subscription_deactivate(
             compute_active_topup_remaining(db, team_id=team.id, region_id=region.id)
             / 100.0
         )
-        if team.budget_type == BudgetType.PERIODIC:
-            topup_budget_duration = f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
-        else:
-            topup_budget_duration = f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
 
-        projected_team_max_budget = topup_remaining_dollars
         if current_team_spend is None:
             try:
                 team_info_resp = await litellm_service.get_team_info(lite_team_id)
@@ -420,17 +438,44 @@ async def subscription_deactivate(
                     team.id,
                     exc,
                 )
-        if current_team_spend is not None:
-            # LiteLLM team spend is non-resettable. Keep current spend as baseline
-            # so remaining headroom stays requestable after deactivation.
+        if topup_remaining_dollars <= 0:
+            # No top-up left: block every key in the team, whatever the spend
+            # counter says now or later.
+            projected_team_max_budget = 0.0
+        elif current_team_spend is None:
+            # A cap without the recorded spend would sit below it and block a
+            # team that still has paid credit. Write nothing and let the caller
+            # retry the whole deactivation.
+            db.rollback()
+            _write_audit_log(
+                db,
+                "subscription.deactivate",
+                "deactivate",
+                str(team.id),
+                502,
+                {
+                    "transaction_id": request.transaction_id,
+                    "region_id": request.region_id,
+                    "reason": request.reason,
+                    "outcome": "spend_read_failed",
+                },
+            )
+            raise HTTPException(
+                status_code=502,
+                detail="Cannot read LiteLLM team spend; deactivation must be retried",
+            )
+        else:
+            # /team/update ignores spend, so the cap has to cover the spend
+            # already recorded for the remaining top-up to be requestable.
             projected_team_max_budget = current_team_spend + topup_remaining_dollars
 
         try:
+            # No budget_duration: LiteLLM must never reset team spend and hand
+            # a cancelled team its old headroom back.
             await litellm_service.update_team_budget(
                 team_id=lite_team_id,
                 max_budget=projected_team_max_budget,
-                budget_duration=topup_budget_duration,
-                spend=0.0,
+                clear_budget_duration=True,
             )
         except Exception as exc:
             logger.error(
@@ -440,10 +485,11 @@ async def subscription_deactivate(
             )
 
         keys = get_team_region_litellm_keys(db, team_id=team.id, region_id=region.id)
+        # duration=None so deactivation does not move the key's expiry.
         for key in keys:
             try:
                 key_cap = (
-                    db.query(DBSpendCap.max_budget)
+                    db.query(DBSpendCap.max_budget, DBSpendCap.budget_duration)
                     .filter(
                         DBSpendCap.scope == "key",
                         DBSpendCap.region_id == region.id,
@@ -454,10 +500,11 @@ async def subscription_deactivate(
                 )
                 has_key_cap = key_cap is not None and key_cap[0] is not None
                 if has_key_cap:
+                    # A cancel must not move the cap window the user picked.
                     await litellm_service.set_key_restrictions(
                         litellm_token=key.litellm_token,
-                        duration="31d",
-                        budget_duration="31d",
+                        duration=None,
+                        budget_duration=key_cap[1],
                         budget_amount=float(key_cap[0]),
                         rpm_limit=None,
                         spend=0.0,
@@ -465,8 +512,8 @@ async def subscription_deactivate(
                 else:
                     await litellm_service.set_key_restrictions(
                         litellm_token=key.litellm_token,
-                        duration=topup_budget_duration,
-                        budget_duration=topup_budget_duration,
+                        duration=None,
+                        budget_duration=None,
                         budget_amount=topup_remaining_dollars,
                         rpm_limit=None,
                         spend=0.0,
