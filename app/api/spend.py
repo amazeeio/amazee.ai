@@ -589,10 +589,12 @@ def _apply_pool_key_windows(
     Every window here comes from the ledger, which is what actually resets the
     key's spend.
 
-    An uncapped key shares the team window. A capped key follows the active
-    subscription, and with no subscription it follows the last top-up, because
-    a purchase is what zeroes its spend. Only a team that has bought nothing
-    falls back to its creation date.
+    A capped key follows the active subscription, whose renewal is what zeroes
+    its spend. With no subscription nothing resets that key on a cycle at all,
+    only the next purchase does, so it shares the team's top-up window like an
+    uncapped key. Reporting a rolling window there would announce resets that
+    never happen and leave earlier spend counted against a period it did not
+    occur in.
     """
     now = datetime.now(UTC)
     active_subscription = (
@@ -612,36 +614,6 @@ def _apply_pool_key_windows(
         )
         .first()
     )
-    capped_anchor = None
-    if active_subscription is None:
-        # A top-up resets key spend, so it is the real start of the window.
-        capped_anchor = (
-            db.query(func.max(DBPoolPurchase.purchased_at))
-            .filter(
-                DBPoolPurchase.team_id == team.id,
-                DBPoolPurchase.region_id == region_id,
-            )
-            .scalar()
-        )
-        if capped_anchor is None:
-            last_deactivation = (
-                db.query(DBPeriodicPayment.payment_date)
-                .filter(
-                    DBPeriodicPayment.team_id == team.id,
-                    DBPeriodicPayment.payment_type == "deactivation",
-                    DBPeriodicPayment.status == "completed",
-                )
-                .order_by(DBPeriodicPayment.payment_date.desc())
-                .first()
-            )
-            capped_anchor = (
-                (last_deactivation[0] if last_deactivation else None)
-                or team.created_at
-                or now
-            )
-        if capped_anchor.tzinfo is None:
-            capped_anchor = capped_anchor.replace(tzinfo=UTC)
-
     for item in items:
         if item.max_budget is None:
             item.budget_duration = team_window.budget_duration
@@ -660,11 +632,11 @@ def _apply_pool_key_windows(
             # budget_reset_at too, so this stops matching once cleaned.
             pass
         else:
-            item.budget_duration = "31d"
-            item.period_start = (
-                current_cycle_start("31d", capped_anchor, now) or capped_anchor
-            )
-            item.budget_reset_at = item.period_start + timedelta(days=31)
+            # Nothing resets this key on a cycle, so it spans the same stretch
+            # of credit the team window describes.
+            item.budget_duration = team_window.budget_duration
+            item.budget_reset_at = team_window.period_end
+            item.period_start = team_window.period_start
 
 
 def _key_gate_locked(db: Session, key: DBPrivateAIKey, region_id: int) -> bool:

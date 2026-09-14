@@ -3792,13 +3792,14 @@ def test_pool_key_with_cap_shows_period_fields(
 
 
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
-def test_pool_capped_key_window_anchors_on_the_last_topup(
+def test_pool_capped_key_without_subscription_shares_the_team_window(
     mock_get_team_info, client, admin_token, test_team, test_region, db
 ):
-    """With no subscription, a top-up is what resets key spend.
+    """With no subscription nothing resets this key on a cycle.
 
-    The window must start there, not at team creation: a purchase zeroes the
-    key's spend, so anchoring elsewhere describes a period that never happened.
+    Only the next purchase does, so the window must span the life of the credit
+    like the team's. A rolling 31d window would announce resets that never
+    happen and leave earlier spend counted against a period it did not occur in.
     """
     test_team.budget_type = BudgetType.POOL
     test_team.created_at = datetime.now(UTC) - timedelta(days=400)
@@ -3831,6 +3832,17 @@ def test_pool_capped_key_window_anchors_on_the_last_topup(
                 stripe_payment_id=f"pi_window_{test_team.id}",
                 created_at=topup_at,
             ),
+            # The window is read from the ledger, not from the purchase row.
+            DBPeriodicBudgetLedgerEntry(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                entry_type="topup",
+                amount_cents=5000,
+                consumed_cents=0,
+                purchased_at=topup_at,
+                expires_at=topup_at + timedelta(days=365),
+                is_active=True,
+            ),
         ]
     )
     db.commit()
@@ -3855,8 +3867,12 @@ def test_pool_capped_key_window_anchors_on_the_last_topup(
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert response.status_code == 200
-    k = response.json()["keys"][0]
-    assert k["budget_duration"] == "31d"
+    data = response.json()
+    k = data["keys"][0]
+    # Same window as the team, which the ledger anchors on the top-up.
+    assert k["budget_duration"] == data["budget_duration"]
+    assert k["period_start"] == data["period_start"]
+    assert k["budget_reset_at"] == data["budget_reset_at"]
     assert k["period_start"].startswith(topup_at.strftime("%Y-%m-%d"))
 
 
