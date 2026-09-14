@@ -575,6 +575,98 @@ def _lock_region_or_404(db: Session, region_id: int) -> DBRegion:
     return region
 
 
+def _apply_pool_key_windows(
+    db: Session,
+    team: DBTeam,
+    region_id: int,
+    items,
+    team_window,
+) -> None:
+    """Give each POOL key the cycle window the ledger owns.
+
+    Key caps hold no LiteLLM duration any more, so LiteLLM reports no
+    ``budget_reset_at`` for them either and a key carries no window of its own.
+    Every window here comes from the ledger, which is what actually resets the
+    key's spend.
+
+    An uncapped key shares the team window. A capped key follows the active
+    subscription, and with no subscription it follows the last top-up, because
+    a purchase is what zeroes its spend. Only a team that has bought nothing
+    falls back to its creation date.
+    """
+    now = datetime.now(UTC)
+    active_subscription = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team.id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            DBPeriodicBudgetLedgerEntry.effective_period_start.isnot(None),
+            DBPeriodicBudgetLedgerEntry.effective_period_end.isnot(None),
+            DBPeriodicBudgetLedgerEntry.effective_period_end > now,
+        )
+        .order_by(
+            DBPeriodicBudgetLedgerEntry.effective_period_end.desc(),
+            DBPeriodicBudgetLedgerEntry.id.desc(),
+        )
+        .first()
+    )
+    capped_anchor = None
+    if active_subscription is None:
+        # A top-up resets key spend, so it is the real start of the window.
+        capped_anchor = (
+            db.query(func.max(DBPoolPurchase.purchased_at))
+            .filter(
+                DBPoolPurchase.team_id == team.id,
+                DBPoolPurchase.region_id == region_id,
+            )
+            .scalar()
+        )
+        if capped_anchor is None:
+            last_deactivation = (
+                db.query(DBPeriodicPayment.payment_date)
+                .filter(
+                    DBPeriodicPayment.team_id == team.id,
+                    DBPeriodicPayment.payment_type == "deactivation",
+                    DBPeriodicPayment.status == "completed",
+                )
+                .order_by(DBPeriodicPayment.payment_date.desc())
+                .first()
+            )
+            capped_anchor = (
+                (last_deactivation[0] if last_deactivation else None)
+                or team.created_at
+                or now
+            )
+        if capped_anchor.tzinfo is None:
+            capped_anchor = capped_anchor.replace(tzinfo=UTC)
+
+    for item in items:
+        if item.max_budget is None:
+            item.budget_duration = team_window.budget_duration
+            item.budget_reset_at = team_window.period_end
+            item.period_start = team_window.period_start
+        elif active_subscription is not None:
+            item.budget_duration = "31d"
+            item.budget_reset_at = active_subscription.effective_period_end
+            item.period_start = active_subscription.effective_period_start
+        elif item.budget_reset_at is not None:
+            # A key still carrying its own live LiteLLM schedule, which means
+            # one written before the ledger took the cycle over and not yet
+            # cleaned up. Its real window is authoritative while it lasts:
+            # relabelling it "31d" would describe a different window than the
+            # one LiteLLM is still enforcing. Clearing the duration clears
+            # budget_reset_at too, so this stops matching once cleaned.
+            pass
+        else:
+            item.budget_duration = "31d"
+            item.period_start = (
+                current_cycle_start("31d", capped_anchor, now) or capped_anchor
+            )
+            item.budget_reset_at = item.period_start + timedelta(days=31)
+
+
 def _key_gate_locked(db: Session, key: DBPrivateAIKey, region_id: int) -> bool:
     """True while this key's team is purchase-gated and has never bought.
 
@@ -1221,77 +1313,9 @@ async def get_team_spend(
     if period_budget is None:
         period_budget = total_budget
 
-    # POOL key window display semantics:
-    # - uncapped keys: same as team window
-    # - capped keys: 31d windows; follow cycle when active subscription exists,
-    #   otherwise anchor to last deactivation or team creation.
+    # Key caps hold no LiteLLM window any more, so the ledger supplies one.
     if team.budget_type == BudgetType.POOL:
-        now = datetime.now(UTC)
-        active_subscription_for_pool = (
-            db.query(DBPeriodicBudgetLedgerEntry)
-            .filter(
-                DBPeriodicBudgetLedgerEntry.team_id == team.id,
-                DBPeriodicBudgetLedgerEntry.region_id == region_id,
-                DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
-                DBPeriodicBudgetLedgerEntry.is_active.is_(True),
-                DBPeriodicBudgetLedgerEntry.effective_period_start.isnot(None),
-                DBPeriodicBudgetLedgerEntry.effective_period_end.isnot(None),
-                DBPeriodicBudgetLedgerEntry.effective_period_end > now,
-            )
-            .order_by(
-                DBPeriodicBudgetLedgerEntry.effective_period_end.desc(),
-                DBPeriodicBudgetLedgerEntry.id.desc(),
-            )
-            .first()
-        )
-        last_deactivation = (
-            db.query(DBPeriodicPayment.payment_date)
-            .filter(
-                DBPeriodicPayment.team_id == team.id,
-                DBPeriodicPayment.payment_type == "deactivation",
-                DBPeriodicPayment.status == "completed",
-            )
-            .order_by(DBPeriodicPayment.payment_date.desc())
-            .first()
-        )
-        capped_anchor = (
-            (last_deactivation[0] if last_deactivation else None)
-            or team.created_at
-            or now
-        )
-        if capped_anchor.tzinfo is None:
-            capped_anchor = capped_anchor.replace(tzinfo=UTC)
-        for item in items:
-            if item.max_budget is None:
-                item.budget_duration = team_budget_duration
-                item.budget_reset_at = team_budget_reset_at
-                item.period_start = team_period_start
-            else:
-                if active_subscription_for_pool is not None:
-                    item.budget_duration = "31d"
-                    item.budget_reset_at = (
-                        active_subscription_for_pool.effective_period_end
-                    )
-                    item.period_start = (
-                        active_subscription_for_pool.effective_period_start
-                    )
-                elif item.budget_reset_at is not None:
-                    # LiteLLM already has a real, live reset schedule on this
-                    # key (budget_reset_at/period_start/budget_duration all
-                    # set above from litellm_key) - trust it completely
-                    # instead of the anchor-based estimate below, which
-                    # drifts into the past once more than one cycle has
-                    # elapsed since the anchor. Relabelling budget_duration
-                    # to a fixed "31d" here would make period_start describe
-                    # a different window than the one LiteLLM actually
-                    # enforces whenever the real duration isn't already 31d.
-                    pass
-                else:
-                    item.budget_duration = "31d"
-                    item.period_start = (
-                        current_cycle_start("31d", capped_anchor, now) or capped_anchor
-                    )
-                    item.budget_reset_at = item.period_start + timedelta(days=31)
+        _apply_pool_key_windows(db, team, region_id, items, pool_window)
 
     return TeamSpendResponse(
         region_id=region_id,
@@ -1425,6 +1449,23 @@ async def get_user_spend(
         )
         item.period_start = _compute_period_start(
             item.budget_reset_at, item.budget_duration
+        )
+
+    # The same keys are reported by the team endpoint, so they must carry the
+    # same window here. Without this the ledger-owned window is missing and
+    # every key reads as having no period at all.
+    user_team = (
+        db.query(DBTeam).filter(DBTeam.id == target_user.team_id).first()
+        if target_user.team_id is not None
+        else None
+    )
+    if user_team is not None and user_team.budget_type == BudgetType.POOL:
+        _apply_pool_key_windows(
+            db,
+            user_team,
+            region_id,
+            items,
+            resolve_team_period_window(db, user_team, region_id),
         )
 
     return UserSpendResponse(

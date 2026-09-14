@@ -3791,6 +3791,148 @@ def test_pool_key_with_cap_shows_period_fields(
     assert k["period_start"] == "2026-05-01T00:00:00Z"
 
 
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_pool_capped_key_window_anchors_on_the_last_topup(
+    mock_get_team_info, client, admin_token, test_team, test_region, db
+):
+    """With no subscription, a top-up is what resets key spend.
+
+    The window must start there, not at team creation: a purchase zeroes the
+    key's spend, so anchoring elsewhere describes a period that never happened.
+    """
+    test_team.budget_type = BudgetType.POOL
+    test_team.created_at = datetime.now(UTC) - timedelta(days=400)
+    db.add(test_team)
+    db.commit()
+    key = DBPrivateAIKey(
+        name="pool-topup-window-key",
+        litellm_token="pool-topup-window-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+    topup_at = datetime.now(UTC) - timedelta(days=3)
+    db.add_all(
+        [
+            DBSpendCap(
+                scope="key",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                key_id=key.id,
+                max_budget=5.0,
+            ),
+            DBPoolPurchase(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                amount_cents=5000,
+                currency="usd",
+                purchased_at=topup_at,
+                stripe_payment_id=f"pi_window_{test_team.id}",
+                created_at=topup_at,
+            ),
+        ]
+    )
+    db.commit()
+
+    mock_get_team_info.return_value = {
+        "team_info": {"spend": 0.5, "max_budget": 20.0},
+        "keys": [
+            {
+                "metadata": {"amazeeai_private_ai_key_name": key.name},
+                "user_id": None,
+                "spend": 0.5,
+                "max_budget": 5.0,
+                # Cleared duration means LiteLLM reports no reset date either.
+                "budget_duration": None,
+                "budget_reset_at": None,
+            }
+        ],
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    k = response.json()["keys"][0]
+    assert k["budget_duration"] == "31d"
+    assert k["period_start"].startswith(topup_at.strftime("%Y-%m-%d"))
+
+
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_user_spend_reports_the_same_key_window_as_the_team_endpoint(
+    mock_get_team_info, client, admin_token, test_team, test_team_user, test_region, db
+):
+    """The two endpoints describe the same key, so the window must match.
+
+    Key caps hold no LiteLLM window, so without the ledger lookup this endpoint
+    reports no period at all while the team endpoint reports a real one.
+    """
+    test_team.budget_type = BudgetType.POOL
+    test_team_user.team_id = test_team.id
+    db.add_all([test_team, test_team_user])
+    db.commit()
+    key = DBPrivateAIKey(
+        name="user-window-key",
+        litellm_token="user-window-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+    now = datetime.now(UTC)
+    db.add_all(
+        [
+            DBSpendCap(
+                scope="key",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                key_id=key.id,
+                max_budget=5.0,
+            ),
+            DBPeriodicBudgetLedgerEntry(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                entry_type="subscription",
+                amount_cents=5000,
+                consumed_cents=0,
+                purchased_at=now - timedelta(days=5),
+                effective_period_start=now - timedelta(days=5),
+                effective_period_end=now + timedelta(days=26),
+                expires_at=now + timedelta(days=26),
+                is_active=True,
+            ),
+        ]
+    )
+    db.commit()
+
+    mock_get_team_info.return_value = {
+        "team_info": {"spend": 0.5, "max_budget": 20.0},
+        "keys": [
+            {
+                "metadata": {"amazeeai_private_ai_key_name": key.name},
+                "user_id": str(test_team_user.id),
+                "spend": 0.5,
+                "max_budget": 5.0,
+                "budget_duration": None,
+                "budget_reset_at": None,
+            }
+        ],
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/user/{test_team_user.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    k = response.json()["keys"][0]
+    assert k["budget_duration"] == "31d"
+    assert k["period_start"] is not None
+    assert k["budget_reset_at"] is not None
+
+
 # ---------------------------------------------------------------------------
 # /spend/{region_id}/team/{team_id}/history tests
 # ---------------------------------------------------------------------------
