@@ -22,34 +22,52 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from sqlalchemy import func
+
 from app.core.config import settings
 from app.core.pool_budget_service import pool_team_has_ever_purchased
 from app.db.database import SessionLocal
-from app.db.models import DBPrivateAIKey, DBRegion, DBSpendCap, DBTeam
+from app.db.models import DBPrivateAIKey, DBRegion, DBSpendCap, DBTeam, DBUser
 from app.services.litellm import LiteLLMService
 
 
 def _raised_gated_keys(session):
-    """Keys with a positive cap whose team is gated and has never purchased."""
+    """Keys with a positive cap whose team is gated and has never purchased.
+
+    A user-scoped key stores a null team_id on its cap row and names the owner
+    instead, so the team is resolved the way _key_gate_locked does: the cap
+    row's own team, else the owner's team. Joining on team_id alone would skip
+    every user-scoped key and leave its raised budget in place.
+    """
     rows = (
-        session.query(DBSpendCap.key_id, DBSpendCap.region_id, DBSpendCap.team_id)
-        .join(DBTeam, DBTeam.id == DBSpendCap.team_id)
+        session.query(
+            DBSpendCap.key_id,
+            DBSpendCap.region_id,
+            func.coalesce(DBSpendCap.team_id, DBUser.team_id).label("team_id"),
+        )
+        .outerjoin(DBUser, DBUser.id == DBSpendCap.user_id)
         .filter(
             DBSpendCap.scope == "key",
             DBSpendCap.key_id.isnot(None),
             DBSpendCap.max_budget.isnot(None),
             DBSpendCap.max_budget > 0,
-            DBTeam.require_purchase_for_requests.is_(True),
         )
         .all()
     )
-    # The purchase check is per team and region, so ask once per pair.
+    # The gate and purchase checks are per team and region, so ask once per pair.
     checked: dict[tuple[int, int], bool] = {}
     for key_id, region_id, team_id in rows:
+        if team_id is None:
+            continue
         pair = (team_id, region_id)
         if pair not in checked:
-            checked[pair] = pool_team_has_ever_purchased(session, team_id, region_id)
-        if not checked[pair]:
+            team = session.query(DBTeam).filter(DBTeam.id == team_id).first()
+            checked[pair] = bool(
+                team is not None
+                and team.require_purchase_for_requests
+                and not pool_team_has_ever_purchased(session, team_id, region_id)
+            )
+        if checked[pair]:
             yield key_id, region_id, team_id
 
 
