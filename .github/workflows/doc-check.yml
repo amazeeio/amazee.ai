@@ -121,11 +121,20 @@ jobs:
           AMAZEEAI_ENDPOINT: ${{ vars.AMAZEEAI_ENDPOINT || 'https://llm.us104.amazee.ai' }}
           PR_TITLE: ${{ github.event.pull_request.title }}
 
+      # The issue goes to docs.amazee.ai, which github.token cannot reach.
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app
+        with:
+          app-id: ${{ secrets.AMAZEE_AI_AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.AMAZEE_AI_AUTOMATION_APP_PRIVATE_KEY }}
+          owner: amazeeio
+          repositories: docs.amazee.ai
+
       - name: Open docs issue
         if: steps.check.outputs.has_matches == 'true'
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.DOCS_ISSUE_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           PR_URL="${{ github.event.pull_request.html_url }}"
