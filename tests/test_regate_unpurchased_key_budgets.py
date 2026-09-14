@@ -102,3 +102,56 @@ def test_regate_dry_run_writes_nothing(mock_session, mock_litellm, db, test_regi
         assert asyncio.run(run(apply=False)) == 0
 
     instance.update_key_budget.assert_not_awaited()
+
+
+@patch("scripts.regate_unpurchased_key_budgets.LiteLLMService")
+@patch("scripts.regate_unpurchased_key_budgets.SessionLocal")
+def test_regate_covers_user_scoped_keys(
+    mock_session, mock_litellm, db, test_region, test_team_user
+):
+    """A user-scoped key's cap row has no team_id; the owner's team decides.
+
+    Joining on the cap row's team_id alone would skip these keys and leave
+    their raised budget live.
+    """
+    gated = DBTeam(
+        name="regate-user-scoped-team",
+        budget_type=BudgetType.POOL,
+        require_purchase_for_requests=True,
+    )
+    db.add(gated)
+    db.commit()
+    test_team_user.team_id = gated.id
+    key = DBPrivateAIKey(
+        name="regate-user-key",
+        litellm_token="sk-regate-user",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+    )
+    db.add_all([test_team_user, key])
+    db.commit()
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=None,
+            user_id=test_team_user.id,
+            key_id=key.id,
+            max_budget=42.0,
+        )
+    )
+    db.commit()
+
+    mock_session.return_value = db
+    instance = mock_litellm.return_value
+    instance.update_key_budget = AsyncMock()
+
+    with patch.object(db, "close", lambda: None):
+        assert asyncio.run(run(apply=True)) == 0
+
+    instance.update_key_budget.assert_awaited_once()
+    assert (
+        instance.update_key_budget.await_args.kwargs["litellm_token"]
+        == key.litellm_token
+    )
+    assert instance.update_key_budget.await_args.kwargs["max_budget"] == 0.0
