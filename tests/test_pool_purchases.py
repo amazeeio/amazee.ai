@@ -904,7 +904,7 @@ def test_pool_purchase_rolls_back_team_budget_when_key_sync_fails(
     assert first_call.kwargs == {
         "team_id": f"{test_region.name}_{test_team.id}",
         "max_budget": 50.0,
-        "budget_duration": "31d",
+        "clear_budget_duration": True,
     }
     assert rollback_call.kwargs == {
         "team_id": f"{test_region.name}_{test_team.id}",

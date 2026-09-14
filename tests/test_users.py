@@ -1038,7 +1038,7 @@ def test_get_user_spend_reports_member_cap_when_litellm_team_missing(
     db.commit()
 
     mock_get_team_info.side_effect = HTTPException(
-        status_code=500,
+        status_code=404,
         detail="Failed to get LiteLLM team info: Status 404: team not found",
     )
 
@@ -1104,7 +1104,7 @@ def test_get_user_spend_unavailable_region_not_cached(
     db.commit()
 
     mock_get_team_info.side_effect = HTTPException(
-        status_code=500,
+        status_code=503,
         detail="Failed to get LiteLLM team info: Status 503: unavailable",
     )
 

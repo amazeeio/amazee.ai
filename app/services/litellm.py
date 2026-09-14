@@ -166,6 +166,7 @@ class LiteLLMService:
         apply_limits: bool = True,
         blocked: Optional[bool] = None,
         allowed_routes: Optional[list[str]] = None,
+        key: Optional[str] = None,
     ) -> str:
         """Create a new API key for LiteLLM
 
@@ -173,6 +174,8 @@ class LiteLLMService:
             allowed_routes: Restrict the key to these LiteLLM routes (exact
                 paths, wildcards or route-group names such as
                 ``llm_api_routes``). None means no route restriction.
+            key: Reuse this key value instead of letting LiteLLM mint one, so a
+                token we already store keeps working after the key is rebuilt.
         """
         try:
             logger.info(
@@ -207,6 +210,8 @@ class LiteLLMService:
             request_data["key_alias"] = clean_alias
             request_data["metadata"] = metadata
             request_data["team_id"] = team_id
+            if key:
+                request_data["key"] = key
             if blocked is not None:
                 request_data["blocked"] = blocked
             if allowed_routes:
@@ -288,6 +293,30 @@ class LiteLLMService:
                 if hasattr(e, "response") and e.response is not None
                 else status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to delete LiteLLM key: {error_msg}",
+            )
+
+    async def delete_team(self, team_id: str) -> bool:
+        """Delete a LiteLLM team"""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/team/delete",
+                    json={"team_ids": [team_id]},
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                )
+
+                # Treat 404 (team not found) as success
+                if response.status_code == 404:
+                    return True
+
+                response.raise_for_status()
+                return True
+        except httpx.HTTPStatusError as e:
+            status_code, error_msg, _ = self._parse_http_error(e)
+            logger.error(f"Error deleting LiteLLM team: {error_msg}")
+            raise HTTPException(
+                status_code=status_code,
+                detail=f"Failed to delete LiteLLM team: {error_msg}",
             )
 
     async def get_key_info(self, litellm_token: str) -> dict:
@@ -425,6 +454,59 @@ class LiteLLMService:
             raise HTTPException(
                 status_code=status_code,
                 detail=f"Failed to list LiteLLM keys: {error_msg}",
+            )
+
+    async def get_team_spend_in_range(
+        self, team_id: str, start: datetime, end: datetime
+    ) -> float:
+        """Sum a team's spend from LiteLLM's spend logs over a time window.
+
+        The team's live ``spend`` counter is reset whenever LiteLLM runs a
+        budget cycle on it, so it cannot be trusted to show what a past period
+        cost. The spend logs survive that reset and are the only per-request
+        record of it. Returns dollars.
+        """
+        page_size = 100
+        total = 0.0
+        page = 1
+        start_date = start.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        end_date = end.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            async with httpx.AsyncClient() as client:
+                while True:
+                    response = await client.get(
+                        f"{self.api_url}/spend/logs/v2",
+                        headers={"Authorization": f"Bearer {self.master_key}"},
+                        params={
+                            "team_id": team_id,
+                            "start_date": start_date,
+                            "end_date": end_date,
+                            "page": page,
+                            "page_size": page_size,
+                        },
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    rows = [r for r in (data.get("data") or []) if isinstance(r, dict)]
+                    for row in rows:
+                        total += float(row.get("spend") or 0.0)
+                    # Stop on a short or empty page; total_pages is only a
+                    # secondary check, since it is not always present.
+                    if len(rows) < page_size:
+                        break
+                    total_pages = data.get("total_pages") or 0
+                    if total_pages and page >= total_pages:
+                        break
+                    page += 1
+            return total
+        except httpx.HTTPStatusError as e:
+            status_code, error_msg, _ = self._parse_http_error(e)
+            logger.error(
+                "Error getting LiteLLM spend logs for team %s: %s", team_id, error_msg
+            )
+            raise HTTPException(
+                status_code=status_code,
+                detail=f"Failed to get LiteLLM team spend logs: {error_msg}",
             )
 
     async def get_key_last_used(self, litellm_token: str) -> Optional[datetime]:
@@ -818,7 +900,7 @@ class LiteLLMService:
     async def set_key_restrictions(
         self,
         litellm_token: str,
-        duration: str,
+        duration: Optional[str],
         budget_amount: float,
         rpm_limit: int,
         budget_duration: Optional[str] = None,
@@ -828,17 +910,21 @@ class LiteLLMService:
         """Set the restrictions for a LiteLLM API key.
 
         Args:
+            duration: New key expiry. None leaves the current expiry alone,
+                      because /key/update reads duration as a new expires
+                      timestamp, not as a budget cycle.
             spend: When provided, overrides the key's spend counter
                    (e.g. 0.0 to reset spend at billing cycle start).
         """
         try:
             request_data = {
                 "key": litellm_token,
-                "duration": duration,
                 "budget_duration": budget_duration,
                 "max_budget": budget_amount,
                 "rpm_limit": rpm_limit,
             }
+            if duration is not None:
+                request_data["duration"] = duration
             if spend is not None:
                 request_data["spend"] = spend
             if blocked is not None:
@@ -851,15 +937,10 @@ class LiteLLMService:
                 )
                 response.raise_for_status()
         except httpx.HTTPStatusError as e:
-            error_msg = str(e)
-            if hasattr(e, "response") and e.response is not None:
-                try:
-                    error_details = e.response.json()
-                    error_msg = f"Status {e.response.status_code}: {error_details}"
-                except ValueError:
-                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            # Callers branch on the upstream status, a missing key must stay a 404.
+            status_code, error_msg, _ = self._parse_http_error(e)
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=status_code,
                 detail=f"Failed to set LiteLLM key restrictions: {error_msg}",
             )
 
@@ -917,15 +998,10 @@ class LiteLLMService:
                 response.raise_for_status()
                 return response.json()
         except httpx.HTTPStatusError as e:
-            error_msg = str(e)
-            if hasattr(e, "response") and e.response is not None:
-                try:
-                    error_details = e.response.json()
-                    error_msg = f"Status {e.response.status_code}: {error_details}"
-                except ValueError:
-                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            # Callers branch on the upstream status, a missing team must stay a 404.
+            status_code, error_msg, _ = self._parse_http_error(e)
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=status_code,
                 detail=f"Failed to get LiteLLM team info: {error_msg}",
             )
 
