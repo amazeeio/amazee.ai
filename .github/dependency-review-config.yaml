@@ -22,3 +22,9 @@ allow-licenses:
 - 'Unlicense'
 - 'X11'
 - 'Zlib'
+allow-ghsas:
+# python-ecdsa Minerva timing attack on P-256 signing. No patched version exists
+# (upstream considers it out of scope). ecdsa is only pulled in transitively by
+# python-jose; we sign JWTs with HS256 (app/core/config.py), so the ECDSA code
+# path is never used. Drop this entry if python-jose is replaced with PyJWT.
+- 'GHSA-wj6h-64fc-37mp'
