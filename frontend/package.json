@@ -59,7 +59,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@typescript-eslint/parser": "^8.34.0",
-    "@vitest/ui": "^4.1.8",
+    "@vitest/ui": "^5.0.0",
     "eslint": "^9",
     "eslint-config-next": "^16",
     "eslint-plugin-unused-imports": "^4.4.1",
