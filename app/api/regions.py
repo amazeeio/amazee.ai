@@ -101,7 +101,9 @@ async def validate_database_connection(
     """
     try:
         # Attempt to connect to the database
-        conn = await asyncpg.connect(host=host, port=port, user=user, password=password)
+        conn = await asyncpg.connect(
+            host=host, port=port, user=user, password=password, timeout=10
+        )
         await conn.close()
         logger.info(f"Database connection validation successful for {host}:{port}")
         return True
