@@ -1,5 +1,6 @@
 # https://github.com/cncf/foundation/blob/main/policies-guidance/allowed-third-party-license-policy.md
 allow-licenses:
+- '0BSD'
 - 'Apache-2.0'
 - 'BSD-2-Clause'
 - 'BSD-2-Clause-FreeBSD'
@@ -15,9 +16,12 @@ allow-licenses:
 - 'LGPL-3.0-or-later'
 - 'LicenseRef-scancode-alliance-open-media-patent-1.0'
 - 'LicenseRef-scancode-other-permissive'
+- 'LicenseRef-scancode-public-domain'
 - 'MIT'
+- 'MIT-0'
 - 'MPL-2.0'
 - 'PostgreSQL'
+- 'PSF-2.0'
 - 'Python-2.0'
 - 'Unlicense'
 - 'X11'
@@ -28,3 +32,7 @@ allow-ghsas:
 # python-jose; we sign JWTs with HS256 (app/core/config.py), so the ECDSA code
 # path is never used. Drop this entry if python-jose is replaced with PyJWT.
 - 'GHSA-wj6h-64fc-37mp'
+allow-dependencies-licenses:
+# typing-extensions is PSF-2.0 (see its LICENSE), but the scanned license
+# expression also picks up a GPL-1.0-or-later mention from a vendored file.
+- 'pkg:pypi/typing-extensions'
