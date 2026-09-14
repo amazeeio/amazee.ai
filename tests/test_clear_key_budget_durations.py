@@ -107,3 +107,37 @@ def test_clear_key_budget_durations_skips_gated_and_is_idempotent(
         mock_instance.update_key_budget.assert_not_awaited()
         # The second run only counted rows, so it left a transaction open.
         db.rollback()
+
+
+def test_clear_key_budget_durations_keeps_rows_when_a_write_fails(
+    db, test_region, monkeypatch
+):
+    """A failed LiteLLM write must not null the row it did not clear.
+
+    The key keeps its cycle in LiteLLM, so dropping the stored duration would
+    hide the drift from reporting and make the cleanup look finished.
+    """
+    purchased_key, gated_key = _seed(db, test_region)
+    snapshot = {
+        hash_litellm_token(purchased_key.litellm_token): {"budget_duration": "1mo"},
+        hash_litellm_token(gated_key.litellm_token): {"budget_duration": "1mo"},
+    }
+
+    with (
+        patch("scripts.clear_key_budget_durations.SessionLocal", return_value=db),
+        patch("scripts.clear_key_budget_durations.LiteLLMService") as mock_litellm,
+    ):
+        monkeypatch.setattr(db, "close", lambda: None)
+        mock_instance = mock_litellm.return_value
+        mock_instance.list_all_keys = AsyncMock(return_value=snapshot)
+        mock_instance.update_key_budget = AsyncMock(side_effect=RuntimeError("boom"))
+
+        assert asyncio.run(run(apply=True)) == 1
+
+        cap = (
+            db.query(DBSpendCap)
+            .filter(DBSpendCap.key_id == purchased_key.id)
+            .first()
+        )
+        assert cap.budget_duration == "31d"
+        db.rollback()

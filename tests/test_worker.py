@@ -954,6 +954,52 @@ async def test_reconcile_team_keys_repairs_capped_pool_key(
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_leaves_a_correct_amount_alone(
+    mock_litellm, db, test_team, test_region
+):
+    """A duration-only repair must not resend the amount.
+
+    cap_map is read before the write is queued, so resending an unchanged
+    amount would undo a cap an operator set in between.
+    """
+    _purchased_pool_team(db, test_team, test_region)
+    key = _reconcile_key(db, test_team, test_region)
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            key_id=key.id,
+            max_budget=25.0,
+        )
+    )
+    db.commit()
+
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock(
+        return_value={
+            "info": {
+                "key_alias": "team_key",
+                "spend": 1.0,
+                "max_budget": 25.0,
+                "budget_duration": "1mo",
+            }
+        }
+    )
+    mock_instance.update_key_budget = AsyncMock()
+
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+    await reconcile_team_keys(db, test_team, keys_by_region, False)
+
+    mock_instance.update_key_budget.assert_awaited_once()
+    call = mock_instance.update_key_budget.await_args
+    assert call.kwargs["clear_budget_duration"] is True
+    assert "max_budget" not in call.kwargs
+    assert "clear_max_budget" not in call.kwargs
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LiteLLMService")
 async def test_reconcile_team_keys_clears_uncapped_pool_key(
     mock_litellm, db, test_team, test_region
 ):
