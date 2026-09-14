@@ -1287,15 +1287,22 @@ async def reconcile_team_keys(
                                 current_max,
                                 expected_max if max_drifted else "unchanged",
                             )
+                            # cap_map was read before this write was queued, so
+                            # sending an unchanged amount would undo a cap an
+                            # operator set in between.
+                            budget_kwargs = {"clear_budget_duration": True}
+                            if max_drifted:
+                                budget_kwargs["max_budget"] = expected_max
+                                budget_kwargs["clear_max_budget"] = (
+                                    expected_max is None
+                                )
                             pending_writes.append(
                                 (
                                     key.id,
                                     partial(
                                         litellm_service.update_key_budget,
                                         key.litellm_token,
-                                        clear_budget_duration=True,
-                                        max_budget=expected_max,
-                                        clear_max_budget=expected_max is None,
+                                        **budget_kwargs,
                                     ),
                                 )
                             )

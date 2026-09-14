@@ -122,7 +122,16 @@ async def run(apply: bool) -> int:
             DBSpendCap.budget_duration.isnot(None),
         )
         cap_count = cap_rows.count()
-        if apply and cap_count:
+        # A failed region listing or key write leaves that key's cycle live in
+        # LiteLLM. Nulling the rows anyway would drop the legacy duration that
+        # reporting still reads, and make the cleanup look finished.
+        if failed:
+            print(
+                f"Skipping the spend_caps cleanup: {failed} failure(s). "
+                f"{cap_count} row(s) still hold a duration; re-run once the "
+                "failures are resolved."
+            )
+        elif apply and cap_count:
             cap_rows.update({"budget_duration": None}, synchronize_session=False)
             session.commit()
 
