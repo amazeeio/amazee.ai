@@ -945,7 +945,7 @@ async def test_reconcile_team_keys_repairs_capped_pool_key(
     mock_instance.update_key_budget.assert_awaited_once()
     call = mock_instance.update_key_budget.await_args
     assert call.args[0] == key.litellm_token
-    assert call.kwargs["budget_duration"] is None
+    assert call.kwargs.get("budget_duration") is None
     assert call.kwargs["clear_budget_duration"] is True
     assert call.kwargs["max_budget"] == 25.0
     assert call.kwargs["clear_max_budget"] is False
@@ -980,7 +980,7 @@ async def test_reconcile_team_keys_clears_uncapped_pool_key(
     mock_instance.update_key_budget.assert_awaited_once()
     call = mock_instance.update_key_budget.await_args
     assert call.args[0] == key.litellm_token
-    assert call.kwargs["budget_duration"] is None
+    assert call.kwargs.get("budget_duration") is None
     assert call.kwargs["clear_budget_duration"] is True
     assert call.kwargs["max_budget"] is None
     assert call.kwargs["clear_max_budget"] is True
@@ -2416,7 +2416,7 @@ async def test_reconcile_team_keys_still_writes_from_snapshot_state(
     args = mock_instance.update_key_budget.await_args
     assert args.args[0] == "sk-team-1"
     assert args.kwargs["max_budget"] == 50.0
-    assert args.kwargs["budget_duration"] is None
+    assert args.kwargs.get("budget_duration") is None
     assert args.kwargs["clear_budget_duration"] is True
 
 

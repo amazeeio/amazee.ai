@@ -84,7 +84,6 @@ async def run(dry_run: bool) -> int:
                 try:
                     await service.update_key_budget(
                         litellm_token=key.litellm_token,
-                        budget_duration=None,
                         max_budget=None,
                         clear_max_budget=True,
                         clear_budget_duration=True,

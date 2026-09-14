@@ -18,7 +18,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.core.pool_budget_service import team_gate_locked
+from app.core.pool_budget_service import key_cap_map, team_gate_locked
 from app.db.database import SessionLocal
 from app.db.models import (
     BudgetType,
@@ -67,16 +67,12 @@ async def run(apply: bool) -> int:
                 print(f"[FAIL] region={region.name} could not list keys: {exc}")
                 continue
 
-            capped_key_ids = {
-                key_id
-                for (key_id,) in session.query(DBSpendCap.key_id).filter(
-                    DBSpendCap.scope == "key",
-                    DBSpendCap.region_id == region.id,
-                    DBSpendCap.max_budget.isnot(None),
-                )
-            }
+            region_keys = _region_keys(session, region.id)
+            capped_key_ids = key_cap_map(
+                session, region.id, [key.id for key, _ in region_keys]
+            ).keys()
 
-            for key, team_id in _region_keys(session, region.id):
+            for key, team_id in region_keys:
                 scanned += 1
                 info = snapshot.get(hash_litellm_token(key.litellm_token)) or {}
                 duration = info.get("budget_duration")
@@ -114,7 +110,6 @@ async def run(apply: bool) -> int:
                 try:
                     await service.update_key_budget(
                         litellm_token=key.litellm_token,
-                        budget_duration=None,
                         clear_budget_duration=True,
                     )
                     cleared += 1

@@ -41,6 +41,7 @@ from app.core.periodic_budget_ledger_service import (
     compute_active_topup_remaining,
 )
 from app.core.pool_budget_service import (
+    key_cap_map,
     pool_available_budget_for_team_region as shared_pool_available_budget_for_team_region,
     pool_team_budget_duration_for_enforcement as shared_pool_team_budget_duration_for_enforcement,
 )
@@ -271,50 +272,28 @@ async def _sync_pool_key_effective_budgets(
     if not keys:
         return []
 
-    key_caps = (
-        db.query(DBSpendCap.key_id, DBSpendCap.max_budget)
-        .filter(
-            DBSpendCap.scope == "key",
-            DBSpendCap.region_id == region.id,
-            DBSpendCap.key_id.isnot(None),
-            DBSpendCap.max_budget.isnot(None),
-            DBSpendCap.key_id.in_([k.id for k in keys]),
-        )
-        .all()
-    )
-    cap_map = {int(key_id): float(max_budget) for key_id, max_budget in key_caps}
+    cap_map = key_cap_map(db, region.id, [k.id for k in keys])
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     semaphore = asyncio.Semaphore(10)
+    # A purchase restarts the period, so key spend goes back to zero.
+    spend_reset = 0.0 if purchased_total > 0 else None
 
     async def _sync_key_budget(key: DBPrivateAIKey) -> str | None:
         try:
             async with semaphore:
+                # Without a user-defined cap the key carries no max_budget at
+                # all, so the team-level pool governs its spend.
                 configured_cap = cap_map.get(key.id)
-                spend_reset = 0.0 if purchased_total > 0 else None
-                if configured_cap is None:
-                    # No user-defined key cap — clear both max_budget
-                    # and budget_duration so no stale duration remains.
-                    await service.update_key_budget(
-                        litellm_token=key.litellm_token,
-                        budget_duration=None,
-                        max_budget=None,
-                        clear_max_budget=True,
-                        clear_budget_duration=True,
-                        blocked=False,
-                        spend=spend_reset,
-                    )
-                else:
-                    await service.update_key_budget(
-                        litellm_token=key.litellm_token,
-                        budget_duration=None,
-                        max_budget=configured_cap,
-                        clear_max_budget=False,
-                        clear_budget_duration=True,
-                        blocked=False,
-                        spend=spend_reset,
-                    )
+                await service.update_key_budget(
+                    litellm_token=key.litellm_token,
+                    max_budget=configured_cap,
+                    clear_max_budget=configured_cap is None,
+                    clear_budget_duration=True,
+                    blocked=False,
+                    spend=spend_reset,
+                )
                 if purchased_total > 0:
                     # A purchase extends the key's expiry to match the credit's
                     # POOL_PURCHASE_EXPIRY_DAYS shelf life. update_key_budget
