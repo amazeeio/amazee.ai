@@ -200,7 +200,13 @@ class LiteLLMService:
                 # If still empty, use a safe default that's guaranteed to be valid
                 clean_alias = f"key-{user_id or 'unknown'}"
 
-            metadata = {"service_account_id": email or "unknown"}
+            # LiteLLM treats a key with service_account_id as a service account
+            # and refuses to create one without a team, so only mark it as such
+            # when the key really has a team. amazeeai_user_id below still ties
+            # the key back to its owner.
+            metadata = {}
+            if team_id is not None:
+                metadata["service_account_id"] = email or "unknown"
             metadata["amazeeai_private_ai_key_name"] = actual_name
 
             # Add user_id to metadata if provided
