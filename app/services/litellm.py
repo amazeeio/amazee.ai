@@ -200,23 +200,17 @@ class LiteLLMService:
                 # If still empty, use a safe default that's guaranteed to be valid
                 clean_alias = f"key-{user_id or 'unknown'}"
 
-            # LiteLLM treats a key with service_account_id as a service account
-            # and refuses to create one without a team, so only mark it as such
-            # when the key really has a team. amazeeai_user_id below still ties
-            # the key back to its owner.
-            metadata = {}
-            if team_id is not None:
-                metadata["service_account_id"] = email or "unknown"
-            metadata["amazeeai_private_ai_key_name"] = actual_name
-
-            # Add user_id to metadata if provided
-            metadata["amazeeai_user_id"] = str(user_id or None)
-            if team_id is not None:
-                metadata["amazeeai_team_id"] = team_id
-
+            metadata = {
+                "amazeeai_private_ai_key_name": actual_name,
+                "amazeeai_user_id": str(user_id or None),
+            }
             request_data["key_alias"] = clean_alias
             request_data["metadata"] = metadata
             if team_id is not None:
+                # LiteLLM refuses to create a service-account key without a team,
+                # so a teamless key carries no service_account_id either.
+                metadata["service_account_id"] = email or "unknown"
+                metadata["amazeeai_team_id"] = team_id
                 request_data["team_id"] = team_id
             if key:
                 request_data["key"] = key
