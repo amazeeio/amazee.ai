@@ -100,6 +100,8 @@ def test_create_key_without_team_omits_team_id(
     request_json = mock_httpx_post_client.post.call_args.kwargs["json"]
     assert "team_id" not in request_json
     assert "amazeeai_team_id" not in request_json["metadata"]
+    # A service account key without a team is rejected by LiteLLM
+    assert "service_account_id" not in request_json["metadata"]
     # Without a team, this is what keeps the key on every model
     assert request_json["models"] == ["all-team-models"]
 
