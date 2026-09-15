@@ -1050,9 +1050,18 @@ async def merge_teams(
         # Delete source team. Its limit rows must go with it, same as in
         # delete_team: owner_id has no foreign key, so they would outlive the
         # team and give a later team with the same id a used-up counter.
+        # Its budget rows die with it too, again as in delete_team: they
+        # reference the team without a cascade, so the delete fails while they
+        # exist, and they only describe the source team's own spend limits.
         # The target team takes the members without a cap check: the merge is
         # a system-admin operation, and its member counter is re-derived from
         # the real members on the next member addition.
+        db.query(DBSpendCap).filter(DBSpendCap.team_id == source_team.id).delete(
+            synchronize_session=False
+        )
+        db.query(DBBudgetAlertState).filter(
+            DBBudgetAlertState.team_id == source_team.id
+        ).delete(synchronize_session=False)
         LimitService(db).delete_limits(OwnerType.TEAM, source_team.id, commit=False)
         db.delete(source_team)
         db.commit()
