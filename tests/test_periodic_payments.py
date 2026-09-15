@@ -2182,3 +2182,117 @@ async def test_sync_periodic_ledger_raises_when_spend_logs_fail(
         .first()
         is None
     )
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LiteLLMService")
+async def test_sync_periodic_ledger_first_cycle_reads_from_team_creation(
+    mock_litellm_class,
+    db,
+    test_team,
+    test_region,
+):
+    """The first cycle of a team has no earlier snapshot to open the window
+    with. Purchase-gated pool teams always carry a LiteLLM budget_duration, so
+    they always take the spend-log path — the window then opens at the team's
+    creation instead of failing the cycle."""
+    from app.core.periodic_budget_ledger_service import add_topup_entry
+    from app.core.worker import _sync_periodic_ledger_for_period
+
+    now = datetime.now(UTC)
+    created_at = now - timedelta(days=10)
+    test_team.created_at = created_at
+    add_topup_entry(
+        db,
+        team_id=test_team.id,
+        region_id=test_region.id,
+        amount_cents=10000,
+        purchased_at=created_at,
+        source_payment_id=None,
+        stripe_payment_id="pi_first",
+    )
+    db.commit()
+
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={
+            "team_info": {"spend": 40.0, "budget_duration": "365d"},
+            "keys": [],
+        }
+    )
+    mock_litellm.get_team_spend_in_range = AsyncMock(return_value=40.0)
+
+    await _sync_periodic_ledger_for_period(
+        db=db,
+        team=test_team,
+        region=test_region,
+        period_start=now,
+        period_end=now + timedelta(days=31),
+        amount_cents=10000,
+        source_payment_id=None,
+        source_invoice_id="inv_first",
+    )
+
+    # The window opened at team creation, so the pre-cycle spend is debited
+    # against the top-up rather than silently dropped.
+    _, window_start, window_end = mock_litellm.get_team_spend_in_range.await_args[0]
+    assert window_start == created_at
+    assert window_end == now
+    topup = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(DBPeriodicBudgetLedgerEntry.stripe_payment_id == "pi_first")
+        .first()
+    )
+    assert topup.consumed_cents == 4000
+    assert (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(DBPeriodicBudgetLedgerEntry.source_invoice_id == "inv_first")
+        .first()
+        is not None
+    )
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LiteLLMService")
+async def test_sync_periodic_ledger_first_cycle_on_a_brand_new_team(
+    mock_litellm_class,
+    db,
+    test_team,
+    test_region,
+):
+    """A team created in the same instant as its first cycle has no window at
+    all — nothing was ever spent, so nothing is debited and the cycle runs."""
+    from app.core.worker import _sync_periodic_ledger_for_period
+
+    now = datetime.now(UTC)
+    test_team.created_at = now
+    db.commit()
+
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={
+            "team_info": {"spend": 0.0, "budget_duration": "365d"},
+            "keys": [],
+        }
+    )
+    mock_litellm.get_team_spend_in_range = AsyncMock(return_value=0.0)
+
+    await _sync_periodic_ledger_for_period(
+        db=db,
+        team=test_team,
+        region=test_region,
+        period_start=now,
+        period_end=now + timedelta(days=31),
+        amount_cents=10000,
+        source_payment_id=None,
+        source_invoice_id="inv_brand_new",
+    )
+
+    mock_litellm.get_team_spend_in_range.assert_not_awaited()
+    entry = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(DBPeriodicBudgetLedgerEntry.source_invoice_id == "inv_brand_new")
+        .first()
+    )
+    assert entry is not None
+    assert entry.amount_cents == 10000
