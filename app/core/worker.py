@@ -56,6 +56,7 @@ from app.core.security import create_access_token
 from app.core.config import settings
 from urllib.parse import urljoin
 from app.core.spend_period_service import (
+    _as_utc,
     fetch_team_spend_snapshot_for_region,
     upsert_team_spend_period,
 )
@@ -495,6 +496,11 @@ async def _elapsed_period_spend_cents(
     window runs from the previous snapshot's period_start up to the new one,
     which is the period whose spend was never debited from the ledger.
 
+    On a team's first cycle there is no earlier snapshot, so the window opens
+    at the team's creation: everything spent since then is exactly what was
+    never debited. Falling back to 0 instead would silently drop the spend of
+    a team that used budget before its first cycle ever ran.
+
     Raises when the spend logs cannot be read, so the caller fails and is
     retried. The per-key counters are deliberately not used as a fallback:
     keys reset on cycles of their own, so their sum is not this window's
@@ -510,13 +516,25 @@ async def _elapsed_period_spend_cents(
         .order_by(DBTeamSpendPeriod.period_start.desc())
         .first()
     )
-    window_start = row[0] if row else None
-    if litellm_service is None or not lite_team_id or window_start is None:
+    window_start = _as_utc(row[0]) if row else _as_utc(team.created_at)
+    missing = [
+        name
+        for name, value in (
+            ("LiteLLM connection", litellm_service),
+            ("LiteLLM team id", lite_team_id),
+            ("window start", window_start),
+        )
+        if not value
+    ]
+    if missing:
         raise RuntimeError(
             f"Cannot read the elapsed period spend for team_id={team.id} "
-            f"region_id={region.id}: no LiteLLM connection or no earlier "
-            "spend period to open the window"
+            f"region_id={region.id}: missing {', '.join(missing)}"
         )
+    if window_start >= _as_utc(period_start):
+        # A first cycle that lands in the same instant as the team's creation
+        # (or a clock skew that puts creation after it) has no window to read.
+        return 0
     total = await litellm_service.get_team_spend_in_range(
         lite_team_id, window_start, period_start
     )
