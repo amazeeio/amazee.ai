@@ -4,6 +4,7 @@ import pytest
 
 from app.db.models import (
     DBAuditLog,
+    DBBudgetAlertState,
     DBPrivateAIKey,
     DBPeriodicBudgetLedgerEntry,
     DBPoolPurchase,
@@ -278,7 +279,14 @@ def test_delete_private_ai_key_removes_dependent_spend_caps(
         max_budget=1.0,
         budget_duration="monthly",
     )
-    db.add(cap)
+    alert = DBBudgetAlertState(
+        subject_key=f"key:{test_key.id}",
+        subject_type="key",
+        region_id=test_region.id,
+        key_id=test_key.id,
+        period_key="2026-08",
+    )
+    db.add_all([cap, alert])
     db.commit()
 
     response = client.delete(
@@ -288,6 +296,12 @@ def test_delete_private_ai_key_removes_dependent_spend_caps(
 
     assert response.status_code == 200
     assert db.query(DBSpendCap).filter(DBSpendCap.key_id == test_key.id).count() == 0
+    assert (
+        db.query(DBBudgetAlertState)
+        .filter(DBBudgetAlertState.key_id == test_key.id)
+        .count()
+        == 0
+    )
     assert (
         db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == test_key.id).first()
         is None
@@ -1114,6 +1128,52 @@ def test_view_spend_uses_db_key_spend_cap_max_budget(
 
     db.query(DBSpendCap).filter(DBSpendCap.key_id == test_key.id).delete()
     db.delete(test_key)
+    db.commit()
+
+
+def _make_spend_scope_key(db, region, team_id, suffix):
+    key = DBPrivateAIKey(
+        database_name=f"spend-scope-{suffix}",
+        name=f"Spend Scope Key {suffix}",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token=f"spend-scope-token-{suffix}",
+        litellm_api_url="https://test-litellm.com",
+        owner_id=None,
+        team_id=team_id,
+        region_id=region.id,
+    )
+    db.add(key)
+    db.commit()
+    db.refresh(key)
+    return key
+
+
+@pytest.mark.parametrize("team_id_offset,expected_status", [(999, 404), (0, 200)])
+@patch("httpx.AsyncClient")
+def test_get_private_ai_key_spend_checks_declared_team(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    test_team,
+    db,
+    mock_httpx_get_client,
+    team_id_offset,
+    expected_status,
+):
+    """A declared team_id that does not own the key 404s, even for an admin."""
+    mock_client_class.return_value = mock_httpx_get_client
+    key = _make_spend_scope_key(db, test_region, test_team.id, "declared")
+
+    response = client.get(
+        f"/private-ai-keys/{key.id}/spend?team_id={key.team_id + team_id_offset}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == expected_status
+
+    db.delete(key)
     db.commit()
 
 

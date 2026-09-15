@@ -194,6 +194,33 @@ async def get_access_group(
     return _group_response(db, _get_group(db, group_id))
 
 
+def reject_undeploy_of_region_default(db: Session, group, removed_region_ids) -> None:
+    """Raise 409 if the group is the default of a region it is leaving.
+
+    A region whose default points at this group must stay deployed —
+    undeploying it would strip every team there of its default set.
+    """
+    removed = set(removed_region_ids)
+    if not removed:
+        return
+    blocked = sorted(
+        row[0]
+        for row in db.query(DBRegion.id)
+        .filter(
+            DBRegion.default_access_group_id == group.id, DBRegion.id.in_(removed)
+        )
+        .all()
+    )
+    if blocked:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Cannot undeploy group '{group.slug}' from region ids {blocked}: "
+                "it is the default access group there. Change the region default first."
+            ),
+        )
+
+
 @router.put("/admin/access-groups/{group_id}", response_model=AccessGroupResponse)
 async def update_access_group(
     group_id: int,
@@ -226,23 +253,7 @@ async def update_access_group(
         old_regions = {a.region_id for a in group.region_associations}
         new_regions = set(group_in.region_ids)
         if old_regions != new_regions:
-            # A region whose default points at this group must stay deployed —
-            # undeploying it would strip every team there of its default set.
-            default_regions = {
-                row[0]
-                for row in db.query(DBRegion.id)
-                .filter(DBRegion.default_access_group_id == group.id)
-                .all()
-            }
-            blocked = sorted(default_regions - new_regions)
-            if blocked:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=(
-                        f"Cannot undeploy group '{group.slug}' from region ids {blocked}: "
-                        "it is the default access group there. Change the region default first."
-                    ),
-                )
+            reject_undeploy_of_region_default(db, group, old_regions - new_regions)
             # Tags change in added/removed regions for all members (old or new)
             affected_model_pks |= {a.model_id for a in group.model_associations}
             if group_in.model_ids is not None:

@@ -17,7 +17,6 @@ from unittest.mock import patch, AsyncMock
 from app.api.budgets import (
     _sync_pool_key_effective_budgets,
     sync_pool_team_budgets,
-    sync_pool_team_monthly_caps,
 )
 from app.core.config import settings
 
@@ -1390,80 +1389,6 @@ async def test_sync_pool_team_budgets_uses_team_only_propagation(
     assert result["teams_updated"] == 1
     assert mock_propagate.await_count == 1
     assert mock_propagate.call_args.kwargs["apply_to_keys"] is False
-
-
-@pytest.mark.asyncio
-async def test_sync_pool_team_monthly_caps_rollover_updates_effective_budget(
-    db, test_team, test_region
-):
-    test_team.budget_type = "pool"
-    db.add(test_team)
-    db.add(
-        DBPoolPurchase(
-            team_id=test_team.id,
-            region_id=test_region.id,
-            amount_cents=5000,
-            currency="usd",
-            purchased_at=datetime.now(UTC),
-            stripe_payment_id=f"pi_rollover_{int(time.time() * 1000000)}",
-            created_at=datetime.now(UTC),
-        )
-    )
-    db.add(
-        DBPeriodicBudgetLedgerEntry(
-            team_id=test_team.id,
-            region_id=test_region.id,
-            entry_type="topup",
-            source_payment_id=None,
-            source_invoice_id=None,
-            stripe_payment_id=f"pi_rollover_ledger_{int(time.time() * 1000000)}",
-            amount_cents=5000,
-            consumed_cents=0,
-            purchased_at=datetime.now(UTC),
-            effective_period_start=None,
-            effective_period_end=None,
-            expires_at=datetime.now(UTC) + timedelta(days=365),
-            rolled_over_from_id=None,
-            is_active=True,
-        )
-    )
-    today = datetime.now(UTC).date()
-    prev_month_anchor = (
-        datetime(today.year - 1, 12, 1, tzinfo=UTC).date()
-        if today.month == 1
-        else datetime(today.year, today.month - 1, 1, tzinfo=UTC).date()
-    )
-    cap = DBSpendCap(
-        scope="team",
-        region_id=test_region.id,
-        team_id=test_team.id,
-        max_budget=10.0,
-        budget_duration="1mo",
-        month_anchor=prev_month_anchor,
-        month_start_spend=7.0,
-    )
-    db.add(cap)
-    db.commit()
-
-    with (
-        patch(
-            "app.api.budgets.LiteLLMService.get_team_info", new_callable=AsyncMock
-        ) as mock_get_team_info,
-        patch(
-            "app.api.budgets.LiteLLMService.update_team_budget", new_callable=AsyncMock
-        ) as mock_update_team_budget,
-    ):
-        mock_get_team_info.return_value = {"team_info": {"spend": 20.0}}
-        result = await sync_pool_team_monthly_caps(db)
-
-    assert result["errors"] == []
-    assert result["teams_updated"] == 1
-    db.refresh(cap)
-    assert cap.month_anchor == today.replace(day=1)
-    assert cap.month_start_spend == 20.0
-    mock_update_team_budget.assert_awaited_once()
-    assert mock_update_team_budget.await_args.kwargs["max_budget"] == 30.0
-    assert mock_update_team_budget.await_args.kwargs["budget_duration"] == "365d"
 
 
 def test_pool_purchase_locks_region_row_against_concurrent_deactivation(

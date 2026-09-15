@@ -220,7 +220,11 @@ async def get_current_user_from_auth(
     except HTTPException:
         raise
     except Exception:
-        pass
+        # The JWT fallback below answers 401 for a bad token, which hides an
+        # infrastructure failure here unless it is logged.
+        logger.exception(
+            "Unexpected error while looking up the API token; falling back to JWT validation"
+        )
 
     # If API token validation fails, try JWT validation
     try:
@@ -234,6 +238,9 @@ async def get_current_user_from_auth(
     except HTTPException:
         raise
     except Exception:
+        # The caller only sees a 401, so without this an infrastructure failure
+        # here looks exactly like a bad token.
+        logger.exception("Unexpected error while validating credentials")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
