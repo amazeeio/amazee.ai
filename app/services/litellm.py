@@ -159,7 +159,7 @@ class LiteLLMService:
         email: str,
         name: str,
         user_id: int,
-        team_id: str,
+        team_id: Optional[str] = None,
         duration: Optional[str] = f"{DEFAULT_KEY_DURATION}d",
         max_budget: Optional[float] = DEFAULT_MAX_SPEND,
         rpm_limit: Optional[int] = DEFAULT_RPM_PER_KEY,
@@ -205,11 +205,13 @@ class LiteLLMService:
 
             # Add user_id to metadata if provided
             metadata["amazeeai_user_id"] = str(user_id or None)
-            metadata["amazeeai_team_id"] = team_id
+            if team_id is not None:
+                metadata["amazeeai_team_id"] = team_id
 
             request_data["key_alias"] = clean_alias
             request_data["metadata"] = metadata
-            request_data["team_id"] = team_id
+            if team_id is not None:
+                request_data["team_id"] = team_id
             if key:
                 request_data["key"] = key
             if blocked is not None:
