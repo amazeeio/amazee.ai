@@ -15,6 +15,8 @@ Semantics:
   and are soft-deactivated (never hard-deleted).
 - Access groups are never pruned automatically: deleting a group cascades to
   team attachments, which is runtime state this endpoint does not own.
+- Undeploying a group from a region where it is the region default is rejected
+  with 409, same as the access-groups endpoint.
 - Deployments in managed regions whose last sync did not end in 'synced' are
   rescheduled on every apply, even with no config diff — apply is self-healing.
 - CATALOG_MANAGED_REGIONS bounds every write. Region references outside it —
@@ -183,6 +185,26 @@ def _apply_access_groups(
             if row.region_id in managed_ids
         }
         if desired_regions != existing_regions:
+            # A region whose default points at this group must stay deployed —
+            # undeploying it would strip every team there of its default set.
+            removed = existing_regions - desired_regions
+            blocked = sorted(
+                row[0]
+                for row in db.query(DBRegion.id)
+                .filter(
+                    DBRegion.default_access_group_id == group.id,
+                    DBRegion.id.in_(removed),
+                )
+                .all()
+            )
+            if blocked:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"Cannot undeploy group '{group.slug}' from region ids {blocked}: "
+                        "it is the default access group there. Change the region default first."
+                    ),
+                )
             for rid in existing_regions - desired_regions:
                 db.query(DBModelAccessGroupRegion).filter_by(
                     group_id=group.id, region_id=rid
