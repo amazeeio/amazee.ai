@@ -518,15 +518,16 @@ def _current_month_anchor() -> date:
 
 
 def _compute_pool_monthly_effective_budget(
-    purchased_total: float,
+    remaining_budget: float,
     period_baseline_spend: float,
     monthly_cap: float,
 ) -> float:
-    # LiteLLM max_budget is an absolute ceiling in the active window, so it is
-    # the prior-period baseline plus this month's cap. It can never go above
-    # what the team purchased: that would let them spend money they never paid.
+    # LiteLLM max_budget is an absolute ceiling in the active window, which
+    # still counts the settled baseline spend. So the ceiling is that baseline
+    # plus what may still be spent this month: min(remaining, cap). Anything
+    # below the baseline would block the team outright.
     return round(
-        min(float(purchased_total), float(period_baseline_spend) + float(monthly_cap)),
+        float(period_baseline_spend) + min(float(remaining_budget), float(monthly_cap)),
         4,
     )
 
@@ -2220,7 +2221,7 @@ async def update_team_budget(
         # A null max_budget must NOT clear the LiteLLM cap for purchase-gated
         # teams — that would grant unlimited usage. Clamp to the purchased total.
         effective_max_budget = _compute_pool_monthly_effective_budget(
-            purchased_total=available_total,
+            remaining_budget=available_total,
             period_baseline_spend=month_start_spend,
             monthly_cap=(
                 body.max_budget if body.max_budget is not None else available_total
