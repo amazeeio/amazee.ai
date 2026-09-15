@@ -1413,6 +1413,21 @@ def test_create_llm_token_as_system_admin(
         for key in list_data
     )
 
+    # The admin has no team, so LiteLLM must get no team id at all
+    key_generate_calls = [
+        call
+        for call in mock_httpx_post_client.post.call_args_list
+        if str(call.args[0]).endswith("/key/generate")
+        and call.kwargs.get("json", {})
+        .get("metadata", {})
+        .get("amazeeai_private_ai_key_name")
+        == "Test LLM Token"
+    ]
+    assert len(key_generate_calls) == 1
+    request_json = key_generate_calls[0].kwargs["json"]
+    assert "team_id" not in request_json
+    assert "amazeeai_team_id" not in request_json["metadata"]
+
 
 @patch("httpx.AsyncClient")
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
