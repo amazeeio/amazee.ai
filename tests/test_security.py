@@ -1,6 +1,8 @@
+import logging
 import os
 import subprocess
 import sys
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -210,6 +212,25 @@ async def test_get_current_user_from_auth_does_not_accept_local_bearer_from_cook
         settings.LOCAL_BEARER_USER_EMAIL = old_local_email
 
     assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_from_auth_logs_unexpected_error(db, caplog):
+    """An infrastructure failure must leave a traceback behind, not just a 401."""
+    with patch(
+        "app.core.security.get_current_user",
+        new=AsyncMock(side_effect=RuntimeError("db down")),
+    ):
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(HTTPException) as exc_info:
+                await get_current_user_from_auth(
+                    authorization="Bearer sometoken",
+                    db=db,
+                )
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "Could not validate credentials"
+    assert "RuntimeError" in caplog.text
 
 
 def test_openapi_and_docs_are_public_when_not_local():

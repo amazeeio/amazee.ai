@@ -234,6 +234,9 @@ async def get_current_user_from_auth(
     except HTTPException:
         raise
     except Exception:
+        # The caller only sees a 401, so without this an infrastructure failure
+        # here looks exactly like a bad token.
+        logger.exception("Unexpected error while validating credentials")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
