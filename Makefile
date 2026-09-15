@@ -165,6 +165,6 @@ lint:
 .PHONY: requirements
 requirements:
 	docker run --rm -v "$(CURDIR)":/w -w /w $$(sed -n 's/^FROM \(uselagoon[^ ]*\) AS base$$/\1/p' Dockerfile) \
-		sh -c 'pip install -q pip-tools && \
+		sh -c 'pip install -q pip-tools==7.6.1 && \
 		pip-compile -q --generate-hashes -o requirements.txt requirements.in && \
 		pip-compile -q --generate-hashes -o requirements-test.txt requirements-test.in'
