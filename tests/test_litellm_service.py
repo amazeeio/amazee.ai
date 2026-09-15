@@ -77,6 +77,33 @@ def test_create_key_success(mock_client_class, test_region, mock_httpx_post_clie
     # Verify key_alias was sanitized ("email - name" format)
     call_args = mock_httpx_post_client.post.call_args
     assert call_args.kwargs["json"]["key_alias"] == "test_at_example.com_-_Test_Key"
+    assert call_args.kwargs["json"]["team_id"] == "team-456"
+    assert call_args.kwargs["json"]["metadata"]["amazeeai_team_id"] == "team-456"
+
+
+@patch("httpx.AsyncClient")
+def test_create_key_without_team_omits_team_id(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    """A key for an owner with no team carries no team_id at all"""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    result = asyncio.run(
+        service.create_key(email="test@example.com", name="Test Key", user_id=123)
+    )
+
+    assert result == "test-private-key-123"
+    request_json = mock_httpx_post_client.post.call_args.kwargs["json"]
+    assert "team_id" not in request_json
+    assert "amazeeai_team_id" not in request_json["metadata"]
+    # A service account key without a team is rejected by LiteLLM
+    assert "service_account_id" not in request_json["metadata"]
+    # Without a team, this is what keeps the key on every model
+    assert request_json["models"] == ["all-team-models"]
 
 
 @patch("httpx.AsyncClient")

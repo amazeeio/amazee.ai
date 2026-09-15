@@ -30,7 +30,7 @@ The only question is one of scalability. The user management system is intended 
 ##### Option 2: New non-relational datastore; either local or cloud based
 A non-relational datastore has very high scalability by default, but may add additional complexity to a system which is relational by nature. Security is neither better nor worse with a non-relational datastore.
 ### Integrations
-- When a key is created, the `team_id` and `user_id` fields must be set in LiteLLM, this will allow those fields to be used in the billing events, tying usage to a customer. `user_id` is not required to relate to an existing user in liteLLM, the same for `team_id` although certain aspects are more user friendly if the `team` has been created.
+- When a key is created, the `team_id` and `user_id` fields must be set in LiteLLM, this will allow those fields to be used in the billing events, tying usage to a customer. `user_id` is not required to relate to an existing user in liteLLM, the same for `team_id` although certain aspects are more user friendly if the `team` has been created. A key for an owner with no team is created without a `team_id` and rolls up by `user_id` only.
 - A single customer would need to map to a single `team` across _all_ instances of LiteLLM for simplicity. Billing should be aggregated in the billing system of choice.
 
 ---

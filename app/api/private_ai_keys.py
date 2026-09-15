@@ -571,7 +571,10 @@ async def create_llm_token(
         litellm_team = team.id
     elif owner is not None:
         owner_email = owner.email
-        litellm_team = owner.team_id or FAKE_ID
+        # No team means no team id for LiteLLM. LiteLLM loads the key's team on
+        # every request, so an id nobody created makes the key dead, and putting
+        # these keys in one shared team would let each of them read its siblings.
+        litellm_team = owner.team_id
     else:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Owner or team not found"
@@ -601,7 +604,9 @@ async def create_llm_token(
             email=owner_email,
             name=private_ai_key.name,
             user_id=owner_id,
-            team_id=LiteLLMService.format_team_id(region.name, litellm_team),
+            team_id=LiteLLMService.format_team_id(region.name, litellm_team)
+            if litellm_team is not None
+            else None,
             duration=f"{days_left_in_period}d"
             if days_left_in_period is not None
             else None,
