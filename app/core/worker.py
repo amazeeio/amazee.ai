@@ -517,11 +517,19 @@ async def _elapsed_period_spend_cents(
         .first()
     )
     window_start = _as_utc(row[0]) if row else _as_utc(team.created_at)
-    if litellm_service is None or not lite_team_id or window_start is None:
+    missing = [
+        name
+        for name, value in (
+            ("LiteLLM connection", litellm_service),
+            ("LiteLLM team id", lite_team_id),
+            ("window start", window_start),
+        )
+        if not value
+    ]
+    if missing:
         raise RuntimeError(
             f"Cannot read the elapsed period spend for team_id={team.id} "
-            f"region_id={region.id}: no LiteLLM connection and no window "
-            "start to read the spend logs with"
+            f"region_id={region.id}: missing {', '.join(missing)}"
         )
     if window_start >= _as_utc(period_start):
         # A first cycle that lands in the same instant as the team's creation
