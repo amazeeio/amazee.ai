@@ -232,6 +232,27 @@ async def test_get_current_user_from_auth_logs_unexpected_error(db, caplog):
     assert exc_info.value.detail == "Could not validate credentials"
     assert "RuntimeError" in caplog.text
 
+    # A failure in the API-token lookup is logged too: the JWT fallback below
+    # it answers a plain 401, which would otherwise hide it.
+    class _ExplodingDB:
+        def query(self, *args, **kwargs):
+            raise RuntimeError("db down")
+
+    caplog.clear()
+    with patch(
+        "app.core.security.get_current_user",
+        new=AsyncMock(side_effect=RuntimeError("db down")),
+    ):
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(HTTPException) as exc_info:
+                await get_current_user_from_auth(
+                    authorization="Bearer sometoken",
+                    db=_ExplodingDB(),
+                )
+
+    assert exc_info.value.status_code == 401
+    assert "falling back to JWT validation" in caplog.text
+
 
 def test_openapi_and_docs_are_public_when_not_local():
     """/openapi.json and the Swagger UI at / are the public API docs.
