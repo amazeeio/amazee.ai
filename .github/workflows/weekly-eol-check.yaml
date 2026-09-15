@@ -42,12 +42,12 @@ jobs:
       - name: Notify Slack about EOL models
         if: steps.eol.outputs.has_alerts == 'true'
         env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.AMAZEE_AI_SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
           WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           WORKFLOW_NAME: ${{ github.workflow }}
         run: |
-          [ -n "$SLACK_BOT_TOKEN" ] || { echo "::error::Missing SLACK_BOT_TOKEN secret."; exit 1; }
+          [ -n "$SLACK_BOT_TOKEN" ] || { echo "::error::Missing AMAZEE_AI_SLACK_BOT_TOKEN secret."; exit 1; }
           [ -n "$SLACK_CHANNEL_ID" ] || { echo "::error::Missing SLACK_CHANNEL_ID variable."; exit 1; }
 
           SUMMARY=$(cat eol-summary.txt)
