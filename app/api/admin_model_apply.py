@@ -32,6 +32,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.api.access_groups import reject_undeploy_of_region_default
 from app.api.admin_models import _contains_sentinel, _merge_credential_sentinels
 from app.core.config import catalog_manages
 from app.core.security import get_current_user_from_auth, get_role_min_system_admin
@@ -185,27 +186,9 @@ def _apply_access_groups(
             if row.region_id in managed_ids
         }
         if desired_regions != existing_regions:
-            # A region whose default points at this group must stay deployed —
-            # undeploying it would strip every team there of its default set.
             removed = existing_regions - desired_regions
-            blocked = sorted(
-                row[0]
-                for row in db.query(DBRegion.id)
-                .filter(
-                    DBRegion.default_access_group_id == group.id,
-                    DBRegion.id.in_(removed),
-                )
-                .all()
-            )
-            if blocked:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=(
-                        f"Cannot undeploy group '{group.slug}' from region ids {blocked}: "
-                        "it is the default access group there. Change the region default first."
-                    ),
-                )
-            for rid in existing_regions - desired_regions:
+            reject_undeploy_of_region_default(db, group, removed)
+            for rid in removed:
                 db.query(DBModelAccessGroupRegion).filter_by(
                     group_id=group.id, region_id=rid
                 ).delete()
