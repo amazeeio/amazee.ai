@@ -46,11 +46,14 @@ jobs:
       FALLBACK_LAGOON_TAG: v1.96.2
     steps:
       # The pinned LiteLLM tags live in two other private repos, which
-      # github.token cannot read.
+      # github.token cannot read. If minting fails (missing secret, revoked
+      # install, expired key) the token output is empty and the matrix step
+      # below warns and uses the FALLBACK_* tags instead of failing the job.
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app
+        continue-on-error: true
         with:
-          app-id: ${{ secrets.AMAZEE_AI_AUTOMATION_APP_ID }}
+          client-id: ${{ secrets.AMAZEE_AI_AUTOMATION_APP_CLIENT_ID }}
           private-key: ${{ secrets.AMAZEE_AI_AUTOMATION_APP_PRIVATE_KEY }}
           owner: amazeeio
           repositories: amazeeai-k0rdent-clusters,litellm-lagoon
