@@ -1050,17 +1050,32 @@ async def merge_teams(
         # Delete source team. Its limit rows must go with it, same as in
         # delete_team: owner_id has no foreign key, so they would outlive the
         # team and give a later team with the same id a used-up counter.
-        # Its budget rows die with it too, again as in delete_team: they
-        # reference the team without a cascade, so the delete fails while they
-        # exist, and they only describe the source team's own spend limits.
         # The target team takes the members without a cap check: the merge is
         # a system-admin operation, and its member counter is re-derived from
         # the real members on the next member addition.
-        db.query(DBSpendCap).filter(DBSpendCap.team_id == source_team.id).delete(
-            synchronize_session=False
-        )
+
+        # Budget rows reference the team without a cascade, so they must be
+        # handled before the delete. Key-scoped rows follow their key to the
+        # target team: the key keeps its LiteLLM budget, and a key with a
+        # budget but no cap row looks stale to the next pool key sync, which
+        # would clear it. The team and team_member rows describe the source
+        # team's own LiteLLM team, so they die with it.
+        db.query(DBSpendCap).filter(
+            DBSpendCap.team_id == source_team.id, DBSpendCap.scope == "key"
+        ).update({DBSpendCap.team_id: target_team.id}, synchronize_session=False)
         db.query(DBBudgetAlertState).filter(
-            DBBudgetAlertState.team_id == source_team.id
+            DBBudgetAlertState.team_id == source_team.id,
+            DBBudgetAlertState.subject_type == "key",
+        ).update(
+            {DBBudgetAlertState.team_id: target_team.id}, synchronize_session=False
+        )
+        db.query(DBSpendCap).filter(
+            DBSpendCap.team_id == source_team.id,
+            DBSpendCap.scope.in_(["team", "team_member"]),
+        ).delete(synchronize_session=False)
+        db.query(DBBudgetAlertState).filter(
+            DBBudgetAlertState.team_id == source_team.id,
+            DBBudgetAlertState.subject_type.in_(["team", "team_member"]),
         ).delete(synchronize_session=False)
         LimitService(db).delete_limits(OwnerType.TEAM, source_team.id, commit=False)
         db.delete(source_team)
