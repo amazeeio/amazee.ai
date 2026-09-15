@@ -3458,6 +3458,44 @@ def test_get_user_spend_db_key_cap_beats_non_key_caps_for_purchased_pool_team(
     assert max_budget_by_name[key_with_member_cap.name] is None
 
 
+def test_compute_pool_monthly_effective_budget_stays_above_the_baseline():
+    """The ceiling is the settled baseline plus what may still be spent."""
+    from app.api.spend import _compute_pool_monthly_effective_budget
+
+    # Cap is the tighter limit.
+    assert (
+        _compute_pool_monthly_effective_budget(
+            remaining_budget=50.0, period_baseline_spend=40.0, monthly_cap=30.0
+        )
+        == 70.0
+    )
+    # Remaining balance is the tighter limit.
+    assert (
+        _compute_pool_monthly_effective_budget(
+            remaining_budget=20.0, period_baseline_spend=40.0, monthly_cap=30.0
+        )
+        == 60.0
+    )
+    # No baseline spend yet: the cap alone.
+    assert (
+        _compute_pool_monthly_effective_budget(
+            remaining_budget=100.0, period_baseline_spend=0.0, monthly_cap=30.0
+        )
+        == 30.0
+    )
+    # A spent-out team still gets a ceiling at its baseline, never below it:
+    # a lower ceiling would block every request.
+    assert (
+        _compute_pool_monthly_effective_budget(
+            remaining_budget=0.0, period_baseline_spend=40.0, monthly_cap=30.0
+        )
+        == 40.0
+    )
+    assert _compute_pool_monthly_effective_budget(
+        remaining_budget=1.0, period_baseline_spend=0.12345, monthly_cap=10.0
+    ) == round(1.12345, 4)
+
+
 # ── _compute_period_start unit tests ─────────────────────────────────
 
 

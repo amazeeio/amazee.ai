@@ -1,6 +1,6 @@
 import logging
 import asyncio
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 
 from app.core.config import settings
 from app.core.security import get_role_min_system_admin
@@ -15,7 +15,6 @@ from app.db.models import (
     DBPoolPurchase,
     DBPrivateAIKey,
     DBRegion,
-    DBSpendCap,
     DBTeam,
     DBTeamRegion,
     DBPeriodicBudgetLedgerEntry,
@@ -40,16 +39,11 @@ from app.core.periodic_budget_ledger_service import (
     add_topup_entry,
     compute_active_topup_remaining,
 )
-from app.core.pool_budget_service import (
-    key_cap_map,
-    pool_available_budget_for_team_region as shared_pool_available_budget_for_team_region,
-    pool_team_budget_duration_for_enforcement as shared_pool_team_budget_duration_for_enforcement,
-)
+from app.core.pool_budget_service import key_cap_map
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["budgets"])
-MONTHLY_BUDGET_DURATION = "1mo"
 
 
 def _is_duplicate_stripe_payment_integrity_error(exc: IntegrityError) -> bool:
@@ -196,11 +190,6 @@ def _get_operator_manual_team_budget_limit(db: Session, team_id: int) -> float |
     return float(existing_limit.max_value)
 
 
-def _current_month_anchor() -> date:
-    now = datetime.now(UTC)
-    return date(year=now.year, month=now.month, day=1)
-
-
 def _pool_budget_duration_from_last_purchase(
     db: Session, team_id: int, region_id: int
 ) -> str:
@@ -220,28 +209,6 @@ def _pool_budget_duration_from_last_purchase(
     days_since_last_purchase = (datetime.now(UTC) - latest_purchase).days
     days_left = max(0, settings.POOL_PURCHASE_EXPIRY_DAYS - days_since_last_purchase)
     return f"{days_left}d"
-
-
-def _compute_pool_monthly_effective_budget(
-    purchased_total: float,
-    month_start_spend: float,
-    monthly_cap: float,
-) -> float:
-    return round(
-        min(float(purchased_total), float(month_start_spend) + float(monthly_cap)), 4
-    )
-
-
-def _pool_available_budget_for_team_region(
-    db: Session, team_id: int, region_id: int
-) -> float:
-    return shared_pool_available_budget_for_team_region(db, team_id, region_id)
-
-
-def _pool_team_budget_duration_for_enforcement(
-    db: Session, team_id: int, region_id: int
-) -> str:
-    return shared_pool_team_budget_duration_for_enforcement(db, team_id, region_id)
 
 
 async def _sync_pool_key_effective_budgets(
@@ -913,77 +880,3 @@ async def sync_pool_team_budgets(db: Session) -> dict:
                 total_updated += 1
 
     return {"teams_updated": total_updated, "errors": errors}
-
-
-async def sync_pool_team_monthly_caps(db: Session) -> dict:
-    """
-    Re-anchor POOL monthly caps at month boundaries.
-
-    For POOL teams with monthly caps, LiteLLM team max_budget is set to:
-    min(available_remaining_budget, month_start_spend + monthly_cap),
-    where available_remaining_budget = active subscription remaining +
-    active top-up remaining.
-    """
-    monthly_caps = (
-        db.query(DBSpendCap)
-        .filter(
-            DBSpendCap.scope == "team",
-            DBSpendCap.budget_duration == MONTHLY_BUDGET_DURATION,
-            DBSpendCap.max_budget.isnot(None),
-            DBSpendCap.team_id.isnot(None),
-            DBSpendCap.region_id.isnot(None),
-        )
-        .all()
-    )
-    current_anchor = _current_month_anchor()
-    teams_updated = 0
-    errors: list[str] = []
-
-    for cap in monthly_caps:
-        if cap.team_id is None or cap.region_id is None:
-            continue
-        team = db.query(DBTeam).filter(DBTeam.id == cap.team_id).first()
-        if team is None or not team.requires_pool_purchase_gate:
-            continue
-        if cap.month_anchor == current_anchor:
-            continue
-        region = db.query(DBRegion).filter(DBRegion.id == cap.region_id).first()
-        if region is None:
-            continue
-        try:
-            service = LiteLLMService(
-                api_url=region.litellm_api_url, api_key=region.litellm_api_key
-            )
-            lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
-            team_info = (await service.get_team_info(lite_team_id)).get("team_info", {})
-            month_start_spend = round(float(team_info.get("spend", 0.0) or 0.0), 4)
-            available_budget = _pool_available_budget_for_team_region(
-                db, team.id, region.id
-            )
-            effective_budget = _compute_pool_monthly_effective_budget(
-                purchased_total=float(available_budget),
-                month_start_spend=month_start_spend,
-                monthly_cap=float(cap.max_budget or 0.0),
-            )
-            await service.update_team_budget(
-                team_id=lite_team_id,
-                max_budget=effective_budget,
-                budget_duration=_pool_team_budget_duration_for_enforcement(
-                    db=db, team_id=team.id, region_id=region.id
-                ),
-            )
-            cap.month_anchor = current_anchor
-            cap.month_start_spend = month_start_spend
-            db.add(cap)
-            db.commit()
-            teams_updated += 1
-        except Exception as exc:
-            db.rollback()
-            msg = (
-                f"Failed monthly cap rollover for team_id={cap.team_id} "
-                f"region_id={cap.region_id}: {str(exc)}"
-            )
-            logger.error(msg)
-            errors.append(msg)
-
-    return {"teams_updated": teams_updated, "errors": errors}

@@ -25,6 +25,7 @@ from app.schemas.models import (
 from app.db.postgres import PostgresManager
 from app.db.models import (
     DBAuditLog,
+    DBBudgetAlertState,
     DBPrivateAIKey,
     DBRegion,
     DBUser,
@@ -544,7 +545,9 @@ async def create_llm_token(
     # Trial keys therefore get LiteLLM's inference-only route group: LLM calls
     # work, every management route returns 403. Members of a real (customer)
     # team are colleagues, so this scoping is deliberately trial-only.
-    allowed_routes = INFERENCE_ONLY_ROUTES if is_anonymous_trial_team(effective_team) else None
+    allowed_routes = (
+        INFERENCE_ONLY_ROUTES if is_anonymous_trial_team(effective_team) else None
+    )
 
     if (owner is not None and owner.team_id) or team_id:
         if settings.ENABLE_LIMITS and not is_pool_team:
@@ -1051,8 +1054,12 @@ async def delete_private_ai_key(
             private_ai_key.database_name, private_ai_key.database_username
         )
 
-    # Remove dependent spend cap rows before deleting key row (FK spend_caps.key_id -> ai_tokens.id)
+    # Remove dependent budget rows before deleting key row (both carry an FK to
+    # ai_tokens.id, and an alert row without its key is a row nothing clears).
     db.query(DBSpendCap).filter(DBSpendCap.key_id == private_ai_key.id).delete()
+    db.query(DBBudgetAlertState).filter(
+        DBBudgetAlertState.key_id == private_ai_key.id
+    ).delete(synchronize_session=False)
 
     # The audit row shares the delete's transaction, so it cannot outlive a rollback.
     db.add(
@@ -1081,11 +1088,21 @@ async def delete_private_ai_key(
 @router.get("/{key_id}/spend", response_model=PrivateAIKeySpendBasic)
 async def get_private_ai_key_spend(
     key_id: int,
+    team_id: Optional[int] = None,
     current_user=Depends(get_current_user_from_auth),
     db: Session = Depends(get_db),
 ):
-    user_role = current_user.role
-    private_ai_key = _get_key_if_allowed(key_id, current_user, user_role, db)
+    """
+    Get the spend of a specific private AI key.
+
+    Optional query parameter:
+    - **team_id**: When provided, the key must belong to this team or the
+      request 404s — a defence-in-depth scope check (issue #600) that applies
+      even to system-admin callers.
+    """
+    private_ai_key = _get_key_if_allowed(
+        key_id, current_user, current_user.role, db, declared_team_id=team_id
+    )
 
     # Get the region
     region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()
