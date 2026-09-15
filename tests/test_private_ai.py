@@ -1136,8 +1136,9 @@ def _make_spend_scope_key(db, region, team_id, suffix):
     return key
 
 
+@pytest.mark.parametrize("team_id_offset,expected_status", [(999, 404), (0, 200)])
 @patch("httpx.AsyncClient")
-def test_get_private_ai_key_spend_wrong_team_id_is_404(
+def test_get_private_ai_key_spend_checks_declared_team(
     mock_client_class,
     client,
     admin_token,
@@ -1145,40 +1146,18 @@ def test_get_private_ai_key_spend_wrong_team_id_is_404(
     test_team,
     db,
     mock_httpx_get_client,
+    team_id_offset,
+    expected_status,
 ):
     """A declared team_id that does not own the key 404s, even for an admin."""
     mock_client_class.return_value = mock_httpx_get_client
-    key = _make_spend_scope_key(db, test_region, test_team.id, "wrong")
+    key = _make_spend_scope_key(db, test_region, test_team.id, "declared")
 
     response = client.get(
-        f"/private-ai-keys/{key.id}/spend?team_id={key.team_id + 999}",
+        f"/private-ai-keys/{key.id}/spend?team_id={key.team_id + team_id_offset}",
         headers={"Authorization": f"Bearer {admin_token}"},
     )
-    assert response.status_code == 404
-
-    db.delete(key)
-    db.commit()
-
-
-@patch("httpx.AsyncClient")
-def test_get_private_ai_key_spend_matching_team_id_is_200(
-    mock_client_class,
-    client,
-    admin_token,
-    test_region,
-    test_team,
-    db,
-    mock_httpx_get_client,
-):
-    """The key's own team id passes the declared scope check."""
-    mock_client_class.return_value = mock_httpx_get_client
-    key = _make_spend_scope_key(db, test_region, test_team.id, "right")
-
-    response = client.get(
-        f"/private-ai-keys/{key.id}/spend?team_id={key.team_id}",
-        headers={"Authorization": f"Bearer {admin_token}"},
-    )
-    assert response.status_code == 200
+    assert response.status_code == expected_status
 
     db.delete(key)
     db.commit()
