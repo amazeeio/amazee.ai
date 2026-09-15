@@ -4,6 +4,7 @@ import pytest
 
 from app.db.models import (
     DBAuditLog,
+    DBBudgetAlertState,
     DBPrivateAIKey,
     DBPeriodicBudgetLedgerEntry,
     DBPoolPurchase,
@@ -278,7 +279,14 @@ def test_delete_private_ai_key_removes_dependent_spend_caps(
         max_budget=1.0,
         budget_duration="monthly",
     )
-    db.add(cap)
+    alert = DBBudgetAlertState(
+        subject_key=f"key:{test_key.id}",
+        subject_type="key",
+        region_id=test_region.id,
+        key_id=test_key.id,
+        period_key="2026-08",
+    )
+    db.add_all([cap, alert])
     db.commit()
 
     response = client.delete(
@@ -288,6 +296,12 @@ def test_delete_private_ai_key_removes_dependent_spend_caps(
 
     assert response.status_code == 200
     assert db.query(DBSpendCap).filter(DBSpendCap.key_id == test_key.id).count() == 0
+    assert (
+        db.query(DBBudgetAlertState)
+        .filter(DBBudgetAlertState.key_id == test_key.id)
+        .count()
+        == 0
+    )
     assert (
         db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == test_key.id).first()
         is None
