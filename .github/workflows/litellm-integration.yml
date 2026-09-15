@@ -40,14 +40,28 @@ jobs:
       # Never interpolate inputs into run: blocks directly (script injection).
       INPUT_IMAGE: ${{ inputs.image }}
       INPUT_TAG: ${{ inputs.tag }}
-      GH_TOKEN: ${{ secrets.AMAZEE_AI_CI_READ_TOKEN }}
       # Fallbacks when resolution fails (keep roughly current; the resolve
       # step warns whenever these are used).
       FALLBACK_PROD_TAG: v1.95.0
       FALLBACK_LAGOON_TAG: v1.96.2
     steps:
+      # The pinned LiteLLM tags live in two other private repos, which
+      # github.token cannot read. If minting fails (missing secret, revoked
+      # install, expired key) the token output is empty and the matrix step
+      # below warns and uses the FALLBACK_* tags instead of failing the job.
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app
+        continue-on-error: true
+        with:
+          client-id: ${{ secrets.AMAZEE_AI_AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AMAZEE_AI_AUTOMATION_APP_PRIVATE_KEY }}
+          owner: amazeeio
+          repositories: amazeeai-k0rdent-clusters,litellm-lagoon
+
       - name: Build test matrix
         id: matrix
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           set -euo pipefail
           valid='^[A-Za-z0-9._/-]+$'
