@@ -65,11 +65,11 @@ def current_cycle_start(
 ) -> datetime | None:
     """Start of the cycle *containing now* for a per-cycle budget.
 
-    Spend caps are per cycle, not absolute: they are written as ``31d`` or ``1mo``,
-    and LiteLLM zeroes the key's spend at each boundary. A percentage
-    against such a cap therefore has to be summed over that cap's current cycle —
-    dividing a longer stretch of spend by a one-month cap reads far above 100 %
-    and fires alerts nobody has earned.
+    A spend cap is per cycle, not absolute, so a percentage against it has to be
+    summed over that cap's current cycle: dividing a longer stretch of spend by a
+    one-month cap reads far above 100 % and fires alerts nobody has earned. Key
+    caps are now owned by the ledger and hold no LiteLLM duration, so only key
+    rows written before that change still reach here with one.
 
     This differs from :func:`compute_period_start` in rolling forward. That one
     derives the window from LiteLLM's ``budget_reset_at``, which can sit in the

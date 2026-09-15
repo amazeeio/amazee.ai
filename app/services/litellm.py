@@ -836,12 +836,14 @@ class LiteLLMService:
         clear_max_budget: bool = False,
         clear_budget_duration: bool = False,
         blocked: Optional[bool] = None,
+        spend: Optional[float] = None,
     ) -> None:
         """Update budget fields for a LiteLLM key.
 
         When clear_max_budget=True, max_budget is explicitly sent as null.
         When clear_budget_duration=True, budget_duration is explicitly sent as null.
         This method intentionally avoids updating key duration/expiry.
+        spend=0.0 starts a new cap period without touching expiry.
         """
         try:
             request_data = {
@@ -853,6 +855,8 @@ class LiteLLMService:
                 request_data["max_budget"] = max_budget
             if blocked is not None:
                 request_data["blocked"] = blocked
+            if spend is not None:
+                request_data["spend"] = spend
 
             async with httpx.AsyncClient() as client:
                 response = await client.post(

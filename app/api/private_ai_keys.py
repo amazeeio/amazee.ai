@@ -16,7 +16,6 @@ from app.schemas.models import (
     PrivateAIKey,
     PrivateAIKeyCreate,
     PrivateAIKeySpendBasic,
-    BudgetPeriodUpdate,
     LiteLLMToken,
     VectorDBCreate,
     VectorDB,
@@ -51,7 +50,6 @@ from app.core.limit_service import (
     DEFAULT_RPM_PER_KEY,
 )
 from app.core.pool_budget_service import pool_team_has_ever_purchased
-from app.core.spend_period_service import canonical_budget_duration
 from app.core.team_service import is_anonymous_trial_team
 
 router = APIRouter(tags=["private-ai-keys"])
@@ -1154,68 +1152,6 @@ async def get_private_ai_key_spend(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get Private AI Key spend: {str(e)}",
-        )
-
-
-@router.put("/{key_id}/budget-period")
-async def update_budget_period(
-    key_id: int,
-    budget_update: BudgetPeriodUpdate,
-    current_user=Depends(get_current_user_from_auth),
-    user_role: UserRole = Depends(get_role_min_team_admin),
-    db: Session = Depends(get_db),
-):
-    """
-    Update the budget period for a private AI key.
-
-    This endpoint will:
-    1. Verify the user has access to the key
-    2. Update the budget period in LiteLLM
-    3. Return the updated spend information
-
-    Required parameters:
-    - **budget_duration**: The new budget period. Accepts canonical forms such
-      as "30d", "7d" or "24h", and the word forms "monthly", "weekly", "daily"
-      and "hourly", which are stored in their canonical equivalent.
-
-    Note: You must be authenticated to use this endpoint.
-    Only the owner of the key or an admin can update it.
-    """
-    private_ai_key = _get_key_if_allowed(key_id, current_user, user_role, db)
-
-    # Get the region
-    region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()
-    if not region:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
-        )
-
-    litellm_service = LiteLLMService(
-        api_url=region.litellm_api_url, api_key=region.litellm_api_key
-    )
-
-    try:
-        # Canonicalise before writing. A word form stored on the key leaves it
-        # with no computable period start, so period spend and budget alerts go
-        # blank for that key.
-        await litellm_service.update_budget(
-            litellm_token=private_ai_key.litellm_token,
-            budget_duration=canonical_budget_duration(budget_update.budget_duration),
-        )
-
-        # Get updated spend information
-        spend_data = await litellm_service.get_key_info(private_ai_key.litellm_token)
-        info = spend_data.get("info", {})
-
-        # Only set default for spend field
-        spend_info = {"spend": info.get("spend", 0.0), **info}
-
-        return PrivateAIKeySpendBasic.model_validate(spend_info)
-    except Exception as e:
-        logger.error(f"Failed to update budget period: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update budget period: {str(e)}",
         )
 
 

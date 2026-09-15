@@ -489,7 +489,7 @@ async def subscription_deactivate(
         for key in keys:
             try:
                 key_cap = (
-                    db.query(DBSpendCap.max_budget, DBSpendCap.budget_duration)
+                    db.query(DBSpendCap.max_budget)
                     .filter(
                         DBSpendCap.scope == "key",
                         DBSpendCap.region_id == region.id,
@@ -499,25 +499,17 @@ async def subscription_deactivate(
                     .first()
                 )
                 has_key_cap = key_cap is not None and key_cap[0] is not None
-                if has_key_cap:
-                    # A cancel must not move the cap window the user picked.
-                    await litellm_service.set_key_restrictions(
-                        litellm_token=key.litellm_token,
-                        duration=None,
-                        budget_duration=key_cap[1],
-                        budget_amount=float(key_cap[0]),
-                        rpm_limit=None,
-                        spend=0.0,
-                    )
-                else:
-                    await litellm_service.set_key_restrictions(
-                        litellm_token=key.litellm_token,
-                        duration=None,
-                        budget_duration=None,
-                        budget_amount=topup_remaining_dollars,
-                        rpm_limit=None,
-                        spend=0.0,
-                    )
+                # The cap the user picked stays; LiteLLM keeps no cycle for it.
+                await litellm_service.set_key_restrictions(
+                    litellm_token=key.litellm_token,
+                    duration=None,
+                    budget_duration=None,
+                    budget_amount=(
+                        float(key_cap[0]) if has_key_cap else topup_remaining_dollars
+                    ),
+                    rpm_limit=None,
+                    spend=0.0,
+                )
             except Exception as exc:
                 logger.error(
                     "Failed to update LiteLLM deactivation key budget for key %s: %s",
