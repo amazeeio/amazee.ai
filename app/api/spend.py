@@ -522,11 +522,11 @@ def _compute_pool_monthly_effective_budget(
     period_baseline_spend: float,
     monthly_cap: float,
 ) -> float:
-    # LiteLLM max_budget is an absolute ceiling in the active 365d window.
-    # To allow exactly `monthly_cap` during this month, shift by prior-period
-    # snapshot baseline (not current live spend).
+    # LiteLLM max_budget is an absolute ceiling in the active window, so it is
+    # the prior-period baseline plus this month's cap. It can never go above
+    # what the team purchased: that would let them spend money they never paid.
     return round(
-        float(period_baseline_spend) + min(float(purchased_total), float(monthly_cap)),
+        min(float(purchased_total), float(period_baseline_spend) + float(monthly_cap)),
         4,
     )
 
