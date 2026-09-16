@@ -149,6 +149,7 @@ def _build_model_response(
                         if mask_litellm_params
                         else _redact_litellm_params(mr_record.litellm_params_override)
                     ),
+                    access_groups_override=mr_record.access_groups_override,
                 )
             )
         else:
