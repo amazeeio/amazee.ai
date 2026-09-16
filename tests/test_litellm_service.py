@@ -1675,3 +1675,120 @@ def test_get_team_info_surfaces_upstream_status(mock_client_class, test_region):
 
     assert exc_info.value.status_code == 404
     assert "Failed to get LiteLLM team info" in exc_info.value.detail
+
+
+def _member_update_client(lite_team_id):
+    """AsyncClient mock whose /user/info lookup finds one membership budget."""
+    get_response = Mock()
+    get_response.status_code = 200
+    get_response.json.return_value = {
+        "teams": [{"team_id": lite_team_id, "team_memberships": [{"budget_id": "b1"}]}]
+    }
+    post_response = Mock()
+    post_response.status_code = 200
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = get_response
+    mock_client.post.return_value = post_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    return mock_client
+
+
+@patch("httpx.AsyncClient")
+def test_update_team_member_clear_budget_duration_sends_null(
+    mock_client_class, test_region
+):
+    mock_client = _member_update_client("team-1")
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.update_team_member(
+            team_id="team-1",
+            user_id="7",
+            role="user",
+            max_budget_in_team=None,
+            clear_budget_duration=True,
+        )
+    )
+
+    assert mock_client.post.await_count == 2
+    first_call, second_call = mock_client.post.await_args_list
+    assert first_call.args[0] == f"{test_region.litellm_api_url}/team/member_update"
+    assert first_call.kwargs["json"] == {
+        "team_id": "team-1",
+        "user_id": "7",
+        "role": "user",
+        "budget_duration": None,
+    }
+    assert second_call.args[0] == f"{test_region.litellm_api_url}/budget/update"
+    assert second_call.kwargs["json"] == {
+        "budget_id": "b1",
+        "budget_duration": None,
+    }
+
+
+@patch("httpx.AsyncClient")
+def test_update_team_member_clear_max_budget_sends_explicit_null(
+    mock_client_class, test_region
+):
+    mock_client = _member_update_client("team-1")
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.update_team_member(
+            team_id="team-1",
+            user_id="7",
+            role="user",
+            max_budget_in_team=None,
+            clear_max_budget_in_team=True,
+            clear_budget_duration=True,
+        )
+    )
+
+    first_call, second_call = mock_client.post.await_args_list
+    assert first_call.kwargs["json"] == {
+        "team_id": "team-1",
+        "user_id": "7",
+        "role": "user",
+        "max_budget_in_team": None,
+        "budget_duration": None,
+    }
+    assert second_call.kwargs["json"] == {
+        "budget_id": "b1",
+        "max_budget": None,
+        "budget_duration": None,
+    }
+
+
+@patch("httpx.AsyncClient")
+def test_update_team_member_without_duration_skips_budget_update(
+    mock_client_class, test_region
+):
+    mock_client = _member_update_client("team-1")
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.update_team_member(
+            team_id="team-1",
+            user_id="7",
+            role="user",
+            max_budget_in_team=5.0,
+        )
+    )
+
+    mock_client.post.assert_awaited_once()
+    assert mock_client.post.await_args.kwargs["json"]["max_budget_in_team"] == 5.0
+    mock_client.get.assert_not_awaited()

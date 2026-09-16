@@ -2296,3 +2296,186 @@ async def test_sync_periodic_ledger_first_cycle_on_a_brand_new_team(
     )
     assert entry is not None
     assert entry.amount_cents == 10000
+
+
+def _member_cycle_mocks(mock_limit_service, mock_litellm_class, memberships):
+    mock_limit_service.return_value.get_token_restrictions.return_value = (
+        31,
+        999.0,
+        1000,
+    )
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={"team_info": {"spend": 0.0}, "team_memberships": memberships}
+    )
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+    mock_litellm.update_team_member = AsyncMock()
+    return mock_litellm
+
+
+async def _run_member_cycle(db, test_team, test_region):
+    return await apply_billing_cycle_for_team(
+        db=db,
+        team_id=test_team.id,
+        budget_cents=10000,
+        region_id=test_region.id,
+        period_start=datetime.now(UTC),
+        period_end=datetime.now(UTC) + timedelta(days=31),
+    )
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.compute_active_topup_remaining", return_value=0)
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.worker.LimitService")
+async def test_apply_billing_cycle_for_team_projects_member_ceiling_from_membership_spend(
+    mock_limit_service,
+    mock_litellm_class,
+    _mock_topup,
+    db,
+    test_team,
+    test_team_user,
+    test_region,
+):
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=test_team_user.id,
+            max_budget=5.0,
+            budget_duration="1mo",
+        )
+    )
+    db.commit()
+    mock_litellm = _member_cycle_mocks(
+        mock_limit_service,
+        mock_litellm_class,
+        [{"user_id": str(test_team_user.id), "spend": 2.5}],
+    )
+
+    errors = await _run_member_cycle(db, test_team, test_region)
+
+    assert errors == []
+    mock_litellm.update_team_member.assert_awaited_once()
+    kwargs = mock_litellm.update_team_member.await_args.kwargs
+    assert kwargs["user_id"] == str(test_team_user.id)
+    assert kwargs["max_budget_in_team"] == 7.5
+    assert kwargs["clear_budget_duration"] is True
+    assert "budget_duration" not in kwargs
+    assert "spend" not in kwargs
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.compute_active_topup_remaining", return_value=0)
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.worker.LimitService")
+async def test_apply_billing_cycle_for_team_leaves_member_without_cap_alone(
+    mock_limit_service,
+    mock_litellm_class,
+    _mock_topup,
+    db,
+    test_team,
+    test_team_user,
+    test_region,
+):
+    mock_litellm = _member_cycle_mocks(
+        mock_limit_service,
+        mock_litellm_class,
+        [{"user_id": str(test_team_user.id), "spend": 2.5}],
+    )
+
+    errors = await _run_member_cycle(db, test_team, test_region)
+
+    assert errors == []
+    mock_litellm.update_team_member.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.compute_active_topup_remaining", return_value=0)
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.worker.LimitService")
+async def test_apply_billing_cycle_for_team_skips_member_missing_from_litellm(
+    mock_limit_service,
+    mock_litellm_class,
+    _mock_topup,
+    db,
+    test_team,
+    test_team_user,
+    test_region,
+    caplog,
+):
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=test_team_user.id,
+            max_budget=5.0,
+            budget_duration="1mo",
+        )
+    )
+    db.commit()
+    mock_litellm = _member_cycle_mocks(mock_limit_service, mock_litellm_class, [])
+
+    with caplog.at_level("WARNING"):
+        errors = await _run_member_cycle(db, test_team, test_region)
+
+    assert errors == []
+    mock_litellm.update_team_member.assert_not_awaited()
+    assert str(test_team_user.id) in caplog.text
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.compute_active_topup_remaining", return_value=0)
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.worker.LimitService")
+async def test_apply_billing_cycle_for_team_reports_one_failed_member_and_continues(
+    mock_limit_service,
+    mock_litellm_class,
+    _mock_topup,
+    db,
+    test_team,
+    test_team_user,
+    test_region,
+):
+    other = DBUser(
+        email="member-cycle-failure@example.com",
+        hashed_password="x",
+        is_active=True,
+        is_admin=False,
+        role="key_creator",
+        team_id=test_team.id,
+        created_at=datetime.now(UTC),
+    )
+    db.add(other)
+    db.commit()
+    for user_id in (test_team_user.id, other.id):
+        db.add(
+            DBSpendCap(
+                scope="team_member",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                user_id=user_id,
+                max_budget=5.0,
+            )
+        )
+    db.commit()
+    mock_litellm = _member_cycle_mocks(
+        mock_limit_service,
+        mock_litellm_class,
+        [
+            {"user_id": str(test_team_user.id), "spend": 2.5},
+            {"user_id": str(other.id), "spend": 1.0},
+        ],
+    )
+    mock_litellm.update_team_member = AsyncMock(
+        side_effect=[RuntimeError("boom"), None]
+    )
+
+    errors = await _run_member_cycle(db, test_team, test_region)
+
+    assert len(errors) == 1
+    assert str(test_team_user.id) in errors[0]
+    assert mock_litellm.update_team_member.await_count == 2

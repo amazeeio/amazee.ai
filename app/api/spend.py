@@ -70,7 +70,7 @@ from app.schemas.models import (
     UserDailyActivityResponse,
     UserSpendResponse,
 )
-from app.services.litellm import LiteLLMService
+from app.services.litellm import LiteLLMService, membership_spend_by_user
 
 router = APIRouter(tags=["spend"])
 logger = logging.getLogger(__name__)
@@ -488,13 +488,6 @@ def _sum_optional_token_values(
         completion_sum if has_completion else None,
         total_sum if has_total else None,
     )
-
-
-def _effective_monthly_budget_duration(max_budget: float | None) -> str | None:
-    """Use calendar-month windows whenever a budget cap is set."""
-    if max_budget is None:
-        return None
-    return MONTHLY_BUDGET_DURATION
 
 
 def _effective_team_budget_duration(
@@ -2282,8 +2275,8 @@ async def update_team_budget(
         "Updates a team-scoped per-member budget (`max_budget_in_team`) for the "
         "specified user.\n\n"
         "Request body accepts only `max_budget`.\n"
-        "`budget_duration` is derived server-side and returned in the response "
-        "(monthly `1mo` when set)."
+        "`budget_duration` is always null: the workspace billing cycle owns the "
+        "member cap period."
     ),
     response_description="Updated team-member budget state.",
 )
@@ -2324,13 +2317,25 @@ async def update_team_member_budget(
             detail="max_budget is required for team-member budget updates",
         )
 
-    effective_duration = _effective_monthly_budget_duration(body.max_budget)
+    # The membership spend counter is never reset, so the cap is pushed as a
+    # ceiling on the spend the member already has. A LiteLLM read failure must
+    # surface: pushing the flat cap would block a member who is already past it.
+    try:
+        team_info = await service.get_team_info(lite_team_id)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        # The team is gone on the LiteLLM side; the worker recreates it and the
+        # next cycle re-anchors the cap, so store the row with a zero baseline.
+        team_info = {}
+    member_spend = membership_spend_by_user(team_info).get(str(user_id), 0.0)
+
     await service.update_team_member(
         team_id=lite_team_id,
         user_id=str(user_id),
         role=team_role_for_litellm(user),
-        max_budget_in_team=body.max_budget,
-        budget_duration=effective_duration,
+        max_budget_in_team=member_spend + body.max_budget,
+        clear_budget_duration=True,
     )
     _upsert_spend_cap(
         db,
@@ -2339,7 +2344,7 @@ async def update_team_member_budget(
         team_id=team_id,
         user_id=user_id,
         max_budget=body.max_budget,
-        budget_duration=effective_duration,
+        budget_duration=None,
     )
     invalidate_user_spend_cache(db, user.email)
     db.commit()
@@ -2351,7 +2356,7 @@ async def update_team_member_budget(
         team_id=team_id,
         user_id=user_id,
         max_budget=body.max_budget,
-        budget_duration=effective_duration,
+        budget_duration=None,
         note="This budget is scoped to the user within the specified team.",
     )
 
@@ -2527,6 +2532,8 @@ async def clear_team_member_budget(
         user_id=str(user_id),
         role=team_role_for_litellm(user),
         max_budget_in_team=None,
+        clear_max_budget_in_team=True,
+        clear_budget_duration=True,
     )
     _delete_spend_cap(
         db, scope="team_member", region_id=region_id, team_id=team_id, user_id=user_id
@@ -2542,7 +2549,10 @@ async def clear_team_member_budget(
         user_id=user_id,
         max_budget=None,
         budget_duration=None,
-        note="Cleared team-member budget override.",
+        note=(
+            "Cleared team-member budget override; the member follows the team "
+            "budget again."
+        ),
     )
 
 
