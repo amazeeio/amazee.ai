@@ -70,7 +70,7 @@ from app.schemas.models import (
     UserDailyActivityResponse,
     UserSpendResponse,
 )
-from app.services.litellm import LiteLLMService
+from app.services.litellm import LiteLLMService, membership_spend_by_user
 
 router = APIRouter(tags=["spend"])
 logger = logging.getLogger(__name__)
@@ -2321,11 +2321,7 @@ async def update_team_member_budget(
     # ceiling on the spend the member already has. A LiteLLM read failure must
     # surface: pushing the flat cap would block a member who is already past it.
     team_info = await service.get_team_info(lite_team_id)
-    member_spend = 0.0
-    for membership in team_info.get("team_memberships") or []:
-        if str(membership.get("user_id")) == str(user_id):
-            member_spend = float(membership.get("spend") or 0.0)
-            break
+    member_spend = membership_spend_by_user(team_info).get(str(user_id), 0.0)
 
     await service.update_team_member(
         team_id=lite_team_id,

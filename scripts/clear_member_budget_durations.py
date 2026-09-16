@@ -19,10 +19,10 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.core.litellm_user_sync import team_role_for_litellm
+from app.core.worker import reanchor_member_caps
 from app.db.database import SessionLocal
 from app.db.models import DBRegion, DBSpendCap, DBUser
-from app.services.litellm import LiteLLMService
+from app.services.litellm import LiteLLMService, membership_spend_by_user
 
 
 async def run(apply: bool) -> int:
@@ -59,48 +59,44 @@ async def run(apply: bool) -> int:
                 )
                 continue
 
-            member_spend = {
-                str(membership["user_id"]): float(membership.get("spend") or 0.0)
-                for membership in (team_info.get("team_memberships") or [])
-                if membership.get("user_id") is not None
-            }
+            member_spend = membership_spend_by_user(team_info)
 
+            pushable = 0
             for row in rows:
                 scanned += 1
+                member_key = str(row.user_id)
                 user = session.query(DBUser).filter(DBUser.id == row.user_id).first()
-                if str(row.user_id) not in member_spend or not user:
+                if member_key not in member_spend or not user:
                     skipped += 1
                     print(
                         f"[SKIP] user_id={row.user_id} team_id={team_id} "
                         f"region={region.name} no LiteLLM membership"
                     )
                     continue
-
-                spend = member_spend[str(row.user_id)]
-                ceiling = spend + float(row.max_budget)
+                pushable += 1
+                spend = member_spend[member_key]
                 print(
                     f"user_id={row.user_id} team_id={team_id} region={region.name} "
                     f"budget_duration={row.budget_duration} spend={spend} "
-                    f"cap={row.max_budget} -> max_budget_in_team={ceiling} "
+                    f"cap={row.max_budget} -> "
+                    f"max_budget_in_team={spend + float(row.max_budget)} "
                     "budget_duration=null"
                 )
-                if not apply:
-                    continue
-                try:
-                    await service.update_team_member(
-                        team_id=lite_team_id,
-                        user_id=str(row.user_id),
-                        role=team_role_for_litellm(user),
-                        max_budget_in_team=ceiling,
-                        clear_budget_duration=True,
-                    )
-                    cleared += 1
-                except Exception as exc:
-                    failed += 1
-                    print(
-                        f"[FAIL] user_id={row.user_id} team_id={team_id} "
-                        f"region={region.name} error={exc}"
-                    )
+
+            if not apply:
+                continue
+            errors = await reanchor_member_caps(
+                db=session,
+                litellm_service=service,
+                region=region,
+                team_id=team_id,
+                lite_team_id=lite_team_id,
+                team_info=team_info,
+            )
+            for error in errors:
+                print(f"[FAIL] team_id={team_id} region={region.name} {error}")
+            failed += len(errors)
+            cleared += max(pushable - len(errors), 0)
 
         cap_count = cap_rows.count()
         # A failed read or write leaves that member's cycle live in LiteLLM.

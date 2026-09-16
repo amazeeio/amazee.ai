@@ -35,6 +35,7 @@ from app.services.litellm import (
     INFERENCE_ONLY_ROUTES,
     LiteLLMService,
     hash_litellm_token,
+    membership_spend_by_user,
 )
 from app.services.ses import SESService
 from app.core.team_service import (
@@ -706,6 +707,71 @@ async def reconcile_periodic_team_budget_drift(
     )
 
 
+async def reanchor_member_caps(
+    db: Session,
+    litellm_service: LiteLLMService,
+    region: DBRegion,
+    team_id: int,
+    lite_team_id: str,
+    team_info: dict,
+) -> list[str]:
+    """Push max_budget_in_team = membership spend + cap for each capped member.
+
+    LiteLLM never resets the membership spend counter, so the cap is re-anchored
+    on the counter. A member without a cap row keeps the team ceiling, and a
+    member missing from the /team/info response is logged and skipped.
+    """
+    errors: list[str] = []
+    member_spend = membership_spend_by_user(team_info)
+    member_caps = (
+        db.query(DBSpendCap)
+        .filter(
+            DBSpendCap.scope == "team_member",
+            DBSpendCap.region_id == region.id,
+            DBSpendCap.team_id == team_id,
+            DBSpendCap.max_budget.isnot(None),
+        )
+        .all()
+    )
+    for cap in member_caps:
+        member_key = str(cap.user_id)
+        member_user = db.query(DBUser).filter(DBUser.id == cap.user_id).first()
+        if member_key not in member_spend or not member_user:
+            logger.warning(
+                "Team %s in region %s: user %s has a member cap but no LiteLLM "
+                "membership; skipping",
+                team_id,
+                region.name,
+                cap.user_id,
+            )
+            continue
+        member_max_budget = member_spend[member_key] + float(cap.max_budget)
+        try:
+            await litellm_service.update_team_member(
+                team_id=lite_team_id,
+                user_id=member_key,
+                role=team_role_for_litellm(member_user),
+                max_budget_in_team=member_max_budget,
+                clear_budget_duration=True,
+            )
+            logger.info(
+                "Updated member %s ceiling in team %s: spend=%s cap=%s "
+                "max_budget_in_team=%s",
+                cap.user_id,
+                team_id,
+                member_spend[member_key],
+                cap.max_budget,
+                member_max_budget,
+            )
+        except Exception as e:
+            error_msg = (
+                f"Failed to update member {cap.user_id} budget in LiteLLM: {str(e)}"
+            )
+            logger.error(error_msg)
+            errors.append(error_msg)
+    return errors
+
+
 async def apply_billing_cycle_for_team(
     db: Session,
     team_id: int,
@@ -990,64 +1056,16 @@ async def apply_billing_cycle_for_team(
                     sync_errors.append(error_msg)
 
         if not sync_errors:
-            # LiteLLM never resets the membership spend counter, so the member
-            # cap is re-anchored on the counter each cycle. A member without a
-            # cap row keeps the team ceiling.
-            member_spend = {
-                str(membership["user_id"]): float(membership.get("spend") or 0.0)
-                for membership in (team_info_resp.get("team_memberships") or [])
-                if membership.get("user_id") is not None
-            }
-            member_caps = (
-                db.query(DBSpendCap)
-                .filter(
-                    DBSpendCap.scope == "team_member",
-                    DBSpendCap.region_id == region.id,
-                    DBSpendCap.team_id == team.id,
-                    DBSpendCap.max_budget.isnot(None),
+            sync_errors.extend(
+                await reanchor_member_caps(
+                    db=db,
+                    litellm_service=litellm_service,
+                    region=region,
+                    team_id=team.id,
+                    lite_team_id=lite_team_id,
+                    team_info=team_info_resp,
                 )
-                .all()
             )
-            for cap in member_caps:
-                member_user = (
-                    db.query(DBUser).filter(DBUser.id == cap.user_id).first()
-                )
-                if str(cap.user_id) not in member_spend or not member_user:
-                    logger.warning(
-                        "Team %s in region %s: user %s has a member cap but no "
-                        "LiteLLM membership; skipping",
-                        team.id,
-                        region.name,
-                        cap.user_id,
-                    )
-                    continue
-                member_max_budget = member_spend[str(cap.user_id)] + float(
-                    cap.max_budget
-                )
-                try:
-                    await litellm_service.update_team_member(
-                        team_id=lite_team_id,
-                        user_id=str(cap.user_id),
-                        role=team_role_for_litellm(member_user),
-                        max_budget_in_team=member_max_budget,
-                        clear_budget_duration=True,
-                    )
-                    logger.info(
-                        "Updated member %s ceiling in team %s: spend=%s cap=%s "
-                        "max_budget_in_team=%s",
-                        cap.user_id,
-                        team.id,
-                        member_spend[str(cap.user_id)],
-                        cap.max_budget,
-                        member_max_budget,
-                    )
-                except Exception as e:
-                    error_msg = (
-                        f"Failed to update member {cap.user_id} budget in "
-                        f"LiteLLM: {str(e)}"
-                    )
-                    logger.error(error_msg)
-                    sync_errors.append(error_msg)
 
         set_team_and_user_limits(db, team)
 

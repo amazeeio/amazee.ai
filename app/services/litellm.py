@@ -43,6 +43,19 @@ INFERENCE_ONLY_ROUTES = ["llm_api_routes", "/model/info"]
 MODEL_HTTP_TIMEOUT = 30.0
 
 
+def membership_spend_by_user(team_info: dict) -> dict[str, float]:
+    """Map user id to membership spend from a /team/info response.
+
+    The spend lives in the top-level team_memberships list, not in the nested
+    team_info object; /user/info would give the cross-team total instead.
+    """
+    return {
+        str(membership["user_id"]): float(membership.get("spend") or 0.0)
+        for membership in (team_info.get("team_memberships") or [])
+        if membership.get("user_id") is not None
+    }
+
+
 def hash_litellm_token(litellm_token: str) -> str:
     """Hash a LiteLLM key the way LiteLLM stores it internally.
 
