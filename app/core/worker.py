@@ -714,8 +714,12 @@ async def reanchor_member_caps(
     team_id: int,
     lite_team_id: str,
     team_info: dict,
+    user_ids: set[int] | None = None,
 ) -> list[str]:
     """Push max_budget_in_team = membership spend + cap for each capped member.
+
+    ``user_ids`` narrows the push to those members; without it every capped
+    member of the team is re-anchored.
 
     LiteLLM never resets the membership spend counter, so the cap is re-anchored
     on the counter. A member without a cap row keeps the team ceiling, and a
@@ -723,16 +727,15 @@ async def reanchor_member_caps(
     """
     errors: list[str] = []
     member_spend = membership_spend_by_user(team_info)
-    member_caps = (
-        db.query(DBSpendCap)
-        .filter(
-            DBSpendCap.scope == "team_member",
-            DBSpendCap.region_id == region.id,
-            DBSpendCap.team_id == team_id,
-            DBSpendCap.max_budget.isnot(None),
-        )
-        .all()
+    cap_query = db.query(DBSpendCap).filter(
+        DBSpendCap.scope == "team_member",
+        DBSpendCap.region_id == region.id,
+        DBSpendCap.team_id == team_id,
+        DBSpendCap.max_budget.isnot(None),
     )
+    if user_ids is not None:
+        cap_query = cap_query.filter(DBSpendCap.user_id.in_(user_ids))
+    member_caps = cap_query.all()
     for cap in member_caps:
         member_key = str(cap.user_id)
         member_user = db.query(DBUser).filter(DBUser.id == cap.user_id).first()
