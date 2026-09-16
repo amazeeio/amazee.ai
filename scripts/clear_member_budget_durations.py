@@ -67,7 +67,7 @@ async def run(apply: bool) -> int:
 
             member_spend = membership_spend_by_user(team_info)
 
-            pushable = 0
+            listed_user_ids: set[int] = set()
             for row in rows:
                 scanned += 1
                 member_key = str(row.user_id)
@@ -79,7 +79,7 @@ async def run(apply: bool) -> int:
                         f"region={region.name} no LiteLLM membership"
                     )
                     continue
-                pushable += 1
+                listed_user_ids.add(row.user_id)
                 spend = member_spend[member_key]
                 print(
                     f"user_id={row.user_id} team_id={team_id} region={region.name} "
@@ -98,11 +98,12 @@ async def run(apply: bool) -> int:
                 team_id=team_id,
                 lite_team_id=lite_team_id,
                 team_info=team_info,
+                user_ids=listed_user_ids,
             )
             for error in errors:
                 print(f"[FAIL] team_id={team_id} region={region.name} {error}")
             failed += len(errors)
-            cleared += max(pushable - len(errors), 0)
+            cleared += max(len(listed_user_ids) - len(errors), 0)
 
         cap_count = cap_rows.count()
         # A failed read or write leaves that member's cycle live in LiteLLM.

@@ -86,6 +86,29 @@ def test_clear_member_budget_durations_applies_and_is_idempotent(
     db, test_team, test_team_user, test_region, monkeypatch
 ):
     _seed(db, test_team, test_team_user, test_region)
+    # A member whose row was already cleared: the script must leave it alone.
+    done = DBUser(
+        email="member-already-cleared@example.com",
+        hashed_password="x",
+        is_active=True,
+        is_admin=False,
+        role="key_creator",
+        team_id=test_team.id,
+        created_at=datetime.now(UTC),
+    )
+    db.add(done)
+    db.commit()
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=done.id,
+            max_budget=10.0,
+            budget_duration=None,
+        )
+    )
+    db.commit()
 
     with (
         patch("scripts.clear_member_budget_durations.SessionLocal", return_value=db),
@@ -93,6 +116,15 @@ def test_clear_member_budget_durations_applies_and_is_idempotent(
     ):
         monkeypatch.setattr(db, "close", lambda: None)
         mock_instance = _mock_service(mock_litellm, test_team_user)
+        mock_instance.get_team_info = AsyncMock(
+            return_value={
+                "team_info": {"spend": 0.0},
+                "team_memberships": [
+                    {"user_id": str(test_team_user.id), "spend": 4.0},
+                    {"user_id": str(done.id), "spend": 7.0},
+                ],
+            }
+        )
 
         assert asyncio.run(run(apply=True)) == 0
 
@@ -103,7 +135,9 @@ def test_clear_member_budget_durations_applies_and_is_idempotent(
         assert kwargs["clear_budget_duration"] is True
         assert "budget_duration" not in kwargs
         assert "spend" not in kwargs
-        assert [cap.budget_duration for cap in _caps(db, test_team)] == [None, None]
+        caps = _caps(db, test_team)
+        assert len(caps) == 3
+        assert all(cap.budget_duration is None for cap in caps)
 
         mock_instance.update_team_member.reset_mock()
         assert asyncio.run(run(apply=True)) == 0
