@@ -1685,8 +1685,13 @@ def test_update_team_member_budget_endpoint(
     assert data["team_id"] == test_team.id
     assert data["user_id"] == test_team_user.id
     assert data["max_budget"] == 1.23
+    assert data["budget_duration"] is None
     mock_update_team_member.assert_awaited_once()
-    assert mock_update_team_member.await_args.kwargs["role"] == "user"
+    kwargs = mock_update_team_member.await_args.kwargs
+    assert kwargs["role"] == "user"
+    assert kwargs["max_budget_in_team"] == 1.23
+    assert kwargs["clear_budget_duration"] is True
+    assert "budget_duration" not in kwargs
     cap = (
         db.query(DBSpendCap)
         .filter(
@@ -1699,11 +1704,11 @@ def test_update_team_member_budget_endpoint(
     )
     assert cap is not None
     assert cap.max_budget == 1.23
-    assert cap.budget_duration == "1mo"
+    assert cap.budget_duration is None
 
 
 @patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
-def test_update_team_member_budget_returns_effective_duration(
+def test_update_team_member_budget_returns_null_duration(
     mock_update_team_member,
     client,
     admin_token,
@@ -1719,7 +1724,7 @@ def test_update_team_member_budget_returns_effective_duration(
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["budget_duration"] == "1mo"
+    assert data["budget_duration"] is None
     mock_update_team_member.assert_awaited_once()
 
 
@@ -2700,8 +2705,12 @@ def test_clear_team_member_budget_endpoint(
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert response.status_code == 200
+    assert response.json()["budget_duration"] is None
     mock_update_team_member.assert_awaited_once()
-    assert mock_update_team_member.await_args.kwargs["max_budget_in_team"] is None
+    kwargs = mock_update_team_member.await_args.kwargs
+    assert kwargs["max_budget_in_team"] is None
+    assert kwargs["clear_max_budget_in_team"] is True
+    assert kwargs["clear_budget_duration"] is True
 
 
 @patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
