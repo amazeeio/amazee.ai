@@ -2,7 +2,9 @@ import asyncio
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
-from app.db.models import DBSpendCap, DBUser
+from sqlalchemy import false
+
+from app.db.models import DBRegion, DBSpendCap, DBUser
 from scripts.clear_member_budget_durations import run
 
 
@@ -133,4 +135,33 @@ def test_clear_member_budget_durations_keeps_rows_when_a_write_fails(
             .first()
         )
         assert cap.budget_duration == "1mo"
+        db.rollback()
+
+
+def test_clear_member_budget_durations_fails_when_region_is_missing(
+    db, test_team, test_team_user, test_region, monkeypatch
+):
+    _seed(db, test_team, test_team_user, test_region)
+    # A foreign key keeps the region row alive while a cap points at it, so the
+    # missing-region path is reproduced by hiding the row from the query.
+    real_query = db.query
+
+    def query_without_regions(model, *args, **kwargs):
+        if model is DBRegion:
+            return real_query(model, *args, **kwargs).filter(false())
+        return real_query(model, *args, **kwargs)
+
+    with (
+        patch("scripts.clear_member_budget_durations.SessionLocal", return_value=db),
+        patch("scripts.clear_member_budget_durations.LiteLLMService") as mock_litellm,
+    ):
+        monkeypatch.setattr(db, "close", lambda: None)
+        monkeypatch.setattr(db, "query", query_without_regions)
+        mock_instance = _mock_service(mock_litellm, test_team_user)
+
+        assert asyncio.run(run(apply=True)) == 1
+
+        mock_instance.get_team_info.assert_not_awaited()
+        monkeypatch.setattr(db, "query", real_query)
+        assert [cap.budget_duration for cap in _caps(db, test_team)] == ["1mo", "1mo"]
         db.rollback()
