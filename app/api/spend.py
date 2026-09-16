@@ -490,13 +490,6 @@ def _sum_optional_token_values(
     )
 
 
-def _effective_monthly_budget_duration(max_budget: float | None) -> str | None:
-    """Use calendar-month windows whenever a budget cap is set."""
-    if max_budget is None:
-        return None
-    return MONTHLY_BUDGET_DURATION
-
-
 def _effective_team_budget_duration(
     team: DBTeam, max_budget: float | None
 ) -> str | None:
@@ -2282,8 +2275,8 @@ async def update_team_budget(
         "Updates a team-scoped per-member budget (`max_budget_in_team`) for the "
         "specified user.\n\n"
         "Request body accepts only `max_budget`.\n"
-        "`budget_duration` is derived server-side and returned in the response "
-        "(monthly `1mo` when set)."
+        "`budget_duration` is always null: the workspace billing cycle owns the "
+        "member cap period."
     ),
     response_description="Updated team-member budget state.",
 )
@@ -2324,13 +2317,12 @@ async def update_team_member_budget(
             detail="max_budget is required for team-member budget updates",
         )
 
-    effective_duration = _effective_monthly_budget_duration(body.max_budget)
     await service.update_team_member(
         team_id=lite_team_id,
         user_id=str(user_id),
         role=team_role_for_litellm(user),
         max_budget_in_team=body.max_budget,
-        budget_duration=effective_duration,
+        clear_budget_duration=True,
     )
     _upsert_spend_cap(
         db,
@@ -2339,7 +2331,7 @@ async def update_team_member_budget(
         team_id=team_id,
         user_id=user_id,
         max_budget=body.max_budget,
-        budget_duration=effective_duration,
+        budget_duration=None,
     )
     invalidate_user_spend_cache(db, user.email)
     db.commit()
@@ -2351,7 +2343,7 @@ async def update_team_member_budget(
         team_id=team_id,
         user_id=user_id,
         max_budget=body.max_budget,
-        budget_duration=effective_duration,
+        budget_duration=None,
         note="This budget is scoped to the user within the specified team.",
     )
 
@@ -2527,6 +2519,8 @@ async def clear_team_member_budget(
         user_id=str(user_id),
         role=team_role_for_litellm(user),
         max_budget_in_team=None,
+        clear_max_budget_in_team=True,
+        clear_budget_duration=True,
     )
     _delete_spend_cap(
         db, scope="team_member", region_id=region_id, team_id=team_id, user_id=user_id
@@ -2542,7 +2536,10 @@ async def clear_team_member_budget(
         user_id=user_id,
         max_budget=None,
         budget_duration=None,
-        note="Cleared team-member budget override.",
+        note=(
+            "Cleared team-member budget override; the member follows the team "
+            "budget again."
+        ),
     )
 
 
