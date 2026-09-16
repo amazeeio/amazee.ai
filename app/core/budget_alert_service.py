@@ -541,10 +541,10 @@ def _member_budget(
 ) -> tuple[float | None, str | None, datetime | None]:
     """Per-member budget and the cycle it applies to.
 
-    The team-member cap wins, else the user's BUDGET limit. The cap carries a
-    duration because it is a per-cycle allowance; the BUDGET limit is absolute and
-    returns ``None`` for the duration, so the caller measures it over the team's
-    cycle instead.
+    The team-member cap wins, else the user's BUDGET limit. A member cap has no
+    duration of its own and is measured over the team's billing window; a
+    duration only appears on legacy rows written before the cycle owned member
+    caps. The BUDGET limit is absolute and also returns ``None``.
     """
     cap = (
         db.query(
@@ -1126,9 +1126,9 @@ async def evaluate_region(
                 member_budget, member_duration, member_anchor = _member_budget(
                     db, team.id, user.id, region.id
                 )
-                # Same rule as for key caps: a team-member cap is a per-cycle
-                # allowance, so it is measured over its own cycle. A plain USER
-                # BUDGET limit is absolute and keeps the team's.
+                # A member cap is measured over the team's billing window. Only
+                # legacy rows still carry a duration; those keep their own cycle,
+                # same rule as for key caps.
                 member_window = window
                 member_total = member_spend.get(user.id, 0.0)
                 if member_duration:
