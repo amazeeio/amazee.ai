@@ -1499,6 +1499,8 @@ class LiteLLMService:
         role: str,
         max_budget_in_team: Optional[float] = None,
         budget_duration: Optional[str] = None,
+        clear_max_budget_in_team: bool = False,
+        clear_budget_duration: bool = False,
     ) -> None:
         """Update a user's role/budget within a LiteLLM team.
 
@@ -1506,9 +1508,15 @@ class LiteLLMService:
         When budget_duration is provided, this method performs a two-step write:
         1. /team/member_update  -> sets max_budget_in_team
         2. /budget/update       -> sets budget_duration on the membership budget
+
+        When clear_max_budget_in_team=True, /team/member_update sends
+        max_budget_in_team as an explicit null; /budget/update repeats it as
+        max_budget so both rows agree.
+        When clear_budget_duration=True, /budget/update sends budget_duration
+        as an explicit null, because /team/member_update ignores that field.
         """
         payload = {"team_id": team_id, "user_id": user_id, "role": role}
-        if max_budget_in_team is not None:
+        if clear_max_budget_in_team or max_budget_in_team is not None:
             payload["max_budget_in_team"] = max_budget_in_team
         try:
             async with httpx.AsyncClient() as client:
@@ -1530,12 +1538,13 @@ class LiteLLMService:
                     team_id,
                     user_id,
                 )
-                if budget_duration is not None and max_budget_in_team is not None:
+                if clear_budget_duration or budget_duration is not None:
                     await self._update_membership_budget_duration(
                         team_id=team_id,
                         user_id=user_id,
                         max_budget=max_budget_in_team,
                         budget_duration=budget_duration,
+                        clear_max_budget=clear_max_budget_in_team,
                     )
                 return
             raise HTTPException(
@@ -1543,20 +1552,22 @@ class LiteLLMService:
                 detail=f"Failed to update LiteLLM team member: {error_msg}",
             )
 
-        if budget_duration is not None and max_budget_in_team is not None:
+        if clear_budget_duration or budget_duration is not None:
             await self._update_membership_budget_duration(
                 team_id=team_id,
                 user_id=user_id,
                 max_budget=max_budget_in_team,
                 budget_duration=budget_duration,
+                clear_max_budget=clear_max_budget_in_team,
             )
 
     async def _update_membership_budget_duration(
         self,
         team_id: str,
         user_id: str,
-        max_budget: float,
-        budget_duration: str,
+        max_budget: Optional[float],
+        budget_duration: Optional[str],
+        clear_max_budget: bool = False,
     ) -> None:
         """Set budget_duration on a team membership's budget table.
 
@@ -1597,15 +1608,16 @@ class LiteLLMService:
                 )
                 return
 
+            budget_payload = {"budget_id": budget_id}
+            if clear_max_budget or max_budget is not None:
+                budget_payload["max_budget"] = max_budget
+            budget_payload["budget_duration"] = budget_duration
+
             async with httpx.AsyncClient() as client:
                 resp = await client.post(
                     f"{self.api_url}/budget/update",
                     headers={"Authorization": f"Bearer {self.master_key}"},
-                    json={
-                        "budget_id": budget_id,
-                        "max_budget": max_budget,
-                        "budget_duration": budget_duration,
-                    },
+                    json=budget_payload,
                 )
                 resp.raise_for_status()
                 logger.info(
