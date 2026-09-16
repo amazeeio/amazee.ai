@@ -1663,9 +1663,11 @@ def test_clear_pool_team_budget_uses_remaining_duration_from_last_purchase(
     assert mock_update_team_budget.await_args.kwargs["budget_duration"] == "355d"
 
 
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
 def test_update_team_member_budget_endpoint(
     mock_update_team_member,
+    mock_get_team_info,
     client,
     admin_token,
     test_team,
@@ -1674,6 +1676,11 @@ def test_update_team_member_budget_endpoint(
     db,
 ):
     test_team_user.role = UserRole.TEAM_ADMIN
+    mock_get_team_info.return_value = {
+        "team_info": {},
+        "team_memberships": [{"user_id": str(test_team_user.id), "spend": 2.5}],
+    }
+
     response = client.put(
         f"/spend/{test_region.id}/team/{test_team.id}/member/{test_team_user.id}/budget",
         headers={"Authorization": f"Bearer {admin_token}"},
@@ -1689,7 +1696,7 @@ def test_update_team_member_budget_endpoint(
     mock_update_team_member.assert_awaited_once()
     kwargs = mock_update_team_member.await_args.kwargs
     assert kwargs["role"] == "user"
-    assert kwargs["max_budget_in_team"] == 1.23
+    assert kwargs["max_budget_in_team"] == 2.5 + 1.23
     assert kwargs["clear_budget_duration"] is True
     assert "budget_duration" not in kwargs
     cap = (
@@ -1707,9 +1714,11 @@ def test_update_team_member_budget_endpoint(
     assert cap.budget_duration is None
 
 
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
 def test_update_team_member_budget_returns_null_duration(
     mock_update_team_member,
+    mock_get_team_info,
     client,
     admin_token,
     test_team,
@@ -1717,6 +1726,8 @@ def test_update_team_member_budget_returns_null_duration(
     test_region,
 ):
     test_team_user.role = UserRole.TEAM_ADMIN
+    mock_get_team_info.return_value = {"team_info": {}, "team_memberships": []}
+
     response = client.put(
         f"/spend/{test_region.id}/team/{test_team.id}/member/{test_team_user.id}/budget",
         headers={"Authorization": f"Bearer {admin_token}"},
@@ -1728,9 +1739,11 @@ def test_update_team_member_budget_returns_null_duration(
     mock_update_team_member.assert_awaited_once()
 
 
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
 def test_update_team_member_budget_allows_cap_above_pool_purchases(
     mock_update_team_member,
+    mock_get_team_info,
     client,
     admin_token,
     test_team,
@@ -1755,6 +1768,8 @@ def test_update_team_member_budget_allows_cap_above_pool_purchases(
     )
     db.commit()
 
+    mock_get_team_info.return_value = {"team_info": {}, "team_memberships": []}
+
     response = client.put(
         f"/spend/{test_region.id}/team/{test_team.id}/member/{test_team_user.id}/budget",
         headers={"Authorization": f"Bearer {admin_token}"},
@@ -1764,9 +1779,11 @@ def test_update_team_member_budget_allows_cap_above_pool_purchases(
     mock_update_team_member.assert_awaited_once()
 
 
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
 def test_update_pool_member_budget_allows_any_value_for_dedicated_team(
     mock_update_team_member,
+    mock_get_team_info,
     client,
     admin_token,
     test_team,
@@ -1784,6 +1801,8 @@ def test_update_pool_member_budget_allows_any_value_for_dedicated_team(
 
     mock_update_team_member.return_value = None
 
+    mock_get_team_info.return_value = {"team_info": {}, "team_memberships": []}
+
     response = client.put(
         f"/spend/{test_region.id}/team/{test_team.id}/member/{test_team_user.id}/budget",
         headers={"Authorization": f"Bearer {admin_token}"},
@@ -1794,9 +1813,11 @@ def test_update_pool_member_budget_allows_any_value_for_dedicated_team(
     assert mock_update_team_member.await_args.kwargs["max_budget_in_team"] == 60.0
 
 
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
 def test_update_pool_member_budget_allows_setting_cap_before_first_purchase(
     mock_update_team_member,
+    mock_get_team_info,
     client,
     admin_token,
     test_team,
@@ -1811,6 +1832,8 @@ def test_update_pool_member_budget_allows_setting_cap_before_first_purchase(
     db.commit()
 
     mock_update_team_member.return_value = None
+
+    mock_get_team_info.return_value = {"team_info": {}, "team_memberships": []}
 
     response = client.put(
         f"/spend/{test_region.id}/team/{test_team.id}/member/{test_team_user.id}/budget",
@@ -1833,9 +1856,11 @@ def test_update_pool_member_budget_allows_setting_cap_before_first_purchase(
     assert cap.max_budget == 60.0
 
 
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
 def test_update_pool_member_budget_returns_configured_cap_before_first_purchase(
     mock_update_team_member,
+    mock_get_team_info,
     client,
     admin_token,
     test_team,
@@ -1858,6 +1883,8 @@ def test_update_pool_member_budget_returns_configured_cap_before_first_purchase(
         .delete()
     )
     db.commit()
+
+    mock_get_team_info.return_value = {"team_info": {}, "team_memberships": []}
 
     response = client.put(
         f"/spend/{test_region.id}/team/{test_team.id}/member/{test_team_user.id}/budget",
