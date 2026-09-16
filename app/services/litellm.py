@@ -43,6 +43,19 @@ INFERENCE_ONLY_ROUTES = ["llm_api_routes", "/model/info"]
 MODEL_HTTP_TIMEOUT = 30.0
 
 
+def membership_spend_by_user(team_info: dict) -> dict[str, float]:
+    """Map user id to membership spend from a /team/info response.
+
+    The spend lives in the top-level team_memberships list, not in the nested
+    team_info object; /user/info would give the cross-team total instead.
+    """
+    return {
+        str(membership["user_id"]): float(membership.get("spend") or 0.0)
+        for membership in (team_info.get("team_memberships") or [])
+        if membership.get("user_id") is not None
+    }
+
+
 def hash_litellm_token(litellm_token: str) -> str:
     """Hash a LiteLLM key the way LiteLLM stores it internally.
 
@@ -1498,18 +1511,24 @@ class LiteLLMService:
         user_id: str,
         role: str,
         max_budget_in_team: Optional[float] = None,
-        budget_duration: Optional[str] = None,
+        clear_max_budget_in_team: bool = False,
+        clear_budget_duration: bool = False,
     ) -> None:
         """Update a user's role/budget within a LiteLLM team.
 
-        LiteLLM's /team/member_update ignores budget_duration (issue #25509).
-        When budget_duration is provided, this method performs a two-step write:
-        1. /team/member_update  -> sets max_budget_in_team
-        2. /budget/update       -> sets budget_duration on the membership budget
+        With clear_budget_duration=True the membership duration is cleared in
+        two steps: /team/member_update sends budget_duration as an explicit
+        null, then /budget/update repeats it on the membership budget row.
+        Current LiteLLM merges the field on member_update; older builds dropped
+        it, which is why the second write stays.
+        With clear_max_budget_in_team=True both writes send the budget as an
+        explicit null, so the two rows agree.
         """
         payload = {"team_id": team_id, "user_id": user_id, "role": role}
-        if max_budget_in_team is not None:
+        if clear_max_budget_in_team or max_budget_in_team is not None:
             payload["max_budget_in_team"] = max_budget_in_team
+        if clear_budget_duration:
+            payload["budget_duration"] = None
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -1520,49 +1539,41 @@ class LiteLLMService:
                 response.raise_for_status()
         except httpx.HTTPStatusError as e:
             status_code, error_msg, response_text = self._parse_http_error(e)
-            if self._is_idempotent_litellm_error(
+            if not self._is_idempotent_litellm_error(
                 status_code,
                 response_text,
                 ["not found", "does not exist", "not a member", "already", "no change"],
             ):
-                logger.info(
-                    "LiteLLM member update noop team=%s user=%s; continuing",
-                    team_id,
-                    user_id,
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to update LiteLLM team member: {error_msg}",
                 )
-                if budget_duration is not None and max_budget_in_team is not None:
-                    await self._update_membership_budget_duration(
-                        team_id=team_id,
-                        user_id=user_id,
-                        max_budget=max_budget_in_team,
-                        budget_duration=budget_duration,
-                    )
-                return
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to update LiteLLM team member: {error_msg}",
+            logger.info(
+                "LiteLLM member update noop team=%s user=%s; continuing",
+                team_id,
+                user_id,
             )
 
-        if budget_duration is not None and max_budget_in_team is not None:
+        if clear_budget_duration:
             await self._update_membership_budget_duration(
                 team_id=team_id,
                 user_id=user_id,
                 max_budget=max_budget_in_team,
-                budget_duration=budget_duration,
+                clear_max_budget=clear_max_budget_in_team,
             )
 
     async def _update_membership_budget_duration(
         self,
         team_id: str,
         user_id: str,
-        max_budget: float,
-        budget_duration: str,
+        max_budget: Optional[float],
+        clear_max_budget: bool = False,
     ) -> None:
-        """Set budget_duration on a team membership's budget table.
+        """Clear budget_duration on a team membership's budget table.
 
-        Workaround for LiteLLM issue #25509 where /team/member_update
-        ignores budget_duration. We look up the membership budget_id
-        via /user/info, then POST it via /budget/update.
+        Older LiteLLM builds drop budget_duration on /team/member_update, so
+        the membership budget_id is looked up via /user/info and nulled
+        directly via /budget/update.
         """
         try:
             async with httpx.AsyncClient() as client:
@@ -1597,20 +1608,20 @@ class LiteLLMService:
                 )
                 return
 
+            budget_payload = {"budget_id": budget_id}
+            if clear_max_budget or max_budget is not None:
+                budget_payload["max_budget"] = max_budget
+            budget_payload["budget_duration"] = None
+
             async with httpx.AsyncClient() as client:
                 resp = await client.post(
                     f"{self.api_url}/budget/update",
                     headers={"Authorization": f"Bearer {self.master_key}"},
-                    json={
-                        "budget_id": budget_id,
-                        "max_budget": max_budget,
-                        "budget_duration": budget_duration,
-                    },
+                    json=budget_payload,
                 )
                 resp.raise_for_status()
                 logger.info(
-                    "Updated membership budget_duration=%s for team=%s user=%s",
-                    budget_duration,
+                    "Cleared membership budget_duration for team=%s user=%s",
                     team_id,
                     user_id,
                 )

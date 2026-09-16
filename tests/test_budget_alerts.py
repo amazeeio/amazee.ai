@@ -1726,7 +1726,7 @@ async def test_capped_key_crossing_inside_its_own_cycle_still_fires(db, region):
 
 @pytest.mark.asyncio
 async def test_member_cap_is_measured_over_the_cap_cycle(db, region):
-    """Team-member caps are written as 1mo, same rule as key caps."""
+    """A legacy member cap with a duration keeps its own cycle, like a key cap."""
     team = _make_team(db)
     _add_topup(db, team, region, amount_cents=100_000, purchased_days_ago=90)
     user = _make_user(db, team)
@@ -1757,6 +1757,42 @@ async def test_member_cap_is_measured_over_the_cap_cycle(db, region):
     # been $326/$50 and fired 100 on spend that belongs to earlier months.
     assert event.spend == 26.0
     assert event.threshold_pct == 50
+
+
+@pytest.mark.asyncio
+async def test_member_cap_without_duration_is_measured_over_the_team_window(db, region):
+    """A member cap with no duration follows the team's billing window."""
+    team = _make_team(db)
+    _add_topup(db, team, region, amount_cents=100_000, purchased_days_ago=90)
+    user = _make_user(db, team)
+    _make_key(db, team, region, token="sk-a", owner=user)
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=region.id,
+            team_id=team.id,
+            user_id=user.id,
+            max_budget=50.0,
+            budget_duration=None,
+        )
+    )
+    db.commit()
+    lite = f"{region.name}_{team.id}"
+
+    rows = [
+        _day(lite, 20.0, days_ago=60, keys={"sk-a": 20.0}),
+        _day(lite, 26.0, days_ago=0, keys={"sk-a": 26.0}),
+    ]
+
+    with _patch_litellm(rows, [_key_state("sk-a")]):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM_MEMBER)
+    # Both days count: the window is the team's, opened by the last top-up.
+    assert event.spend == 46.0
+    assert event.max_budget == 50.0
+    # The team's period, not a cap cycle of the member's own.
+    assert event.period_key.startswith("pool_topup:")
 
 
 @pytest.mark.asyncio
