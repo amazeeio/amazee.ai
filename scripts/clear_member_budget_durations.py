@@ -44,6 +44,12 @@ async def run(apply: bool) -> int:
 
         for (region_id, team_id), rows in groups.items():
             region = session.query(DBRegion).filter(DBRegion.id == region_id).first()
+            if not region:
+                failed += len(rows)
+                print(
+                    f"[FAIL] team_id={team_id} region_id={region_id} region not found"
+                )
+                continue
             service = LiteLLMService(
                 api_url=region.litellm_api_url,
                 api_key=region.litellm_api_key,
