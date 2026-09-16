@@ -1723,6 +1723,7 @@ def test_update_team_member_clear_budget_duration_sends_null(
         "team_id": "team-1",
         "user_id": "7",
         "role": "user",
+        "budget_duration": None,
     }
     assert second_call.args[0] == f"{test_region.litellm_api_url}/budget/update"
     assert second_call.kwargs["json"] == {
@@ -1759,6 +1760,7 @@ def test_update_team_member_clear_max_budget_sends_explicit_null(
         "user_id": "7",
         "role": "user",
         "max_budget_in_team": None,
+        "budget_duration": None,
     }
     assert second_call.kwargs["json"] == {
         "budget_id": "b1",
