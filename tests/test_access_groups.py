@@ -453,6 +453,42 @@ def test_public_listing_does_not_enforce_on_unmanaged_regions(db, test_region, m
     assert _filter_region_groups_by_access(db, groups, None)[0].models == groups[0].models
 
 
+def test_public_listing_honors_deployment_access_groups_override(db, test_region, monkeypatch):
+    """A model in the region default group but whose deployment here is
+    overridden to an opt-in group is hidden from the default listing."""
+    from app.api.public import _filter_region_groups_by_access
+    from app.core.config import settings
+    from app.schemas.models import (
+        PublicModelCapabilities,
+        PublicModelPricing,
+        PublicModelSummary,
+        PublicRegionModels,
+    )
+
+    ga = _make_model(db, "openai/ga")
+    gated = _make_model(db, "openai/gated")
+    default = _make_group(db, slug="default-models", model_ids=[ga.id, gated.id], region_ids=[test_region.id])
+    _make_group(db, slug="preview", region_ids=[test_region.id])
+    test_region.default_access_group_id = default.id
+    _deploy_model(db, ga, test_region)
+    _deploy_model(db, gated, test_region).access_groups_override = ["preview"]
+    db.commit()
+
+    def summary(model_id):
+        return PublicModelSummary(
+            model_id=model_id, display_name=model_id, provider="openai", type="chat",
+            description="", capabilities=PublicModelCapabilities(), pricing=PublicModelPricing(),
+        )
+
+    groups = [PublicRegionModels(region=test_region.name, status="available",
+                                 models=[summary("openai/ga"), summary("openai/gated")])]
+    monkeypatch.setattr(settings, "ENV_SUFFIX", "production")
+    monkeypatch.setattr(settings, "CATALOG_MANAGED_REGIONS", test_region.name)
+    listed = [m.model_id for m in _filter_region_groups_by_access(db, groups, None)[0].models]
+    assert listed == ["openai/ga"]
+    assert model_access_group_slugs(db, gated.id, test_region.id) == ["preview"]
+
+
 @patch("app.services.model_sync.LiteLLMService")
 def test_model_sync_pushes_access_groups(mock_service_cls, client, db, test_region):
     from app.services.model_sync import sync_model_to_region_task

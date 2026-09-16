@@ -1284,6 +1284,8 @@ class AdminModelRegionResponse(BaseModel):
     synced_at: Optional[datetime] = None
     # Merged over the model's litellm_params at sync time (credentials redacted)
     litellm_params_override: Optional[dict] = None
+    # Replaces the model's access groups in this region when set
+    access_groups_override: Optional[List[str]] = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -1402,6 +1404,8 @@ class ApplyAccessGroupSpec(BaseModel):
 class ApplyDeploymentSpec(BaseModel):
     region: str
     litellm_params_override: Optional[dict] = None
+    # When set, replaces the model's access_groups in this region only.
+    access_groups: Optional[List[str]] = None
 
 
 class ApplyAliasTargetSpec(BaseModel):

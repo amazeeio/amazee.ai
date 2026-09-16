@@ -109,6 +109,13 @@ def _validate_specs(req: ApplyConfigRequest) -> None:
             raise _bad_request(
                 f"Model '{spec.model_id}' references access groups not defined in payload: {unknown_groups}"
             )
+        for d in spec.deployments:
+            unknown_groups = sorted(set(d.access_groups or []) - known_slugs)
+            if unknown_groups:
+                raise _bad_request(
+                    f"Deployment '{spec.model_id}@{d.region}' references access groups "
+                    f"not defined in payload: {unknown_groups}"
+                )
 
 
 def _resolve_regions(
@@ -284,16 +291,17 @@ def _apply_deployments(
     db: Session,
     model: DBModel,
     spec_key: str,
-    desired: Dict[int, Optional[dict]],
+    desired: Dict[int, Tuple[Optional[dict], Optional[List[str]]]],
     region_names: Dict[int, str],
     managed_ids: Set[int],
     changes: List[ApplyChange],
 ) -> Set[int]:
-    """Reconcile DBModelRegion rows to `desired` (region_id -> override).
-    Returns region ids needing a sync."""
+    """Reconcile DBModelRegion rows to `desired` (region_id -> (params
+    override, access-groups override)). Returns region ids needing a sync."""
     to_sync: Set[int] = set()
     existing = {a.region_id: a for a in db.query(DBModelRegion).filter_by(model_id=model.id).all()}
-    for region_id, override in desired.items():
+    for region_id, (override, groups_override) in desired.items():
+        groups_override = sorted(set(groups_override)) if groups_override is not None else None
         assoc = existing.get(region_id)
         stored = assoc.litellm_params_override if assoc else None
         resolved = _merge_credential_sentinels(override or {}, stored) or None
@@ -310,6 +318,7 @@ def _apply_deployments(
                     is_active=True,
                     sync_status="pending",
                     litellm_params_override=resolved,
+                    access_groups_override=groups_override,
                 )
             )
             changes.append(
@@ -328,6 +337,9 @@ def _apply_deployments(
         if assoc.litellm_params_override != resolved:
             assoc.litellm_params_override = resolved
             deployment_changed.append("override")
+        if assoc.access_groups_override != groups_override:
+            assoc.access_groups_override = groups_override
+            deployment_changed.append("access_groups")
         if deployment_changed:
             assoc.sync_status = "pending"
             assoc.sync_error = None
@@ -452,12 +464,12 @@ async def apply_model_config(
                     ApplyChange(entity="alias_target", key=spec.model_id, action="update")
                 )
                 catalog_changed.add(model.id)
-            desired_deployments: Dict[int, Optional[dict]] = {
-                region_id: None for region_id, _ in desired_targets
+            desired_deployments: Dict[int, Tuple[Optional[dict], Optional[List[str]]]] = {
+                region_id: (None, None) for region_id, _ in desired_targets
             }
         else:
             desired_deployments = {
-                regions[d.region].id: d.litellm_params_override
+                regions[d.region].id: (d.litellm_params_override, d.access_groups)
                 for d in spec.deployments
                 if d.region in regions
             }
@@ -486,16 +498,20 @@ async def apply_model_config(
             row.model_id
             for row in db.query(DBModelAccessGroupModel).filter_by(group_id=group_pk).all()
         ]
-        if member_pks:
-            for assoc in (
-                db.query(DBModelRegion)
-                .filter(
-                    DBModelRegion.model_id.in_(member_pks),
-                    DBModelRegion.region_id.in_(affected_regions),
-                    DBModelRegion.is_active.is_(True),
-                )
-                .all()
-            ):
+        slug = next(s for s, g in groups.items() if g.id == group_pk)
+        for assoc in (
+            db.query(DBModelRegion)
+            .filter(
+                DBModelRegion.region_id.in_(affected_regions),
+                DBModelRegion.is_active.is_(True),
+            )
+            .all()
+        ):
+            if assoc.access_groups_override is not None:
+                affected = slug in assoc.access_groups_override
+            else:
+                affected = assoc.model_id in member_pks
+            if affected:
                 syncs.add((assoc.model_id, assoc.region_id))
 
     # Models in the DB but absent from the payload.
