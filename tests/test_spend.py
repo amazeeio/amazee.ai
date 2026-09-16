@@ -1,6 +1,7 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import HTTPException
 from app.core.roles import UserRole
 from datetime import UTC, datetime, timedelta
 from sqlalchemy.exc import IntegrityError
@@ -1712,6 +1713,44 @@ def test_update_team_member_budget_endpoint(
     assert cap is not None
     assert cap.max_budget == 1.23
     assert cap.budget_duration is None
+
+
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
+def test_update_team_member_budget_stores_cap_when_litellm_team_is_missing(
+    mock_update_team_member,
+    mock_get_team_info,
+    client,
+    admin_token,
+    test_team,
+    test_team_user,
+    test_region,
+    db,
+):
+    """A team missing in LiteLLM is recreated by the worker; keep the cap row."""
+    mock_get_team_info.side_effect = HTTPException(
+        status_code=404, detail="team not found"
+    )
+
+    response = client.put(
+        f"/spend/{test_region.id}/team/{test_team.id}/member/{test_team_user.id}/budget",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"max_budget": 4.0},
+    )
+    assert response.status_code == 200, response.json()
+    assert mock_update_team_member.await_args.kwargs["max_budget_in_team"] == 4.0
+    cap = (
+        db.query(DBSpendCap)
+        .filter(
+            DBSpendCap.scope == "team_member",
+            DBSpendCap.region_id == test_region.id,
+            DBSpendCap.team_id == test_team.id,
+            DBSpendCap.user_id == test_team_user.id,
+        )
+        .first()
+    )
+    assert cap is not None
+    assert cap.max_budget == 4.0
 
 
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
