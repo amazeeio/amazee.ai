@@ -2320,7 +2320,14 @@ async def update_team_member_budget(
     # The membership spend counter is never reset, so the cap is pushed as a
     # ceiling on the spend the member already has. A LiteLLM read failure must
     # surface: pushing the flat cap would block a member who is already past it.
-    team_info = await service.get_team_info(lite_team_id)
+    try:
+        team_info = await service.get_team_info(lite_team_id)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        # The team is gone on the LiteLLM side; the worker recreates it and the
+        # next cycle re-anchors the cap, so store the row with a zero baseline.
+        team_info = {}
     member_spend = membership_spend_by_user(team_info).get(str(user_id), 0.0)
 
     await service.update_team_member(
