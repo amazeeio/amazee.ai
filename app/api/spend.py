@@ -2317,11 +2317,21 @@ async def update_team_member_budget(
             detail="max_budget is required for team-member budget updates",
         )
 
+    # The membership spend counter is never reset, so the cap is pushed as a
+    # ceiling on the spend the member already has. A LiteLLM read failure must
+    # surface: pushing the flat cap would block a member who is already past it.
+    team_info = await service.get_team_info(lite_team_id)
+    member_spend = 0.0
+    for membership in team_info.get("team_memberships") or []:
+        if str(membership.get("user_id")) == str(user_id):
+            member_spend = float(membership.get("spend") or 0.0)
+            break
+
     await service.update_team_member(
         team_id=lite_team_id,
         user_id=str(user_id),
         role=team_role_for_litellm(user),
-        max_budget_in_team=body.max_budget,
+        max_budget_in_team=member_spend + body.max_budget,
         clear_budget_duration=True,
     )
     _upsert_spend_cap(
