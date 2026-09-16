@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.core.config import catalog_manages, settings
 from app.core.security import get_current_user_from_auth
@@ -16,6 +16,7 @@ from app.db.models import (
     DBModelAccessGroup,
     DBModelAccessGroupModel,
     DBModelAccessGroupRegion,
+    DBModelAliasTarget,
     DBModelRegion,
     DBRegion,
     DBTeamModelAccessGroup,
@@ -692,7 +693,10 @@ def _filter_region_groups_by_access(
     apply rewrites the (global, region-less) model->group memberships.
 
     A deployment with access_groups_override belongs to exactly those groups
-    in its region, whatever the model-level memberships say.
+    in its region, whatever the model-level memberships say. An alias is
+    judged by its regional target: LiteLLM expands a model_group_alias into
+    a copy of the target, tags included, so the target's groups are what
+    the proxy authorizes against.
 
     Query cost is fixed per request (a handful of queries) regardless of how
     many regions are enforced — this is a high-traffic endpoint.
@@ -754,6 +758,21 @@ def _filter_region_groups_by_access(
         .filter(DBModelAccessGroup.id.in_(all_group_ids))
         .all()
     )
+    target_model = aliased(DBModel)
+    alias_targets: dict[tuple[int, str], str] = {
+        (region_id, alias_name): target_name
+        for region_id, alias_name, target_name in (
+            db.query(DBModelAliasTarget.region_id, DBModel.model_id, target_model.model_id)
+            .join(DBModel, DBModel.id == DBModelAliasTarget.alias_model_id)
+            .join(target_model, target_model.id == DBModelAliasTarget.target_model_id)
+            .filter(
+                DBModelAliasTarget.region_id.in_(allowed_group_ids.keys()),
+                DBModel.deleted_at.is_(None),
+                target_model.deleted_at.is_(None),
+            )
+            .all()
+        )
+    }
     overrides: dict[tuple[int, str], set[str]] = {
         (region_id, model_name): set(slugs)
         for region_id, model_name, slugs in (
@@ -780,9 +799,10 @@ def _filter_region_groups_by_access(
         allowed_slugs = {slug_by_id[gid] for gid in allowed_group_ids[region.id] if gid in slug_by_id}
 
         def visible(model_name: str, region_id: int = region.id) -> bool:
-            override = overrides.get((region_id, model_name))
+            effective = alias_targets.get((region_id, model_name), model_name)
+            override = overrides.get((region_id, effective))
             if override is None:
-                return model_name in allowed
+                return effective in allowed
             return bool(override & allowed_slugs)
 
         filtered.append(

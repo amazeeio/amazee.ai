@@ -22,6 +22,7 @@ def _make_model(db, model_id="openai/test-model", **kwargs):
         provider=kwargs.get("provider", "openai"),
         type=kwargs.get("type", "chat"),
         is_active_globally=kwargs.get("is_active_globally", True),
+        is_alias=kwargs.get("is_alias", False),
         litellm_params={"model": model_id},
     )
     db.add(model)
@@ -480,8 +481,18 @@ def test_public_listing_honors_deployment_access_groups_override(db, test_region
             description="", capabilities=PublicModelCapabilities(), pricing=PublicModelPricing(),
         )
 
+    # Aliases follow their regional target: LiteLLM authorizes an alias with
+    # the target's tags, so an alias in the default group pointing at a gated
+    # target must be hidden too.
+    from app.db.models import DBModelAliasTarget
+
+    alias = _make_model(db, "chat", is_alias=True)
+    db.add(DBModelAccessGroupModel(group_id=default.id, model_id=alias.id))
+    db.add(DBModelAliasTarget(alias_model_id=alias.id, region_id=test_region.id, target_model_id=gated.id))
+    db.commit()
+
     groups = [PublicRegionModels(region=test_region.name, status="available",
-                                 models=[summary("openai/ga"), summary("openai/gated")])]
+                                 models=[summary("openai/ga"), summary("openai/gated"), summary("chat")])]
     monkeypatch.setattr(settings, "ENV_SUFFIX", "production")
     monkeypatch.setattr(settings, "CATALOG_MANAGED_REGIONS", test_region.name)
     listed = [m.model_id for m in _filter_region_groups_by_access(db, groups, None)[0].models]
