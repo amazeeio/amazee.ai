@@ -2010,6 +2010,64 @@ def test_remove_user_from_team_keeps_member_cap_when_sync_fails(
     assert remaining == 1
 
 
+def test_add_user_to_team_clears_a_stale_member_cap(
+    client, admin_token, db, test_team, test_region
+):
+    """A cap left behind by an interrupted removal must not come back."""
+    joiner = DBUser(email="rejoiner@example.com", role="read_only")
+    other_user = DBUser(email="other-capped@example.com", role="read_only")
+    other_team = DBTeam(name="other team for caps", admin_email="other-caps@e.com")
+    db.add_all([joiner, other_user, other_team])
+    db.commit()
+    db.refresh(joiner)
+    db.refresh(other_user)
+    db.refresh(other_team)
+    db.add_all(
+        [
+            DBSpendCap(
+                scope="team_member",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                user_id=joiner.id,
+                max_budget=5.0,
+            ),
+            DBSpendCap(
+                scope="team_member",
+                region_id=test_region.id,
+                team_id=other_team.id,
+                user_id=joiner.id,
+                max_budget=6.0,
+            ),
+            DBSpendCap(
+                scope="team_member",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                user_id=other_user.id,
+                max_budget=7.0,
+            ),
+        ]
+    )
+    db.commit()
+
+    with patch("app.api.users.sync_add_user_to_team", new_callable=AsyncMock):
+        response = client.post(
+            f"/users/{joiner.id}/add-to-team",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"team_id": test_team.id},
+        )
+
+    assert response.status_code == 200
+    remaining = {
+        (cap.team_id, cap.user_id)
+        for cap in db.query(DBSpendCap)
+        .filter(DBSpendCap.scope == "team_member")
+        .all()
+    }
+    assert (test_team.id, joiner.id) not in remaining
+    assert (other_team.id, joiner.id) in remaining
+    assert (test_team.id, other_user.id) in remaining
+
+
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
 def test_add_user_to_team_takes_a_seat(client, admin_token, db, test_team):
     """
