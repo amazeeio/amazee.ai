@@ -1927,6 +1927,45 @@ def test_remove_user_from_team_frees_the_seat(client, admin_token, db, test_team
     assert response.status_code == 201
 
 
+def test_remove_user_from_team_deletes_member_cap(
+    client, admin_token, db, test_team, test_region
+):
+    """The member cap belongs to the membership, so it goes with it."""
+    member = DBUser(
+        email="capped-leaver@example.com", team_id=test_team.id, role="read_only"
+    )
+    db.add(member)
+    db.commit()
+    db.refresh(member)
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=member.id,
+            max_budget=5.0,
+        )
+    )
+    db.commit()
+
+    with patch("app.api.users.sync_remove_user_from_team", new_callable=AsyncMock):
+        response = client.post(
+            f"/users/{member.id}/remove-from-team",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 200
+    remaining = (
+        db.query(DBSpendCap)
+        .filter(
+            DBSpendCap.scope == "team_member",
+            DBSpendCap.user_id == member.id,
+        )
+        .count()
+    )
+    assert remaining == 0
+
+
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
 def test_add_user_to_team_takes_a_seat(client, admin_token, db, test_team):
     """

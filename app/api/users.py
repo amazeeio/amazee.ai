@@ -1216,6 +1216,13 @@ async def remove_user_from_team(
     # Remove user from team
     previous_team_id = db_user.team_id
     db_user.team_id = None
+    # A member cap belongs to the membership, so it goes with it; a rejoin
+    # would otherwise silently inherit the old limit.
+    db.query(DBSpendCap).filter(
+        DBSpendCap.scope == "team_member",
+        DBSpendCap.team_id == previous_team_id,
+        DBSpendCap.user_id == db_user.id,
+    ).delete(synchronize_session=False)
     try:
         db.commit()
         db.refresh(db_user)
