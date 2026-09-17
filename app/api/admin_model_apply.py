@@ -79,6 +79,7 @@ def _validate_specs(req: ApplyConfigRequest) -> None:
             "Refusing to prune with an empty models list — that would deactivate the entire catalog."
         )
     known_slugs = set(slugs)
+    group_regions = {g.slug: set(g.regions) for g in req.access_groups}
     for spec in req.models:
         if spec.is_alias:
             if spec.litellm_params:
@@ -109,12 +110,23 @@ def _validate_specs(req: ApplyConfigRequest) -> None:
             raise _bad_request(
                 f"Model '{spec.model_id}' references access groups not defined in payload: {unknown_groups}"
             )
+        # A per-deployment override may only name groups deployed to that
+        # region: the sync intersects the override with the region's groups,
+        # so an undeployed slug would silently leave the model untagged —
+        # live on the proxy, callable by nobody, hidden from the listing.
+        # (Alias specs never reach here with deployments — rejected above.)
         for d in spec.deployments:
             unknown_groups = sorted(set(d.access_groups or []) - known_slugs)
             if unknown_groups:
                 raise _bad_request(
                     f"Deployment '{spec.model_id}@{d.region}' references access groups "
                     f"not defined in payload: {unknown_groups}"
+                )
+            undeployed = sorted(s for s in d.access_groups or [] if d.region not in group_regions[s])
+            if undeployed:
+                raise _bad_request(
+                    f"Deployment '{spec.model_id}@{d.region}' references access groups "
+                    f"not deployed to that region: {undeployed}"
                 )
 
 
