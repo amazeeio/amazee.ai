@@ -1,5 +1,6 @@
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -9,9 +10,9 @@ from app.core.periodic_budget_ledger_service import (
     compute_active_topup_remaining,
 )
 from app.core.security import get_role_min_system_admin
+from app.core.spend_period_service import upsert_team_spend_period
 from app.core.team_service import get_team_region_litellm_keys
 from app.core.worker import (
-    _previous_period_spend_baseline_cents,
     _record_periodic_payment_direct,
     _sync_periodic_ledger_for_period,
     apply_billing_cycle_for_team,
@@ -25,6 +26,7 @@ from app.db.models import (
     DBRegion,
     DBSpendCap,
     DBTeam,
+    DBTeamSpendPeriod,
 )
 from app.schemas.models import (
     BudgetType,
@@ -65,6 +67,83 @@ def _write_audit_log(
             db.rollback()
         except Exception as rollback_exc:
             logger.warning("Failed to rollback audit log transaction: %s", rollback_exc)
+
+
+def _raise_settlement_failed(
+    db: Session,
+    request: SubscriptionDeactivateRequest,
+    team_id: int,
+    exc: Exception,
+) -> NoReturn:
+    """The period was not debited, so the deactivation must not go through."""
+    db.rollback()
+    _write_audit_log(
+        db,
+        "subscription.deactivate",
+        "deactivate",
+        str(team_id),
+        502,
+        {
+            "transaction_id": request.transaction_id,
+            "region_id": request.region_id,
+            "reason": request.reason,
+            "outcome": "settlement_failed",
+            "error": str(exc),
+        },
+    )
+    raise HTTPException(
+        status_code=502,
+        detail="Cannot settle the current period; deactivation must be retried",
+    )
+
+
+DEACTIVATE_SNAPSHOT_SOURCES = (
+    "moad_subscription_deactivate",
+    "moad_subscription_deactivate_retry",
+)
+
+
+def _current_period_spend_baseline_cents(
+    db: Session, *, team_id: int, region_id: int, period_start: datetime
+) -> int:
+    """The counter captured at the start of the period being settled, in cents.
+
+    The cycle writes its snapshot with the period's own start, and the spend
+    before it was already debited then, so that snapshot is the baseline here.
+    """
+    row = (
+        db.query(DBTeamSpendPeriod.total_spend)
+        .filter(
+            DBTeamSpendPeriod.team_id == team_id,
+            DBTeamSpendPeriod.region_id == region_id,
+            DBTeamSpendPeriod.period_start <= period_start,
+        )
+        .order_by(DBTeamSpendPeriod.period_start.desc(), DBTeamSpendPeriod.id.desc())
+        .first()
+    )
+    if row is None or row[0] is None:
+        return 0
+    return int(round(float(row[0]) * 100))
+
+
+def _latest_spend_snapshot(
+    db: Session, *, team_id: int, region_id: int
+) -> DBTeamSpendPeriod | None:
+    """The newest snapshot written by a deactivation attempt.
+
+    A cycle snapshot holds the counter at the start of the period, which a
+    retry would debit a second time.
+    """
+    return (
+        db.query(DBTeamSpendPeriod)
+        .filter(
+            DBTeamSpendPeriod.team_id == team_id,
+            DBTeamSpendPeriod.region_id == region_id,
+            DBTeamSpendPeriod.source.in_(DEACTIVATE_SNAPSHOT_SOURCES),
+        )
+        .order_by(DBTeamSpendPeriod.period_start.desc(), DBTeamSpendPeriod.id.desc())
+        .first()
+    )
 
 
 @router.post(
@@ -339,29 +418,23 @@ async def subscription_deactivate(
         lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
         current_team_spend: float | None = None
         if active_subscription_period:
-            await capture_periodic_team_spend_for_period(
-                db=db,
-                team=team,
-                region=region,
-                period_start=active_subscription_period.effective_period_start,
-                period_end=active_subscription_period.effective_period_end,
-                source_event_id=request.transaction_id,
-            )
             # Debit mid-period spend against top-up entries so that
             # compute_active_topup_remaining reflects actual remaining balance.
             # Without this, FIFO never runs on the cancel path (no invoice),
-            # and consumed_cents stays stale — leaking top-up credits.
+            # and consumed_cents stays stale — leaking top-up credits. A
+            # swallowed failure here would deactivate a team whose spend was
+            # never debited, so a failed settlement ends the request.
             try:
                 team_info_resp = await litellm_service.get_team_info(lite_team_id)
                 team_info = team_info_resp.get("team_info", team_info_resp)
                 current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
                 current_spend_cents = int(round(current_team_spend * 100))
                 litellm_cycle_active = bool(team_info.get("budget_duration"))
-                spend_baseline_cents = _previous_period_spend_baseline_cents(
+                spend_baseline_cents = _current_period_spend_baseline_cents(
                     db,
                     team_id=team.id,
                     region_id=region.id,
-                    current_period_start=active_subscription_period.effective_period_start,
+                    period_start=active_subscription_period.effective_period_start,
                 )
                 if (
                     not litellm_cycle_active
@@ -398,14 +471,110 @@ async def subscription_deactivate(
                         region_id=region.id,
                         spend_cents=incremental_spend_cents,
                     )
-            except Exception as exc:
-                db.rollback()
-                logger.warning(
-                    "Failed to run FIFO allocation on cancellation for team %s: %s",
-                    team.id,
-                    exc,
-                    exc_info=True,
+                # The cycle already owns the snapshot for this window, so the
+                # counter this attempt settled is recorded under its own
+                # window; a retry starts from here instead of from the cycle.
+                upsert_team_spend_period(
+                    db=db,
+                    team=team,
+                    region_id=region.id,
+                    period_start=active_subscription_period.effective_period_start,
+                    period_end=datetime.now(UTC),
+                    source="moad_subscription_deactivate",
+                    snapshot={"total_spend": current_team_spend},
+                    stripe_event_id=request.transaction_id,
                 )
+                db.commit()
+                # After the debit: this capture writes the cycle's own window,
+                # which the baseline read above would otherwise pick up as a
+                # counter that was already settled.
+                await capture_periodic_team_spend_for_period(
+                    db=db,
+                    team=team,
+                    region=region,
+                    period_start=active_subscription_period.effective_period_start,
+                    period_end=active_subscription_period.effective_period_end,
+                    source_event_id=request.transaction_id,
+                )
+            except Exception as exc:
+                _raise_settlement_failed(db, request, team.id, exc)
+        elif existing is not None and existing.sync_status == "sync_failed":
+            # A retry of a half-done deactivation: the period is settled, but
+            # the spend since the first attempt was never debited and would
+            # come back as headroom in the projection below.
+            try:
+                team_info_resp = await litellm_service.get_team_info(lite_team_id)
+                team_info = team_info_resp.get("team_info", team_info_resp)
+                current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
+                current_spend_cents = int(round(current_team_spend * 100))
+                litellm_cycle_active = bool(team_info.get("budget_duration"))
+                snapshot_row = _latest_spend_snapshot(
+                    db, team_id=team.id, region_id=region.id
+                )
+                baseline_cents = (
+                    int(round(float(snapshot_row.total_spend or 0.0) * 100))
+                    if snapshot_row is not None
+                    else None
+                )
+                # created_at is the last resort: the window must never be
+                # None, the log read below takes it as its lower bound.
+                retry_window_start = (
+                    existing.payment_date
+                    or (snapshot_row.period_start if snapshot_row is not None else None)
+                    or existing.created_at
+                )
+                if (
+                    not litellm_cycle_active
+                    and baseline_cents is not None
+                    and current_spend_cents >= baseline_cents
+                ):
+                    incremental_spend_cents = current_spend_cents - baseline_cents
+                else:
+                    # No snapshot, a counter below it, or a LiteLLM cycle still
+                    # running on this team: the counter can have been reset
+                    # between the attempts, so subtracting the baseline would
+                    # undercount and hand back credit the team already spent.
+                    # The spend logs survive a reset.
+                    logger.warning(
+                        "LiteLLM team spend counter is not trustworthy on "
+                        "cancellation retry for team_id=%s region_id=%s: live=%s "
+                        "cents, baseline=%s cents, litellm_cycle_active=%s",
+                        team.id,
+                        region.id,
+                        current_spend_cents,
+                        baseline_cents,
+                        litellm_cycle_active,
+                    )
+                    logged_spend = await litellm_service.get_team_spend_in_range(
+                        lite_team_id,
+                        retry_window_start,
+                        datetime.now(UTC),
+                    )
+                    incremental_spend_cents = max(
+                        0, int(round(float(logged_spend) * 100))
+                    )
+                if incremental_spend_cents > 0:
+                    allocate_period_spend_fifo(
+                        db,
+                        team_id=team.id,
+                        region_id=region.id,
+                        spend_cents=incremental_spend_cents,
+                    )
+                # Snapshot the counter so a third attempt debits only the
+                # spend that comes after this one.
+                upsert_team_spend_period(
+                    db=db,
+                    team=team,
+                    region_id=region.id,
+                    period_start=retry_window_start,
+                    period_end=datetime.now(UTC),
+                    source="moad_subscription_deactivate_retry",
+                    snapshot={"total_spend": current_team_spend},
+                    stripe_event_id=request.transaction_id,
+                )
+                db.commit()
+            except Exception as exc:
+                _raise_settlement_failed(db, request, team.id, exc)
 
         # Deactivation immediately ends active subscription windows.
         active_sub_rows = (
@@ -469,6 +638,7 @@ async def subscription_deactivate(
             # already recorded for the remaining top-up to be requestable.
             projected_team_max_budget = current_team_spend + topup_remaining_dollars
 
+        sync_errors: list[str] = []
         try:
             # No budget_duration: LiteLLM must never reset team spend and hand
             # a cancelled team its old headroom back.
@@ -482,6 +652,9 @@ async def subscription_deactivate(
                 "Failed to update LiteLLM deactivation budget for team %s: %s",
                 team.id,
                 exc,
+            )
+            sync_errors.append(
+                f"Failed to update team {team.id} budget in region {region.name}: {exc}"
             )
 
         keys = get_team_region_litellm_keys(db, team_id=team.id, region_id=region.id)
@@ -516,6 +689,7 @@ async def subscription_deactivate(
                     key.id,
                     exc,
                 )
+                sync_errors.append(f"Failed to update key {key.id} in LiteLLM: {exc}")
 
         payment_id = await _record_periodic_payment_direct(
             db,
@@ -524,7 +698,37 @@ async def subscription_deactivate(
             amount_cents=0,
             currency="usd",
             payment_type="deactivation",
+            # The row is stamped by outcome, so a Stripe retry short-circuits
+            # at the top only once every LiteLLM write landed.
+            sync_status="sync_failed" if sync_errors else "success",
         )
+
+        if sync_errors:
+            logger.error(
+                "subscription.deactivate LiteLLM sync failed: team_id=%s "
+                "transaction_id=%s errors=%d",
+                team.id,
+                request.transaction_id,
+                len(sync_errors),
+            )
+            _write_audit_log(
+                db,
+                "subscription.deactivate",
+                "deactivate",
+                str(team.id),
+                502,
+                {
+                    "transaction_id": request.transaction_id,
+                    "region_id": request.region_id,
+                    "reason": request.reason,
+                    "outcome": "litellm_sync_failed",
+                    "sync_errors": sync_errors,
+                },
+            )
+            raise HTTPException(
+                status_code=502,
+                detail="LiteLLM sync failed during deactivation; deactivation must be retried",
+            )
 
         _write_audit_log(
             db,

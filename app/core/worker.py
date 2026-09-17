@@ -40,7 +40,7 @@ from app.services.litellm import (
 from app.services.ses import SESService
 from app.core.team_service import (
     get_team_keys_by_region,
-    reprovision_litellm_team,
+    get_team_info_or_recreate,
     get_team_region_litellm_keys,
     is_anonymous_trial_team,
     soft_delete_team,
@@ -297,8 +297,14 @@ async def _record_periodic_payment_direct(
     amount_cents: int,
     currency: str = "usd",
     payment_type: str = "subscription",
+    sync_status: str = "pending",
 ) -> Optional[int]:
-    """Record a periodic team payment using direct billing payload fields."""
+    """Record a periodic team payment using direct billing payload fields.
+
+    ``sync_status`` stays "pending" while a later step still decides the
+    outcome; a caller that has already finished its work stamps "success" here
+    so a retry of the same transaction short-circuits.
+    """
     try:
         team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
         if not team:
@@ -319,7 +325,7 @@ async def _record_periodic_payment_direct(
                 currency=currency.lower(),
                 payment_type=payment_type,
                 status="completed",
-                sync_status="pending",
+                sync_status=sync_status,
                 payment_date=datetime.now(UTC),
             )
             db.add(payment_record)
@@ -330,6 +336,11 @@ async def _record_periodic_payment_direct(
                 transaction_id,
                 team.id,
             )
+        elif sync_status != "pending" and payment_record.sync_status != sync_status:
+            # An earlier attempt left the row behind; the attempt that finishes
+            # is the one that stamps it.
+            payment_record.sync_status = sync_status
+            db.commit()
 
         return payment_record.id
     except Exception as e:
@@ -475,7 +486,9 @@ def _previous_period_spend_baseline_cents(
             DBTeamSpendPeriod.region_id == region_id,
             DBTeamSpendPeriod.period_start < current_period_start,
         )
-        .order_by(DBTeamSpendPeriod.period_start.desc())
+        # A deactivation snapshot shares its period_start with the cycle row
+        # that opened the period, so the newest row wins.
+        .order_by(DBTeamSpendPeriod.period_start.desc(), DBTeamSpendPeriod.id.desc())
         .first()
     )
     if row is None or row[0] is None:
@@ -565,7 +578,9 @@ async def _sync_periodic_ledger_for_period(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
         lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
-        team_info_resp = await litellm_service.get_team_info(lite_team_id)
+        team_info_resp = await get_team_info_or_recreate(
+            db, team, region, litellm_service
+        )
         team_info = team_info_resp.get("team_info", team_info_resp)
         snapshot_total_spend = float(team_info.get("spend", 0.0) or 0.0)
         litellm_cycle_active = bool(team_info.get("budget_duration"))
@@ -834,30 +849,9 @@ async def apply_billing_cycle_for_team(
         team_max_budget = per_region_budget
         current_team_spend = 0.0
         try:
-            try:
-                team_info_resp = await litellm_service.get_team_info(lite_team_id)
-            except HTTPException as exc:
-                if exc.status_code != 404:
-                    raise
-                # The team was removed on the LiteLLM side; recreate it so the
-                # budget update below has something to attach to.
-                logger.info(
-                    "LiteLLM team %s missing in region %s, recreating it",
-                    lite_team_id,
-                    region.name,
-                )
-                # The team took its users and memberships with it, so rebuild
-                # them too; a bare team would accept no key.
-                await reprovision_litellm_team(
-                    db,
-                    team,
-                    region,
-                    litellm_service,
-                    db.query(DBUser).filter(DBUser.team_id == team.id).all(),
-                )
-                # The rebuilt memberships carry no member budget, so the member
-                # cap push below needs the fresh membership list.
-                team_info_resp = await litellm_service.get_team_info(lite_team_id)
+            team_info_resp = await get_team_info_or_recreate(
+                db, team, region, litellm_service
+            )
             team_info = team_info_resp.get("team_info", team_info_resp)
             current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
 
@@ -1046,6 +1040,9 @@ async def apply_billing_cycle_for_team(
                             team_id=lite_team_id,
                             apply_limits=False,
                             key=key.litellm_token,
+                            # Born blocked so a failed limit write cannot leave
+                            # the key live and uncapped; the call below unblocks.
+                            blocked=True,
                             # Same route restriction normal provisioning applies,
                             # or a rebuilt trial key would come back unrestricted.
                             allowed_routes=(

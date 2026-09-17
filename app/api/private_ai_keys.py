@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 from app.db.database import get_db
+from app.core.audit import key_delete_audit_log
 from app.core.dependencies import get_limit_service
 from app.schemas.models import (
     PrivateAIKey,
@@ -24,7 +25,6 @@ from app.schemas.models import (
 )
 from app.db.postgres import PostgresManager
 from app.db.models import (
-    DBAuditLog,
     DBBudgetAlertState,
     DBPrivateAIKey,
     DBRegion,
@@ -1066,20 +1066,14 @@ async def delete_private_ai_key(
         DBBudgetAlertState.key_id == private_ai_key.id
     ).delete(synchronize_session=False)
 
-    # The audit row shares the delete's transaction, so it cannot outlive a rollback.
     db.add(
-        DBAuditLog(
-            event_type="private_ai_key.delete",
-            resource_type="private_ai_key",
-            resource_id=str(key_id),
-            action="delete",
+        key_delete_audit_log(
+            key_id=key_id,
+            team_id=private_ai_key.team_id,
+            region_id=private_ai_key.region_id,
+            key_name=private_ai_key.name,
             user_id=current_user.id,
             request_source="api",
-            details={
-                "team_id": private_ai_key.team_id,
-                "region_id": private_ai_key.region_id,
-                "key_name": private_ai_key.name,
-            },
         )
     )
 

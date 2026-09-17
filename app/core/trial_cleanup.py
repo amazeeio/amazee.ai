@@ -28,6 +28,7 @@ from typing import Optional
 from sqlalchemy import exists, or_
 from sqlalchemy.orm import Session
 
+from app.core.audit import key_delete_audit_log
 from app.core.config import settings
 from app.core.team_service import is_anonymous_trial_team
 from app.db.models import (
@@ -447,6 +448,15 @@ def _delete_key_rows(db: Session, key: DBPrivateAIKey) -> None:
     )
     db.query(DBBudgetAlertState).filter(DBBudgetAlertState.key_id == key.id).delete(
         synchronize_session=False
+    )
+    db.add(
+        key_delete_audit_log(
+            key_id=key.id,
+            team_id=key.team_id,
+            region_id=key.region_id,
+            key_name=key.name,
+            source="trial_cleanup",
+        )
     )
     db.delete(key)
 

@@ -8,6 +8,7 @@ from sqlalchemy import false
 
 from app.core.config import settings
 from app.core.worker import (
+    _previous_period_spend_baseline_cents,
     _record_periodic_payment_direct,
     apply_billing_cycle_for_team,
     reanchor_member_caps,
@@ -563,9 +564,78 @@ async def test_apply_billing_cycle_for_team_rebuilds_a_lost_key_on_a_live_team(
     assert errors == []
     assert mock_litellm.create_key.await_args.kwargs["key"] == "lost-token"
     assert mock_litellm.create_key.await_args.kwargs["allowed_routes"] is None
+    assert mock_litellm.create_key.await_args.kwargs["blocked"] is True
     assert mock_litellm.set_key_restrictions.await_count == 2
     db.refresh(payment)
     assert payment.sync_status == "success"
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.compute_active_topup_remaining", return_value=0)
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.worker.LimitService")
+async def test_apply_billing_cycle_for_team_leaves_a_rebuilt_key_blocked_when_limits_fail(
+    mock_limit_service,
+    mock_litellm_class,
+    _mock_topup,
+    db,
+    test_team,
+    test_region,
+):
+    """A rebuilt key stays blocked when the limit write that follows fails."""
+    db.add(
+        DBPrivateAIKey(
+            name="lost-key",
+            litellm_token="lost-token",
+            region_id=test_region.id,
+            team_id=test_team.id,
+        )
+    )
+    payment = DBPeriodicPayment(
+        team_id=test_team.id,
+        stripe_payment_id="pay_sync_key_limits_failed",
+        amount_cents=10000,
+        currency="usd",
+        payment_type="subscription",
+        status="completed",
+        sync_status="pending",
+        payment_date=datetime.now(UTC),
+    )
+    db.add(payment)
+    db.commit()
+
+    mock_limit_service.return_value.get_token_restrictions.return_value = (
+        31,
+        999.0,
+        1000,
+    )
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 0.0}})
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.create_key = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock(
+        side_effect=[
+            HTTPException(status_code=404, detail="Key not found"),
+            Exception("limits failed"),
+        ]
+    )
+
+    errors = await apply_billing_cycle_for_team(
+        db=db,
+        team_id=test_team.id,
+        budget_cents=10000,
+        region_id=test_region.id,
+        period_start=datetime.now(UTC),
+        period_end=datetime.now(UTC) + timedelta(days=31),
+        source_payment_id=payment.id,
+    )
+
+    assert len(errors) == 1
+    assert mock_litellm.create_key.await_args.kwargs["blocked"] is True
+    # The unblocking call is the one that raised, so nothing lifted the block.
+    assert mock_litellm.set_key_restrictions.await_count == 2
+    db.refresh(payment)
+    assert payment.sync_status == "sync_failed"
 
 
 @pytest.mark.asyncio
@@ -1261,7 +1331,11 @@ def test_subscription_deactivate_fails_when_spend_read_fails(
     test_team,
     test_region,
 ):
-    """With top-up left and no readable spend, deactivate must write nothing."""
+    """With an unreadable team spend, deactivate must write nothing.
+
+    The read sits inside the settlement, so the period is never debited and
+    the request ends there.
+    """
     period_start = datetime.now(UTC) - timedelta(days=5)
     period_end = datetime.now(UTC) + timedelta(days=26)
     sub_entry = DBPeriodicBudgetLedgerEntry(
@@ -1333,7 +1407,7 @@ def test_subscription_deactivate_fails_when_spend_read_fails(
         db.query(DBAuditLog)
         .filter(
             DBAuditLog.event_type == "subscription.deactivate",
-            DBAuditLog.details["outcome"].as_string() == "spend_read_failed",
+            DBAuditLog.details["outcome"].as_string() == "settlement_failed",
         )
         .count()
         == 1
@@ -1382,6 +1456,7 @@ def test_subscription_deactivate_captures_snapshot_before_reset(
 
     mock_record_payment.return_value = 777
     mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 0.0}})
     mock_litellm.update_team_budget = AsyncMock()
     mock_litellm.set_key_restrictions = AsyncMock()
 
@@ -1560,6 +1635,40 @@ def test_subscription_deactivate_fifo_debits_topup_on_cancellation(
     assert mock_litellm.set_key_restrictions.await_args.kwargs["duration"] is None
 
 
+def test_previous_period_spend_baseline_prefers_the_newest_snapshot(
+    db, test_team, test_region
+):
+    """A deactivation snapshot shares period_start with the cycle row."""
+    period_start = datetime.now(UTC) - timedelta(days=31)
+    # The deactivation row closes the window early, so it is a second row on
+    # the same period_start.
+    for total_spend, source, period_end in (
+        (10.0, "moad_subscription_cycle", period_start + timedelta(days=31)),
+        (12.0, "moad_subscription_deactivate", period_start + timedelta(days=5)),
+    ):
+        db.add(
+            DBTeamSpendPeriod(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                budget_type=test_team.budget_type,
+                period_start=period_start,
+                period_end=period_end,
+                total_spend=total_spend,
+                source=source,
+            )
+        )
+        db.commit()
+
+    baseline = _previous_period_spend_baseline_cents(
+        db,
+        team_id=test_team.id,
+        region_id=test_region.id,
+        current_period_start=datetime.now(UTC),
+    )
+
+    assert baseline == 1200
+
+
 def _seed_deactivate_period(db, team, region, *, baseline_spend):
     """Active subscription period plus an older snapshot as the baseline."""
     period_start = datetime.now(UTC) - timedelta(days=5)
@@ -1698,6 +1807,632 @@ def test_subscription_deactivate_uses_spend_logs_when_litellm_still_has_a_cycle(
     assert mock_litellm.get_team_spend_in_range.await_args.args[1] == period_start
 
 
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+@patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_fails_when_settlement_fails(
+    mock_litellm_class,
+    mock_record_payment,
+    _mock_capture_spend,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """A failed settlement must stop the deactivation, not cancel silently."""
+    sub_entry, _period_start = _seed_deactivate_period(
+        db, test_team, test_region, baseline_spend=50.0
+    )
+    mock_record_payment.return_value = 993
+
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={"team_info": {"spend": 2.0, "max_budget": 100.0}}
+    )
+    mock_litellm.get_team_spend_in_range = AsyncMock(side_effect=Exception("logs down"))
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    response = client.post(
+        "/billing/subscription/deactivate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_cancel_settle_fail",
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+            "reason": "cancelled",
+        },
+    )
+
+    assert response.status_code == 502
+    db.refresh(sub_entry)
+    assert sub_entry.is_active is True
+    assert sub_entry.consumed_cents == 0
+    mock_litellm.update_team_budget.assert_not_awaited()
+    mock_litellm.set_key_restrictions.assert_not_awaited()
+    audit = (
+        db.query(DBAuditLog)
+        .filter(DBAuditLog.event_type == "subscription.deactivate")
+        .order_by(DBAuditLog.id.desc())
+        .first()
+    )
+    assert audit is not None
+    assert audit.details["outcome"] == "settlement_failed"
+
+
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_retry_with_same_transaction_is_idempotent(
+    mock_litellm_class,
+    _mock_capture_spend,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """The payment row is stamped, so a Stripe retry short-circuits."""
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 0.0}})
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    payload = {
+        "transaction_id": "txn_cancel_retry",
+        "team_id": test_team.id,
+        "region_id": test_region.id,
+        "reason": "cancelled",
+    }
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    first = client.post(
+        "/billing/subscription/deactivate", headers=headers, json=payload
+    )
+    assert first.status_code == 200
+    payment = (
+        db.query(DBPeriodicPayment)
+        .filter(DBPeriodicPayment.stripe_payment_id == "txn_cancel_retry")
+        .first()
+    )
+    assert payment.sync_status == "success"
+    team_info_calls = mock_litellm.get_team_info.await_count
+
+    second = client.post(
+        "/billing/subscription/deactivate", headers=headers, json=payload
+    )
+    assert second.status_code == 200
+    assert second.json()["idempotent"] is True
+    assert second.json()["payment_id"] == first.json()["payment_id"]
+    assert mock_litellm.update_team_budget.await_count == 1
+    assert mock_litellm.get_team_info.await_count == team_info_calls
+
+
+def _seed_deactivate_key(db, team, region, name):
+    key = DBPrivateAIKey(
+        name=name,
+        litellm_token=f"{name}-token",
+        region_id=region.id,
+        team_id=team.id,
+    )
+    db.add(key)
+    db.commit()
+    return key
+
+
+def _latest_deactivate_audit(db):
+    return (
+        db.query(DBAuditLog)
+        .filter(DBAuditLog.event_type == "subscription.deactivate")
+        .order_by(DBAuditLog.id.desc())
+        .first()
+    )
+
+
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_fails_when_team_budget_write_fails(
+    mock_litellm_class,
+    _mock_capture_spend,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """A failed team budget write must leave the deactivation retryable."""
+    sub_entry, _period_start = _seed_deactivate_period(
+        db, test_team, test_region, baseline_spend=0.0
+    )
+    _seed_deactivate_key(db, test_team, test_region, "deactivate-team-fail-key")
+
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 0.0}})
+    mock_litellm.update_team_budget = AsyncMock(side_effect=Exception("litellm down"))
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    response = client.post(
+        "/billing/subscription/deactivate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_cancel_team_write_fail",
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+            "reason": "cancelled",
+        },
+    )
+
+    assert response.status_code == 502
+    payment = (
+        db.query(DBPeriodicPayment)
+        .filter(DBPeriodicPayment.stripe_payment_id == "txn_cancel_team_write_fail")
+        .first()
+    )
+    assert payment is not None
+    assert payment.sync_status == "sync_failed"
+    assert payment.payment_type == "deactivation"
+    db.refresh(sub_entry)
+    assert sub_entry.is_active is False
+    audit = _latest_deactivate_audit(db)
+    assert audit is not None
+    assert audit.details["outcome"] == "litellm_sync_failed"
+    assert audit.details["sync_errors"]
+    # The key loop still runs when the team write fails.
+    mock_litellm.set_key_restrictions.assert_awaited_once()
+
+
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_retry_after_litellm_failure_completes(
+    mock_litellm_class,
+    _mock_capture_spend,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """The retry re-runs the LiteLLM writes and settles the period only once."""
+    sub_entry, _period_start = _seed_deactivate_period(
+        db, test_team, test_region, baseline_spend=0.0
+    )
+    _seed_deactivate_key(db, test_team, test_region, "deactivate-retry-key")
+
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 0.0}})
+    mock_litellm.update_team_budget = AsyncMock(side_effect=Exception("litellm down"))
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    payload = {
+        "transaction_id": "txn_cancel_retry_after_fail",
+        "team_id": test_team.id,
+        "region_id": test_region.id,
+        "reason": "cancelled",
+    }
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    first = client.post(
+        "/billing/subscription/deactivate", headers=headers, json=payload
+    )
+    assert first.status_code == 502
+    payment = (
+        db.query(DBPeriodicPayment)
+        .filter(DBPeriodicPayment.stripe_payment_id == "txn_cancel_retry_after_fail")
+        .first()
+    )
+    assert payment.sync_status == "sync_failed"
+    first_payment_id = payment.id
+    team_info_calls = mock_litellm.get_team_info.await_count
+
+    mock_litellm.update_team_budget.side_effect = None
+    mock_litellm.update_team_budget.return_value = None
+
+    second = client.post(
+        "/billing/subscription/deactivate", headers=headers, json=payload
+    )
+
+    assert second.status_code == 200
+    assert second.json()["idempotent"] is False
+    assert second.json()["payment_id"] == first_payment_id
+    assert mock_litellm.update_team_budget.await_count == 2
+    assert mock_litellm.set_key_restrictions.await_count == 2
+    # Only the projection read: the second pass finds no active period.
+    assert mock_litellm.get_team_info.await_count == team_info_calls + 1
+    db.refresh(payment)
+    assert payment.sync_status == "success"
+    db.refresh(sub_entry)
+    assert sub_entry.is_active is False
+    assert _mock_capture_spend.await_count == 1
+
+
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_fails_when_key_write_fails(
+    mock_litellm_class,
+    _mock_capture_spend,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """A failed key write must leave the deactivation retryable."""
+    sub_entry, _period_start = _seed_deactivate_period(
+        db, test_team, test_region, baseline_spend=0.0
+    )
+    _seed_deactivate_key(db, test_team, test_region, "deactivate-key-fail-key")
+
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 0.0}})
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock(side_effect=Exception("key down"))
+
+    response = client.post(
+        "/billing/subscription/deactivate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_cancel_key_write_fail",
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+            "reason": "cancelled",
+        },
+    )
+
+    assert response.status_code == 502
+    payment = (
+        db.query(DBPeriodicPayment)
+        .filter(DBPeriodicPayment.stripe_payment_id == "txn_cancel_key_write_fail")
+        .first()
+    )
+    assert payment is not None
+    assert payment.sync_status == "sync_failed"
+    assert payment.payment_type == "deactivation"
+    db.refresh(sub_entry)
+    assert sub_entry.is_active is False
+    audit = _latest_deactivate_audit(db)
+    assert audit is not None
+    assert audit.details["outcome"] == "litellm_sync_failed"
+    assert audit.details["sync_errors"]
+    mock_litellm.update_team_budget.assert_awaited_once()
+
+
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_retry_debits_spend_since_the_first_attempt(
+    mock_litellm_class,
+    _mock_capture_spend,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """The retry must not hand back the credit spent between the attempts."""
+    sub_entry, period_start = _seed_deactivate_period(
+        db, test_team, test_region, baseline_spend=4.0
+    )
+    _seed_deactivate_key(db, test_team, test_region, "deactivate-retry-debit-key")
+    topup = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="topup",
+        stripe_payment_id="pi_topup_retry_debit",
+        amount_cents=5000,
+        consumed_cents=0,
+        purchased_at=datetime.now(UTC) - timedelta(days=1),
+        expires_at=datetime.now(UTC) + timedelta(days=30),
+        is_active=True,
+    )
+    db.add(topup)
+    # The cycle snapshot of the running period: the counter stood at 4.00 then.
+    db.add(
+        DBTeamSpendPeriod(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            budget_type=test_team.budget_type,
+            period_start=period_start,
+            period_end=period_start + timedelta(days=31),
+            total_spend=4.0,
+            source="moad_subscription_cycle",
+        )
+    )
+    db.commit()
+
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 10.0}})
+    mock_litellm.update_team_budget = AsyncMock(side_effect=Exception("litellm down"))
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    payload = {
+        "transaction_id": "txn_cancel_retry_debit",
+        "team_id": test_team.id,
+        "region_id": test_region.id,
+        "reason": "cancelled",
+    }
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    first = client.post(
+        "/billing/subscription/deactivate", headers=headers, json=payload
+    )
+    assert first.status_code == 502
+    # The 6.00 since the cycle snapshot lands on the subscription credit.
+    db.refresh(sub_entry)
+    assert sub_entry.consumed_cents == 600
+
+    # The team burned 2.00 more between the two attempts.
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 12.0}})
+    mock_litellm.update_team_budget.side_effect = None
+    mock_litellm.update_team_budget.return_value = None
+
+    second = client.post(
+        "/billing/subscription/deactivate", headers=headers, json=payload
+    )
+
+    assert second.status_code == 200
+    db.refresh(topup)
+    # Only the 2.00 burned since the first attempt, not the 6.00 again: the
+    # subscription rows are inactive now, so the debit lands on the top-up.
+    assert topup.consumed_cents == 200
+    # 12.00 live spend plus the 48.00 top-up left after the debit.
+    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 60.0
+    assert mock_litellm.set_key_restrictions.await_args.kwargs["budget_amount"] == 48.0
+    payment = (
+        db.query(DBPeriodicPayment)
+        .filter(DBPeriodicPayment.stripe_payment_id == "txn_cancel_retry_debit")
+        .first()
+    )
+    assert payment.sync_status == "success"
+    db.refresh(sub_entry)
+    assert sub_entry.is_active is False
+    # A third attempt starts from the counter this one recorded.
+    assert (
+        db.query(DBTeamSpendPeriod)
+        .filter(
+            DBTeamSpendPeriod.team_id == test_team.id,
+            DBTeamSpendPeriod.source == "moad_subscription_deactivate_retry",
+        )
+        .first()
+        .total_spend
+        == 12.0
+    )
+
+
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_retry_reads_logs_while_a_litellm_cycle_runs(
+    mock_litellm_class,
+    _mock_capture_spend,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """A retry must not subtract its baseline from a counter LiteLLM can reset.
+
+    The first attempt fails before the team budget write, so the team keeps its
+    LiteLLM cycle. If that cycle resets the counter and the team spends past the
+    recorded baseline again, subtracting the baseline undercounts and leaves the
+    team top-up credit it already used.
+    """
+    sub_entry, period_start = _seed_deactivate_period(
+        db, test_team, test_region, baseline_spend=4.0
+    )
+    _seed_deactivate_key(db, test_team, test_region, "deactivate-retry-cycle-key")
+    topup = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="topup",
+        stripe_payment_id="pi_topup_retry_cycle",
+        amount_cents=5000,
+        consumed_cents=0,
+        purchased_at=datetime.now(UTC) - timedelta(days=1),
+        expires_at=datetime.now(UTC) + timedelta(days=30),
+        is_active=True,
+    )
+    db.add(topup)
+    db.add(
+        DBTeamSpendPeriod(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            budget_type=test_team.budget_type,
+            period_start=period_start,
+            period_end=period_start + timedelta(days=31),
+            total_spend=4.0,
+            source="moad_subscription_cycle",
+        )
+    )
+    db.commit()
+
+    mock_litellm = mock_litellm_class.return_value
+    # First attempt: no cycle on the team yet in this read, counter trusted.
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 10.0}})
+    mock_litellm.update_team_budget = AsyncMock(side_effect=Exception("litellm down"))
+    mock_litellm.set_key_restrictions = AsyncMock()
+    mock_litellm.get_team_spend_in_range = AsyncMock(return_value=12.0)
+
+    payload = {
+        "transaction_id": "txn_cancel_retry_cycle",
+        "team_id": test_team.id,
+        "region_id": test_region.id,
+        "reason": "cancelled",
+    }
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    first = client.post(
+        "/billing/subscription/deactivate", headers=headers, json=payload
+    )
+    assert first.status_code == 502
+    db.refresh(sub_entry)
+    assert sub_entry.consumed_cents == 600
+
+    # The budget write never landed, so the team still carries its cycle. The
+    # counter reset and climbed back to 12.00, above the 10.00 snapshot the
+    # failed attempt recorded. The logs hold the real 12.00 for the window.
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={"team_info": {"spend": 12.0, "budget_duration": "31d"}}
+    )
+    mock_litellm.update_team_budget.side_effect = None
+    mock_litellm.update_team_budget.return_value = None
+
+    second = client.post(
+        "/billing/subscription/deactivate", headers=headers, json=payload
+    )
+
+    assert second.status_code == 200
+    mock_litellm.get_team_spend_in_range.assert_awaited_once()
+    db.refresh(topup)
+    # The logged 12.00, not the 2.00 a baseline subtraction would have found.
+    assert topup.consumed_cents == 1200
+
+
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_debits_only_the_current_period(
+    mock_litellm_class,
+    _mock_capture_spend,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """The period settled at the last cycle must not be debited a second time."""
+    sub_entry, period_start = _seed_deactivate_period(
+        db, test_team, test_region, baseline_spend=4.0
+    )
+    _seed_deactivate_key(db, test_team, test_region, "deactivate-current-period-key")
+    # The cycle that opened the running period snapshotted the counter at 10.00;
+    # everything below that was debited then.
+    db.add(
+        DBTeamSpendPeriod(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            budget_type=test_team.budget_type,
+            period_start=period_start,
+            period_end=period_start + timedelta(days=31),
+            total_spend=10.0,
+            source="moad_subscription_cycle",
+        )
+    )
+    db.commit()
+
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 12.0}})
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    response = client.post(
+        "/billing/subscription/deactivate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_cancel_current_period",
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+            "reason": "cancelled",
+        },
+    )
+
+    assert response.status_code == 200
+    db.refresh(sub_entry)
+    # 12.00 minus the 10.00 of the cycle snapshot, not minus the 4.00 of the
+    # cycle before it.
+    assert sub_entry.consumed_cents == 200
+
+
+@patch("app.core.spend_period_service.LiteLLMService")
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_debits_the_first_period_without_a_cycle_snapshot(
+    mock_litellm_class,
+    mock_snapshot_litellm_class,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """The first period has no cycle snapshot, so the whole spend is new."""
+    period_start = datetime.now(UTC) - timedelta(days=5)
+    sub_entry = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="subscription",
+        source_invoice_id="in_first_period_cancel",
+        amount_cents=10000,
+        consumed_cents=0,
+        purchased_at=period_start,
+        effective_period_start=period_start,
+        effective_period_end=period_start + timedelta(days=31),
+        expires_at=period_start + timedelta(days=31),
+        is_active=True,
+    )
+    db.add(sub_entry)
+    topup = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="topup",
+        stripe_payment_id="pi_topup_first_period",
+        amount_cents=5000,
+        consumed_cents=0,
+        purchased_at=datetime.now(UTC) - timedelta(days=1),
+        expires_at=datetime.now(UTC) + timedelta(days=30),
+        is_active=True,
+    )
+    db.add(topup)
+    db.commit()
+
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 12.0}})
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+    # The real capture runs here and must not become the baseline.
+    mock_snapshot_litellm_class.return_value.get_team_info = AsyncMock(
+        return_value={"team_info": {"spend": 12.0}, "keys": []}
+    )
+
+    response = client.post(
+        "/billing/subscription/deactivate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_cancel_first_period",
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+            "reason": "cancelled",
+        },
+    )
+
+    assert response.status_code == 200
+    db.refresh(sub_entry)
+    db.refresh(topup)
+    # The subscription credit takes the debit first, so the top-up is untouched.
+    assert sub_entry.consumed_cents == 1200
+    assert topup.consumed_cents == 0
+
+
 def test_subscription_deactivate_endpoint_idempotent(
     client, admin_token, db, test_team
 ):
@@ -1787,6 +2522,99 @@ def test_pool_subscription_cycle_endpoint_accepted(
     assert data["team_id"] == pool_team.id
     assert data["budget_dollars"] == 30.0
     mock_apply_cycle.assert_awaited_once()
+
+
+@patch("app.core.team_service.effective_team_group_slugs", return_value=["group-a"])
+@patch("app.core.worker.compute_active_topup_remaining", return_value=0)
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.LiteLLMService")
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+def test_subscription_cycle_endpoint_recreates_missing_team_and_settles_from_spend_logs(
+    _mock_capture,
+    mock_litellm_class,
+    mock_limit_service,
+    _mock_topup,
+    _mock_slugs,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """A team missing in LiteLLM is recreated before the ledger sync reads it,
+    and the period is settled from the spend logs, not the reset counter."""
+    from app.core.periodic_budget_ledger_service import add_subscription_entry
+
+    now = datetime.now(UTC)
+    previous_start = now - timedelta(days=30)
+    db.add(
+        DBTeamSpendPeriod(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            budget_type=test_team.budget_type,
+            period_start=previous_start,
+            period_end=now,
+            total_spend=50.0,
+            source="test",
+        )
+    )
+    add_subscription_entry(
+        db,
+        team_id=test_team.id,
+        region_id=test_region.id,
+        amount_cents=10000,
+        purchased_at=previous_start,
+        period_start=previous_start,
+        period_end=now,
+        source_payment_id=None,
+        source_invoice_id="inv_prev",
+    )
+    db.commit()
+
+    mock_limit_service.return_value.get_token_restrictions.return_value = (
+        31,
+        999.0,
+        1000,
+    )
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        side_effect=[
+            HTTPException(status_code=404, detail="Team not found"),
+            {"team_info": {"spend": 0.0}},
+            {"team_info": {"spend": 0.0}},
+        ]
+    )
+    mock_litellm.get_team_spend_in_range = AsyncMock(return_value=40.0)
+    mock_litellm.create_team = AsyncMock()
+    mock_litellm.create_user = AsyncMock()
+    mock_litellm.add_team_member = AsyncMock()
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    response = client.post(
+        "/billing/subscription/cycle",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_cycle_missing_team",
+            "budget_cents": 10000,
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+        },
+    )
+
+    assert response.status_code == 200
+    assert mock_litellm.create_team.await_count == 1
+    assert mock_litellm.get_team_info.await_count == 3
+    mock_litellm.get_team_spend_in_range.assert_awaited_once()
+    previous_entry = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(DBPeriodicBudgetLedgerEntry.source_invoice_id == "inv_prev")
+        .first()
+    )
+    assert previous_entry.consumed_cents == 4000
 
 
 def test_pool_subscription_cycle_endpoint_returns_404_for_unknown_team(
@@ -2371,13 +3199,16 @@ async def test_apply_billing_cycle_for_team_projects_member_ceiling_from_members
     errors = await _run_member_cycle(db, test_team, test_region)
 
     assert errors == []
-    mock_litellm.update_team_member.assert_awaited_once()
-    kwargs = mock_litellm.update_team_member.await_args.kwargs
-    assert kwargs["user_id"] == str(test_team_user.id)
-    assert kwargs["max_budget_in_team"] == 7.5
-    assert kwargs["clear_budget_duration"] is True
-    assert "budget_duration" not in kwargs
-    assert "spend" not in kwargs
+    # The team read repairs the missing ceiling and the cycle pushes it again
+    # with the same numbers, so the ceiling matters here, not the call count.
+    assert mock_litellm.update_team_member.await_count >= 1
+    for call in mock_litellm.update_team_member.await_args_list:
+        kwargs = call.kwargs
+        assert kwargs["user_id"] == str(test_team_user.id)
+        assert kwargs["max_budget_in_team"] == 7.5
+        assert kwargs["clear_budget_duration"] is True
+        assert "budget_duration" not in kwargs
+        assert "spend" not in kwargs
 
 
 @pytest.mark.asyncio
@@ -2437,11 +3268,12 @@ async def test_apply_billing_cycle_for_team_caps_member_missing_from_litellm_mem
         errors = await _run_member_cycle(db, test_team, test_region)
 
     assert errors == []
-    mock_litellm.update_team_member.assert_awaited_once()
-    kwargs = mock_litellm.update_team_member.await_args.kwargs
-    assert kwargs["user_id"] == str(test_team_user.id)
-    assert kwargs["max_budget_in_team"] == 5.0
-    assert kwargs["clear_budget_duration"] is True
+    assert mock_litellm.update_team_member.await_count >= 1
+    for call in mock_litellm.update_team_member.await_args_list:
+        kwargs = call.kwargs
+        assert kwargs["user_id"] == str(test_team_user.id)
+        assert kwargs["max_budget_in_team"] == 5.0
+        assert kwargs["clear_budget_duration"] is True
     assert "membership row missing" in caplog.text
 
 
@@ -2534,9 +3366,7 @@ async def test_apply_billing_cycle_for_team_reanchors_member_caps_after_recreate
             HTTPException(status_code=404, detail="Team not found"),
             {
                 "team_info": {"spend": 0.0},
-                "team_memberships": [
-                    {"user_id": str(test_team_user.id), "spend": 0.0}
-                ],
+                "team_memberships": [{"user_id": str(test_team_user.id), "spend": 0.0}],
             },
         ]
     )
@@ -2545,10 +3375,145 @@ async def test_apply_billing_cycle_for_team_reanchors_member_caps_after_recreate
 
     assert errors == []
     assert mock_litellm.get_team_info.await_count == 2
-    mock_litellm.update_team_member.assert_awaited_once()
-    kwargs = mock_litellm.update_team_member.await_args.kwargs
+    # The recreate pushes the cap and the cycle pushes it again with the same
+    # numbers, so the ceiling matters here, not the number of calls.
+    assert mock_litellm.update_team_member.await_count >= 1
+    for call in mock_litellm.update_team_member.await_args_list:
+        assert call.kwargs["user_id"] == str(test_team_user.id)
+        assert call.kwargs["max_budget_in_team"] == 5.0
+
+
+def _seed_two_capped_members(db, team, region, test_team_user):
+    """Two capped members; only the second one still carries a ceiling."""
+    other = DBUser(
+        email=f"capped_other_{team.id}@example.com",
+        hashed_password="x",
+        is_active=True,
+        role="key_creator",
+        team_id=team.id,
+    )
+    db.add(other)
+    db.commit()
+    db.refresh(other)
+    for user in (test_team_user, other):
+        db.add(
+            DBSpendCap(
+                scope="team_member",
+                region_id=region.id,
+                team_id=team.id,
+                user_id=user.id,
+                max_budget=5.0,
+            )
+        )
+    db.commit()
+    team_info = {
+        "team_info": {"spend": 0.0},
+        "team_memberships": [
+            {"user_id": str(test_team_user.id), "spend": 2.0},
+            {
+                "user_id": str(other.id),
+                "spend": 1.0,
+                "litellm_budget_table": {"max_budget": 6.0},
+            },
+        ],
+    }
+    return other, team_info
+
+
+@pytest.mark.asyncio
+async def test_get_team_info_or_recreate_restores_a_missing_member_ceiling(
+    db, test_team, test_team_user, test_region
+):
+    """A member left without a ceiling is repaired; one that has it is left alone."""
+    from app.core.team_service import get_team_info_or_recreate
+
+    _other, team_info = _seed_two_capped_members(
+        db, test_team, test_region, test_team_user
+    )
+
+    service = AsyncMock()
+    service.get_team_info = AsyncMock(return_value=team_info)
+    service.update_team_member = AsyncMock()
+
+    result = await get_team_info_or_recreate(db, test_team, test_region, service)
+
+    assert result is team_info
+    service.update_team_member.assert_awaited_once()
+    kwargs = service.update_team_member.await_args.kwargs
     assert kwargs["user_id"] == str(test_team_user.id)
-    assert kwargs["max_budget_in_team"] == 5.0
+    assert kwargs["max_budget_in_team"] == 7.0
+
+
+@pytest.mark.asyncio
+async def test_get_team_info_or_recreate_raises_when_a_missing_ceiling_cannot_be_pushed(
+    db, test_team, test_team_user, test_region
+):
+    """The repair of an existing team fails the caller too."""
+    from app.core.team_service import get_team_info_or_recreate
+
+    _other, team_info = _seed_two_capped_members(
+        db, test_team, test_region, test_team_user
+    )
+
+    service = AsyncMock()
+    service.get_team_info = AsyncMock(return_value=team_info)
+    service.update_team_member = AsyncMock(side_effect=Exception("member push failed"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_team_info_or_recreate(db, test_team, test_region, service)
+
+    assert exc_info.value.status_code == 502
+    assert "member push failed" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+@patch("app.core.team_service.effective_team_group_slugs", return_value=["group-a"])
+async def test_get_team_info_or_recreate_raises_when_member_caps_cannot_be_restored(
+    _mock_slugs,
+    db,
+    test_team,
+    test_team_user,
+    test_region,
+):
+    """A recreated team without its caps must fail the caller, not pass."""
+    from app.core.team_service import get_team_info_or_recreate
+
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=test_team_user.id,
+            max_budget=5.0,
+        )
+    )
+    db.commit()
+
+    service = AsyncMock()
+    service.get_team_info = AsyncMock(
+        side_effect=[
+            HTTPException(status_code=404, detail="Team not found"),
+            {
+                "team_info": {"spend": 0.0},
+                "team_memberships": [],
+            },
+        ]
+    )
+    service.create_team = AsyncMock()
+    service.create_user = AsyncMock()
+    service.add_team_member = AsyncMock()
+    service.update_team_member = AsyncMock(side_effect=Exception("member push failed"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_team_info_or_recreate(db, test_team, test_region, service)
+
+    assert exc_info.value.status_code == 502
+    assert LiteLLMService.format_team_id(test_region.name, test_team.id) in (
+        exc_info.value.detail
+    )
+    assert "member push failed" in exc_info.value.detail
+    service.create_team.assert_awaited_once()
+    service.update_team_member.assert_awaited_once()
 
 
 @pytest.mark.asyncio
