@@ -1792,3 +1792,49 @@ def test_update_team_member_without_duration_skips_budget_update(
     mock_client.post.assert_awaited_once()
     assert mock_client.post.await_args.kwargs["json"]["max_budget_in_team"] == 5.0
     mock_client.get.assert_not_awaited()
+
+
+@patch("httpx.AsyncClient")
+def test_update_team_member_treats_user_not_in_team_as_noop(
+    mock_client_class, test_region, caplog
+):
+    """LiteLLM 400 "User not found in team" must not fail the caller."""
+    request = httpx.Request(
+        "POST", f"{test_region.litellm_api_url}/team/member_update"
+    )
+    response = httpx.Response(
+        status_code=400, request=request, json={"error": "User not found in team"}
+    )
+    post_response = Mock()
+    post_response.status_code = 400
+    post_response.raise_for_status.side_effect = HTTPStatusError(
+        "Bad Request", request=request, response=response
+    )
+    get_response = Mock()
+    get_response.status_code = 200
+    get_response.json.return_value = {"teams": []}
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = post_response
+    mock_client.get.return_value = get_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    with caplog.at_level("WARNING"):
+        asyncio.run(
+            service.update_team_member(
+                team_id="team-1",
+                user_id="7",
+                role="user",
+                max_budget_in_team=5.0,
+                clear_budget_duration=True,
+            )
+        )
+
+    assert mock_client.post.await_count == 1
+    assert "No membership budget_id found" in caplog.text
