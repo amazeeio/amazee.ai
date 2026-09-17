@@ -13,12 +13,14 @@ from app.db.models import (
     DBAuditLog,
     DBPrivateAIKey,
     DBRegion,
+    DBSpendCap,
     DBTeam,
     DBTeamRegion,
     DBUser,
 )
 from app.services.access_groups import effective_team_group_slugs
 from app.services.litellm import LiteLLMService
+from fastapi import HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
@@ -256,6 +258,67 @@ async def reprovision_litellm_team(
         )
 
 
+async def get_team_info_or_recreate(
+    db: Session,
+    team: DBTeam,
+    region: DBRegion,
+    litellm_service: LiteLLMService,
+) -> dict:
+    """Read the LiteLLM team info, recreating the team when it is gone.
+
+    Used by the billing cycle, the ledger sync and the top-up purchase, which
+    all write a budget right after the read and would fail on a missing team.
+    """
+    lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+    try:
+        return await litellm_service.get_team_info(lite_team_id)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        logger.info(
+            "LiteLLM team %s missing in region %s, recreating it",
+            lite_team_id,
+            region.name,
+        )
+        # The team took its users and memberships with it, so rebuild them
+        # too; a bare team would accept no key.
+        await reprovision_litellm_team(
+            db,
+            team,
+            region,
+            litellm_service,
+            db.query(DBUser).filter(DBUser.team_id == team.id).all(),
+        )
+        # The rebuilt memberships carry no member budget, so the caps go back
+        # on here; not every caller re-anchors them afterwards.
+        team_info = await litellm_service.get_team_info(lite_team_id)
+        if (
+            db.query(DBSpendCap.id)
+            .filter(
+                DBSpendCap.scope == "team_member",
+                DBSpendCap.team_id == team.id,
+                DBSpendCap.region_id == region.id,
+                DBSpendCap.max_budget.isnot(None),
+            )
+            .first()
+        ):
+            # Local import: worker imports this module at module level.
+            from app.core.worker import reanchor_member_caps
+
+            cap_errors = await reanchor_member_caps(
+                db, litellm_service, region, team.id, lite_team_id, team_info
+            )
+            if cap_errors:
+                logger.error(
+                    "Failed to re-anchor member caps in region %s after "
+                    "recreating team %s: %s",
+                    region.name,
+                    team.id,
+                    "; ".join(cap_errors),
+                )
+        return team_info
+
+
 async def restore_soft_deleted_team(db: Session, team: DBTeam) -> dict:
     """
     Restore a soft-deleted team with full cascade behavior.
@@ -302,6 +365,31 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> dict:
                 api_url=region.litellm_api_url, api_key=region.litellm_api_key
             )
             await reprovision_litellm_team(db, team, region, litellm_service, team_users)
+            if (
+                db.query(DBSpendCap.id)
+                .filter(
+                    DBSpendCap.scope == "team_member",
+                    DBSpendCap.team_id == team.id,
+                    DBSpendCap.region_id == region.id,
+                    DBSpendCap.max_budget.isnot(None),
+                )
+                .first()
+            ):
+                # Local import: worker imports this module at module level.
+                from app.core.worker import reanchor_member_caps
+
+                lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+                team_info = await litellm_service.get_team_info(lite_team_id)
+                cap_errors = await reanchor_member_caps(
+                    db, litellm_service, region, team.id, lite_team_id, team_info
+                )
+                if cap_errors:
+                    logger.error(
+                        "Failed to re-anchor member caps in region %s: %s",
+                        region.name,
+                        "; ".join(cap_errors),
+                    )
+                    failed_regions.append(region.name)
         except Exception as region_error:
             logger.error(
                 f"Failed to re-provision LiteLLM team/users in region {region.name}: {str(region_error)}"

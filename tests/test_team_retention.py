@@ -10,6 +10,7 @@ from app.db.models import (
     DBUser,
     DBPrivateAIKey,
     DBRegion,
+    DBSpendCap,
 )
 from app.schemas.models import BudgetType
 from app.core.worker import (
@@ -1244,6 +1245,56 @@ async def test_restore_reprovisions_litellm_team_and_users(
     # Each user must be (re-)created and added as a member
     assert mock_service.create_user.call_count == 2
     assert mock_service.add_team_member.call_count == 2
+    # No member cap, so no membership read is needed.
+    mock_service.get_team_info.assert_not_called()
+
+
+@patch("app.core.team_service.LiteLLMService")
+@pytest.mark.asyncio
+async def test_restore_reanchors_member_caps_after_reprovision(
+    mock_litellm_class, db: Session, test_team, test_region
+):
+    """A re-provisioned membership carries no budget, so the cap is pushed again."""
+    user = DBUser(email="capped@example.com", team_id=test_team.id, is_active=False)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=user.id,
+            max_budget=5.0,
+        )
+    )
+    existing = (
+        db.query(DBTeamRegion)
+        .filter(
+            DBTeamRegion.team_id == test_team.id,
+            DBTeamRegion.region_id == test_region.id,
+        )
+        .first()
+    )
+    if not existing:
+        db.add(DBTeamRegion(team_id=test_team.id, region_id=test_region.id))
+    test_team.deleted_at = datetime.now(UTC)
+    db.commit()
+
+    mock_service = AsyncMock()
+    mock_service.get_team_info.return_value = {
+        "team_info": {},
+        "team_memberships": [{"user_id": str(user.id), "spend": 2.0}],
+    }
+    mock_litellm_class.return_value = mock_service
+
+    result = await restore_soft_deleted_team(db, test_team)
+
+    assert result["litellm_warnings"] == []
+    mock_service.update_team_member.assert_awaited_once()
+    kwargs = mock_service.update_team_member.await_args.kwargs
+    assert kwargs["max_budget_in_team"] == 7.0
+    assert kwargs["clear_budget_duration"] is True
 
 
 @patch("app.core.team_service.LiteLLMService")

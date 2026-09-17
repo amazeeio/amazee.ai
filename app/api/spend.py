@@ -27,7 +27,6 @@ from app.core.security import (
 )
 from app.core.spend_period_service import (
     compute_period_start,
-    current_cycle_start,
     resolve_team_period_window,
 )
 from app.db.database import get_db
@@ -1533,10 +1532,6 @@ async def get_key_spend_alias(
             budget_reset_at, info.get("budget_duration")
         )
 
-        # For POOL teams, keys expose team/cycle aligned window semantics:
-        # - active subscription => 31d cycle window
-        # - no active subscription => uncapped key follows team 365d window,
-        #   capped key follows 31d window anchored to deactivation or team creation.
         team_for_key = (
             db.query(DBTeam)
             .filter(DBTeam.id == key.team_id, DBTeam.deleted_at.is_(None))
@@ -1544,75 +1539,12 @@ async def get_key_spend_alias(
             if key.team_id is not None
             else None
         )
-        if team_for_key is not None and team_for_key.budget_type == BudgetType.POOL:
-            now = datetime.now(UTC)
-            active_subscription = (
-                db.query(DBPeriodicBudgetLedgerEntry)
-                .filter(
-                    DBPeriodicBudgetLedgerEntry.team_id == team_for_key.id,
-                    DBPeriodicBudgetLedgerEntry.region_id == region_id,
-                    DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
-                    DBPeriodicBudgetLedgerEntry.is_active.is_(True),
-                    DBPeriodicBudgetLedgerEntry.effective_period_start.isnot(None),
-                    DBPeriodicBudgetLedgerEntry.effective_period_end.isnot(None),
-                    DBPeriodicBudgetLedgerEntry.effective_period_end > now,
-                )
-                .order_by(
-                    DBPeriodicBudgetLedgerEntry.effective_period_end.desc(),
-                    DBPeriodicBudgetLedgerEntry.id.desc(),
-                )
-                .first()
-            )
-            if active_subscription is not None:
-                info["budget_duration"] = "31d"
-                budget_reset_at = active_subscription.effective_period_end
-                period_start = active_subscription.effective_period_start
-            elif budget_reset_at is not None:
-                # LiteLLM already has a real, live reset schedule on this key
-                # (budget_reset_at/period_start/budget_duration all set above
-                # from `info`) - trust it completely instead of the
-                # anchor-based estimate below, which drifts into the past
-                # once more than one cycle has elapsed since the anchor.
-                # Relabelling budget_duration to a fixed "31d" here would
-                # make period_start describe a different window than the one
-                # LiteLLM actually enforces whenever the real duration isn't
-                # already 31d.
-                pass
-            else:
-                if configured_key_cap is None:
-                    duration_days = settings.POOL_PURCHASE_EXPIRY_DAYS
-                    info["budget_duration"] = f"{duration_days}d"
-                    anchor = team_for_key.created_at or now
-                else:
-                    duration_days = 31
-                    info["budget_duration"] = "31d"
-                    last_deactivation = (
-                        db.query(DBPeriodicPayment.payment_date)
-                        .filter(
-                            DBPeriodicPayment.team_id == team_for_key.id,
-                            DBPeriodicPayment.payment_type == "deactivation",
-                            DBPeriodicPayment.status == "completed",
-                        )
-                        .order_by(DBPeriodicPayment.payment_date.desc())
-                        .first()
-                    )
-                    anchor = (
-                        (last_deactivation[0] if last_deactivation else None)
-                        or team_for_key.created_at
-                        or now
-                    )
-                if anchor.tzinfo is None:
-                    anchor = anchor.replace(tzinfo=UTC)
-                # Roll the anchor forward to the cycle containing now, instead
-                # of a single anchor + duration_days window: once more than one
-                # cycle has elapsed since the anchor, a fixed single window
-                # lands in the past and makes a live cap look expired.
-                period_start = (
-                    current_cycle_start(f"{duration_days}d", anchor, now) or anchor
-                )
-                budget_reset_at = period_start + timedelta(days=duration_days)
-        elif (
+        is_pool = (
+            team_for_key is not None and team_for_key.budget_type == BudgetType.POOL
+        )
+        if (
             team_for_key is not None
+            and not is_pool
             and period_start is None
             and configured_key_cap is None
         ):
@@ -1625,7 +1557,7 @@ async def get_key_spend_alias(
                 info["budget_duration"] = team_window.budget_duration
                 budget_reset_at = team_window.period_end
                 period_start = team_window.period_start
-        return PrivateAIKeySpend.model_validate(
+        result = PrivateAIKeySpend.model_validate(
             {
                 "spend": info.get("spend", 0.0),
                 **info,
@@ -1633,6 +1565,16 @@ async def get_key_spend_alias(
                 "period_start": period_start,
             }
         )
+        if is_pool:
+            # Same window the team and user endpoints report for this key.
+            _apply_pool_key_windows(
+                db,
+                team_for_key,
+                region_id,
+                [result],
+                resolve_team_period_window(db, team_for_key, region_id),
+            )
+        return result
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

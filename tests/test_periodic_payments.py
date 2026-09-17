@@ -563,9 +563,78 @@ async def test_apply_billing_cycle_for_team_rebuilds_a_lost_key_on_a_live_team(
     assert errors == []
     assert mock_litellm.create_key.await_args.kwargs["key"] == "lost-token"
     assert mock_litellm.create_key.await_args.kwargs["allowed_routes"] is None
+    assert mock_litellm.create_key.await_args.kwargs["blocked"] is True
     assert mock_litellm.set_key_restrictions.await_count == 2
     db.refresh(payment)
     assert payment.sync_status == "success"
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.compute_active_topup_remaining", return_value=0)
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.worker.LimitService")
+async def test_apply_billing_cycle_for_team_leaves_a_rebuilt_key_blocked_when_limits_fail(
+    mock_limit_service,
+    mock_litellm_class,
+    _mock_topup,
+    db,
+    test_team,
+    test_region,
+):
+    """A rebuilt key stays blocked when the limit write that follows fails."""
+    db.add(
+        DBPrivateAIKey(
+            name="lost-key",
+            litellm_token="lost-token",
+            region_id=test_region.id,
+            team_id=test_team.id,
+        )
+    )
+    payment = DBPeriodicPayment(
+        team_id=test_team.id,
+        stripe_payment_id="pay_sync_key_limits_failed",
+        amount_cents=10000,
+        currency="usd",
+        payment_type="subscription",
+        status="completed",
+        sync_status="pending",
+        payment_date=datetime.now(UTC),
+    )
+    db.add(payment)
+    db.commit()
+
+    mock_limit_service.return_value.get_token_restrictions.return_value = (
+        31,
+        999.0,
+        1000,
+    )
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 0.0}})
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.create_key = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock(
+        side_effect=[
+            HTTPException(status_code=404, detail="Key not found"),
+            Exception("limits failed"),
+        ]
+    )
+
+    errors = await apply_billing_cycle_for_team(
+        db=db,
+        team_id=test_team.id,
+        budget_cents=10000,
+        region_id=test_region.id,
+        period_start=datetime.now(UTC),
+        period_end=datetime.now(UTC) + timedelta(days=31),
+        source_payment_id=payment.id,
+    )
+
+    assert len(errors) == 1
+    assert mock_litellm.create_key.await_args.kwargs["blocked"] is True
+    # The unblocking call is the one that raised, so nothing lifted the block.
+    assert mock_litellm.set_key_restrictions.await_count == 2
+    db.refresh(payment)
+    assert payment.sync_status == "sync_failed"
 
 
 @pytest.mark.asyncio
@@ -1261,7 +1330,11 @@ def test_subscription_deactivate_fails_when_spend_read_fails(
     test_team,
     test_region,
 ):
-    """With top-up left and no readable spend, deactivate must write nothing."""
+    """With an unreadable team spend, deactivate must write nothing.
+
+    The read sits inside the settlement, so the period is never debited and
+    the request ends there.
+    """
     period_start = datetime.now(UTC) - timedelta(days=5)
     period_end = datetime.now(UTC) + timedelta(days=26)
     sub_entry = DBPeriodicBudgetLedgerEntry(
@@ -1333,7 +1406,7 @@ def test_subscription_deactivate_fails_when_spend_read_fails(
         db.query(DBAuditLog)
         .filter(
             DBAuditLog.event_type == "subscription.deactivate",
-            DBAuditLog.details["outcome"].as_string() == "spend_read_failed",
+            DBAuditLog.details["outcome"].as_string() == "settlement_failed",
         )
         .count()
         == 1
@@ -1382,6 +1455,7 @@ def test_subscription_deactivate_captures_snapshot_before_reset(
 
     mock_record_payment.return_value = 777
     mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 0.0}})
     mock_litellm.update_team_budget = AsyncMock()
     mock_litellm.set_key_restrictions = AsyncMock()
 
@@ -1698,6 +1772,113 @@ def test_subscription_deactivate_uses_spend_logs_when_litellm_still_has_a_cycle(
     assert mock_litellm.get_team_spend_in_range.await_args.args[1] == period_start
 
 
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+@patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_fails_when_settlement_fails(
+    mock_litellm_class,
+    mock_record_payment,
+    _mock_capture_spend,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """A failed settlement must stop the deactivation, not cancel silently."""
+    sub_entry, _period_start = _seed_deactivate_period(
+        db, test_team, test_region, baseline_spend=50.0
+    )
+    mock_record_payment.return_value = 993
+
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={"team_info": {"spend": 2.0, "max_budget": 100.0}}
+    )
+    mock_litellm.get_team_spend_in_range = AsyncMock(side_effect=Exception("logs down"))
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    response = client.post(
+        "/billing/subscription/deactivate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_cancel_settle_fail",
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+            "reason": "cancelled",
+        },
+    )
+
+    assert response.status_code == 502
+    db.refresh(sub_entry)
+    assert sub_entry.is_active is True
+    assert sub_entry.consumed_cents == 0
+    mock_litellm.update_team_budget.assert_not_awaited()
+    mock_litellm.set_key_restrictions.assert_not_awaited()
+    audit = (
+        db.query(DBAuditLog)
+        .filter(DBAuditLog.event_type == "subscription.deactivate")
+        .order_by(DBAuditLog.id.desc())
+        .first()
+    )
+    assert audit is not None
+    assert audit.details["outcome"] == "settlement_failed"
+
+
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_retry_with_same_transaction_is_idempotent(
+    mock_litellm_class,
+    _mock_capture_spend,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """The payment row is stamped, so a Stripe retry short-circuits."""
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 0.0}})
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    payload = {
+        "transaction_id": "txn_cancel_retry",
+        "team_id": test_team.id,
+        "region_id": test_region.id,
+        "reason": "cancelled",
+    }
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    first = client.post(
+        "/billing/subscription/deactivate", headers=headers, json=payload
+    )
+    assert first.status_code == 200
+    payment = (
+        db.query(DBPeriodicPayment)
+        .filter(DBPeriodicPayment.stripe_payment_id == "txn_cancel_retry")
+        .first()
+    )
+    assert payment.sync_status == "success"
+    team_info_calls = mock_litellm.get_team_info.await_count
+
+    second = client.post(
+        "/billing/subscription/deactivate", headers=headers, json=payload
+    )
+    assert second.status_code == 200
+    assert second.json()["idempotent"] is True
+    assert second.json()["payment_id"] == first.json()["payment_id"]
+    assert mock_litellm.update_team_budget.await_count == 1
+    assert mock_litellm.get_team_info.await_count == team_info_calls
+
+
 def test_subscription_deactivate_endpoint_idempotent(
     client, admin_token, db, test_team
 ):
@@ -1787,6 +1968,99 @@ def test_pool_subscription_cycle_endpoint_accepted(
     assert data["team_id"] == pool_team.id
     assert data["budget_dollars"] == 30.0
     mock_apply_cycle.assert_awaited_once()
+
+
+@patch("app.core.team_service.effective_team_group_slugs", return_value=["group-a"])
+@patch("app.core.worker.compute_active_topup_remaining", return_value=0)
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.LiteLLMService")
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+def test_subscription_cycle_endpoint_recreates_missing_team_and_settles_from_spend_logs(
+    _mock_capture,
+    mock_litellm_class,
+    mock_limit_service,
+    _mock_topup,
+    _mock_slugs,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """A team missing in LiteLLM is recreated before the ledger sync reads it,
+    and the period is settled from the spend logs, not the reset counter."""
+    from app.core.periodic_budget_ledger_service import add_subscription_entry
+
+    now = datetime.now(UTC)
+    previous_start = now - timedelta(days=30)
+    db.add(
+        DBTeamSpendPeriod(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            budget_type=test_team.budget_type,
+            period_start=previous_start,
+            period_end=now,
+            total_spend=50.0,
+            source="test",
+        )
+    )
+    add_subscription_entry(
+        db,
+        team_id=test_team.id,
+        region_id=test_region.id,
+        amount_cents=10000,
+        purchased_at=previous_start,
+        period_start=previous_start,
+        period_end=now,
+        source_payment_id=None,
+        source_invoice_id="inv_prev",
+    )
+    db.commit()
+
+    mock_limit_service.return_value.get_token_restrictions.return_value = (
+        31,
+        999.0,
+        1000,
+    )
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        side_effect=[
+            HTTPException(status_code=404, detail="Team not found"),
+            {"team_info": {"spend": 0.0}},
+            {"team_info": {"spend": 0.0}},
+        ]
+    )
+    mock_litellm.get_team_spend_in_range = AsyncMock(return_value=40.0)
+    mock_litellm.create_team = AsyncMock()
+    mock_litellm.create_user = AsyncMock()
+    mock_litellm.add_team_member = AsyncMock()
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    response = client.post(
+        "/billing/subscription/cycle",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_cycle_missing_team",
+            "budget_cents": 10000,
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+        },
+    )
+
+    assert response.status_code == 200
+    assert mock_litellm.create_team.await_count == 1
+    assert mock_litellm.get_team_info.await_count == 3
+    mock_litellm.get_team_spend_in_range.assert_awaited_once()
+    previous_entry = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(DBPeriodicBudgetLedgerEntry.source_invoice_id == "inv_prev")
+        .first()
+    )
+    assert previous_entry.consumed_cents == 4000
 
 
 def test_pool_subscription_cycle_endpoint_returns_404_for_unknown_team(
@@ -2545,10 +2819,12 @@ async def test_apply_billing_cycle_for_team_reanchors_member_caps_after_recreate
 
     assert errors == []
     assert mock_litellm.get_team_info.await_count == 2
-    mock_litellm.update_team_member.assert_awaited_once()
-    kwargs = mock_litellm.update_team_member.await_args.kwargs
-    assert kwargs["user_id"] == str(test_team_user.id)
-    assert kwargs["max_budget_in_team"] == 5.0
+    # The recreate pushes the cap and the cycle pushes it again with the same
+    # numbers, so the ceiling matters here, not the number of calls.
+    assert mock_litellm.update_team_member.await_count >= 1
+    for call in mock_litellm.update_team_member.await_args_list:
+        assert call.kwargs["user_id"] == str(test_team_user.id)
+        assert call.kwargs["max_budget_in_team"] == 5.0
 
 
 @pytest.mark.asyncio

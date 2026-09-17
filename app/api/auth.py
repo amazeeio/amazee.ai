@@ -25,6 +25,7 @@ from sqlalchemy import func
 from urllib.parse import urlparse
 from jose import JWTError, jwt
 
+from app.core.audit import key_delete_audit_log
 from app.core.config import settings
 from app.core.dependencies import get_limit_service
 from app.core.roles import UserRole
@@ -1094,9 +1095,11 @@ async def generate_trial_access(
         # The user row only consumes trial capacity, which is a counter we can
         # raise; a stranded key stays live until its natural expiry and is not
         # recoverable by any automated means.
+        litellm_key_deleted = False
         try:
             if private_ai_key and private_ai_key.litellm_token:
                 await litellm_service.delete_key(private_ai_key.litellm_token)
+                litellm_key_deleted = True
         except Exception as cleanup_error:
             # Log the alias, never the token: this line goes to shared logs.
             # The alias is what identifies the key in LiteLLM's own admin UI.
@@ -1111,6 +1114,17 @@ async def generate_trial_access(
                 # user; left behind, it would pin a future user with the same
                 # id to the trial budget cap.
                 limit_service.delete_limits(OwnerType.USER, user.id, commit=False)
+                if litellm_key_deleted:
+                    # The audit row commits with the user delete below.
+                    db.add(
+                        key_delete_audit_log(
+                            key_id=private_ai_key.id,
+                            team_id=team.id if team else None,
+                            region_id=region.id,
+                            key_name=private_ai_key.name,
+                            source="trial_signup_cleanup",
+                        )
+                    )
                 db.delete(user)
                 db.commit()
         except Exception as cleanup_error:

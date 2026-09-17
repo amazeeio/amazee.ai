@@ -12,6 +12,7 @@ from app.db.models import DBTeamRegion
 from app.schemas.limits import LimitSource, LimitType, OwnerType, ResourceType, UnitType
 from datetime import datetime, UTC, timedelta
 import pytest
+from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from unittest.mock import patch, AsyncMock
 from app.api.budgets import (
@@ -855,6 +856,106 @@ def test_pool_purchase_restores_team_budget_when_key_sync_fails(
     assert purchase is not None
 
 
+@patch("app.core.team_service.effective_team_group_slugs", return_value=["group-a"])
+def test_pool_purchase_recreates_a_team_missing_in_litellm(
+    _mock_slugs, client, admin_token, db, test_team, test_region
+):
+    """A team LiteLLM lost must be rebuilt, not turned into a failed purchase."""
+    test_team.budget_type = "pool"
+    db.commit()
+    payment_id = f"pi_missing_team_{int(time.time() * 1000000)}"
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            side_effect=[
+                HTTPException(status_code=404, detail="Team not found"),
+                {"team_info": {"max_budget": 0.0, "spend": 0.0}},
+            ]
+        )
+        mock_instance.create_team = AsyncMock()
+        mock_instance.create_user = AsyncMock()
+        mock_instance.add_team_member = AsyncMock()
+        mock_instance.update_team_budget = AsyncMock()
+
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00Z",
+                "stripe_payment_id": payment_id,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 201
+    assert mock_instance.create_team.await_count == 1
+    assert mock_instance.get_team_info.await_count == 2
+    mock_instance.update_team_budget.assert_awaited_once()
+    payment = (
+        db.query(DBPeriodicPayment)
+        .filter(DBPeriodicPayment.stripe_payment_id == payment_id)
+        .first()
+    )
+    assert payment.sync_status == "success"
+
+
+@patch("app.core.team_service.effective_team_group_slugs", return_value=["group-a"])
+def test_pool_purchase_reanchors_member_caps_after_a_team_recreate(
+    _mock_slugs, client, admin_token, db, test_team, test_region, test_team_user
+):
+    """A rebuilt membership carries no member budget, so the cap goes back on."""
+    test_team.budget_type = "pool"
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=test_team_user.id,
+            max_budget=5.0,
+        )
+    )
+    db.commit()
+    payment_id = f"pi_missing_team_caps_{int(time.time() * 1000000)}"
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            side_effect=[
+                HTTPException(status_code=404, detail="Team not found"),
+                {
+                    "team_info": {"max_budget": 0.0, "spend": 0.0},
+                    "team_memberships": [
+                        {"user_id": str(test_team_user.id), "spend": 2.0}
+                    ],
+                },
+            ]
+        )
+        mock_instance.create_team = AsyncMock()
+        mock_instance.create_user = AsyncMock()
+        mock_instance.add_team_member = AsyncMock()
+        mock_instance.update_team_member = AsyncMock()
+        mock_instance.update_team_budget = AsyncMock()
+
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00Z",
+                "stripe_payment_id": payment_id,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 201
+    mock_instance.update_team_member.assert_awaited_once()
+    kwargs = mock_instance.update_team_member.await_args.kwargs
+    assert kwargs["user_id"] == str(test_team_user.id)
+    assert kwargs["max_budget_in_team"] == 7.0
+
+
 def test_pool_purchase_rolls_back_team_budget_when_key_sync_fails(
     client, admin_token, db, test_team, test_region
 ):
@@ -1493,20 +1594,31 @@ async def test_sync_pool_keys_resets_spend_on_purchase(db, test_team, test_regio
         )
 
     assert errors == []
-    by_token = {
-        call.kwargs["litellm_token"]: call.kwargs
+    budget_calls = [
+        call
         for call in mock_instance.update_key_budget.await_args_list
-    }
+        if call.kwargs["spend"] is None
+    ]
+    reset_calls = [
+        call
+        for call in mock_instance.update_key_budget.await_args_list
+        if call.kwargs["spend"] == 0.0
+    ]
+    by_token = {call.kwargs["litellm_token"]: call.kwargs for call in budget_calls}
     assert len(by_token) == 2
     capped_kwargs = by_token[capped.litellm_token]
     assert capped_kwargs["max_budget"] == 25.0
     assert capped_kwargs.get("budget_duration") is None
     assert capped_kwargs["clear_budget_duration"] is True
-    assert capped_kwargs["spend"] == 0.0
     uncapped_kwargs = by_token[uncapped.litellm_token]
     assert uncapped_kwargs["clear_max_budget"] is True
     assert uncapped_kwargs["clear_budget_duration"] is True
-    assert uncapped_kwargs["spend"] == 0.0
+    # The spend reset is a second pass, once per key and nothing else.
+    assert sorted(call.kwargs["litellm_token"] for call in reset_calls) == sorted(
+        [capped.litellm_token, uncapped.litellm_token]
+    )
+    for call in reset_calls:
+        assert set(call.kwargs) == {"litellm_token", "spend"}
 
     duration_tokens = {
         call.kwargs["litellm_token"]: call.kwargs["duration"]
@@ -1517,6 +1629,31 @@ async def test_sync_pool_keys_resets_spend_on_purchase(db, test_team, test_regio
         capped.litellm_token: expected,
         uncapped.litellm_token: expected,
     }
+
+
+@pytest.mark.asyncio
+async def test_sync_pool_keys_skips_spend_reset_when_a_budget_write_fails(
+    db, test_team, test_region
+):
+    """A failed budget write must leave every key counter untouched."""
+    capped, _uncapped = _seed_pool_keys_for_sync(db, test_team, test_region)
+
+    async def _budget(**kwargs):
+        if kwargs["litellm_token"] == capped.litellm_token:
+            raise RuntimeError("litellm down")
+        return None
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.update_key_budget = AsyncMock(side_effect=_budget)
+        mock_instance.update_key_duration = AsyncMock()
+        errors = await _sync_pool_key_effective_budgets(
+            db, team_id=test_team.id, region=test_region, purchased_total=50.0
+        )
+
+    assert len(errors) == 1
+    for call in mock_instance.update_key_budget.await_args_list:
+        assert call.kwargs.get("spend") != 0.0
 
 
 @pytest.mark.asyncio
