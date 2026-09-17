@@ -48,7 +48,8 @@ def _caps(db, test_team):
 
 def _mock_service(mock_litellm, test_team_user):
     mock_instance = mock_litellm.return_value
-    # The second seeded member has no LiteLLM membership on purpose.
+    # The second seeded member has no LiteLLM membership row on purpose: it is
+    # pushed with spend 0.0.
     mock_instance.get_team_info = AsyncMock(
         return_value={
             "team_info": {"spend": 0.0},
@@ -85,7 +86,7 @@ def test_clear_member_budget_durations_dry_run_writes_nothing(
 def test_clear_member_budget_durations_applies_and_is_idempotent(
     db, test_team, test_team_user, test_region, monkeypatch
 ):
-    _seed(db, test_team, test_team_user, test_region)
+    other = _seed(db, test_team, test_team_user, test_region)
     # A member whose row was already cleared: the script must leave it alone.
     done = DBUser(
         email="member-already-cleared@example.com",
@@ -128,13 +129,18 @@ def test_clear_member_budget_durations_applies_and_is_idempotent(
 
         assert asyncio.run(run(apply=True)) == 0
 
-        mock_instance.update_team_member.assert_awaited_once()
-        kwargs = mock_instance.update_team_member.await_args.kwargs
-        assert kwargs["user_id"] == str(test_team_user.id)
-        assert kwargs["max_budget_in_team"] == 14.0
-        assert kwargs["clear_budget_duration"] is True
-        assert "budget_duration" not in kwargs
-        assert "spend" not in kwargs
+        assert mock_instance.update_team_member.await_count == 2
+        by_user = {
+            call.kwargs["user_id"]: call.kwargs
+            for call in mock_instance.update_team_member.await_args_list
+        }
+        assert by_user[str(test_team_user.id)]["max_budget_in_team"] == 14.0
+        # No membership row, so the ceiling starts at the cap.
+        assert by_user[str(other.id)]["max_budget_in_team"] == 10.0
+        for kwargs in by_user.values():
+            assert kwargs["clear_budget_duration"] is True
+            assert "budget_duration" not in kwargs
+            assert "spend" not in kwargs
         caps = _caps(db, test_team)
         assert len(caps) == 3
         assert all(cap.budget_duration is None for cap in caps)
@@ -198,4 +204,35 @@ def test_clear_member_budget_durations_fails_when_region_is_missing(
         mock_instance.get_team_info.assert_not_awaited()
         monkeypatch.setattr(db, "query", real_query)
         assert [cap.budget_duration for cap in _caps(db, test_team)] == ["1mo", "1mo"]
+        db.rollback()
+
+
+def test_clear_member_budget_durations_skips_a_member_whose_user_is_gone(
+    db, test_team, test_team_user, test_region, monkeypatch, capsys
+):
+    _seed(db, test_team, test_team_user, test_region)
+    # A foreign key keeps the user row alive while a cap points at it, so the
+    # missing-user path is reproduced by hiding the row from the query.
+    real_query = db.query
+
+    def query_without_users(model, *args, **kwargs):
+        if model is DBUser:
+            return real_query(model, *args, **kwargs).filter(false())
+        return real_query(model, *args, **kwargs)
+
+    with (
+        patch("scripts.clear_member_budget_durations.SessionLocal", return_value=db),
+        patch("scripts.clear_member_budget_durations.LiteLLMService") as mock_litellm,
+    ):
+        monkeypatch.setattr(db, "close", lambda: None)
+        monkeypatch.setattr(db, "query", query_without_users)
+        mock_instance = _mock_service(mock_litellm, test_team_user)
+
+        assert asyncio.run(run(apply=True)) == 0
+
+        mock_instance.update_team_member.assert_not_awaited()
+        out = capsys.readouterr().out
+        assert "skipped=2" in out
+        assert out.count("[SKIP]") == 2
+        monkeypatch.setattr(db, "query", real_query)
         db.rollback()

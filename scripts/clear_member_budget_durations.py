@@ -72,21 +72,24 @@ async def run(apply: bool) -> int:
                 scanned += 1
                 member_key = str(row.user_id)
                 user = session.query(DBUser).filter(DBUser.id == row.user_id).first()
-                if member_key not in member_spend or not user:
+                if not user:
                     skipped += 1
                     print(
                         f"[SKIP] user_id={row.user_id} team_id={team_id} "
-                        f"region={region.name} no LiteLLM membership"
+                        f"region={region.name} user row is gone"
                     )
                     continue
                 listed_user_ids.add(row.user_id)
-                spend = member_spend[member_key]
+                # LiteLLM writes the membership row on the first budget push,
+                # so a member without one starts the cycle at spend 0.0.
+                spend = member_spend.get(member_key, 0.0)
+                marker = "" if member_key in member_spend else " (no membership row)"
                 print(
                     f"user_id={row.user_id} team_id={team_id} region={region.name} "
                     f"budget_duration={row.budget_duration} spend={spend} "
                     f"cap={row.max_budget} -> "
                     f"max_budget_in_team={spend + float(row.max_budget)} "
-                    "budget_duration=null"
+                    f"budget_duration=null{marker}"
                 )
 
             if not apply:
