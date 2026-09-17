@@ -2094,7 +2094,7 @@ def test_subscription_deactivate_retry_debits_spend_since_the_first_attempt(
 ):
     """The retry must not hand back the credit spent between the attempts."""
     sub_entry, period_start = _seed_deactivate_period(
-        db, test_team, test_region, baseline_spend=10.0
+        db, test_team, test_region, baseline_spend=4.0
     )
     _seed_deactivate_key(db, test_team, test_region, "deactivate-retry-debit-key")
     topup = DBPeriodicBudgetLedgerEntry(
@@ -2109,7 +2109,7 @@ def test_subscription_deactivate_retry_debits_spend_since_the_first_attempt(
         is_active=True,
     )
     db.add(topup)
-    # The snapshot the first attempt captured: the counter stood at 10.00.
+    # The cycle snapshot of the running period: the counter stood at 4.00 then.
     db.add(
         DBTeamSpendPeriod(
             team_id=test_team.id,
@@ -2117,8 +2117,8 @@ def test_subscription_deactivate_retry_debits_spend_since_the_first_attempt(
             budget_type=test_team.budget_type,
             period_start=period_start,
             period_end=period_start + timedelta(days=31),
-            total_spend=10.0,
-            source="test",
+            total_spend=4.0,
+            source="moad_subscription_cycle",
         )
     )
     db.commit()
@@ -2140,6 +2140,9 @@ def test_subscription_deactivate_retry_debits_spend_since_the_first_attempt(
         "/billing/subscription/deactivate", headers=headers, json=payload
     )
     assert first.status_code == 502
+    # The 6.00 since the cycle snapshot lands on the subscription credit.
+    db.refresh(sub_entry)
+    assert sub_entry.consumed_cents == 600
 
     # The team burned 2.00 more between the two attempts.
     mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 12.0}})
@@ -2152,6 +2155,8 @@ def test_subscription_deactivate_retry_debits_spend_since_the_first_attempt(
 
     assert second.status_code == 200
     db.refresh(topup)
+    # Only the 2.00 burned since the first attempt, not the 6.00 again: the
+    # subscription rows are inactive now, so the debit lands on the top-up.
     assert topup.consumed_cents == 200
     # 12.00 live spend plus the 48.00 top-up left after the debit.
     assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 60.0
