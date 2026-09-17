@@ -2844,13 +2844,16 @@ async def test_apply_billing_cycle_for_team_projects_member_ceiling_from_members
     errors = await _run_member_cycle(db, test_team, test_region)
 
     assert errors == []
-    mock_litellm.update_team_member.assert_awaited_once()
-    kwargs = mock_litellm.update_team_member.await_args.kwargs
-    assert kwargs["user_id"] == str(test_team_user.id)
-    assert kwargs["max_budget_in_team"] == 7.5
-    assert kwargs["clear_budget_duration"] is True
-    assert "budget_duration" not in kwargs
-    assert "spend" not in kwargs
+    # The team read repairs the missing ceiling and the cycle pushes it again
+    # with the same numbers, so the ceiling matters here, not the call count.
+    assert mock_litellm.update_team_member.await_count >= 1
+    for call in mock_litellm.update_team_member.await_args_list:
+        kwargs = call.kwargs
+        assert kwargs["user_id"] == str(test_team_user.id)
+        assert kwargs["max_budget_in_team"] == 7.5
+        assert kwargs["clear_budget_duration"] is True
+        assert "budget_duration" not in kwargs
+        assert "spend" not in kwargs
 
 
 @pytest.mark.asyncio
@@ -2910,11 +2913,12 @@ async def test_apply_billing_cycle_for_team_caps_member_missing_from_litellm_mem
         errors = await _run_member_cycle(db, test_team, test_region)
 
     assert errors == []
-    mock_litellm.update_team_member.assert_awaited_once()
-    kwargs = mock_litellm.update_team_member.await_args.kwargs
-    assert kwargs["user_id"] == str(test_team_user.id)
-    assert kwargs["max_budget_in_team"] == 5.0
-    assert kwargs["clear_budget_duration"] is True
+    assert mock_litellm.update_team_member.await_count >= 1
+    for call in mock_litellm.update_team_member.await_args_list:
+        kwargs = call.kwargs
+        assert kwargs["user_id"] == str(test_team_user.id)
+        assert kwargs["max_budget_in_team"] == 5.0
+        assert kwargs["clear_budget_duration"] is True
     assert "membership row missing" in caplog.text
 
 
@@ -3024,6 +3028,89 @@ async def test_apply_billing_cycle_for_team_reanchors_member_caps_after_recreate
     for call in mock_litellm.update_team_member.await_args_list:
         assert call.kwargs["user_id"] == str(test_team_user.id)
         assert call.kwargs["max_budget_in_team"] == 5.0
+
+
+def _seed_two_capped_members(db, team, region, test_team_user):
+    """Two capped members; only the second one still carries a ceiling."""
+    other = DBUser(
+        email=f"capped_other_{team.id}@example.com",
+        hashed_password="x",
+        is_active=True,
+        role="key_creator",
+        team_id=team.id,
+    )
+    db.add(other)
+    db.commit()
+    db.refresh(other)
+    for user in (test_team_user, other):
+        db.add(
+            DBSpendCap(
+                scope="team_member",
+                region_id=region.id,
+                team_id=team.id,
+                user_id=user.id,
+                max_budget=5.0,
+            )
+        )
+    db.commit()
+    team_info = {
+        "team_info": {"spend": 0.0},
+        "team_memberships": [
+            {"user_id": str(test_team_user.id), "spend": 2.0},
+            {
+                "user_id": str(other.id),
+                "spend": 1.0,
+                "litellm_budget_table": {"max_budget": 6.0},
+            },
+        ],
+    }
+    return other, team_info
+
+
+@pytest.mark.asyncio
+async def test_get_team_info_or_recreate_restores_a_missing_member_ceiling(
+    db, test_team, test_team_user, test_region
+):
+    """A member left without a ceiling is repaired; one that has it is left alone."""
+    from app.core.team_service import get_team_info_or_recreate
+
+    _other, team_info = _seed_two_capped_members(
+        db, test_team, test_region, test_team_user
+    )
+
+    service = AsyncMock()
+    service.get_team_info = AsyncMock(return_value=team_info)
+    service.update_team_member = AsyncMock()
+
+    result = await get_team_info_or_recreate(db, test_team, test_region, service)
+
+    assert result is team_info
+    service.update_team_member.assert_awaited_once()
+    kwargs = service.update_team_member.await_args.kwargs
+    assert kwargs["user_id"] == str(test_team_user.id)
+    assert kwargs["max_budget_in_team"] == 7.0
+
+
+@pytest.mark.asyncio
+async def test_get_team_info_or_recreate_raises_when_a_missing_ceiling_cannot_be_pushed(
+    db, test_team, test_team_user, test_region
+):
+    """The repair of an existing team fails the caller too."""
+    from app.core.team_service import get_team_info_or_recreate
+
+    _other, team_info = _seed_two_capped_members(
+        db, test_team, test_region, test_team_user
+    )
+
+    service = AsyncMock()
+    service.get_team_info = AsyncMock(return_value=team_info)
+    service.update_team_member = AsyncMock(side_effect=Exception("member push failed"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_team_info_or_recreate(db, test_team, test_region, service)
+
+    assert exc_info.value.status_code == 502
+    assert "member push failed" in exc_info.value.detail
 
 
 @pytest.mark.asyncio
