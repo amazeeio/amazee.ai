@@ -12,6 +12,7 @@ from app.db.models import DBTeamRegion
 from app.schemas.limits import LimitSource, LimitType, OwnerType, ResourceType, UnitType
 from datetime import datetime, UTC, timedelta
 import pytest
+from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from unittest.mock import patch, AsyncMock
 from app.api.budgets import (
@@ -853,6 +854,51 @@ def test_pool_purchase_restores_team_budget_when_key_sync_fails(
         .first()
     )
     assert purchase is not None
+
+
+@patch("app.core.team_service.effective_team_group_slugs", return_value=["group-a"])
+def test_pool_purchase_recreates_a_team_missing_in_litellm(
+    _mock_slugs, client, admin_token, db, test_team, test_region
+):
+    """A team LiteLLM lost must be rebuilt, not turned into a failed purchase."""
+    test_team.budget_type = "pool"
+    db.commit()
+    payment_id = f"pi_missing_team_{int(time.time() * 1000000)}"
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            side_effect=[
+                HTTPException(status_code=404, detail="Team not found"),
+                {"team_info": {"max_budget": 0.0, "spend": 0.0}},
+            ]
+        )
+        mock_instance.create_team = AsyncMock()
+        mock_instance.create_user = AsyncMock()
+        mock_instance.add_team_member = AsyncMock()
+        mock_instance.update_team_budget = AsyncMock()
+
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00Z",
+                "stripe_payment_id": payment_id,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 201
+    assert mock_instance.create_team.await_count == 1
+    assert mock_instance.get_team_info.await_count == 2
+    mock_instance.update_team_budget.assert_awaited_once()
+    payment = (
+        db.query(DBPeriodicPayment)
+        .filter(DBPeriodicPayment.stripe_payment_id == payment_id)
+        .first()
+    )
+    assert payment.sync_status == "success"
 
 
 def test_pool_purchase_rolls_back_team_budget_when_key_sync_fails(
