@@ -418,14 +418,6 @@ async def subscription_deactivate(
         lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
         current_team_spend: float | None = None
         if active_subscription_period:
-            await capture_periodic_team_spend_for_period(
-                db=db,
-                team=team,
-                region=region,
-                period_start=active_subscription_period.effective_period_start,
-                period_end=active_subscription_period.effective_period_end,
-                source_event_id=request.transaction_id,
-            )
             # Debit mid-period spend against top-up entries so that
             # compute_active_topup_remaining reflects actual remaining balance.
             # Without this, FIFO never runs on the cancel path (no invoice),
@@ -493,6 +485,17 @@ async def subscription_deactivate(
                     stripe_event_id=request.transaction_id,
                 )
                 db.commit()
+                # After the debit: this capture writes the cycle's own window,
+                # which the baseline read above would otherwise pick up as a
+                # counter that was already settled.
+                await capture_periodic_team_spend_for_period(
+                    db=db,
+                    team=team,
+                    region=region,
+                    period_start=active_subscription_period.effective_period_start,
+                    period_end=active_subscription_period.effective_period_end,
+                    source_event_id=request.transaction_id,
+                )
             except Exception as exc:
                 _raise_settlement_failed(db, request, team.id, exc)
         elif existing is not None and existing.sync_status == "sync_failed":

@@ -2239,6 +2239,75 @@ def test_subscription_deactivate_debits_only_the_current_period(
     assert sub_entry.consumed_cents == 200
 
 
+@patch("app.core.spend_period_service.LiteLLMService")
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_debits_the_first_period_without_a_cycle_snapshot(
+    mock_litellm_class,
+    mock_snapshot_litellm_class,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """The first period has no cycle snapshot, so the whole spend is new."""
+    period_start = datetime.now(UTC) - timedelta(days=5)
+    sub_entry = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="subscription",
+        source_invoice_id="in_first_period_cancel",
+        amount_cents=10000,
+        consumed_cents=0,
+        purchased_at=period_start,
+        effective_period_start=period_start,
+        effective_period_end=period_start + timedelta(days=31),
+        expires_at=period_start + timedelta(days=31),
+        is_active=True,
+    )
+    db.add(sub_entry)
+    topup = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="topup",
+        stripe_payment_id="pi_topup_first_period",
+        amount_cents=5000,
+        consumed_cents=0,
+        purchased_at=datetime.now(UTC) - timedelta(days=1),
+        expires_at=datetime.now(UTC) + timedelta(days=30),
+        is_active=True,
+    )
+    db.add(topup)
+    db.commit()
+
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 12.0}})
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+    # The real capture runs here and must not become the baseline.
+    mock_snapshot_litellm_class.return_value.get_team_info = AsyncMock(
+        return_value={"team_info": {"spend": 12.0}, "keys": []}
+    )
+
+    response = client.post(
+        "/billing/subscription/deactivate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_cancel_first_period",
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+            "reason": "cancelled",
+        },
+    )
+
+    assert response.status_code == 200
+    db.refresh(sub_entry)
+    db.refresh(topup)
+    # The subscription credit takes the debit first, so the top-up is untouched.
+    assert sub_entry.consumed_cents == 1200
+    assert topup.consumed_cents == 0
+
+
 def test_subscription_deactivate_endpoint_idempotent(
     client, admin_token, db, test_team
 ):
