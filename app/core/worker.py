@@ -723,7 +723,10 @@ async def reanchor_member_caps(
 
     LiteLLM never resets the membership spend counter, so the cap is re-anchored
     on the counter. A member without a cap row keeps the team ceiling, and a
-    member missing from the /team/info response is logged and skipped.
+    member missing from the /team/info response is pushed with spend 0.0,
+    because LiteLLM creates the membership row only when a budget is first set.
+    A cap whose user row is gone, or whose user left the team, is logged and
+    skipped.
     """
     errors: list[str] = []
     member_spend = membership_spend_by_user(team_info)
@@ -739,16 +742,29 @@ async def reanchor_member_caps(
     for cap in member_caps:
         member_key = str(cap.user_id)
         member_user = db.query(DBUser).filter(DBUser.id == cap.user_id).first()
-        if member_key not in member_spend or not member_user:
+        if not member_user:
             logger.warning(
-                "Team %s in region %s: user %s has a member cap but no LiteLLM "
-                "membership; skipping",
+                "Team %s in region %s: user %s has a member cap but no user row; "
+                "skipping",
                 team_id,
                 region.name,
                 cap.user_id,
             )
             continue
-        member_max_budget = member_spend[member_key] + float(cap.max_budget)
+        # A cap row survives the user leaving the team, and LiteLLM would
+        # create a membership for a non-member instead of rejecting the push.
+        if member_user.team_id != team_id:
+            logger.warning(
+                "Team %s in region %s: user %s has a member cap but is no "
+                "longer in the team; skipping",
+                team_id,
+                region.name,
+                cap.user_id,
+            )
+            continue
+        has_membership = member_key in member_spend
+        member_spend_value = member_spend.get(member_key, 0.0)
+        member_max_budget = member_spend_value + float(cap.max_budget)
         try:
             await litellm_service.update_team_member(
                 team_id=lite_team_id,
@@ -759,12 +775,13 @@ async def reanchor_member_caps(
             )
             logger.info(
                 "Updated member %s ceiling in team %s: spend=%s cap=%s "
-                "max_budget_in_team=%s",
+                "max_budget_in_team=%s%s",
                 cap.user_id,
                 team_id,
-                member_spend[member_key],
+                member_spend_value,
                 cap.max_budget,
                 member_max_budget,
+                "" if has_membership else " (membership row missing)",
             )
         except Exception as e:
             error_msg = (
@@ -838,7 +855,9 @@ async def apply_billing_cycle_for_team(
                     litellm_service,
                     db.query(DBUser).filter(DBUser.team_id == team.id).all(),
                 )
-                team_info_resp = {}
+                # The rebuilt memberships carry no member budget, so the member
+                # cap push below needs the fresh membership list.
+                team_info_resp = await litellm_service.get_team_info(lite_team_id)
             team_info = team_info_resp.get("team_info", team_info_resp)
             current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
 

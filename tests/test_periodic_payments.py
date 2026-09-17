@@ -1,13 +1,16 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import false
 
 from app.core.config import settings
 from app.core.worker import (
     _record_periodic_payment_direct,
     apply_billing_cycle_for_team,
+    reanchor_member_caps,
     reconcile_periodic_team_budget_drift,
 )
 from app.db.models import (
@@ -245,7 +248,10 @@ async def test_apply_billing_cycle_for_team_recreates_missing_litellm_team(
     )
     mock_litellm = mock_litellm_class.return_value
     mock_litellm.get_team_info = AsyncMock(
-        side_effect=HTTPException(status_code=404, detail="Team not found")
+        side_effect=[
+            HTTPException(status_code=404, detail="Team not found"),
+            {"team_info": {"spend": 0.0}},
+        ]
     )
     mock_litellm.create_team = AsyncMock()
     mock_litellm.create_user = AsyncMock()
@@ -266,6 +272,7 @@ async def test_apply_billing_cycle_for_team_recreates_missing_litellm_team(
     assert errors == []
     db.refresh(payment)
     assert payment.sync_status == "success"
+    assert mock_litellm.get_team_info.await_count == 2
     assert mock_litellm.create_team.await_args.kwargs["models"] == ["group-a"]
     # Users and memberships are rebuilt with the team, or it would accept no key.
     lite_team_id = LiteLLMService.format_team_id(test_region.name, test_team.id)
@@ -325,7 +332,10 @@ async def test_apply_billing_cycle_for_team_rebuilds_keys_lost_with_the_team(
     lite_team_id = mock_litellm_class.format_team_id.return_value
     mock_litellm = mock_litellm_class.return_value
     mock_litellm.get_team_info = AsyncMock(
-        side_effect=HTTPException(status_code=404, detail="Team not found")
+        side_effect=[
+            HTTPException(status_code=404, detail="Team not found"),
+            {"team_info": {"spend": 0.0}},
+        ]
     )
     mock_litellm.create_team = AsyncMock()
     mock_litellm.create_user = AsyncMock()
@@ -400,7 +410,10 @@ async def test_apply_billing_cycle_for_team_fails_when_key_rebuild_fails(
     )
     mock_litellm = mock_litellm_class.return_value
     mock_litellm.get_team_info = AsyncMock(
-        side_effect=HTTPException(status_code=404, detail="Team not found")
+        side_effect=[
+            HTTPException(status_code=404, detail="Team not found"),
+            {"team_info": {"spend": 0.0}},
+        ]
     )
     mock_litellm.create_team = AsyncMock()
     mock_litellm.create_user = AsyncMock()
@@ -2396,7 +2409,7 @@ async def test_apply_billing_cycle_for_team_leaves_member_without_cap_alone(
 @patch("app.core.worker.compute_active_topup_remaining", return_value=0)
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.worker.LimitService")
-async def test_apply_billing_cycle_for_team_skips_member_missing_from_litellm(
+async def test_apply_billing_cycle_for_team_caps_member_missing_from_litellm_memberships(
     mock_limit_service,
     mock_litellm_class,
     _mock_topup,
@@ -2406,6 +2419,7 @@ async def test_apply_billing_cycle_for_team_skips_member_missing_from_litellm(
     test_region,
     caplog,
 ):
+    """LiteLLM writes the membership row on the first budget push, so push it."""
     db.add(
         DBSpendCap(
             scope="team_member",
@@ -2419,12 +2433,16 @@ async def test_apply_billing_cycle_for_team_skips_member_missing_from_litellm(
     db.commit()
     mock_litellm = _member_cycle_mocks(mock_limit_service, mock_litellm_class, [])
 
-    with caplog.at_level("WARNING"):
+    with caplog.at_level("INFO"):
         errors = await _run_member_cycle(db, test_team, test_region)
 
     assert errors == []
-    mock_litellm.update_team_member.assert_not_awaited()
-    assert str(test_team_user.id) in caplog.text
+    mock_litellm.update_team_member.assert_awaited_once()
+    kwargs = mock_litellm.update_team_member.await_args.kwargs
+    assert kwargs["user_id"] == str(test_team_user.id)
+    assert kwargs["max_budget_in_team"] == 5.0
+    assert kwargs["clear_budget_duration"] is True
+    assert "membership row missing" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -2479,3 +2497,205 @@ async def test_apply_billing_cycle_for_team_reports_one_failed_member_and_contin
     assert len(errors) == 1
     assert str(test_team_user.id) in errors[0]
     assert mock_litellm.update_team_member.await_count == 2
+
+
+@pytest.mark.asyncio
+@patch("app.core.team_service.effective_team_group_slugs", return_value=["group-a"])
+@patch("app.core.worker.compute_active_topup_remaining", return_value=0)
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.worker.LimitService")
+async def test_apply_billing_cycle_for_team_reanchors_member_caps_after_recreate(
+    mock_limit_service,
+    mock_litellm_class,
+    _mock_topup,
+    _mock_slugs,
+    db,
+    test_team,
+    test_team_user,
+    test_region,
+):
+    """A recreated team loses the member budgets, so the caps go back on."""
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=test_team_user.id,
+            max_budget=5.0,
+        )
+    )
+    db.commit()
+    mock_litellm = _member_cycle_mocks(mock_limit_service, mock_litellm_class, [])
+    mock_litellm.create_team = AsyncMock()
+    mock_litellm.create_user = AsyncMock()
+    mock_litellm.add_team_member = AsyncMock()
+    mock_litellm.get_team_info = AsyncMock(
+        side_effect=[
+            HTTPException(status_code=404, detail="Team not found"),
+            {
+                "team_info": {"spend": 0.0},
+                "team_memberships": [
+                    {"user_id": str(test_team_user.id), "spend": 0.0}
+                ],
+            },
+        ]
+    )
+
+    errors = await _run_member_cycle(db, test_team, test_region)
+
+    assert errors == []
+    assert mock_litellm.get_team_info.await_count == 2
+    mock_litellm.update_team_member.assert_awaited_once()
+    kwargs = mock_litellm.update_team_member.await_args.kwargs
+    assert kwargs["user_id"] == str(test_team_user.id)
+    assert kwargs["max_budget_in_team"] == 5.0
+
+
+@pytest.mark.asyncio
+@patch("app.core.team_service.effective_team_group_slugs", return_value=["group-a"])
+@patch("app.core.worker.compute_active_topup_remaining", return_value=0)
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.worker.LimitService")
+async def test_apply_billing_cycle_for_team_fails_when_the_second_team_read_fails(
+    mock_limit_service,
+    mock_litellm_class,
+    _mock_topup,
+    _mock_slugs,
+    db,
+    test_team,
+    test_team_user,
+    test_region,
+):
+    """Without the fresh team info the cycle must fail, not run on an empty one."""
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=test_team_user.id,
+            max_budget=5.0,
+        )
+    )
+    payment = DBPeriodicPayment(
+        team_id=test_team.id,
+        stripe_payment_id="pay_sync_second_read_failed",
+        amount_cents=10000,
+        currency="usd",
+        payment_type="subscription",
+        status="completed",
+        sync_status="pending",
+        payment_date=datetime.now(UTC),
+    )
+    db.add(payment)
+    db.commit()
+    mock_litellm = _member_cycle_mocks(mock_limit_service, mock_litellm_class, [])
+    mock_litellm.create_team = AsyncMock()
+    mock_litellm.create_user = AsyncMock()
+    mock_litellm.add_team_member = AsyncMock()
+    mock_litellm.get_team_info = AsyncMock(
+        side_effect=[
+            HTTPException(status_code=404, detail="Team not found"),
+            HTTPException(status_code=500, detail="LiteLLM error"),
+        ]
+    )
+
+    errors = await apply_billing_cycle_for_team(
+        db=db,
+        team_id=test_team.id,
+        budget_cents=10000,
+        region_id=test_region.id,
+        period_start=datetime.now(UTC),
+        period_end=datetime.now(UTC) + timedelta(days=31),
+        source_payment_id=payment.id,
+    )
+
+    assert len(errors) == 1
+    db.refresh(payment)
+    assert payment.sync_status == "sync_failed"
+    mock_litellm.update_team_budget.assert_not_awaited()
+    mock_litellm.update_team_member.assert_not_awaited()
+
+
+def test_reanchor_member_caps_skips_member_whose_user_row_is_gone(
+    db, test_team, test_team_user, test_region, monkeypatch, caplog
+):
+    """A cap row whose user is gone has nobody to cap."""
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=test_team_user.id,
+            max_budget=5.0,
+        )
+    )
+    db.commit()
+    # A foreign key keeps the user row alive while a cap points at it, so the
+    # missing-user path is reproduced by hiding the row from the query.
+    real_query = db.query
+
+    def query_without_users(model, *args, **kwargs):
+        if model is DBUser:
+            return real_query(model, *args, **kwargs).filter(false())
+        return real_query(model, *args, **kwargs)
+
+    monkeypatch.setattr(db, "query", query_without_users)
+    litellm_service = AsyncMock()
+
+    with caplog.at_level("WARNING"):
+        errors = asyncio.run(
+            reanchor_member_caps(
+                db=db,
+                litellm_service=litellm_service,
+                region=test_region,
+                team_id=test_team.id,
+                lite_team_id=LiteLLMService.format_team_id(
+                    test_region.name, test_team.id
+                ),
+                team_info={
+                    "team_memberships": [
+                        {"user_id": str(test_team_user.id), "spend": 1.0}
+                    ]
+                },
+            )
+        )
+
+    assert errors == []
+    litellm_service.update_team_member.assert_not_awaited()
+    assert str(test_team_user.id) in caplog.text
+
+
+def test_reanchor_member_caps_skips_member_who_left_the_team(
+    db, test_team, test_team_user, test_region, caplog
+):
+    """A cap row outlives the membership; an ex-member must not be capped."""
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=test_team_user.id,
+            max_budget=5.0,
+        )
+    )
+    test_team_user.team_id = None
+    db.commit()
+    litellm_service = AsyncMock()
+
+    with caplog.at_level("WARNING"):
+        errors = asyncio.run(
+            reanchor_member_caps(
+                db=db,
+                litellm_service=litellm_service,
+                region=test_region,
+                team_id=test_team.id,
+                lite_team_id=LiteLLMService.format_team_id(
+                    test_region.name, test_team.id
+                ),
+                team_info={"team_memberships": []},
+            )
+        )
+
+    assert errors == []
+    litellm_service.update_team_member.assert_not_awaited()
+    assert "no longer in the team" in caplog.text
