@@ -956,6 +956,74 @@ def test_pool_purchase_reanchors_member_caps_after_a_team_recreate(
     assert kwargs["max_budget_in_team"] == 7.0
 
 
+@patch("app.core.team_service.effective_team_group_slugs", return_value=["group-a"])
+def test_pool_purchase_fails_when_member_caps_cannot_be_restored_after_recreate(
+    _mock_slugs, client, admin_token, db, test_team, test_region, test_team_user
+):
+    """A recreate that cannot restore the caps must leave the purchase retryable."""
+    test_team.budget_type = "pool"
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=test_team_user.id,
+            max_budget=5.0,
+        )
+    )
+    db.commit()
+    payment_id = f"pi_missing_team_caps_fail_{int(time.time() * 1000000)}"
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            side_effect=[
+                HTTPException(status_code=404, detail="Team not found"),
+                {
+                    "team_info": {"max_budget": 0.0, "spend": 0.0},
+                    "team_memberships": [
+                        {"user_id": str(test_team_user.id), "spend": 2.0}
+                    ],
+                },
+            ]
+        )
+        mock_instance.create_team = AsyncMock()
+        mock_instance.create_user = AsyncMock()
+        mock_instance.add_team_member = AsyncMock()
+        mock_instance.update_team_member = AsyncMock(
+            side_effect=Exception("member push failed")
+        )
+        mock_instance.update_team_budget = AsyncMock()
+
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00Z",
+                "stripe_payment_id": payment_id,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 502
+    mock_instance.update_team_budget.assert_not_awaited()
+    payment = (
+        db.query(DBPeriodicPayment)
+        .filter(DBPeriodicPayment.stripe_payment_id == payment_id)
+        .first()
+    )
+    assert payment.sync_status == "sync_failed"
+    assert "Member caps could not be restored" in payment.error_log
+    # The failed top-up entry is gone, so a retry can insert it again.
+    assert (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(DBPeriodicBudgetLedgerEntry.stripe_payment_id == payment_id)
+        .first()
+        is None
+    )
+
+
 def test_pool_purchase_rolls_back_team_budget_when_key_sync_fails(
     client, admin_token, db, test_team, test_region
 ):
