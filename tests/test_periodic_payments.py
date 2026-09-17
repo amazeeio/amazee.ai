@@ -563,9 +563,78 @@ async def test_apply_billing_cycle_for_team_rebuilds_a_lost_key_on_a_live_team(
     assert errors == []
     assert mock_litellm.create_key.await_args.kwargs["key"] == "lost-token"
     assert mock_litellm.create_key.await_args.kwargs["allowed_routes"] is None
+    assert mock_litellm.create_key.await_args.kwargs["blocked"] is True
     assert mock_litellm.set_key_restrictions.await_count == 2
     db.refresh(payment)
     assert payment.sync_status == "success"
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.compute_active_topup_remaining", return_value=0)
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.worker.LimitService")
+async def test_apply_billing_cycle_for_team_leaves_a_rebuilt_key_blocked_when_limits_fail(
+    mock_limit_service,
+    mock_litellm_class,
+    _mock_topup,
+    db,
+    test_team,
+    test_region,
+):
+    """A rebuilt key stays blocked when the limit write that follows fails."""
+    db.add(
+        DBPrivateAIKey(
+            name="lost-key",
+            litellm_token="lost-token",
+            region_id=test_region.id,
+            team_id=test_team.id,
+        )
+    )
+    payment = DBPeriodicPayment(
+        team_id=test_team.id,
+        stripe_payment_id="pay_sync_key_limits_failed",
+        amount_cents=10000,
+        currency="usd",
+        payment_type="subscription",
+        status="completed",
+        sync_status="pending",
+        payment_date=datetime.now(UTC),
+    )
+    db.add(payment)
+    db.commit()
+
+    mock_limit_service.return_value.get_token_restrictions.return_value = (
+        31,
+        999.0,
+        1000,
+    )
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 0.0}})
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.create_key = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock(
+        side_effect=[
+            HTTPException(status_code=404, detail="Key not found"),
+            Exception("limits failed"),
+        ]
+    )
+
+    errors = await apply_billing_cycle_for_team(
+        db=db,
+        team_id=test_team.id,
+        budget_cents=10000,
+        region_id=test_region.id,
+        period_start=datetime.now(UTC),
+        period_end=datetime.now(UTC) + timedelta(days=31),
+        source_payment_id=payment.id,
+    )
+
+    assert len(errors) == 1
+    assert mock_litellm.create_key.await_args.kwargs["blocked"] is True
+    # The unblocking call is the one that raised, so nothing lifted the block.
+    assert mock_litellm.set_key_restrictions.await_count == 2
+    db.refresh(payment)
+    assert payment.sync_status == "sync_failed"
 
 
 @pytest.mark.asyncio
