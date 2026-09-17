@@ -725,7 +725,8 @@ async def reanchor_member_caps(
     on the counter. A member without a cap row keeps the team ceiling, and a
     member missing from the /team/info response is pushed with spend 0.0,
     because LiteLLM creates the membership row only when a budget is first set.
-    A cap whose user row is gone from our DB is logged and skipped.
+    A cap whose user row is gone, or whose user left the team, is logged and
+    skipped.
     """
     errors: list[str] = []
     member_spend = membership_spend_by_user(team_info)
@@ -745,6 +746,17 @@ async def reanchor_member_caps(
             logger.warning(
                 "Team %s in region %s: user %s has a member cap but no user row; "
                 "skipping",
+                team_id,
+                region.name,
+                cap.user_id,
+            )
+            continue
+        # A cap row survives the user leaving the team, and LiteLLM would
+        # create a membership for a non-member instead of rejecting the push.
+        if member_user.team_id != team_id:
+            logger.warning(
+                "Team %s in region %s: user %s has a member cap but is no "
+                "longer in the team; skipping",
                 team_id,
                 region.name,
                 cap.user_id,
