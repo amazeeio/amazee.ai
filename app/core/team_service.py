@@ -19,6 +19,7 @@ from app.db.models import (
 )
 from app.services.access_groups import effective_team_group_slugs
 from app.services.litellm import LiteLLMService
+from fastapi import HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
@@ -254,6 +255,42 @@ async def reprovision_litellm_team(
         raise RuntimeError(
             f"Failed to re-provision LiteLLM users {failed_user_ids} in region {region.name}"
         )
+
+
+async def get_team_info_or_recreate(
+    db: Session,
+    team: DBTeam,
+    region: DBRegion,
+    litellm_service: LiteLLMService,
+) -> dict:
+    """Read the LiteLLM team info, recreating the team when it is gone.
+
+    Every caller that reads team info before a budget write needs this, so the
+    404 is handled once instead of once per call site.
+    """
+    lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+    try:
+        return await litellm_service.get_team_info(lite_team_id)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        logger.info(
+            "LiteLLM team %s missing in region %s, recreating it",
+            lite_team_id,
+            region.name,
+        )
+        # The team took its users and memberships with it, so rebuild them
+        # too; a bare team would accept no key.
+        await reprovision_litellm_team(
+            db,
+            team,
+            region,
+            litellm_service,
+            db.query(DBUser).filter(DBUser.team_id == team.id).all(),
+        )
+        # The rebuilt memberships carry no member budget, so callers pushing
+        # member caps need the fresh membership list.
+        return await litellm_service.get_team_info(lite_team_id)
 
 
 async def restore_soft_deleted_team(db: Session, team: DBTeam) -> dict:

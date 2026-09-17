@@ -1789,6 +1789,99 @@ def test_pool_subscription_cycle_endpoint_accepted(
     mock_apply_cycle.assert_awaited_once()
 
 
+@patch("app.core.team_service.effective_team_group_slugs", return_value=["group-a"])
+@patch("app.core.worker.compute_active_topup_remaining", return_value=0)
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.LiteLLMService")
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+def test_subscription_cycle_endpoint_recreates_missing_team_and_settles_from_spend_logs(
+    _mock_capture,
+    mock_litellm_class,
+    mock_limit_service,
+    _mock_topup,
+    _mock_slugs,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """A team missing in LiteLLM is recreated before the ledger sync reads it,
+    and the period is settled from the spend logs, not the reset counter."""
+    from app.core.periodic_budget_ledger_service import add_subscription_entry
+
+    now = datetime.now(UTC)
+    previous_start = now - timedelta(days=30)
+    db.add(
+        DBTeamSpendPeriod(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            budget_type=test_team.budget_type,
+            period_start=previous_start,
+            period_end=now,
+            total_spend=50.0,
+            source="test",
+        )
+    )
+    add_subscription_entry(
+        db,
+        team_id=test_team.id,
+        region_id=test_region.id,
+        amount_cents=10000,
+        purchased_at=previous_start,
+        period_start=previous_start,
+        period_end=now,
+        source_payment_id=None,
+        source_invoice_id="inv_prev",
+    )
+    db.commit()
+
+    mock_limit_service.return_value.get_token_restrictions.return_value = (
+        31,
+        999.0,
+        1000,
+    )
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        side_effect=[
+            HTTPException(status_code=404, detail="Team not found"),
+            {"team_info": {"spend": 0.0}},
+            {"team_info": {"spend": 0.0}},
+        ]
+    )
+    mock_litellm.get_team_spend_in_range = AsyncMock(return_value=40.0)
+    mock_litellm.create_team = AsyncMock()
+    mock_litellm.create_user = AsyncMock()
+    mock_litellm.add_team_member = AsyncMock()
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    response = client.post(
+        "/billing/subscription/cycle",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_cycle_missing_team",
+            "budget_cents": 10000,
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+        },
+    )
+
+    assert response.status_code == 200
+    assert mock_litellm.create_team.await_count == 1
+    assert mock_litellm.get_team_info.await_count == 3
+    mock_litellm.get_team_spend_in_range.assert_awaited_once()
+    previous_entry = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(DBPeriodicBudgetLedgerEntry.source_invoice_id == "inv_prev")
+        .first()
+    )
+    assert previous_entry.consumed_cents == 4000
+
+
 def test_pool_subscription_cycle_endpoint_returns_404_for_unknown_team(
     client, admin_token, db, test_region
 ):
