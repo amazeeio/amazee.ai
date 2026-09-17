@@ -98,15 +98,26 @@ def _raise_settlement_failed(
     )
 
 
+DEACTIVATE_SNAPSHOT_SOURCES = (
+    "moad_subscription_deactivate",
+    "moad_subscription_deactivate_retry",
+)
+
+
 def _latest_spend_snapshot(
     db: Session, *, team_id: int, region_id: int
 ) -> DBTeamSpendPeriod | None:
-    """The newest stored spend snapshot for the team in this region."""
+    """The newest snapshot written by a deactivation attempt.
+
+    A cycle snapshot holds the counter at the start of the period, which a
+    retry would debit a second time.
+    """
     return (
         db.query(DBTeamSpendPeriod)
         .filter(
             DBTeamSpendPeriod.team_id == team_id,
             DBTeamSpendPeriod.region_id == region_id,
+            DBTeamSpendPeriod.source.in_(DEACTIVATE_SNAPSHOT_SOURCES),
         )
         .order_by(DBTeamSpendPeriod.period_start.desc(), DBTeamSpendPeriod.id.desc())
         .first()
@@ -446,6 +457,20 @@ async def subscription_deactivate(
                         region_id=region.id,
                         spend_cents=incremental_spend_cents,
                     )
+                # The cycle already owns the snapshot for this window, so the
+                # counter this attempt settled is recorded under its own
+                # window; a retry starts from here instead of from the cycle.
+                upsert_team_spend_period(
+                    db=db,
+                    team=team,
+                    region_id=region.id,
+                    period_start=active_subscription_period.effective_period_start,
+                    period_end=datetime.now(UTC),
+                    source="moad_subscription_deactivate",
+                    snapshot={"total_spend": current_team_spend},
+                    stripe_event_id=request.transaction_id,
+                )
+                db.commit()
             except Exception as exc:
                 _raise_settlement_failed(db, request, team.id, exc)
         elif existing is not None and existing.sync_status == "sync_failed":
