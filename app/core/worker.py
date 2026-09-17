@@ -297,8 +297,14 @@ async def _record_periodic_payment_direct(
     amount_cents: int,
     currency: str = "usd",
     payment_type: str = "subscription",
+    sync_status: str = "pending",
 ) -> Optional[int]:
-    """Record a periodic team payment using direct billing payload fields."""
+    """Record a periodic team payment using direct billing payload fields.
+
+    ``sync_status`` stays "pending" while a later step still decides the
+    outcome; a caller that has already finished its work stamps "success" here
+    so a retry of the same transaction short-circuits.
+    """
     try:
         team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
         if not team:
@@ -319,7 +325,7 @@ async def _record_periodic_payment_direct(
                 currency=currency.lower(),
                 payment_type=payment_type,
                 status="completed",
-                sync_status="pending",
+                sync_status=sync_status,
                 payment_date=datetime.now(UTC),
             )
             db.add(payment_record)
@@ -330,6 +336,11 @@ async def _record_periodic_payment_direct(
                 transaction_id,
                 team.id,
             )
+        elif sync_status != "pending" and payment_record.sync_status != sync_status:
+            # An earlier attempt left the row behind; the attempt that finishes
+            # is the one that stamps it.
+            payment_record.sync_status = sync_status
+            db.commit()
 
         return payment_record.id
     except Exception as e:
