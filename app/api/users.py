@@ -1137,6 +1137,13 @@ async def add_user_to_team(
 
     # Add user to team
     db_user.team_id = team_operation.team_id
+    # A cap left behind by an interrupted removal must not follow the user back
+    # in, so the membership starts without one.
+    db.query(DBSpendCap).filter(
+        DBSpendCap.scope == "team_member",
+        DBSpendCap.team_id == team_operation.team_id,
+        DBSpendCap.user_id == db_user.id,
+    ).delete(synchronize_session=False)
     try:
         db.commit()
         db.refresh(db_user)
