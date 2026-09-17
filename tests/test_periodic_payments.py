@@ -2663,3 +2663,39 @@ def test_reanchor_member_caps_skips_member_whose_user_row_is_gone(
     assert errors == []
     litellm_service.update_team_member.assert_not_awaited()
     assert str(test_team_user.id) in caplog.text
+
+
+def test_reanchor_member_caps_skips_member_who_left_the_team(
+    db, test_team, test_team_user, test_region, caplog
+):
+    """A cap row outlives the membership; an ex-member must not be capped."""
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=test_team_user.id,
+            max_budget=5.0,
+        )
+    )
+    test_team_user.team_id = None
+    db.commit()
+    litellm_service = AsyncMock()
+
+    with caplog.at_level("WARNING"):
+        errors = asyncio.run(
+            reanchor_member_caps(
+                db=db,
+                litellm_service=litellm_service,
+                region=test_region,
+                team_id=test_team.id,
+                lite_team_id=LiteLLMService.format_team_id(
+                    test_region.name, test_team.id
+                ),
+                team_info={"team_memberships": []},
+            )
+        )
+
+    assert errors == []
+    litellm_service.update_team_member.assert_not_awaited()
+    assert "no longer in the team" in caplog.text
