@@ -47,7 +47,7 @@ from app.core.limit_service import (
 from app.core.worker import generate_pricing_url
 
 from app.db.database import get_db
-from app.db.models import DBUser, DBAPIToken, DBRegion, DBTeam
+from app.db.models import DBUser, DBAPIToken, DBAuditLog, DBRegion, DBTeam
 
 from app.services.litellm import LiteLLMService
 from app.services.dynamodb import DynamoDBService
@@ -1094,9 +1094,11 @@ async def generate_trial_access(
         # The user row only consumes trial capacity, which is a counter we can
         # raise; a stranded key stays live until its natural expiry and is not
         # recoverable by any automated means.
+        litellm_key_deleted = False
         try:
             if private_ai_key and private_ai_key.litellm_token:
                 await litellm_service.delete_key(private_ai_key.litellm_token)
+                litellm_key_deleted = True
         except Exception as cleanup_error:
             # Log the alias, never the token: this line goes to shared logs.
             # The alias is what identifies the key in LiteLLM's own admin UI.
@@ -1111,6 +1113,24 @@ async def generate_trial_access(
                 # user; left behind, it would pin a future user with the same
                 # id to the trial budget cap.
                 limit_service.delete_limits(OwnerType.USER, user.id, commit=False)
+                if litellm_key_deleted:
+                    # The audit row commits with the user delete below.
+                    db.add(
+                        DBAuditLog(
+                            event_type="private_ai_key.delete",
+                            resource_type="private_ai_key",
+                            resource_id=str(private_ai_key.id),
+                            action="delete",
+                            user_id=None,
+                            request_source=None,
+                            details={
+                                "team_id": team.id if team else None,
+                                "region_id": region.id,
+                                "key_name": private_ai_key.name,
+                                "source": "trial_signup_cleanup",
+                            },
+                        )
+                    )
                 db.delete(user)
                 db.commit()
         except Exception as cleanup_error:
