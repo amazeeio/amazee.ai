@@ -350,7 +350,9 @@ async def subscription_deactivate(
             # Debit mid-period spend against top-up entries so that
             # compute_active_topup_remaining reflects actual remaining balance.
             # Without this, FIFO never runs on the cancel path (no invoice),
-            # and consumed_cents stays stale — leaking top-up credits.
+            # and consumed_cents stays stale — leaking top-up credits. A
+            # swallowed failure here would deactivate a team whose spend was
+            # never debited, so a failed settlement ends the request.
             try:
                 team_info_resp = await litellm_service.get_team_info(lite_team_id)
                 team_info = team_info_resp.get("team_info", team_info_resp)
@@ -399,12 +401,26 @@ async def subscription_deactivate(
                         spend_cents=incremental_spend_cents,
                     )
             except Exception as exc:
+                # Whatever failed here, the period was not debited, so the
+                # deactivation must not go through on this attempt.
                 db.rollback()
-                logger.warning(
-                    "Failed to run FIFO allocation on cancellation for team %s: %s",
-                    team.id,
-                    exc,
-                    exc_info=True,
+                _write_audit_log(
+                    db,
+                    "subscription.deactivate",
+                    "deactivate",
+                    str(team.id),
+                    502,
+                    {
+                        "transaction_id": request.transaction_id,
+                        "region_id": request.region_id,
+                        "reason": request.reason,
+                        "outcome": "settlement_failed",
+                        "error": str(exc),
+                    },
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail="Cannot settle the current period; deactivation must be retried",
                 )
 
         # Deactivation immediately ends active subscription windows.
@@ -524,6 +540,9 @@ async def subscription_deactivate(
             amount_cents=0,
             currency="usd",
             payment_type="deactivation",
+            # The deactivation is done here, so the row is stamped straight
+            # away and a retry hits the idempotent skip at the top.
+            sync_status="success",
         )
 
         _write_audit_log(

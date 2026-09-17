@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from app.core.config import settings
 from app.core.security import get_role_min_system_admin
 from app.core.team_service import (
+    get_team_info_or_recreate,
     get_team_region_litellm_keys,
     propagate_team_budget_to_keys,
 )
@@ -244,44 +245,58 @@ async def _sync_pool_key_effective_budgets(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     semaphore = asyncio.Semaphore(10)
-    # A purchase restarts the period, so key spend goes back to zero.
-    spend_reset = 0.0 if purchased_total > 0 else None
 
-    async def _sync_key_budget(key: DBPrivateAIKey) -> str | None:
-        try:
-            async with semaphore:
-                # Without a user-defined cap the key carries no max_budget at
-                # all, so the team-level pool governs its spend.
-                configured_cap = cap_map.get(key.id)
-                await service.update_key_budget(
-                    litellm_token=key.litellm_token,
-                    max_budget=configured_cap,
-                    clear_max_budget=configured_cap is None,
-                    clear_budget_duration=True,
-                    blocked=False,
-                    spend=spend_reset,
-                )
-                if purchased_total > 0:
-                    # A purchase extends the key's expiry to match the credit's
-                    # POOL_PURCHASE_EXPIRY_DAYS shelf life. update_key_budget
-                    # deliberately never touches key duration/expiry, so without
-                    # this the key keeps whatever (possibly short) expiry an
-                    # earlier billing/trial path stamped — letting a paid,
-                    # in-credit key expire mid-period while its balance is
-                    # healthy (issue #631).
-                    await service.update_key_duration(
-                        litellm_token=key.litellm_token,
-                        duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
-                    )
-            return None
-        except Exception as exc:
-            return f"Key {key.id}: {str(exc)}"
+    async def _for_each_key(action) -> list[str]:
+        async def _run(key: DBPrivateAIKey) -> str | None:
+            try:
+                async with semaphore:
+                    await action(key)
+                return None
+            except Exception as exc:
+                return f"Key {key.id}: {str(exc)}"
 
-    return [
-        error
-        for error in await asyncio.gather(*[_sync_key_budget(key) for key in keys])
-        if error is not None
-    ]
+        return [
+            error
+            for error in await asyncio.gather(*[_run(key) for key in keys])
+            if error is not None
+        ]
+
+    async def _sync_key_budget(key: DBPrivateAIKey) -> None:
+        # Without a user-defined cap the key carries no max_budget at all, so
+        # the team-level pool governs its spend.
+        configured_cap = cap_map.get(key.id)
+        await service.update_key_budget(
+            litellm_token=key.litellm_token,
+            max_budget=configured_cap,
+            clear_max_budget=configured_cap is None,
+            clear_budget_duration=True,
+            blocked=False,
+            spend=None,
+        )
+        if purchased_total > 0:
+            # A purchase extends the key's expiry to match the credit's
+            # POOL_PURCHASE_EXPIRY_DAYS shelf life. update_key_budget
+            # deliberately never touches key duration/expiry, so without this
+            # the key keeps whatever (possibly short) expiry an earlier
+            # billing/trial path stamped — letting a paid, in-credit key
+            # expire mid-period while its balance is healthy (issue #631).
+            await service.update_key_duration(
+                litellm_token=key.litellm_token,
+                duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
+            )
+
+    budget_errors = await _for_each_key(_sync_key_budget)
+    if budget_errors or purchased_total <= 0:
+        return budget_errors
+
+    # A purchase restarts the period, so key spend goes back to zero. It is a
+    # second pass because a sibling failure rolls the team budget back while
+    # LiteLLM keeps the zeroed key counter.
+    return await _for_each_key(
+        lambda key: service.update_key_budget(
+            litellm_token=key.litellm_token, spend=0.0
+        )
+    )
 
 
 @router.post(
@@ -589,7 +604,7 @@ async def purchase_periodic_topup(
     previous_team_budget_duration: str | None = None
     team_budget_updated = False
     try:
-        team_info_resp = await service.get_team_info(lite_team_id)
+        team_info_resp = await get_team_info_or_recreate(db, team, region, service)
         team_info = team_info_resp.get("team_info", team_info_resp)
         current_spend = float(team_info.get("spend", 0.0) or 0.0)
         previous_max_budget_raw = team_info.get("max_budget")
