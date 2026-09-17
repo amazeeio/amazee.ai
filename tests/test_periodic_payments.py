@@ -2078,6 +2078,105 @@ def test_subscription_deactivate_fails_when_key_write_fails(
     mock_litellm.update_team_budget.assert_awaited_once()
 
 
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_retry_debits_spend_since_the_first_attempt(
+    mock_litellm_class,
+    _mock_capture_spend,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """The retry must not hand back the credit spent between the attempts."""
+    sub_entry, period_start = _seed_deactivate_period(
+        db, test_team, test_region, baseline_spend=10.0
+    )
+    _seed_deactivate_key(db, test_team, test_region, "deactivate-retry-debit-key")
+    topup = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="topup",
+        stripe_payment_id="pi_topup_retry_debit",
+        amount_cents=5000,
+        consumed_cents=0,
+        purchased_at=datetime.now(UTC) - timedelta(days=1),
+        expires_at=datetime.now(UTC) + timedelta(days=30),
+        is_active=True,
+    )
+    db.add(topup)
+    # The snapshot the first attempt captured: the counter stood at 10.00.
+    db.add(
+        DBTeamSpendPeriod(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            budget_type=test_team.budget_type,
+            period_start=period_start,
+            period_end=period_start + timedelta(days=31),
+            total_spend=10.0,
+            source="test",
+        )
+    )
+    db.commit()
+
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 10.0}})
+    mock_litellm.update_team_budget = AsyncMock(side_effect=Exception("litellm down"))
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    payload = {
+        "transaction_id": "txn_cancel_retry_debit",
+        "team_id": test_team.id,
+        "region_id": test_region.id,
+        "reason": "cancelled",
+    }
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    first = client.post(
+        "/billing/subscription/deactivate", headers=headers, json=payload
+    )
+    assert first.status_code == 502
+
+    # The team burned 2.00 more between the two attempts.
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 12.0}})
+    mock_litellm.update_team_budget.side_effect = None
+    mock_litellm.update_team_budget.return_value = None
+
+    second = client.post(
+        "/billing/subscription/deactivate", headers=headers, json=payload
+    )
+
+    assert second.status_code == 200
+    db.refresh(topup)
+    assert topup.consumed_cents == 200
+    # 12.00 live spend plus the 48.00 top-up left after the debit.
+    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 60.0
+    assert mock_litellm.set_key_restrictions.await_args.kwargs["budget_amount"] == 48.0
+    payment = (
+        db.query(DBPeriodicPayment)
+        .filter(DBPeriodicPayment.stripe_payment_id == "txn_cancel_retry_debit")
+        .first()
+    )
+    assert payment.sync_status == "success"
+    db.refresh(sub_entry)
+    assert sub_entry.is_active is False
+    # A third attempt starts from the counter this one recorded.
+    assert (
+        db.query(DBTeamSpendPeriod)
+        .filter(
+            DBTeamSpendPeriod.team_id == test_team.id,
+            DBTeamSpendPeriod.source == "moad_subscription_deactivate_retry",
+        )
+        .first()
+        .total_spend
+        == 12.0
+    )
+
+
 def test_subscription_deactivate_endpoint_idempotent(
     client, admin_token, db, test_team
 ):
