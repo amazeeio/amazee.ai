@@ -1824,6 +1824,56 @@ def test_subscription_deactivate_fails_when_settlement_fails(
     assert audit.details["outcome"] == "settlement_failed"
 
 
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_retry_with_same_transaction_is_idempotent(
+    mock_litellm_class,
+    _mock_capture_spend,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """The payment row is stamped, so a Stripe retry short-circuits."""
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 0.0}})
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    payload = {
+        "transaction_id": "txn_cancel_retry",
+        "team_id": test_team.id,
+        "region_id": test_region.id,
+        "reason": "cancelled",
+    }
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    first = client.post(
+        "/billing/subscription/deactivate", headers=headers, json=payload
+    )
+    assert first.status_code == 200
+    payment = (
+        db.query(DBPeriodicPayment)
+        .filter(DBPeriodicPayment.stripe_payment_id == "txn_cancel_retry")
+        .first()
+    )
+    assert payment.sync_status == "success"
+    team_info_calls = mock_litellm.get_team_info.await_count
+
+    second = client.post(
+        "/billing/subscription/deactivate", headers=headers, json=payload
+    )
+    assert second.status_code == 200
+    assert second.json()["idempotent"] is True
+    assert second.json()["payment_id"] == first.json()["payment_id"]
+    assert mock_litellm.update_team_budget.await_count == 1
+    assert mock_litellm.get_team_info.await_count == team_info_calls
+
+
 def test_subscription_deactivate_endpoint_idempotent(
     client, admin_token, db, test_team
 ):
