@@ -13,6 +13,7 @@ from app.db.models import (
     DBAuditLog,
     DBPrivateAIKey,
     DBRegion,
+    DBSpendCap,
     DBTeam,
     DBTeamRegion,
     DBUser,
@@ -339,6 +340,33 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> dict:
                 api_url=region.litellm_api_url, api_key=region.litellm_api_key
             )
             await reprovision_litellm_team(db, team, region, litellm_service, team_users)
+            has_member_caps = (
+                db.query(DBSpendCap.id)
+                .filter(
+                    DBSpendCap.scope == "team_member",
+                    DBSpendCap.team_id == team.id,
+                    DBSpendCap.region_id == region.id,
+                    DBSpendCap.max_budget.isnot(None),
+                )
+                .first()
+                is not None
+            )
+            if has_member_caps:
+                # Local import: worker imports this module at module level.
+                from app.core.worker import reanchor_member_caps
+
+                lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+                team_info = await litellm_service.get_team_info(lite_team_id)
+                cap_errors = await reanchor_member_caps(
+                    db, litellm_service, region, team.id, lite_team_id, team_info
+                )
+                if cap_errors:
+                    logger.error(
+                        "Failed to re-anchor member caps in region %s: %s",
+                        region.name,
+                        "; ".join(cap_errors),
+                    )
+                    failed_regions.append(region.name)
         except Exception as region_error:
             logger.error(
                 f"Failed to re-provision LiteLLM team/users in region {region.name}: {str(region_error)}"
