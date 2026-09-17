@@ -1330,7 +1330,11 @@ def test_subscription_deactivate_fails_when_spend_read_fails(
     test_team,
     test_region,
 ):
-    """With top-up left and no readable spend, deactivate must write nothing."""
+    """With an unreadable team spend, deactivate must write nothing.
+
+    The read sits inside the settlement, so the period is never debited and
+    the request ends there.
+    """
     period_start = datetime.now(UTC) - timedelta(days=5)
     period_end = datetime.now(UTC) + timedelta(days=26)
     sub_entry = DBPeriodicBudgetLedgerEntry(
@@ -1402,7 +1406,7 @@ def test_subscription_deactivate_fails_when_spend_read_fails(
         db.query(DBAuditLog)
         .filter(
             DBAuditLog.event_type == "subscription.deactivate",
-            DBAuditLog.details["outcome"].as_string() == "spend_read_failed",
+            DBAuditLog.details["outcome"].as_string() == "settlement_failed",
         )
         .count()
         == 1
@@ -1451,6 +1455,7 @@ def test_subscription_deactivate_captures_snapshot_before_reset(
 
     mock_record_payment.return_value = 777
     mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 0.0}})
     mock_litellm.update_team_budget = AsyncMock()
     mock_litellm.set_key_restrictions = AsyncMock()
 
