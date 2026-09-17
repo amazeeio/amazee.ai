@@ -613,3 +613,28 @@ def test_apply_deployment_access_groups_must_be_defined(client, admin_token, tes
     res = _apply(client, admin_token, payload)
     assert res.status_code == 400
     assert "nope" in res.text
+
+
+def test_apply_deployment_access_groups_must_be_deployed_to_region(client, admin_token, test_region):
+    """An override naming a group that is not deployed to the region would
+    leave the deployment live but untagged — callable by nobody — so reject it."""
+    payload = _payload(test_region.name)
+    payload["access_groups"].append(
+        {"slug": "preview", "label": "Preview", "description": None, "regions": []}
+    )
+    payload["models"][0]["deployments"][0]["access_groups"] = ["preview"]
+    res = _apply(client, admin_token, payload)
+    assert res.status_code == 400
+    assert "not deployed to that region" in res.text
+
+
+def test_apply_alias_cannot_carry_deployment_access_groups(client, admin_token, test_region):
+    """Aliases take their groups from the regional target; a deployment row on
+    an alias (with or without access_groups) is rejected outright."""
+    payload = _payload(test_region.name)
+    payload["models"][1]["deployments"] = [
+        {"region": test_region.name, "access_groups": ["default-models"]}
+    ]
+    res = _apply(client, admin_token, payload)
+    assert res.status_code == 400
+    assert "derived from alias_targets" in res.text
