@@ -1,5 +1,6 @@
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -9,6 +10,7 @@ from app.core.periodic_budget_ledger_service import (
     compute_active_topup_remaining,
 )
 from app.core.security import get_role_min_system_admin
+from app.core.spend_period_service import upsert_team_spend_period
 from app.core.team_service import get_team_region_litellm_keys
 from app.core.worker import (
     _previous_period_spend_baseline_cents,
@@ -25,6 +27,7 @@ from app.db.models import (
     DBRegion,
     DBSpendCap,
     DBTeam,
+    DBTeamSpendPeriod,
 )
 from app.schemas.models import (
     BudgetType,
@@ -65,6 +68,49 @@ def _write_audit_log(
             db.rollback()
         except Exception as rollback_exc:
             logger.warning("Failed to rollback audit log transaction: %s", rollback_exc)
+
+
+def _raise_settlement_failed(
+    db: Session,
+    request: SubscriptionDeactivateRequest,
+    team_id: int,
+    exc: Exception,
+) -> NoReturn:
+    """The period was not debited, so the deactivation must not go through."""
+    db.rollback()
+    _write_audit_log(
+        db,
+        "subscription.deactivate",
+        "deactivate",
+        str(team_id),
+        502,
+        {
+            "transaction_id": request.transaction_id,
+            "region_id": request.region_id,
+            "reason": request.reason,
+            "outcome": "settlement_failed",
+            "error": str(exc),
+        },
+    )
+    raise HTTPException(
+        status_code=502,
+        detail="Cannot settle the current period; deactivation must be retried",
+    )
+
+
+def _latest_spend_snapshot(
+    db: Session, *, team_id: int, region_id: int
+) -> DBTeamSpendPeriod | None:
+    """The newest stored spend snapshot for the team in this region."""
+    return (
+        db.query(DBTeamSpendPeriod)
+        .filter(
+            DBTeamSpendPeriod.team_id == team_id,
+            DBTeamSpendPeriod.region_id == region_id,
+        )
+        .order_by(DBTeamSpendPeriod.period_start.desc(), DBTeamSpendPeriod.id.desc())
+        .first()
+    )
 
 
 @router.post(
@@ -401,27 +447,60 @@ async def subscription_deactivate(
                         spend_cents=incremental_spend_cents,
                     )
             except Exception as exc:
-                # Whatever failed here, the period was not debited, so the
-                # deactivation must not go through on this attempt.
-                db.rollback()
-                _write_audit_log(
-                    db,
-                    "subscription.deactivate",
-                    "deactivate",
-                    str(team.id),
-                    502,
-                    {
-                        "transaction_id": request.transaction_id,
-                        "region_id": request.region_id,
-                        "reason": request.reason,
-                        "outcome": "settlement_failed",
-                        "error": str(exc),
-                    },
+                _raise_settlement_failed(db, request, team.id, exc)
+        elif existing is not None and existing.sync_status == "sync_failed":
+            # A retry of a half-done deactivation: the period is settled, but
+            # the spend since the first attempt was never debited and would
+            # come back as headroom in the projection below.
+            try:
+                team_info_resp = await litellm_service.get_team_info(lite_team_id)
+                team_info = team_info_resp.get("team_info", team_info_resp)
+                current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
+                current_spend_cents = int(round(current_team_spend * 100))
+                snapshot_row = _latest_spend_snapshot(
+                    db, team_id=team.id, region_id=region.id
                 )
-                raise HTTPException(
-                    status_code=502,
-                    detail="Cannot settle the current period; deactivation must be retried",
+                baseline_cents = (
+                    int(round(float(snapshot_row.total_spend or 0.0) * 100))
+                    if snapshot_row is not None
+                    else None
                 )
+                retry_window_start = existing.payment_date or snapshot_row.period_start
+                if baseline_cents is not None and current_spend_cents >= baseline_cents:
+                    incremental_spend_cents = current_spend_cents - baseline_cents
+                else:
+                    # No snapshot, or a counter below it: read the window from
+                    # the spend logs, which survive a counter reset.
+                    logged_spend = await litellm_service.get_team_spend_in_range(
+                        lite_team_id,
+                        retry_window_start,
+                        datetime.now(UTC),
+                    )
+                    incremental_spend_cents = max(
+                        0, int(round(float(logged_spend) * 100))
+                    )
+                if incremental_spend_cents > 0:
+                    allocate_period_spend_fifo(
+                        db,
+                        team_id=team.id,
+                        region_id=region.id,
+                        spend_cents=incremental_spend_cents,
+                    )
+                # Snapshot the counter so a third attempt debits only the
+                # spend that comes after this one.
+                upsert_team_spend_period(
+                    db=db,
+                    team=team,
+                    region_id=region.id,
+                    period_start=retry_window_start,
+                    period_end=datetime.now(UTC),
+                    source="moad_subscription_deactivate_retry",
+                    snapshot={"total_spend": current_team_spend},
+                    stripe_event_id=request.transaction_id,
+                )
+                db.commit()
+            except Exception as exc:
+                _raise_settlement_failed(db, request, team.id, exc)
 
         # Deactivation immediately ends active subscription windows.
         active_sub_rows = (
