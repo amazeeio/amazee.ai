@@ -1539,9 +1539,12 @@ async def get_key_spend_alias(
             if key.team_id is not None
             else None
         )
+        is_pool = (
+            team_for_key is not None and team_for_key.budget_type == BudgetType.POOL
+        )
         if (
             team_for_key is not None
-            and team_for_key.budget_type != BudgetType.POOL
+            and not is_pool
             and period_start is None
             and configured_key_cap is None
         ):
@@ -1562,7 +1565,7 @@ async def get_key_spend_alias(
                 "period_start": period_start,
             }
         )
-        if team_for_key is not None and team_for_key.budget_type == BudgetType.POOL:
+        if is_pool:
             # Same window the team and user endpoints report for this key.
             _apply_pool_key_windows(
                 db,
