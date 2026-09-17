@@ -79,7 +79,6 @@ def _validate_specs(req: ApplyConfigRequest) -> None:
             "Refusing to prune with an empty models list — that would deactivate the entire catalog."
         )
     known_slugs = set(slugs)
-    group_regions = {g.slug: set(g.regions) for g in req.access_groups}
     for spec in req.models:
         if spec.is_alias:
             if spec.litellm_params:
@@ -110,10 +109,6 @@ def _validate_specs(req: ApplyConfigRequest) -> None:
             raise _bad_request(
                 f"Model '{spec.model_id}' references access groups not defined in payload: {unknown_groups}"
             )
-        # A per-deployment override may only name groups deployed to that
-        # region: the sync intersects the override with the region's groups,
-        # so an undeployed slug would silently leave the model untagged —
-        # live on the proxy, callable by nobody, hidden from the listing.
         # (Alias specs never reach here with deployments — rejected above.)
         for d in spec.deployments:
             unknown_groups = sorted(set(d.access_groups or []) - known_slugs)
@@ -122,7 +117,21 @@ def _validate_specs(req: ApplyConfigRequest) -> None:
                     f"Deployment '{spec.model_id}@{d.region}' references access groups "
                     f"not defined in payload: {unknown_groups}"
                 )
-            undeployed = sorted(s for s in d.access_groups or [] if d.region not in group_regions[s])
+
+
+def _validate_overrides_deployed(req: ApplyConfigRequest, regions: Dict[str, DBRegion]) -> None:
+    """A per-deployment access_groups override may only name groups deployed
+    to that region: the sync intersects the override with the region's groups,
+    so an undeployed slug would silently leave the model untagged — live on
+    the proxy, callable by nobody, hidden from the listing. Only regions this
+    environment resolved are checked; a row for a skipped region is not ours
+    to judge and must not fail the apply for the managed ones."""
+    group_regions = {g.slug: set(g.regions) for g in req.access_groups}
+    for spec in req.models:
+        for d in spec.deployments:
+            if d.region not in regions or not d.access_groups:
+                continue
+            undeployed = sorted(s for s in d.access_groups if d.region not in group_regions[s])
             if undeployed:
                 raise _bad_request(
                     f"Deployment '{spec.model_id}@{d.region}' references access groups "
@@ -415,6 +424,7 @@ async def apply_model_config(
     """Apply a full desired-state model config (see module docstring)."""
     _validate_specs(req)
     regions, managed_ids, skipped_regions = _resolve_regions(db, req)
+    _validate_overrides_deployed(req, regions)
     region_names = {r.id: r.name for r in regions.values()}
     # Deactivations can hit regions not referenced in the payload at all.
     for r in db.query(DBRegion.id, DBRegion.name).all():

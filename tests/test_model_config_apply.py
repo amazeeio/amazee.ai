@@ -638,3 +638,19 @@ def test_apply_alias_cannot_carry_deployment_access_groups(client, admin_token, 
     res = _apply(client, admin_token, payload)
     assert res.status_code == 400
     assert "derived from alias_targets" in res.text
+
+
+def test_apply_override_in_skipped_region_does_not_block_apply(client, admin_token, test_region):
+    """The region-deployment check only judges regions this environment
+    resolves: an override on a row for an unknown region is skipped with the
+    row, never a 400 for the managed regions."""
+    payload = _payload(test_region.name)
+    payload["access_groups"].append(
+        {"slug": "preview", "label": "Preview", "description": None, "regions": []}
+    )
+    payload["models"][0]["deployments"].append(
+        {"region": "no-such-region", "access_groups": ["preview"]}
+    )
+    res = _apply(client, admin_token, payload)
+    assert res.status_code == 200, res.text
+    assert res.json()["skipped_regions"] == [{"region": "no-such-region", "reason": "unknown"}]
