@@ -3904,6 +3904,94 @@ def test_pool_key_with_cap_shows_period_fields(
     assert k["period_start"] == "2026-05-01T00:00:00Z"
 
 
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_pool_capped_key_single_endpoint_matches_team_window(
+    mock_get_team_info,
+    mock_get_key_info,
+    client,
+    admin_token,
+    test_team,
+    test_region,
+    db,
+):
+    """The single-key endpoint reports the same window as the team endpoint."""
+    test_team.budget_type = BudgetType.POOL
+    test_team.created_at = datetime.now(UTC) - timedelta(days=400)
+    db.add(test_team)
+    db.commit()
+    key = DBPrivateAIKey(
+        name="pool-single-window-key",
+        litellm_token="pool-single-window-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+    topup_at = datetime.now(UTC) - timedelta(days=3)
+    db.add_all(
+        [
+            DBSpendCap(
+                scope="key",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                key_id=key.id,
+                max_budget=5.0,
+            ),
+            DBPeriodicBudgetLedgerEntry(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                entry_type="topup",
+                amount_cents=5000,
+                consumed_cents=0,
+                purchased_at=topup_at,
+                expires_at=topup_at + timedelta(days=365),
+                is_active=True,
+            ),
+        ]
+    )
+    db.commit()
+
+    mock_get_key_info.return_value = {
+        "info": {
+            "spend": 0.5,
+            "max_budget": 5.0,
+            "budget_duration": None,
+            "budget_reset_at": None,
+            "expires": "2026-12-31T23:59:59Z",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-02T00:00:00Z",
+        }
+    }
+    mock_get_team_info.return_value = {
+        "team_info": {"spend": 0.5, "max_budget": 20.0},
+        "keys": [
+            {
+                "metadata": {"amazeeai_private_ai_key_name": key.name},
+                "user_id": None,
+                "spend": 0.5,
+                "max_budget": 5.0,
+                "budget_duration": None,
+                "budget_reset_at": None,
+            }
+        ],
+    }
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    key_response = client.get(f"/spend/{test_region.id}/key/{key.id}", headers=headers)
+    team_response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}", headers=headers
+    )
+    assert key_response.status_code == 200
+    assert team_response.status_code == 200
+    key_data = key_response.json()
+    team_data = team_response.json()
+    assert key_data["budget_duration"] == team_data["budget_duration"]
+    assert key_data["budget_reset_at"] == team_data["budget_reset_at"]
+    assert key_data["period_start"] == team_data["period_start"]
+    assert key_data["budget_duration"] != "31d"
+
+
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
 def test_pool_capped_key_without_subscription_shares_the_team_window(
     mock_get_team_info, client, admin_token, test_team, test_region, db
