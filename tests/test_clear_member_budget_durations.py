@@ -265,4 +265,16 @@ def test_clear_member_budget_durations_skips_a_member_who_left_the_team(
         assert mock_instance.update_team_member.await_args.kwargs["user_id"] == str(
             test_team_user.id
         )
+        # The skipped row keeps its duration: it is the only marker that a
+        # later run must list it again.
+        durations = {cap.user_id: cap.budget_duration for cap in _caps(db, test_team)}
+        assert durations[test_team_user.id] is None
+        assert durations[other.id] == "1mo"
+
+        mock_instance.update_team_member.reset_mock()
+        capsys.readouterr()
+        assert asyncio.run(run(apply=True)) == 0
+
+        mock_instance.update_team_member.assert_not_awaited()
+        assert "skipped=1" in capsys.readouterr().out
         db.rollback()

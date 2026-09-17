@@ -32,6 +32,9 @@ async def run(apply: bool) -> int:
         cleared = 0
         skipped = 0
         failed = 0
+        # Only a row we pushed loses its duration; a skipped row keeps it as
+        # the marker that the next run must list it again.
+        cleared_row_ids: set[int] = set()
 
         cap_rows = session.query(DBSpendCap).filter(
             DBSpendCap.scope == "team_member",
@@ -68,6 +71,7 @@ async def run(apply: bool) -> int:
             member_spend = membership_spend_by_user(team_info)
 
             listed_user_ids: set[int] = set()
+            listed_row_ids: set[int] = set()
             for row in rows:
                 scanned += 1
                 member_key = str(row.user_id)
@@ -83,6 +87,7 @@ async def run(apply: bool) -> int:
                     )
                     continue
                 listed_user_ids.add(row.user_id)
+                listed_row_ids.add(row.id)
                 # LiteLLM writes the membership row on the first budget push,
                 # so a member without one starts the cycle at spend 0.0.
                 spend = member_spend.get(member_key, 0.0)
@@ -110,23 +115,26 @@ async def run(apply: bool) -> int:
                 print(f"[FAIL] team_id={team_id} region={region.name} {error}")
             failed += len(errors)
             cleared += max(len(listed_user_ids) - len(errors), 0)
+            if not errors:
+                cleared_row_ids |= listed_row_ids
 
-        cap_count = cap_rows.count()
         # A failed read or write leaves that member's cycle live in LiteLLM.
         # Nulling the rows anyway would make the cleanup look finished.
         if failed:
             print(
                 f"Skipping the spend_caps cleanup: {failed} failure(s). "
-                f"{cap_count} row(s) still hold a duration; re-run once the "
-                "failures are resolved."
+                f"{cap_rows.count()} row(s) still hold a duration; re-run once "
+                "the failures are resolved."
             )
-        elif apply and cap_count:
-            cap_rows.update({"budget_duration": None}, synchronize_session=False)
+        elif apply and cleared_row_ids:
+            session.query(DBSpendCap).filter(DBSpendCap.id.in_(cleared_row_ids)).update(
+                {"budget_duration": None}, synchronize_session=False
+            )
             session.commit()
 
         print(
             f"Done. scanned={scanned} cleared={cleared} skipped={skipped} "
-            f"failed={failed} apply={apply}"
+            f"failed={failed} left={cap_rows.count()} apply={apply}"
         )
         return 0 if failed == 0 else 1
     finally:
