@@ -289,9 +289,34 @@ async def get_team_info_or_recreate(
             litellm_service,
             db.query(DBUser).filter(DBUser.team_id == team.id).all(),
         )
-        # The rebuilt memberships carry no member budget, so callers pushing
-        # member caps need the fresh membership list.
-        return await litellm_service.get_team_info(lite_team_id)
+        # The rebuilt memberships carry no member budget, so the caps go back
+        # on here; not every caller re-anchors them afterwards.
+        team_info = await litellm_service.get_team_info(lite_team_id)
+        if (
+            db.query(DBSpendCap.id)
+            .filter(
+                DBSpendCap.scope == "team_member",
+                DBSpendCap.team_id == team.id,
+                DBSpendCap.region_id == region.id,
+                DBSpendCap.max_budget.isnot(None),
+            )
+            .first()
+        ):
+            # Local import: worker imports this module at module level.
+            from app.core.worker import reanchor_member_caps
+
+            cap_errors = await reanchor_member_caps(
+                db, litellm_service, region, team.id, lite_team_id, team_info
+            )
+            if cap_errors:
+                logger.error(
+                    "Failed to re-anchor member caps in region %s after "
+                    "recreating team %s: %s",
+                    region.name,
+                    team.id,
+                    "; ".join(cap_errors),
+                )
+        return team_info
 
 
 async def restore_soft_deleted_team(db: Session, team: DBTeam) -> dict:
