@@ -340,7 +340,7 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> dict:
                 api_url=region.litellm_api_url, api_key=region.litellm_api_key
             )
             await reprovision_litellm_team(db, team, region, litellm_service, team_users)
-            has_member_caps = (
+            if (
                 db.query(DBSpendCap.id)
                 .filter(
                     DBSpendCap.scope == "team_member",
@@ -349,9 +349,7 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> dict:
                     DBSpendCap.max_budget.isnot(None),
                 )
                 .first()
-                is not None
-            )
-            if has_member_caps:
+            ):
                 # Local import: worker imports this module at module level.
                 from app.core.worker import reanchor_member_caps
 
