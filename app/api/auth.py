@@ -25,6 +25,7 @@ from sqlalchemy import func
 from urllib.parse import urlparse
 from jose import JWTError, jwt
 
+from app.core.audit import key_delete_audit_log
 from app.core.config import settings
 from app.core.dependencies import get_limit_service
 from app.core.roles import UserRole
@@ -47,7 +48,7 @@ from app.core.limit_service import (
 from app.core.worker import generate_pricing_url
 
 from app.db.database import get_db
-from app.db.models import DBUser, DBAPIToken, DBAuditLog, DBRegion, DBTeam
+from app.db.models import DBUser, DBAPIToken, DBRegion, DBTeam
 
 from app.services.litellm import LiteLLMService
 from app.services.dynamodb import DynamoDBService
@@ -1116,19 +1117,12 @@ async def generate_trial_access(
                 if litellm_key_deleted:
                     # The audit row commits with the user delete below.
                     db.add(
-                        DBAuditLog(
-                            event_type="private_ai_key.delete",
-                            resource_type="private_ai_key",
-                            resource_id=str(private_ai_key.id),
-                            action="delete",
-                            user_id=None,
-                            request_source=None,
-                            details={
-                                "team_id": team.id if team else None,
-                                "region_id": region.id,
-                                "key_name": private_ai_key.name,
-                                "source": "trial_signup_cleanup",
-                            },
+                        key_delete_audit_log(
+                            key_id=private_ai_key.id,
+                            team_id=team.id if team else None,
+                            region_id=region.id,
+                            key_name=private_ai_key.name,
+                            source="trial_signup_cleanup",
                         )
                     )
                 db.delete(user)
