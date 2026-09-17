@@ -485,6 +485,7 @@ async def subscription_deactivate(
             # already recorded for the remaining top-up to be requestable.
             projected_team_max_budget = current_team_spend + topup_remaining_dollars
 
+        sync_errors: list[str] = []
         try:
             # No budget_duration: LiteLLM must never reset team spend and hand
             # a cancelled team its old headroom back.
@@ -498,6 +499,9 @@ async def subscription_deactivate(
                 "Failed to update LiteLLM deactivation budget for team %s: %s",
                 team.id,
                 exc,
+            )
+            sync_errors.append(
+                f"Failed to update team {team.id} budget in region {region.name}: {exc}"
             )
 
         keys = get_team_region_litellm_keys(db, team_id=team.id, region_id=region.id)
@@ -532,6 +536,7 @@ async def subscription_deactivate(
                     key.id,
                     exc,
                 )
+                sync_errors.append(f"Failed to update key {key.id} in LiteLLM: {exc}")
 
         payment_id = await _record_periodic_payment_direct(
             db,
@@ -540,10 +545,37 @@ async def subscription_deactivate(
             amount_cents=0,
             currency="usd",
             payment_type="deactivation",
-            # The deactivation is done here, so the row is stamped straight
-            # away and a retry hits the idempotent skip at the top.
-            sync_status="success",
+            # The row is stamped by outcome, so a Stripe retry short-circuits
+            # at the top only once every LiteLLM write landed.
+            sync_status="sync_failed" if sync_errors else "success",
         )
+
+        if sync_errors:
+            logger.error(
+                "subscription.deactivate LiteLLM sync failed: team_id=%s "
+                "transaction_id=%s errors=%d",
+                team.id,
+                request.transaction_id,
+                len(sync_errors),
+            )
+            _write_audit_log(
+                db,
+                "subscription.deactivate",
+                "deactivate",
+                str(team.id),
+                502,
+                {
+                    "transaction_id": request.transaction_id,
+                    "region_id": request.region_id,
+                    "reason": request.reason,
+                    "outcome": "litellm_sync_failed",
+                    "sync_errors": sync_errors,
+                },
+            )
+            raise HTTPException(
+                status_code=502,
+                detail="LiteLLM sync failed during deactivation; deactivation must be retried",
+            )
 
         _write_audit_log(
             db,
