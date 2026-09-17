@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from app.core.config import settings
 from app.core.security import get_role_min_system_admin
 from app.core.team_service import (
+    get_team_info_or_recreate,
     get_team_region_litellm_keys,
     propagate_team_budget_to_keys,
 )
@@ -609,7 +610,7 @@ async def purchase_periodic_topup(
     previous_team_budget_duration: str | None = None
     team_budget_updated = False
     try:
-        team_info_resp = await service.get_team_info(lite_team_id)
+        team_info_resp = await get_team_info_or_recreate(db, team, region, service)
         team_info = team_info_resp.get("team_info", team_info_resp)
         current_spend = float(team_info.get("spend", 0.0) or 0.0)
         previous_max_budget_raw = team_info.get("max_budget")

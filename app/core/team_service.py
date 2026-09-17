@@ -266,8 +266,8 @@ async def get_team_info_or_recreate(
 ) -> dict:
     """Read the LiteLLM team info, recreating the team when it is gone.
 
-    Every caller that reads team info before a budget write needs this, so the
-    404 is handled once instead of once per call site.
+    Used by the billing cycle, the ledger sync and the top-up purchase, which
+    all write a budget right after the read and would fail on a missing team.
     """
     lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
     try:
