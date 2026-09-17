@@ -236,3 +236,33 @@ def test_clear_member_budget_durations_skips_a_member_whose_user_is_gone(
         assert out.count("[SKIP]") == 2
         monkeypatch.setattr(db, "query", real_query)
         db.rollback()
+
+
+def test_clear_member_budget_durations_skips_a_member_who_left_the_team(
+    db, test_team, test_team_user, test_region, monkeypatch, capsys
+):
+    other = _seed(db, test_team, test_team_user, test_region)
+    other.team_id = None
+    db.commit()
+
+    with (
+        patch("scripts.clear_member_budget_durations.SessionLocal", return_value=db),
+        patch("scripts.clear_member_budget_durations.LiteLLMService") as mock_litellm,
+    ):
+        monkeypatch.setattr(db, "close", lambda: None)
+        mock_instance = _mock_service(mock_litellm, test_team_user)
+
+        assert asyncio.run(run(apply=False)) == 0
+
+        out = capsys.readouterr().out
+        assert "skipped=1" in out
+        assert f"[SKIP] user_id={other.id}" in out
+        assert "user no longer in the team" in out
+
+        assert asyncio.run(run(apply=True)) == 0
+
+        mock_instance.update_team_member.assert_awaited_once()
+        assert mock_instance.update_team_member.await_args.kwargs["user_id"] == str(
+            test_team_user.id
+        )
+        db.rollback()

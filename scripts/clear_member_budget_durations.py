@@ -72,11 +72,14 @@ async def run(apply: bool) -> int:
                 scanned += 1
                 member_key = str(row.user_id)
                 user = session.query(DBUser).filter(DBUser.id == row.user_id).first()
-                if not user:
+                if not user or user.team_id != team_id:
                     skipped += 1
+                    reason = (
+                        "user row is gone" if not user else "user no longer in the team"
+                    )
                     print(
                         f"[SKIP] user_id={row.user_id} team_id={team_id} "
-                        f"region={region.name} user row is gone"
+                        f"region={region.name} {reason}"
                     )
                     continue
                 listed_user_ids.add(row.user_id)
