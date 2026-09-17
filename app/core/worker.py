@@ -838,7 +838,9 @@ async def apply_billing_cycle_for_team(
                     litellm_service,
                     db.query(DBUser).filter(DBUser.team_id == team.id).all(),
                 )
-                team_info_resp = {}
+                # The rebuilt memberships carry no member budget, so the member
+                # cap push below needs the fresh membership list.
+                team_info_resp = await litellm_service.get_team_info(lite_team_id)
             team_info = team_info_resp.get("team_info", team_info_resp)
             current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
 
