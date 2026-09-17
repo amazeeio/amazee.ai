@@ -1,0 +1,9 @@
+# Direct test dependencies; pinned to requirements.txt via the -c line below.
+# Edit this file, then run `make requirements`.
+-c requirements.txt
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0
+requests-mock==1.12.1
+faker==40.37.0
+pytest-env==1.7.0

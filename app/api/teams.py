@@ -22,6 +22,7 @@ from app.core.team_service import (
     soft_delete_team,
 )
 from app.core.litellm_user_sync import sync_add_user_to_team, sync_remove_user_from_team
+from app.core.pool_budget_service import key_cap_map
 from app.core.worker import generate_pricing_url, get_team_admin_email
 from app.db.database import get_db
 from app.db.models import (
@@ -555,48 +556,29 @@ async def extend_team_trial(team_id: int, db: Session = Depends(get_db)):
         # Explicit operator per-key caps (DBSpendCap) for this region's keys, so
         # the pool branch clears only *stale* caps left by the old trial path
         # and preserves deliberate key caps.
-        key_cap_map: dict[int, float] = {}
-        if is_pool_team and keys:
-            for cap_key_id, cap_value in (
-                db.query(DBSpendCap.key_id, DBSpendCap.max_budget)
-                .filter(
-                    DBSpendCap.scope == "key",
-                    DBSpendCap.region_id == region.id,
-                    DBSpendCap.key_id.isnot(None),
-                    DBSpendCap.max_budget.isnot(None),
-                    DBSpendCap.key_id.in_([k.id for k in keys]),
-                )
-                .all()
-            ):
-                key_cap_map[int(cap_key_id)] = float(cap_value)
+        cap_map: dict[int, float] = {}
+        if is_pool_team:
+            cap_map = key_cap_map(db, region.id, [k.id for k in keys])
 
         # Update each key's duration and budget via LiteLLM
         for key in keys:
             try:
                 if is_pool_team:
                     # Extend key life to the pool horizon and clear any stale
-                    # per-key budget so the team-level pool governs spend —
+                    # per-key budget so the team-level pool governs spend,
                     # unless an explicit operator key cap is configured, which
-                    # is preserved. Without clearing, a key previously clobbered
-                    # by the old trial path stays capped at DEFAULT_MAX_SPEND
-                    # even while the pool has credit (issue #631).
-                    configured_cap = key_cap_map.get(key.id)
-                    if configured_cap is None:
-                        await litellm_service.update_key_budget(
-                            litellm_token=key.litellm_token,
-                            budget_duration=None,
-                            max_budget=None,
-                            clear_max_budget=True,
-                            clear_budget_duration=True,
-                            blocked=False,
-                        )
-                    else:
-                        await litellm_service.update_key_budget(
-                            litellm_token=key.litellm_token,
-                            max_budget=configured_cap,
-                            clear_max_budget=False,
-                            blocked=False,
-                        )
+                    # is preserved. Without clearing, a key capped by an older
+                    # trial path stays stuck at DEFAULT_MAX_SPEND while the
+                    # pool still has credit. The key never keeps a LiteLLM
+                    # budget_duration: the ledger owns the cap cycle.
+                    configured_cap = cap_map.get(key.id)
+                    await litellm_service.update_key_budget(
+                        litellm_token=key.litellm_token,
+                        max_budget=configured_cap,
+                        clear_max_budget=configured_cap is None,
+                        clear_budget_duration=True,
+                        blocked=False,
+                    )
                     await litellm_service.update_key_duration(
                         litellm_token=key.litellm_token,
                         duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
@@ -1071,6 +1053,30 @@ async def merge_teams(
         # The target team takes the members without a cap check: the merge is
         # a system-admin operation, and its member counter is re-derived from
         # the real members on the next member addition.
+
+        # Budget rows reference the team without a cascade, so they must be
+        # handled before the delete. Key-scoped rows follow their key to the
+        # target team: the key keeps its LiteLLM budget, and a key with a
+        # budget but no cap row looks stale to the next pool key sync, which
+        # would clear it. The team and team_member rows describe the source
+        # team's own LiteLLM team, so they die with it.
+        db.query(DBSpendCap).filter(
+            DBSpendCap.team_id == source_team.id, DBSpendCap.scope == "key"
+        ).update({DBSpendCap.team_id: target_team.id}, synchronize_session=False)
+        db.query(DBBudgetAlertState).filter(
+            DBBudgetAlertState.team_id == source_team.id,
+            DBBudgetAlertState.subject_type == "key",
+        ).update(
+            {DBBudgetAlertState.team_id: target_team.id}, synchronize_session=False
+        )
+        db.query(DBSpendCap).filter(
+            DBSpendCap.team_id == source_team.id,
+            DBSpendCap.scope.in_(["team", "team_member"]),
+        ).delete(synchronize_session=False)
+        db.query(DBBudgetAlertState).filter(
+            DBBudgetAlertState.team_id == source_team.id,
+            DBBudgetAlertState.subject_type.in_(["team", "team_member"]),
+        ).delete(synchronize_session=False)
         LimitService(db).delete_limits(OwnerType.TEAM, source_team.id, commit=False)
         db.delete(source_team)
         db.commit()

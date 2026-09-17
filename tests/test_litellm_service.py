@@ -77,6 +77,33 @@ def test_create_key_success(mock_client_class, test_region, mock_httpx_post_clie
     # Verify key_alias was sanitized ("email - name" format)
     call_args = mock_httpx_post_client.post.call_args
     assert call_args.kwargs["json"]["key_alias"] == "test_at_example.com_-_Test_Key"
+    assert call_args.kwargs["json"]["team_id"] == "team-456"
+    assert call_args.kwargs["json"]["metadata"]["amazeeai_team_id"] == "team-456"
+
+
+@patch("httpx.AsyncClient")
+def test_create_key_without_team_omits_team_id(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    """A key for an owner with no team carries no team_id at all"""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    result = asyncio.run(
+        service.create_key(email="test@example.com", name="Test Key", user_id=123)
+    )
+
+    assert result == "test-private-key-123"
+    request_json = mock_httpx_post_client.post.call_args.kwargs["json"]
+    assert "team_id" not in request_json
+    assert "amazeeai_team_id" not in request_json["metadata"]
+    # A service account key without a team is rejected by LiteLLM
+    assert "service_account_id" not in request_json["metadata"]
+    # Without a team, this is what keeps the key on every model
+    assert request_json["models"] == ["all-team-models"]
 
 
 @patch("httpx.AsyncClient")
@@ -102,6 +129,30 @@ def test_create_key_with_email_fallback(
     # Verify key_alias was sanitized ("email - fallback_name" format)
     call_args = mock_httpx_post_client.post.call_args
     assert call_args.kwargs["json"]["key_alias"] == "test_at_example.com_-_key-123"
+
+
+@patch("httpx.AsyncClient")
+def test_create_key_reuses_a_given_key_value(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    """A caller-chosen key value is sent, so a stored token survives a rebuild."""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.create_key(
+            email="test@example.com",
+            name="Test Key",
+            user_id=123,
+            team_id="team-456",
+            key="sk-fixed",
+        )
+    )
+
+    assert mock_httpx_post_client.post.call_args.kwargs["json"]["key"] == "sk-fixed"
 
 
 @patch("httpx.AsyncClient")
@@ -231,6 +282,59 @@ def test_delete_key_failure(mock_client_class, test_region, mock_httpx_failure_c
 
     assert exc_info.value.status_code == 500
     assert "Failed to delete LiteLLM key" in exc_info.value.detail
+
+
+@patch("httpx.AsyncClient")
+def test_delete_team_success(mock_client_class, test_region, mock_httpx_post_client):
+    """Test successful team deletion"""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    result = asyncio.run(service.delete_team("test-team"))
+
+    assert result is True
+    mock_httpx_post_client.post.assert_called_once_with(
+        f"{test_region.litellm_api_url}/team/delete",
+        json={"team_ids": ["test-team"]},
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+    )
+
+
+@patch("httpx.AsyncClient")
+def test_delete_team_not_found(
+    mock_client_class, test_region, mock_httpx_failure_client
+):
+    """Test team deletion when the team is gone (should return True)"""
+    mock_client_class.return_value = mock_httpx_failure_client(404, "Not Found")
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    result = asyncio.run(service.delete_team("non-existent-team"))
+
+    assert result is True
+
+
+@patch("httpx.AsyncClient")
+def test_delete_team_failure(mock_client_class, test_region, mock_httpx_failure_client):
+    """Test team deletion failure"""
+    mock_client_class.return_value = mock_httpx_failure_client(
+        500, "Internal Server Error"
+    )
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(service.delete_team("test-team"))
+
+    assert exc_info.value.status_code == 500
+    assert "Failed to delete LiteLLM team" in exc_info.value.detail
 
 
 @patch("httpx.AsyncClient")
@@ -508,6 +612,38 @@ def test_update_key_budget_can_toggle_blocked(
 
 
 @patch("httpx.AsyncClient")
+def test_update_key_budget_can_reset_spend(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.update_key_budget(
+            litellm_token="test-token",
+            max_budget=5.0,
+            budget_duration=None,
+            clear_budget_duration=True,
+            spend=0.0,
+        )
+    )
+
+    mock_httpx_post_client.post.assert_called_once_with(
+        f"{test_region.litellm_api_url}/key/update",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={
+            "key": "test-token",
+            "budget_duration": None,
+            "max_budget": 5.0,
+            "spend": 0.0,
+        },
+    )
+
+
+@patch("httpx.AsyncClient")
 def test_update_key_duration_success(
     mock_client_class, test_region, mock_httpx_post_client
 ):
@@ -570,6 +706,33 @@ def test_set_key_restrictions_success(
         json={
             "key": "test-token",
             "duration": "30d",
+            "budget_duration": "monthly",
+            "max_budget": 100.0,
+            "rpm_limit": 1000,
+        },
+    )
+
+
+@patch("httpx.AsyncClient")
+def test_set_key_restrictions_without_duration(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    """duration=None must leave the key expiry out of the request"""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.set_key_restrictions("test-token", None, 100.0, 1000, "monthly")
+    )
+
+    mock_httpx_post_client.post.assert_called_once_with(
+        f"{test_region.litellm_api_url}/key/update",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={
+            "key": "test-token",
             "budget_duration": "monthly",
             "max_budget": 100.0,
             "rpm_limit": 1000,
@@ -1485,3 +1648,193 @@ def test_get_daily_activity_refuses_to_return_partial_history(
     assert exc.value.status_code == 500
     assert "exceeded" in str(exc.value.detail)
     assert mock_client.get.call_count == 100
+
+
+@patch("httpx.AsyncClient")
+def test_get_team_info_surfaces_upstream_status(mock_client_class, test_region):
+    """A missing team must reach the caller as a 404, not a flat 500."""
+    mock_response = Mock()
+    mock_response.status_code = 404
+    mock_response.json.return_value = {"error": "team not found"}
+    mock_response.raise_for_status.side_effect = HTTPStatusError(
+        "Not Found", request=None, response=mock_response
+    )
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(service.get_team_info("missing-team"))
+
+    assert exc_info.value.status_code == 404
+    assert "Failed to get LiteLLM team info" in exc_info.value.detail
+
+
+def _member_update_client(lite_team_id):
+    """AsyncClient mock whose /user/info lookup finds one membership budget."""
+    get_response = Mock()
+    get_response.status_code = 200
+    get_response.json.return_value = {
+        "teams": [{"team_id": lite_team_id, "team_memberships": [{"budget_id": "b1"}]}]
+    }
+    post_response = Mock()
+    post_response.status_code = 200
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = get_response
+    mock_client.post.return_value = post_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    return mock_client
+
+
+@patch("httpx.AsyncClient")
+def test_update_team_member_clear_budget_duration_sends_null(
+    mock_client_class, test_region
+):
+    mock_client = _member_update_client("team-1")
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.update_team_member(
+            team_id="team-1",
+            user_id="7",
+            role="user",
+            max_budget_in_team=None,
+            clear_budget_duration=True,
+        )
+    )
+
+    assert mock_client.post.await_count == 2
+    first_call, second_call = mock_client.post.await_args_list
+    assert first_call.args[0] == f"{test_region.litellm_api_url}/team/member_update"
+    assert first_call.kwargs["json"] == {
+        "team_id": "team-1",
+        "user_id": "7",
+        "role": "user",
+        "budget_duration": None,
+    }
+    assert second_call.args[0] == f"{test_region.litellm_api_url}/budget/update"
+    assert second_call.kwargs["json"] == {
+        "budget_id": "b1",
+        "budget_duration": None,
+    }
+
+
+@patch("httpx.AsyncClient")
+def test_update_team_member_clear_max_budget_sends_explicit_null(
+    mock_client_class, test_region
+):
+    mock_client = _member_update_client("team-1")
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.update_team_member(
+            team_id="team-1",
+            user_id="7",
+            role="user",
+            max_budget_in_team=None,
+            clear_max_budget_in_team=True,
+            clear_budget_duration=True,
+        )
+    )
+
+    first_call, second_call = mock_client.post.await_args_list
+    assert first_call.kwargs["json"] == {
+        "team_id": "team-1",
+        "user_id": "7",
+        "role": "user",
+        "max_budget_in_team": None,
+        "budget_duration": None,
+    }
+    assert second_call.kwargs["json"] == {
+        "budget_id": "b1",
+        "max_budget": None,
+        "budget_duration": None,
+    }
+
+
+@patch("httpx.AsyncClient")
+def test_update_team_member_without_duration_skips_budget_update(
+    mock_client_class, test_region
+):
+    mock_client = _member_update_client("team-1")
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.update_team_member(
+            team_id="team-1",
+            user_id="7",
+            role="user",
+            max_budget_in_team=5.0,
+        )
+    )
+
+    mock_client.post.assert_awaited_once()
+    assert mock_client.post.await_args.kwargs["json"]["max_budget_in_team"] == 5.0
+    mock_client.get.assert_not_awaited()
+
+
+@patch("httpx.AsyncClient")
+def test_update_team_member_treats_user_not_in_team_as_noop(
+    mock_client_class, test_region, caplog
+):
+    """LiteLLM 400 "User not found in team" must not fail the caller."""
+    request = httpx.Request(
+        "POST", f"{test_region.litellm_api_url}/team/member_update"
+    )
+    response = httpx.Response(
+        status_code=400, request=request, json={"error": "User not found in team"}
+    )
+    post_response = Mock()
+    post_response.status_code = 400
+    post_response.raise_for_status.side_effect = HTTPStatusError(
+        "Bad Request", request=request, response=response
+    )
+    get_response = Mock()
+    get_response.status_code = 200
+    get_response.json.return_value = {"teams": []}
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = post_response
+    mock_client.get.return_value = get_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    with caplog.at_level("WARNING"):
+        asyncio.run(
+            service.update_team_member(
+                team_id="team-1",
+                user_id="7",
+                role="user",
+                max_budget_in_team=5.0,
+                clear_budget_duration=True,
+            )
+        )
+
+    assert mock_client.post.await_count == 1
+    assert "No membership budget_id found" in caplog.text

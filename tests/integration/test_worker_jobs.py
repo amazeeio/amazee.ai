@@ -1,7 +1,7 @@
 """Worker jobs invoked directly as functions against real LiteLLM proxies.
 
-Covered: apply_billing_cycle_for_team (the hardcoded 31d + Stripe-30d safety
-net), monitor_teams (smoke — SESService construction fails gracefully without
+Covered: apply_billing_cycle_for_team (team budget projected from the ledger,
+with no LiteLLM budget cycle), monitor_teams (smoke — SESService construction fails gracefully without
 AWS creds), hard_delete_expired_teams (cascades into LiteLLM key deletion and
 the region's Postgres).
 Trial jobs (monitor_trial_users / reap_trial_keys) are follow-up: their setup
@@ -51,8 +51,8 @@ async def test_apply_billing_cycle_sets_litellm_team_budget(
     info = await service.get_team_info(lt_team_id)
     team_info = info.get("team_info", info)
     assert float(team_info.get("max_budget") or 0) == 50.0
-    # The 31d (not 30d) duration is the deliberate Stripe safety net.
-    assert team_info.get("budget_duration") == "31d"
+    # The ledger owns the period, so LiteLLM must hold no budget cycle.
+    assert not team_info.get("budget_duration")
 
     # Keys must still work after the cycle applies.
     assert completion(LITELLM_A_URL, key["litellm_token"]).status_code == 200

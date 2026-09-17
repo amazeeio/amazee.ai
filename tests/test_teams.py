@@ -1255,6 +1255,148 @@ def test_merge_teams_endpoint_success(mock_post, client, admin_token, db):
     assert data["users_migrated"] == 0
 
 
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
+def test_merge_teams_with_budget_rows(mock_post, client, admin_token, db, test_region):
+    """
+    GIVEN: A source team with a team spend cap, a member spend cap, a budget
+        alert state row and a key with its own key-scoped cap
+    WHEN: It is merged into a target team
+    THEN: A 200 is returned, the team-level rows are gone, the key-scoped rows
+        moved to the target team and the target team stays
+
+    Both tables reference teams.id without a cascade, so the delete at the end
+    of the merge raised a foreign key violation while those rows existed. The
+    key rows must survive: the key itself moves to the target team and keeps
+    its LiteLLM budget.
+    """
+    source_team = DBTeam(
+        name="Budget Source Team",
+        admin_email="budget-source@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    target_team = DBTeam(
+        name="Budget Target Team",
+        admin_email="budget-target@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    db.add_all([source_team, target_team])
+    db.commit()
+    db.refresh(source_team)
+    db.refresh(target_team)
+
+    member = DBUser(email="merge-budget-member@example.com", team_id=source_team.id)
+    db.add(member)
+    key = DBPrivateAIKey(
+        database_name="merge-budget-key",
+        name="merge-budget-key",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="merge-budget-token",
+        litellm_api_url="https://test-litellm.com",
+        team_id=source_team.id,
+        region_id=test_region.id,
+    )
+    db.add(key)
+    db.commit()
+    db.refresh(member)
+    db.refresh(key)
+
+    db.add_all(
+        [
+            DBSpendCap(
+                scope="key",
+                region_id=test_region.id,
+                team_id=source_team.id,
+                key_id=key.id,
+                max_budget=7.0,
+            ),
+            DBBudgetAlertState(
+                subject_key=f"key:{key.id}",
+                subject_type="key",
+                region_id=test_region.id,
+                team_id=source_team.id,
+                period_key="2026-08",
+            ),
+            DBSpendCap(
+                scope="team",
+                region_id=test_region.id,
+                team_id=source_team.id,
+                max_budget=20.0,
+                budget_duration="31d",
+            ),
+            DBSpendCap(
+                scope="team_member",
+                region_id=test_region.id,
+                team_id=source_team.id,
+                user_id=member.id,
+                max_budget=3.0,
+                budget_duration="1mo",
+            ),
+            DBBudgetAlertState(
+                subject_key=f"team:{source_team.id}",
+                subject_type="team",
+                region_id=test_region.id,
+                team_id=source_team.id,
+                period_key="2026-08",
+            ),
+        ]
+    )
+    db.commit()
+    source_team_id = source_team.id
+    target_team_id = target_team.id
+
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.raise_for_status.return_value = None
+
+    response = client.post(
+        f"/teams/{target_team_id}/merge",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "source_team_id": source_team_id,
+            "conflict_resolution_strategy": "delete",
+        },
+    )
+
+    assert response.status_code == 200
+    assert db.query(DBTeam).filter(DBTeam.id == source_team_id).first() is None
+    assert db.query(DBTeam).filter(DBTeam.id == target_team_id).first() is not None
+    assert (
+        db.query(DBSpendCap).filter(DBSpendCap.team_id == source_team_id).count() == 0
+    )
+    assert (
+        db.query(DBBudgetAlertState)
+        .filter(DBBudgetAlertState.team_id == source_team_id)
+        .count()
+        == 0
+    )
+
+    # The key moved, so its cap and alert state moved with it.
+    key_cap = db.query(DBSpendCap).filter(DBSpendCap.key_id == key.id).one()
+    assert key_cap.team_id == target_team_id
+    assert key_cap.max_budget == 7.0
+    assert (
+        db.query(DBBudgetAlertState)
+        .filter(DBBudgetAlertState.subject_key == f"key:{key.id}")
+        .one()
+        .team_id
+        == target_team_id
+    )
+    assert (
+        db.query(DBSpendCap)
+        .filter(
+            DBSpendCap.team_id == target_team_id,
+            DBSpendCap.scope.in_(["team", "team_member"]),
+        )
+        .count()
+        == 0
+    )
+
+
 def test_merge_teams_endpoint_unauthorized(client, test_token, db):
     """Given a non-admin user
     When attempting to merge teams

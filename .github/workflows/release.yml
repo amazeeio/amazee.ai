@@ -37,8 +37,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write       # push the release branch and the tag, create the Release
-      pull-requests: write  # open the deploy pull request
+      contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
@@ -47,14 +46,26 @@ jobs:
       LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}
       REPO_URL: ${{ github.server_url }}/${{ github.repository }}
     steps:
+      # Act as the org's automation GitHub App so the pull request it opens gets
+      # its checks run (pull requests from the default github.token don't).
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app
+        with:
+          client-id: ${{ secrets.AMAZEE_AI_AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AMAZEE_AI_AUTOMATION_APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          token: ${{ steps.app.outputs.token }}
 
       - name: Configure git author
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          bot="${{ steps.app.outputs.app-slug }}[bot]"
+          git config user.name "$bot"
+          git config user.email "$(gh api "/users/$bot" --jq .id)+$bot@users.noreply.github.com"
 
       - name: Resolve the commit to release
         id: target
@@ -181,7 +192,7 @@ jobs:
 
       - name: Create the GitHub Release
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           TAG: ${{ steps.version.outputs.tag }}
           PREV: ${{ steps.version.outputs.previous }}
           RESPONSE_FILE: ${{ steps.notes.outputs.response-file }}
@@ -198,7 +209,7 @@ jobs:
 
       - name: Open the deploy pull request
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           BRANCH: ${{ steps.version.outputs.branch }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |

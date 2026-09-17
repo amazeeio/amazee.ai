@@ -365,7 +365,7 @@ def _amazee_team_id_from_litellm(entity_id: str, region_name: str) -> int | None
 
 async def _exact_team_key_state(
     service: LiteLLMService, lite_team_id: str
-) -> dict[str, dict]:
+) -> dict[str, dict] | None:
     """Current per-key ``spend``/``max_budget`` for one team, keyed by hashed token.
 
     Supplies the ``max_budget`` a key is measured against when our ``spend_caps``
@@ -373,12 +373,15 @@ async def _exact_team_key_state(
     is never read: LiteLLM's key counters are lifetime totals that a top-up does
     not reset, so they cannot be divided by a budget that excludes expired
     entries. Spend always comes from the daily-activity rows.
+
+    Returns ``None`` when the fetch fails, so a caller can tell "LiteLLM lists no
+    keys" apart from "we do not know which keys LiteLLM lists".
     """
     try:
         keys = await service.list_keys_for_team(lite_team_id)
     except Exception as exc:
         logger.warning("Could not fetch exact key state for %s: %s", lite_team_id, exc)
-        return {}
+        return None
     return {
         str(key.get("token")): key
         for key in keys
@@ -517,11 +520,9 @@ def _litellm_cycle_anchor(
 def _cap_cycle_anchor(cap_created_at: datetime | None, team: DBTeam) -> datetime | None:
     """Where a rolling ``Nd`` cap cycle is anchored.
 
-    The cap row's own ``created_at``. Setting a cap calls ``update_key_budget``
-    with the duration, which is the moment LiteLLM starts counting: it stores
-    ``budget_reset_at = that moment + N days`` and steps it on from there. An
-    amount-only change deliberately passes no duration, so the original anchor
-    survives and ``created_at`` stays the right one.
+    The cap row's own ``created_at``: the cycle runs from the moment the cap was
+    set. The ledger owns the key cap cycle and LiteLLM holds no duration on a
+    key, so only rows written before that rule may still carry one.
 
     Team creation is the wrong anchor whenever a cap was added later than the team,
     which is common: the two dates can be hundreds of days apart, and the cap's own
@@ -540,10 +541,10 @@ def _member_budget(
 ) -> tuple[float | None, str | None, datetime | None]:
     """Per-member budget and the cycle it applies to.
 
-    The team-member cap wins, else the user's BUDGET limit. The cap carries a
-    duration because it is a per-cycle allowance; the BUDGET limit is absolute and
-    returns ``None`` for the duration, so the caller measures it over the team's
-    cycle instead.
+    The team-member cap wins, else the user's BUDGET limit. A member cap has no
+    duration of its own and is measured over the team's billing window; a
+    duration only appears on legacy rows written before the cycle owned member
+    caps. The BUDGET limit is absolute and also returns ``None``.
     """
     cap = (
         db.query(
@@ -959,7 +960,7 @@ async def evaluate_region(
 
         for db_key in db_keys:
             hashed = LiteLLMService.hash_token(db_key.litellm_token)
-            key_state = exact_keys.get(hashed)
+            key_state = (exact_keys or {}).get(hashed)
             litellm_max_budget = (
                 key_state.get("max_budget") if key_state is not None else None
             )
@@ -1026,12 +1027,12 @@ async def evaluate_region(
             if not key_budget or key_budget <= 0:
                 continue
 
-            # A cap is an allowance *per cycle*, so its percentage is measured over
-            # that cycle. Caps are written as 31d or 1mo and LiteLLM zeroes the
-            # key's spend at each boundary; dividing the team's longer cycle of
-            # spend by a one-month cap would read far above 100 % and alert on
-            # nothing. A key bounded by the pool has no cycle of its own and keeps
-            # the team's window.
+            # A cap is an allowance *per cycle*, so its percentage is measured
+            # over that cycle: dividing the team's longer stretch of spend by a
+            # one-month cap would read far above 100 % and alert on nothing.
+            # New key caps carry no duration, so only rows written earlier reach
+            # this branch. A key bounded by the pool has no cycle of its own and
+            # keeps the team's window.
             key_window = window
             key_since = since
             if cap_duration:
@@ -1065,20 +1066,38 @@ async def evaluate_region(
                 )
             )
 
-        # The entity total covers every key LiteLLM attributes to the team, including
-        # any we do not have a row for. A gap means our key table is out of sync, and
-        # the team percentage would be understated, so it is worth saying so.
-        entity_total = _sum_from(entity_days.get(lite_team_id), since)
-        if entity_total - team_spend > 0.01:
-            logger.warning(
-                "Team %s region %s: LiteLLM attributes %.4f but our keys account for "
-                "%.4f; %.4f of spend belongs to keys missing from ai_tokens",
+        # A gap means our key table is out of sync and the team percentage would be
+        # understated, so it is worth saying so. The entity figure cannot answer that:
+        # it keeps the spend of deleted keys forever, so only spend LiteLLM can still
+        # tie to a live key counts. With no key on either side there is nothing to
+        # compare, and the leftover entity spend is history, not a gap.
+        if exact_keys is None:
+            # Without the key list an empty set of untracked keys is unknowable,
+            # not a fact, so a missing-key warning here would be guesswork.
+            logger.debug(
+                "Team %s region %s: skipping key reconciliation, key list unavailable",
                 team.id,
                 region.id,
-                entity_total,
-                team_spend,
-                entity_total - team_spend,
             )
+            tracked = set()
+        else:
+            tracked = set(exact_keys) | {
+                LiteLLMService.hash_token(key.litellm_token) for key in db_keys
+            }
+        if tracked:
+            attributed_total = sum(
+                _sum_from(key_days.get(hashed), since) for hashed in tracked
+            )
+            if attributed_total - team_spend > 0.01:
+                logger.warning(
+                    "Team %s region %s: LiteLLM attributes %.4f but our keys account "
+                    "for %.4f; %.4f of spend belongs to keys missing from ai_tokens",
+                    team.id,
+                    region.id,
+                    attributed_total,
+                    team_spend,
+                    attributed_total - team_spend,
+                )
 
         subjects.append(
             _Subject(
@@ -1107,9 +1126,9 @@ async def evaluate_region(
                 member_budget, member_duration, member_anchor = _member_budget(
                     db, team.id, user.id, region.id
                 )
-                # Same rule as for key caps: a team-member cap is a per-cycle
-                # allowance, so it is measured over its own cycle. A plain USER
-                # BUDGET limit is absolute and keeps the team's.
+                # A member cap is measured over the team's billing window. Only
+                # legacy rows still carry a duration; those keep their own cycle,
+                # same rule as for key caps.
                 member_window = window
                 member_total = member_spend.get(user.id, 0.0)
                 if member_duration:

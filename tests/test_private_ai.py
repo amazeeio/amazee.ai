@@ -3,6 +3,8 @@ from unittest.mock import patch, Mock, AsyncMock
 import pytest
 
 from app.db.models import (
+    DBAuditLog,
+    DBBudgetAlertState,
     DBPrivateAIKey,
     DBPeriodicBudgetLedgerEntry,
     DBPoolPurchase,
@@ -223,6 +225,25 @@ def test_delete_private_ai_key(
     deleted_key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
     assert deleted_key is None
 
+    # Verify the delete was audited
+    audit_rows = (
+        db.query(DBAuditLog)
+        .filter(
+            DBAuditLog.resource_type == "private_ai_key",
+            DBAuditLog.resource_id == str(key_id),
+        )
+        .all()
+    )
+    assert len(audit_rows) == 1
+    audit = audit_rows[0]
+    assert audit.event_type == "private_ai_key.delete"
+    assert audit.action == "delete"
+    assert audit.user_id == test_user.id
+    assert audit.request_source == "api"
+    assert audit.details["key_name"] == "Test Key to Delete"
+    assert audit.details["region_id"] == test_region.id
+    assert audit.details["team_id"] is None
+
 
 @patch("httpx.AsyncClient")
 def test_delete_private_ai_key_removes_dependent_spend_caps(
@@ -258,7 +279,14 @@ def test_delete_private_ai_key_removes_dependent_spend_caps(
         max_budget=1.0,
         budget_duration="monthly",
     )
-    db.add(cap)
+    alert = DBBudgetAlertState(
+        subject_key=f"key:{test_key.id}",
+        subject_type="key",
+        region_id=test_region.id,
+        key_id=test_key.id,
+        period_key="2026-08",
+    )
+    db.add_all([cap, alert])
     db.commit()
 
     response = client.delete(
@@ -268,6 +296,12 @@ def test_delete_private_ai_key_removes_dependent_spend_caps(
 
     assert response.status_code == 200
     assert db.query(DBSpendCap).filter(DBSpendCap.key_id == test_key.id).count() == 0
+    assert (
+        db.query(DBBudgetAlertState)
+        .filter(DBBudgetAlertState.key_id == test_key.id)
+        .count()
+        == 0
+    )
     assert (
         db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == test_key.id).first()
         is None
@@ -1097,6 +1131,52 @@ def test_view_spend_uses_db_key_spend_cap_max_budget(
     db.commit()
 
 
+def _make_spend_scope_key(db, region, team_id, suffix):
+    key = DBPrivateAIKey(
+        database_name=f"spend-scope-{suffix}",
+        name=f"Spend Scope Key {suffix}",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token=f"spend-scope-token-{suffix}",
+        litellm_api_url="https://test-litellm.com",
+        owner_id=None,
+        team_id=team_id,
+        region_id=region.id,
+    )
+    db.add(key)
+    db.commit()
+    db.refresh(key)
+    return key
+
+
+@pytest.mark.parametrize("team_id_offset,expected_status", [(999, 404), (0, 200)])
+@patch("httpx.AsyncClient")
+def test_get_private_ai_key_spend_checks_declared_team(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    test_team,
+    db,
+    mock_httpx_get_client,
+    team_id_offset,
+    expected_status,
+):
+    """A declared team_id that does not own the key 404s, even for an admin."""
+    mock_client_class.return_value = mock_httpx_get_client
+    key = _make_spend_scope_key(db, test_region, test_team.id, "declared")
+
+    response = client.get(
+        f"/private-ai-keys/{key.id}/spend?team_id={key.team_id + team_id_offset}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == expected_status
+
+    db.delete(key)
+    db.commit()
+
+
 @patch("httpx.AsyncClient")
 def test_view_spend_with_missing_fields(
     mock_client_class,
@@ -1294,121 +1374,6 @@ def test_view_spend_when_litellm_returns_non_404_error(
 
 
 @patch("httpx.AsyncClient")
-def test_update_budget_period_as_key_creator(
-    mock_client_class,
-    client,
-    team_key_creator_token,
-    test_region,
-    db,
-    test_team_key_creator,
-    mock_httpx_post_client,
-):
-    """Test that a key_creator cannot update the budget period for a key they own"""
-    # Use the httpx POST client fixture (though it shouldn't be called)
-    mock_client_class.return_value = mock_httpx_post_client
-
-    # Create a test key owned by the key_creator user
-    test_key = DBPrivateAIKey(
-        database_name="test-db-key-creator",
-        name="Test Key for Key Creator",
-        database_host="test-host",
-        database_username="test-user",
-        database_password="test-pass",
-        litellm_token="test-token-key-creator",
-        litellm_api_url="https://test-litellm.com",
-        owner_id=test_team_key_creator.id,
-        region_id=test_region.id,
-    )
-    db.add(test_key)
-    db.commit()
-    db.refresh(test_key)
-
-    # Try to update the budget period as a key_creator
-    response = client.put(
-        f"/private-ai-keys/{test_key.id}/budget-period",
-        headers={"Authorization": f"Bearer {team_key_creator_token}"},
-        json={"budget_duration": "monthly"},
-    )
-
-    # Verify the response
-    assert response.status_code == 403
-    assert "Not authorized to perform this action" in response.json()["detail"]
-
-    # Verify that the LiteLLM API was not called
-    mock_httpx_post_client.post.assert_not_called()
-
-    # Clean up the test key
-    db.delete(test_key)
-    db.commit()
-
-
-@patch("httpx.AsyncClient")
-def test_update_budget_duration_as_team_admin(
-    mock_client_class,
-    client,
-    team_admin_token,
-    test_region,
-    db,
-    test_team,
-    mock_httpx_combined_client,
-):
-    """Test that a team admin can update the budget duration for a team-owned key"""
-    # Use the combined httpx client fixture for both POST (update) and GET (info) operations
-    mock_client_class.return_value = mock_httpx_combined_client
-
-    # Create a test key owned by the team
-    test_key = DBPrivateAIKey(
-        database_name="test-db-team",
-        name="Test Team Key",
-        database_host="test-host",
-        database_username="test-user",
-        database_password="test-pass",
-        litellm_token="test-token-team",
-        litellm_api_url="https://test-litellm.com",
-        team_id=test_team.id,
-        region_id=test_region.id,
-    )
-    db.add(test_key)
-    db.commit()
-    db.refresh(test_key)
-
-    # Update the budget duration as team admin
-    response = client.put(
-        f"/private-ai-keys/{test_key.id}/budget-period",
-        headers={"Authorization": f"Bearer {team_admin_token}"},
-        json={"budget_duration": "monthly"},
-    )
-
-    # Verify the response
-    assert response.status_code == 200
-    data = response.json()
-    assert data["budget_duration"] == "monthly"
-
-    # The word form is canonicalised before it reaches LiteLLM, so the key does
-    # not end up carrying a duration our period maths cannot parse.
-    mock_httpx_combined_client.post.assert_called_with(
-        f"{test_region.litellm_api_url}/key/update",
-        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
-        json={
-            "key": test_key.litellm_token,
-            "budget_duration": "30d",
-            "duration": "365d",
-        },
-    )
-
-    # Verify that the key info was checked
-    mock_httpx_combined_client.get.assert_called_with(
-        f"{test_region.litellm_api_url}/key/info",
-        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
-        params={"key": test_key.litellm_token},
-    )
-
-    # Clean up the test key
-    db.delete(test_key)
-    db.commit()
-
-
-@patch("httpx.AsyncClient")
 def test_create_llm_token_as_system_admin(
     mock_client_class, client, admin_token, test_region, mock_httpx_post_client
 ):
@@ -1447,6 +1412,21 @@ def test_create_llm_token_as_system_admin(
         and key["name"] == "Test LLM Token"
         for key in list_data
     )
+
+    # The admin has no team, so LiteLLM must get no team id at all
+    key_generate_calls = [
+        call
+        for call in mock_httpx_post_client.post.call_args_list
+        if str(call.args[0]).endswith("/key/generate")
+        and call.kwargs.get("json", {})
+        .get("metadata", {})
+        .get("amazeeai_private_ai_key_name")
+        == "Test LLM Token"
+    ]
+    assert len(key_generate_calls) == 1
+    request_json = key_generate_calls[0].kwargs["json"]
+    assert "team_id" not in request_json
+    assert "amazeeai_team_id" not in request_json["metadata"]
 
 
 @patch("httpx.AsyncClient")

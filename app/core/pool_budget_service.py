@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.periodic_budget_ledger_service import compute_active_topup_remaining
-from app.db.models import DBPeriodicBudgetLedgerEntry, DBPoolPurchase
+from app.db.models import DBPeriodicBudgetLedgerEntry, DBPoolPurchase, DBSpendCap
 
 
 def _pool_budget_duration_from_last_purchase(
@@ -96,6 +96,45 @@ def pool_team_has_ever_purchased(db: Session, team_id: int, region_id: int) -> b
         is not None
     )
     return has_pool_purchase
+
+
+def team_gate_locked(db: Session, team, region_id: int) -> bool:
+    """True while a purchase-gated team has never bought anything in the region.
+
+    Its keys then sit at max_budget=0 with the gate duration, and that zero is
+    the only thing stopping inference, so no reconcile or cleanup may touch
+    them.
+    """
+    return bool(
+        team is not None
+        and team.requires_pool_purchase_gate
+        and not pool_team_has_ever_purchased(db, team.id, region_id)
+    )
+
+
+def key_cap_map(
+    db: Session, region_id: int, key_ids: list[int]
+) -> dict[int, float]:
+    """Operator per-key caps for these keys, as {key_id: max_budget}.
+
+    Only rows with a budget are returned, so membership means "this key has a
+    cap the ledger owns".
+    """
+    if not key_ids:
+        return {}
+    return {
+        int(key_id): float(max_budget)
+        for key_id, max_budget in db.query(
+            DBSpendCap.key_id, DBSpendCap.max_budget
+        )
+        .filter(
+            DBSpendCap.scope == "key",
+            DBSpendCap.region_id == region_id,
+            DBSpendCap.max_budget.isnot(None),
+            DBSpendCap.key_id.in_(key_ids),
+        )
+        .all()
+    }
 
 
 def pool_team_budget_duration_for_enforcement(
