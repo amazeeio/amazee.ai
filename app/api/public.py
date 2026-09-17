@@ -6,15 +6,18 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.core.config import catalog_manages, settings
 from app.core.security import get_current_user_from_auth
 from app.db.database import get_db
 from app.db.models import (
     DBModel,
+    DBModelAccessGroup,
     DBModelAccessGroupModel,
     DBModelAccessGroupRegion,
+    DBModelAliasTarget,
+    DBModelRegion,
     DBRegion,
     DBTeamModelAccessGroup,
     DBTeamRegion,
@@ -689,7 +692,13 @@ def _filter_region_groups_by_access(
     the caller can actually call — and would make the listing move whenever an
     apply rewrites the (global, region-less) model->group memberships.
 
-    Query cost is fixed per request (at most three queries) regardless of how
+    A deployment with access_groups_override belongs to exactly those groups
+    in its region, whatever the model-level memberships say. An alias is
+    judged by its regional target: LiteLLM expands a model_group_alias into
+    a copy of the target, tags included, so the target's groups are what
+    the proxy authorizes against.
+
+    Query cost is fixed per request (a handful of queries) regardless of how
     many regions are enforced — this is a high-traffic endpoint.
     """
     if user is not None and user.is_admin:
@@ -744,6 +753,39 @@ def _filter_region_groups_by_access(
     names_by_group: dict[int, set[str]] = {}
     for group_id, model_name in rows:
         names_by_group.setdefault(group_id, set()).add(model_name)
+    slug_by_id = dict(
+        db.query(DBModelAccessGroup.id, DBModelAccessGroup.slug)
+        .filter(DBModelAccessGroup.id.in_(all_group_ids))
+        .all()
+    )
+    target_model = aliased(DBModel)
+    alias_targets: dict[tuple[int, str], str] = {
+        (region_id, alias_name): target_name
+        for region_id, alias_name, target_name in (
+            db.query(DBModelAliasTarget.region_id, DBModel.model_id, target_model.model_id)
+            .join(DBModel, DBModel.id == DBModelAliasTarget.alias_model_id)
+            .join(target_model, target_model.id == DBModelAliasTarget.target_model_id)
+            .filter(
+                DBModelAliasTarget.region_id.in_(allowed_group_ids.keys()),
+                DBModel.deleted_at.is_(None),
+                target_model.deleted_at.is_(None),
+            )
+            .all()
+        )
+    }
+    overrides: dict[tuple[int, str], set[str]] = {
+        (region_id, model_name): set(slugs)
+        for region_id, model_name, slugs in (
+            db.query(DBModelRegion.region_id, DBModel.model_id, DBModelRegion.access_groups_override)
+            .join(DBModel, DBModel.id == DBModelRegion.model_id)
+            .filter(
+                DBModelRegion.region_id.in_(allowed_group_ids.keys()),
+                DBModelRegion.access_groups_override.isnot(None),
+                DBModel.deleted_at.is_(None),
+            )
+            .all()
+        )
+    }
 
     filtered: list[PublicRegionModels] = []
     for group in region_groups:
@@ -754,11 +796,20 @@ def _filter_region_groups_by_access(
         allowed: set[str] = set().union(
             *(names_by_group.get(gid, set()) for gid in allowed_group_ids[region.id])
         )
+        allowed_slugs = {slug_by_id[gid] for gid in allowed_group_ids[region.id] if gid in slug_by_id}
+
+        def visible(model_name: str, region_id: int = region.id) -> bool:
+            effective = alias_targets.get((region_id, model_name), model_name)
+            override = overrides.get((region_id, effective))
+            if override is None:
+                return effective in allowed
+            return bool(override & allowed_slugs)
+
         filtered.append(
             PublicRegionModels(
                 region=group.region,
                 status=group.status,
-                models=[m for m in group.models if m.model_id in allowed],
+                models=[m for m in group.models if visible(m.model_id)],
             )
         )
     return filtered
