@@ -2182,6 +2182,63 @@ def test_subscription_deactivate_retry_debits_spend_since_the_first_attempt(
     )
 
 
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_debits_only_the_current_period(
+    mock_litellm_class,
+    _mock_capture_spend,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """The period settled at the last cycle must not be debited a second time."""
+    sub_entry, period_start = _seed_deactivate_period(
+        db, test_team, test_region, baseline_spend=4.0
+    )
+    _seed_deactivate_key(db, test_team, test_region, "deactivate-current-period-key")
+    # The cycle that opened the running period snapshotted the counter at 10.00;
+    # everything below that was debited then.
+    db.add(
+        DBTeamSpendPeriod(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            budget_type=test_team.budget_type,
+            period_start=period_start,
+            period_end=period_start + timedelta(days=31),
+            total_spend=10.0,
+            source="moad_subscription_cycle",
+        )
+    )
+    db.commit()
+
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 12.0}})
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    response = client.post(
+        "/billing/subscription/deactivate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_cancel_current_period",
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+            "reason": "cancelled",
+        },
+    )
+
+    assert response.status_code == 200
+    db.refresh(sub_entry)
+    # 12.00 minus the 10.00 of the cycle snapshot, not minus the 4.00 of the
+    # cycle before it.
+    assert sub_entry.consumed_cents == 200
+
+
 def test_subscription_deactivate_endpoint_idempotent(
     client, admin_token, db, test_team
 ):

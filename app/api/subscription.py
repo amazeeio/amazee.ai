@@ -13,7 +13,6 @@ from app.core.security import get_role_min_system_admin
 from app.core.spend_period_service import upsert_team_spend_period
 from app.core.team_service import get_team_region_litellm_keys
 from app.core.worker import (
-    _previous_period_spend_baseline_cents,
     _record_periodic_payment_direct,
     _sync_periodic_ledger_for_period,
     apply_billing_cycle_for_team,
@@ -102,6 +101,29 @@ DEACTIVATE_SNAPSHOT_SOURCES = (
     "moad_subscription_deactivate",
     "moad_subscription_deactivate_retry",
 )
+
+
+def _current_period_spend_baseline_cents(
+    db: Session, *, team_id: int, region_id: int, period_start: datetime
+) -> int:
+    """The counter captured at the start of the period being settled, in cents.
+
+    The cycle writes its snapshot with the period's own start, and the spend
+    before it was already debited then, so that snapshot is the baseline here.
+    """
+    row = (
+        db.query(DBTeamSpendPeriod.total_spend)
+        .filter(
+            DBTeamSpendPeriod.team_id == team_id,
+            DBTeamSpendPeriod.region_id == region_id,
+            DBTeamSpendPeriod.period_start <= period_start,
+        )
+        .order_by(DBTeamSpendPeriod.period_start.desc(), DBTeamSpendPeriod.id.desc())
+        .first()
+    )
+    if row is None or row[0] is None:
+        return 0
+    return int(round(float(row[0]) * 100))
 
 
 def _latest_spend_snapshot(
@@ -416,11 +438,11 @@ async def subscription_deactivate(
                 current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
                 current_spend_cents = int(round(current_team_spend * 100))
                 litellm_cycle_active = bool(team_info.get("budget_duration"))
-                spend_baseline_cents = _previous_period_spend_baseline_cents(
+                spend_baseline_cents = _current_period_spend_baseline_cents(
                     db,
                     team_id=team.id,
                     region_id=region.id,
-                    current_period_start=active_subscription_period.effective_period_start,
+                    period_start=active_subscription_period.effective_period_start,
                 )
                 if (
                     not litellm_cycle_active
