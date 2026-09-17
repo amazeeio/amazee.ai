@@ -290,7 +290,8 @@ async def get_team_info_or_recreate(
             db.query(DBUser).filter(DBUser.team_id == team.id).all(),
         )
         # The rebuilt memberships carry no member budget, so the caps go back
-        # on here; not every caller re-anchors them afterwards.
+        # on here; not every caller re-anchors them afterwards. A team without
+        # its caps is not a usable result, so a failed push ends the request.
         team_info = await litellm_service.get_team_info(lite_team_id)
         if (
             db.query(DBSpendCap.id)
@@ -315,6 +316,13 @@ async def get_team_info_or_recreate(
                     region.name,
                     team.id,
                     "; ".join(cap_errors),
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "Member caps could not be restored after recreating "
+                        f"LiteLLM team {lite_team_id}: {'; '.join(cap_errors)}"
+                    ),
                 )
         return team_info
 

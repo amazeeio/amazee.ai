@@ -3028,6 +3028,56 @@ async def test_apply_billing_cycle_for_team_reanchors_member_caps_after_recreate
 
 @pytest.mark.asyncio
 @patch("app.core.team_service.effective_team_group_slugs", return_value=["group-a"])
+async def test_get_team_info_or_recreate_raises_when_member_caps_cannot_be_restored(
+    _mock_slugs,
+    db,
+    test_team,
+    test_team_user,
+    test_region,
+):
+    """A recreated team without its caps must fail the caller, not pass."""
+    from app.core.team_service import get_team_info_or_recreate
+
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=test_team_user.id,
+            max_budget=5.0,
+        )
+    )
+    db.commit()
+
+    service = AsyncMock()
+    service.get_team_info = AsyncMock(
+        side_effect=[
+            HTTPException(status_code=404, detail="Team not found"),
+            {
+                "team_info": {"spend": 0.0},
+                "team_memberships": [],
+            },
+        ]
+    )
+    service.create_team = AsyncMock()
+    service.create_user = AsyncMock()
+    service.add_team_member = AsyncMock()
+    service.update_team_member = AsyncMock(side_effect=Exception("member push failed"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_team_info_or_recreate(db, test_team, test_region, service)
+
+    assert exc_info.value.status_code == 502
+    assert LiteLLMService.format_team_id(test_region.name, test_team.id) in (
+        exc_info.value.detail
+    )
+    assert "member push failed" in exc_info.value.detail
+    service.create_team.assert_awaited_once()
+    service.update_team_member.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("app.core.team_service.effective_team_group_slugs", return_value=["group-a"])
 @patch("app.core.worker.compute_active_topup_remaining", return_value=0)
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.worker.LimitService")
