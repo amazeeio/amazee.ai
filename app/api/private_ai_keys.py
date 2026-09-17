@@ -16,7 +16,6 @@ from app.schemas.models import (
     PrivateAIKey,
     PrivateAIKeyCreate,
     PrivateAIKeySpendBasic,
-    BudgetPeriodUpdate,
     LiteLLMToken,
     VectorDBCreate,
     VectorDB,
@@ -25,6 +24,8 @@ from app.schemas.models import (
 )
 from app.db.postgres import PostgresManager
 from app.db.models import (
+    DBAuditLog,
+    DBBudgetAlertState,
     DBPrivateAIKey,
     DBRegion,
     DBUser,
@@ -50,7 +51,6 @@ from app.core.limit_service import (
     DEFAULT_RPM_PER_KEY,
 )
 from app.core.pool_budget_service import pool_team_has_ever_purchased
-from app.core.spend_period_service import canonical_budget_duration
 from app.core.team_service import is_anonymous_trial_team
 
 router = APIRouter(tags=["private-ai-keys"])
@@ -545,7 +545,9 @@ async def create_llm_token(
     # Trial keys therefore get LiteLLM's inference-only route group: LLM calls
     # work, every management route returns 403. Members of a real (customer)
     # team are colleagues, so this scoping is deliberately trial-only.
-    allowed_routes = INFERENCE_ONLY_ROUTES if is_anonymous_trial_team(effective_team) else None
+    allowed_routes = (
+        INFERENCE_ONLY_ROUTES if is_anonymous_trial_team(effective_team) else None
+    )
 
     if (owner is not None and owner.team_id) or team_id:
         if settings.ENABLE_LIMITS and not is_pool_team:
@@ -569,7 +571,10 @@ async def create_llm_token(
         litellm_team = team.id
     elif owner is not None:
         owner_email = owner.email
-        litellm_team = owner.team_id or FAKE_ID
+        # No team means no team id for LiteLLM. LiteLLM loads the key's team on
+        # every request, so an id nobody created makes the key dead, and putting
+        # these keys in one shared team would let each of them read its siblings.
+        litellm_team = owner.team_id
     else:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Owner or team not found"
@@ -599,7 +604,9 @@ async def create_llm_token(
             email=owner_email,
             name=private_ai_key.name,
             user_id=owner_id,
-            team_id=LiteLLMService.format_team_id(region.name, litellm_team),
+            team_id=LiteLLMService.format_team_id(region.name, litellm_team)
+            if litellm_team is not None
+            else None,
             duration=f"{days_left_in_period}d"
             if days_left_in_period is not None
             else None,
@@ -1052,8 +1059,29 @@ async def delete_private_ai_key(
             private_ai_key.database_name, private_ai_key.database_username
         )
 
-    # Remove dependent spend cap rows before deleting key row (FK spend_caps.key_id -> ai_tokens.id)
+    # Remove dependent budget rows before deleting key row (both carry an FK to
+    # ai_tokens.id, and an alert row without its key is a row nothing clears).
     db.query(DBSpendCap).filter(DBSpendCap.key_id == private_ai_key.id).delete()
+    db.query(DBBudgetAlertState).filter(
+        DBBudgetAlertState.key_id == private_ai_key.id
+    ).delete(synchronize_session=False)
+
+    # The audit row shares the delete's transaction, so it cannot outlive a rollback.
+    db.add(
+        DBAuditLog(
+            event_type="private_ai_key.delete",
+            resource_type="private_ai_key",
+            resource_id=str(key_id),
+            action="delete",
+            user_id=current_user.id,
+            request_source="api",
+            details={
+                "team_id": private_ai_key.team_id,
+                "region_id": private_ai_key.region_id,
+                "key_name": private_ai_key.name,
+            },
+        )
+    )
 
     # Remove the private AI key record from the application database
     db.delete(private_ai_key)
@@ -1065,11 +1093,21 @@ async def delete_private_ai_key(
 @router.get("/{key_id}/spend", response_model=PrivateAIKeySpendBasic)
 async def get_private_ai_key_spend(
     key_id: int,
+    team_id: Optional[int] = None,
     current_user=Depends(get_current_user_from_auth),
     db: Session = Depends(get_db),
 ):
-    user_role = current_user.role
-    private_ai_key = _get_key_if_allowed(key_id, current_user, user_role, db)
+    """
+    Get the spend of a specific private AI key.
+
+    Optional query parameter:
+    - **team_id**: When provided, the key must belong to this team or the
+      request 404s — a defence-in-depth scope check (issue #600) that applies
+      even to system-admin callers.
+    """
+    private_ai_key = _get_key_if_allowed(
+        key_id, current_user, current_user.role, db, declared_team_id=team_id
+    )
 
     # Get the region
     region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()
@@ -1136,68 +1174,6 @@ async def get_private_ai_key_spend(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get Private AI Key spend: {str(e)}",
-        )
-
-
-@router.put("/{key_id}/budget-period")
-async def update_budget_period(
-    key_id: int,
-    budget_update: BudgetPeriodUpdate,
-    current_user=Depends(get_current_user_from_auth),
-    user_role: UserRole = Depends(get_role_min_team_admin),
-    db: Session = Depends(get_db),
-):
-    """
-    Update the budget period for a private AI key.
-
-    This endpoint will:
-    1. Verify the user has access to the key
-    2. Update the budget period in LiteLLM
-    3. Return the updated spend information
-
-    Required parameters:
-    - **budget_duration**: The new budget period. Accepts canonical forms such
-      as "30d", "7d" or "24h", and the word forms "monthly", "weekly", "daily"
-      and "hourly", which are stored in their canonical equivalent.
-
-    Note: You must be authenticated to use this endpoint.
-    Only the owner of the key or an admin can update it.
-    """
-    private_ai_key = _get_key_if_allowed(key_id, current_user, user_role, db)
-
-    # Get the region
-    region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()
-    if not region:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
-        )
-
-    litellm_service = LiteLLMService(
-        api_url=region.litellm_api_url, api_key=region.litellm_api_key
-    )
-
-    try:
-        # Canonicalise before writing. A word form stored on the key leaves it
-        # with no computable period start, so period spend and budget alerts go
-        # blank for that key.
-        await litellm_service.update_budget(
-            litellm_token=private_ai_key.litellm_token,
-            budget_duration=canonical_budget_duration(budget_update.budget_duration),
-        )
-
-        # Get updated spend information
-        spend_data = await litellm_service.get_key_info(private_ai_key.litellm_token)
-        info = spend_data.get("info", {})
-
-        # Only set default for spend field
-        spend_info = {"spend": info.get("spend", 0.0), **info}
-
-        return PrivateAIKeySpendBasic.model_validate(spend_info)
-    except Exception as e:
-        logger.error(f"Failed to update budget period: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update budget period: {str(e)}",
         )
 
 

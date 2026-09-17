@@ -1,6 +1,6 @@
 import logging
 import asyncio
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 
 from app.core.config import settings
 from app.core.security import get_role_min_system_admin
@@ -15,7 +15,6 @@ from app.db.models import (
     DBPoolPurchase,
     DBPrivateAIKey,
     DBRegion,
-    DBSpendCap,
     DBTeam,
     DBTeamRegion,
     DBPeriodicBudgetLedgerEntry,
@@ -40,15 +39,11 @@ from app.core.periodic_budget_ledger_service import (
     add_topup_entry,
     compute_active_topup_remaining,
 )
-from app.core.pool_budget_service import (
-    pool_available_budget_for_team_region as shared_pool_available_budget_for_team_region,
-    pool_team_budget_duration_for_enforcement as shared_pool_team_budget_duration_for_enforcement,
-)
+from app.core.pool_budget_service import key_cap_map
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["budgets"])
-MONTHLY_BUDGET_DURATION = "1mo"
 
 
 def _is_duplicate_stripe_payment_integrity_error(exc: IntegrityError) -> bool:
@@ -101,11 +96,6 @@ def _lock_active_region_or_404(db: Session, region_id: int) -> DBRegion:
             detail="Region not found or inactive",
         )
     return region
-
-
-# PERIODIC teams use a fixed 31d rolling window so LiteLLM never self-resets
-# on a calendar boundary. Spend is reset manually on each Stripe webhook renewal.
-PERIODIC_BUDGET_DURATION = "31d"
 
 
 @router.get(
@@ -200,11 +190,6 @@ def _get_operator_manual_team_budget_limit(db: Session, team_id: int) -> float |
     return float(existing_limit.max_value)
 
 
-def _current_month_anchor() -> date:
-    now = datetime.now(UTC)
-    return date(year=now.year, month=now.month, day=1)
-
-
 def _pool_budget_duration_from_last_purchase(
     db: Session, team_id: int, region_id: int
 ) -> str:
@@ -226,28 +211,6 @@ def _pool_budget_duration_from_last_purchase(
     return f"{days_left}d"
 
 
-def _compute_pool_monthly_effective_budget(
-    purchased_total: float,
-    month_start_spend: float,
-    monthly_cap: float,
-) -> float:
-    return round(
-        min(float(purchased_total), float(month_start_spend) + float(monthly_cap)), 4
-    )
-
-
-def _pool_available_budget_for_team_region(
-    db: Session, team_id: int, region_id: int
-) -> float:
-    return shared_pool_available_budget_for_team_region(db, team_id, region_id)
-
-
-def _pool_team_budget_duration_for_enforcement(
-    db: Session, team_id: int, region_id: int
-) -> str:
-    return shared_pool_team_budget_duration_for_enforcement(db, team_id, region_id)
-
-
 async def _sync_pool_key_effective_budgets(
     db: Session, *, team_id: int, region: DBRegion, purchased_total: float
 ) -> list[str]:
@@ -264,9 +227,9 @@ async def _sync_pool_key_effective_budgets(
     In both cases the team has at least one historical purchase record, so keys
     are always unblocked (blocked=False). Budget enforcement is handled by
     max_budget, not the blocked flag.
-    - No configured key cap → clear key max_budget and budget_duration
-      so the key inherits the team budget.
-    - Configured key cap → set key max_budget to the configured value.
+
+    A purchase starts a new cap period, so key spend is reset to zero. Expiry
+    sync only re-applies or clears the cap.
     """
     keys = get_team_region_litellm_keys(
         db,
@@ -276,46 +239,28 @@ async def _sync_pool_key_effective_budgets(
     if not keys:
         return []
 
-    key_caps = (
-        db.query(DBSpendCap.key_id, DBSpendCap.max_budget)
-        .filter(
-            DBSpendCap.scope == "key",
-            DBSpendCap.region_id == region.id,
-            DBSpendCap.key_id.isnot(None),
-            DBSpendCap.max_budget.isnot(None),
-            DBSpendCap.key_id.in_([k.id for k in keys]),
-        )
-        .all()
-    )
-    cap_map = {int(key_id): float(max_budget) for key_id, max_budget in key_caps}
+    cap_map = key_cap_map(db, region.id, [k.id for k in keys])
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     semaphore = asyncio.Semaphore(10)
+    # A purchase restarts the period, so key spend goes back to zero.
+    spend_reset = 0.0 if purchased_total > 0 else None
 
     async def _sync_key_budget(key: DBPrivateAIKey) -> str | None:
         try:
             async with semaphore:
+                # Without a user-defined cap the key carries no max_budget at
+                # all, so the team-level pool governs its spend.
                 configured_cap = cap_map.get(key.id)
-                if configured_cap is None:
-                    # No user-defined key cap — clear both max_budget
-                    # and budget_duration so no stale duration remains.
-                    await service.update_key_budget(
-                        litellm_token=key.litellm_token,
-                        budget_duration=None,
-                        max_budget=None,
-                        clear_max_budget=True,
-                        clear_budget_duration=True,
-                        blocked=False,
-                    )
-                else:
-                    await service.update_key_budget(
-                        litellm_token=key.litellm_token,
-                        budget_duration=MONTHLY_BUDGET_DURATION,
-                        max_budget=configured_cap,
-                        clear_max_budget=False,
-                        blocked=False,
-                    )
+                await service.update_key_budget(
+                    litellm_token=key.litellm_token,
+                    max_budget=configured_cap,
+                    clear_max_budget=configured_cap is None,
+                    clear_budget_duration=True,
+                    blocked=False,
+                    spend=spend_reset,
+                )
                 if purchased_total > 0:
                     # A purchase extends the key's expiry to match the credit's
                     # POOL_PURCHASE_EXPIRY_DAYS shelf life. update_key_budget
@@ -680,10 +625,12 @@ async def purchase_periodic_topup(
         desired_remaining = (sub_remaining_cents + topup_remaining_cents) / 100.0
         new_total_budget = round(current_spend + desired_remaining, 4)
 
+        # No LiteLLM budget cycle: the ledger owns the period, and a LiteLLM
+        # reset would drop the team spend counter and hide real spend from it.
         await service.update_team_budget(
             team_id=lite_team_id,
             max_budget=new_total_budget,
-            budget_duration=PERIODIC_BUDGET_DURATION,
+            clear_budget_duration=True,
         )
         team_budget_updated = True
         if team.requires_pool_purchase_gate:
@@ -933,77 +880,3 @@ async def sync_pool_team_budgets(db: Session) -> dict:
                 total_updated += 1
 
     return {"teams_updated": total_updated, "errors": errors}
-
-
-async def sync_pool_team_monthly_caps(db: Session) -> dict:
-    """
-    Re-anchor POOL monthly caps at month boundaries.
-
-    For POOL teams with monthly caps, LiteLLM team max_budget is set to:
-    min(available_remaining_budget, month_start_spend + monthly_cap),
-    where available_remaining_budget = active subscription remaining +
-    active top-up remaining.
-    """
-    monthly_caps = (
-        db.query(DBSpendCap)
-        .filter(
-            DBSpendCap.scope == "team",
-            DBSpendCap.budget_duration == MONTHLY_BUDGET_DURATION,
-            DBSpendCap.max_budget.isnot(None),
-            DBSpendCap.team_id.isnot(None),
-            DBSpendCap.region_id.isnot(None),
-        )
-        .all()
-    )
-    current_anchor = _current_month_anchor()
-    teams_updated = 0
-    errors: list[str] = []
-
-    for cap in monthly_caps:
-        if cap.team_id is None or cap.region_id is None:
-            continue
-        team = db.query(DBTeam).filter(DBTeam.id == cap.team_id).first()
-        if team is None or not team.requires_pool_purchase_gate:
-            continue
-        if cap.month_anchor == current_anchor:
-            continue
-        region = db.query(DBRegion).filter(DBRegion.id == cap.region_id).first()
-        if region is None:
-            continue
-        try:
-            service = LiteLLMService(
-                api_url=region.litellm_api_url, api_key=region.litellm_api_key
-            )
-            lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
-            team_info = (await service.get_team_info(lite_team_id)).get("team_info", {})
-            month_start_spend = round(float(team_info.get("spend", 0.0) or 0.0), 4)
-            available_budget = _pool_available_budget_for_team_region(
-                db, team.id, region.id
-            )
-            effective_budget = _compute_pool_monthly_effective_budget(
-                purchased_total=float(available_budget),
-                month_start_spend=month_start_spend,
-                monthly_cap=float(cap.max_budget or 0.0),
-            )
-            await service.update_team_budget(
-                team_id=lite_team_id,
-                max_budget=effective_budget,
-                budget_duration=_pool_team_budget_duration_for_enforcement(
-                    db=db, team_id=team.id, region_id=region.id
-                ),
-            )
-            cap.month_anchor = current_anchor
-            cap.month_start_spend = month_start_spend
-            db.add(cap)
-            db.commit()
-            teams_updated += 1
-        except Exception as exc:
-            db.rollback()
-            msg = (
-                f"Failed monthly cap rollover for team_id={cap.team_id} "
-                f"region_id={cap.region_id}: {str(exc)}"
-            )
-            logger.error(msg)
-            errors.append(msg)
-
-    return {"teams_updated": teams_updated, "errors": errors}

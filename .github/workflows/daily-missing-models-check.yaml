@@ -20,7 +20,6 @@ on:
 
 permissions:
   contents: read
-  actions: write
 
 jobs:
   check-missing-models:
@@ -91,7 +90,7 @@ jobs:
       - name: Notify Slack about new missing models
         if: steps.gate.outputs.skip != 'true' && steps.compare.outputs.has_new_missing == 'true'
         env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.AMAZEE_AI_SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
           PROVIDER: ${{ matrix.provider }}
           WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

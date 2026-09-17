@@ -515,10 +515,6 @@ class TrialAccessResponse(BaseModel):
     team_name: str
 
 
-class BudgetPeriodUpdate(BaseModel):
-    budget_duration: str
-
-
 class TokenDurationUpdate(BaseModel):
     """Schema for updating a token's duration"""
 
@@ -862,6 +858,14 @@ class TeamSpendBreakdownResponse(BaseModel):
 
 
 class SpendBudgetUpdateRequest(BaseModel):
+    """Body for the budget PUT routes.
+
+    extra='forbid' keeps a caller from smuggling in a budget_duration: the
+    ledger owns the cap period, not LiteLLM.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
     max_budget: Optional[float] = Field(default=None, ge=0)
 
 

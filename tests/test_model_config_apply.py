@@ -187,6 +187,36 @@ def test_apply_removes_deployment_declaratively(mock_svc, client, admin_token, d
 
 
 @patch("app.services.model_sync.LiteLLMService")
+def test_apply_rejects_undeploying_region_default_group(
+    mock_svc, client, admin_token, db, test_region
+):
+    """A region whose default points at the group keeps its deployment."""
+    payload = _payload(test_region.name)
+    assert _apply(client, admin_token, payload).status_code == 200
+    group = db.query(DBModelAccessGroup).filter_by(slug="default-models").one()
+    test_region.default_access_group_id = group.id
+    db.add(test_region)
+    db.commit()
+
+    undeploy = _payload(test_region.name)
+    undeploy["access_groups"][0]["regions"] = []
+    res = _apply(client, admin_token, undeploy)
+    assert res.status_code == 409
+    assert "default access group" in res.json()["detail"]
+    assert (
+        db.query(DBModelAccessGroupRegion)
+        .filter_by(group_id=group.id, region_id=test_region.id)
+        .count()
+        == 1
+    )
+
+    undeploy["dry_run"] = True
+    dry = _apply(client, admin_token, undeploy)
+    assert dry.status_code == 409
+    assert "default access group" in dry.json()["detail"]
+
+
+@patch("app.services.model_sync.LiteLLMService")
 def test_apply_prune_deactivates_absent_models(mock_svc, client, admin_token, db, test_region):
     payload = _payload(test_region.name)
     assert _apply(client, admin_token, payload).status_code == 200

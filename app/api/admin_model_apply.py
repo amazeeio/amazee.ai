@@ -15,6 +15,8 @@ Semantics:
   and are soft-deactivated (never hard-deleted).
 - Access groups are never pruned automatically: deleting a group cascades to
   team attachments, which is runtime state this endpoint does not own.
+- Undeploying a group from a region where it is the region default is rejected
+  with 409, same as the access-groups endpoint.
 - Deployments in managed regions whose last sync did not end in 'synced' are
   rescheduled on every apply, even with no config diff — apply is self-healing.
 - CATALOG_MANAGED_REGIONS bounds every write. Region references outside it —
@@ -30,6 +32,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.api.access_groups import reject_undeploy_of_region_default
 from app.api.admin_models import _contains_sentinel, _merge_credential_sentinels
 from app.core.config import catalog_manages
 from app.core.security import get_current_user_from_auth, get_role_min_system_admin
@@ -183,7 +186,9 @@ def _apply_access_groups(
             if row.region_id in managed_ids
         }
         if desired_regions != existing_regions:
-            for rid in existing_regions - desired_regions:
+            removed = existing_regions - desired_regions
+            reject_undeploy_of_region_default(db, group, removed)
+            for rid in removed:
                 db.query(DBModelAccessGroupRegion).filter_by(
                     group_id=group.id, region_id=rid
                 ).delete()

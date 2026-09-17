@@ -65,8 +65,9 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
 
         if is_auth_endpoint:
+            auth_status = "success" if 200 <= response.status_code < 300 else "failure"
             auth_requests_total.labels(
-                endpoint=request.url.path, status="success"
+                endpoint=request.url.path, status=auth_status
             ).inc()
 
         # Get user type from request state (set by AuthMiddleware)

@@ -1,4 +1,4 @@
-FROM uselagoon/python-3.12:latest
+FROM uselagoon/python-3.12:latest@sha256:5ab457220705f7b4c072ee746b5920779a385a70175e0471b9a263c840ff1070
 
 WORKDIR /app
 
@@ -7,7 +7,7 @@ COPY requirements.txt .
 COPY requirements-test.txt .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt -r requirements-test.txt
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt -r requirements-test.txt
 
 # Copy application code, scripts, and tests
 COPY app/ app/

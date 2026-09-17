@@ -70,7 +70,7 @@ from app.schemas.models import (
     UserDailyActivityResponse,
     UserSpendResponse,
 )
-from app.services.litellm import LiteLLMService
+from app.services.litellm import LiteLLMService, membership_spend_by_user
 
 router = APIRouter(tags=["spend"])
 logger = logging.getLogger(__name__)
@@ -490,13 +490,6 @@ def _sum_optional_token_values(
     )
 
 
-def _effective_monthly_budget_duration(max_budget: float | None) -> str | None:
-    """Use calendar-month windows whenever a budget cap is set."""
-    if max_budget is None:
-        return None
-    return MONTHLY_BUDGET_DURATION
-
-
 def _effective_team_budget_duration(
     team: DBTeam, max_budget: float | None
 ) -> str | None:
@@ -518,15 +511,16 @@ def _current_month_anchor() -> date:
 
 
 def _compute_pool_monthly_effective_budget(
-    purchased_total: float,
+    remaining_budget: float,
     period_baseline_spend: float,
     monthly_cap: float,
 ) -> float:
-    # LiteLLM max_budget is an absolute ceiling in the active 365d window.
-    # To allow exactly `monthly_cap` during this month, shift by prior-period
-    # snapshot baseline (not current live spend).
+    # LiteLLM max_budget is an absolute ceiling in the active window, which
+    # still counts the settled baseline spend. So the ceiling is that baseline
+    # plus what may still be spent this month: min(remaining, cap). Anything
+    # below the baseline would block the team outright.
     return round(
-        float(period_baseline_spend) + min(float(purchased_total), float(monthly_cap)),
+        float(period_baseline_spend) + min(float(remaining_budget), float(monthly_cap)),
         4,
     )
 
@@ -573,6 +567,99 @@ def _lock_region_or_404(db: Session, region_id: int) -> DBRegion:
     if not region:
         raise HTTPException(status_code=404, detail="Region not found")
     return region
+
+
+def _apply_pool_key_windows(
+    db: Session,
+    team: DBTeam,
+    region_id: int,
+    items,
+    team_window,
+) -> None:
+    """Give each POOL key the cycle window the ledger owns.
+
+    Key caps hold no LiteLLM duration any more, so LiteLLM reports no
+    ``budget_reset_at`` for them either and a key carries no window of its own.
+    Every window here comes from the ledger, which is what actually resets the
+    key's spend.
+
+    A capped key follows the active subscription, whose renewal is what zeroes
+    its spend. With no subscription nothing resets that key on a cycle at all,
+    only the next purchase does, so it shares the team's top-up window like an
+    uncapped key. Reporting a rolling window there would announce resets that
+    never happen and leave earlier spend counted against a period it did not
+    occur in.
+    """
+    now = datetime.now(UTC)
+    active_subscription = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team.id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            DBPeriodicBudgetLedgerEntry.effective_period_start.isnot(None),
+            DBPeriodicBudgetLedgerEntry.effective_period_end.isnot(None),
+            DBPeriodicBudgetLedgerEntry.effective_period_end > now,
+        )
+        .order_by(
+            DBPeriodicBudgetLedgerEntry.effective_period_end.desc(),
+            DBPeriodicBudgetLedgerEntry.id.desc(),
+        )
+        .first()
+    )
+    for item in items:
+        if item.max_budget is None:
+            item.budget_duration = team_window.budget_duration
+            item.budget_reset_at = team_window.period_end
+            item.period_start = team_window.period_start
+        elif active_subscription is not None:
+            item.budget_duration = "31d"
+            item.budget_reset_at = active_subscription.effective_period_end
+            item.period_start = active_subscription.effective_period_start
+        elif item.budget_reset_at is not None:
+            # A key still carrying its own live LiteLLM schedule, which means
+            # one written before the ledger took the cycle over and not yet
+            # cleaned up. Its real window is authoritative while it lasts:
+            # relabelling it "31d" would describe a different window than the
+            # one LiteLLM is still enforcing. Clearing the duration clears
+            # budget_reset_at too, so this stops matching once cleaned.
+            pass
+        else:
+            # Nothing resets this key on a cycle, so it spans the same stretch
+            # of credit the team window describes.
+            item.budget_duration = team_window.budget_duration
+            item.budget_reset_at = team_window.period_end
+            item.period_start = team_window.period_start
+
+
+def _key_gate_locked(db: Session, key: DBPrivateAIKey, region_id: int) -> bool:
+    """True while this key's team is purchase-gated and has never bought.
+
+    Such a key sits at a zero max_budget, and that zero is the only thing
+    stopping inference: LiteLLM denies a key at spend >= max_budget but a team
+    only at spend > max_budget, so raising the key's budget lets one request
+    through against the team's $0.
+
+    The team is resolved the way key creation does it, the key's own team or
+    the owner's team for a user-scoped key, because reading only key.team_id
+    would miss a user key whose owner sits in a gated team.
+
+    Takes the region lock before the purchase check. The purchase path holds
+    the same lock and clears key gates before committing its purchase row, so
+    an unlocked read can still see "never purchased" for a team that is
+    already funded and re-gate a key the purchase just paid for.
+    """
+    team_id = key.team_id
+    if team_id is None and key.owner_id is not None:
+        team_id = db.query(DBUser.team_id).filter(DBUser.id == key.owner_id).scalar()
+    if team_id is None:
+        return False
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if team is None or not team.requires_pool_purchase_gate:
+        return False
+    _lock_region_or_404(db, region_id)
+    return not pool_team_has_ever_purchased(db, team_id, region_id)
 
 
 def _assert_team_access(current_user: DBUser, role: str, team_id: int) -> None:
@@ -1117,6 +1204,23 @@ async def get_team_spend(
             sub_cycle_budget_cents = int(active_subscription.amount_cents or 0)
             periodic_budget_view = round(sub_cycle_budget_cents / 100.0, 4)
 
+    elif team_period_start is None:
+        # LiteLLM holds no budget cycle for these teams, so its team_info
+        # carries no window at all. The subscription ledger owns the period.
+        # Only that source is reported: the anchor-based fallback window is
+        # never rolled forward, so it can end in the past.
+        team_window = resolve_team_period_window(db, team, region_id)
+        if team_window.source == "subscription_ledger":
+            team_budget_duration = team_window.budget_duration
+            team_budget_reset_at = team_window.period_end
+            team_period_start = team_window.period_start
+            for item in items:
+                # Uncapped keys share the team window; a capped key keeps its own.
+                if item.max_budget is None and item.period_start is None:
+                    item.budget_duration = team_budget_duration
+                    item.budget_reset_at = team_budget_reset_at
+                    item.period_start = team_period_start
+
     if team.budget_type != BudgetType.POOL:
         periodic_budget_view = None
     now = datetime.now(UTC)
@@ -1175,77 +1279,9 @@ async def get_team_spend(
     if period_budget is None:
         period_budget = total_budget
 
-    # POOL key window display semantics:
-    # - uncapped keys: same as team window
-    # - capped keys: 31d windows; follow cycle when active subscription exists,
-    #   otherwise anchor to last deactivation or team creation.
+    # Key caps hold no LiteLLM window any more, so the ledger supplies one.
     if team.budget_type == BudgetType.POOL:
-        now = datetime.now(UTC)
-        active_subscription_for_pool = (
-            db.query(DBPeriodicBudgetLedgerEntry)
-            .filter(
-                DBPeriodicBudgetLedgerEntry.team_id == team.id,
-                DBPeriodicBudgetLedgerEntry.region_id == region_id,
-                DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
-                DBPeriodicBudgetLedgerEntry.is_active.is_(True),
-                DBPeriodicBudgetLedgerEntry.effective_period_start.isnot(None),
-                DBPeriodicBudgetLedgerEntry.effective_period_end.isnot(None),
-                DBPeriodicBudgetLedgerEntry.effective_period_end > now,
-            )
-            .order_by(
-                DBPeriodicBudgetLedgerEntry.effective_period_end.desc(),
-                DBPeriodicBudgetLedgerEntry.id.desc(),
-            )
-            .first()
-        )
-        last_deactivation = (
-            db.query(DBPeriodicPayment.payment_date)
-            .filter(
-                DBPeriodicPayment.team_id == team.id,
-                DBPeriodicPayment.payment_type == "deactivation",
-                DBPeriodicPayment.status == "completed",
-            )
-            .order_by(DBPeriodicPayment.payment_date.desc())
-            .first()
-        )
-        capped_anchor = (
-            (last_deactivation[0] if last_deactivation else None)
-            or team.created_at
-            or now
-        )
-        if capped_anchor.tzinfo is None:
-            capped_anchor = capped_anchor.replace(tzinfo=UTC)
-        for item in items:
-            if item.max_budget is None:
-                item.budget_duration = team_budget_duration
-                item.budget_reset_at = team_budget_reset_at
-                item.period_start = team_period_start
-            else:
-                if active_subscription_for_pool is not None:
-                    item.budget_duration = "31d"
-                    item.budget_reset_at = (
-                        active_subscription_for_pool.effective_period_end
-                    )
-                    item.period_start = (
-                        active_subscription_for_pool.effective_period_start
-                    )
-                elif item.budget_reset_at is not None:
-                    # LiteLLM already has a real, live reset schedule on this
-                    # key (budget_reset_at/period_start/budget_duration all
-                    # set above from litellm_key) - trust it completely
-                    # instead of the anchor-based estimate below, which
-                    # drifts into the past once more than one cycle has
-                    # elapsed since the anchor. Relabelling budget_duration
-                    # to a fixed "31d" here would make period_start describe
-                    # a different window than the one LiteLLM actually
-                    # enforces whenever the real duration isn't already 31d.
-                    pass
-                else:
-                    item.budget_duration = "31d"
-                    item.period_start = (
-                        current_cycle_start("31d", capped_anchor, now) or capped_anchor
-                    )
-                    item.budget_reset_at = item.period_start + timedelta(days=31)
+        _apply_pool_key_windows(db, team, region_id, items, pool_window)
 
     return TeamSpendResponse(
         region_id=region_id,
@@ -1379,6 +1415,23 @@ async def get_user_spend(
         )
         item.period_start = _compute_period_start(
             item.budget_reset_at, item.budget_duration
+        )
+
+    # The same keys are reported by the team endpoint, so they must carry the
+    # same window here. Without this the ledger-owned window is missing and
+    # every key reads as having no period at all.
+    user_team = (
+        db.query(DBTeam).filter(DBTeam.id == target_user.team_id).first()
+        if target_user.team_id is not None
+        else None
+    )
+    if user_team is not None and user_team.budget_type == BudgetType.POOL:
+        _apply_pool_key_windows(
+            db,
+            user_team,
+            region_id,
+            items,
+            resolve_team_period_window(db, user_team, region_id),
         )
 
     return UserSpendResponse(
@@ -1558,6 +1611,20 @@ async def get_key_spend_alias(
                     current_cycle_start(f"{duration_days}d", anchor, now) or anchor
                 )
                 budget_reset_at = period_start + timedelta(days=duration_days)
+        elif (
+            team_for_key is not None
+            and period_start is None
+            and configured_key_cap is None
+        ):
+            # No LiteLLM cycle on the key, so fall back to the team's ledger
+            # window, the same one the team spend endpoint reports. Only while
+            # a subscription is active: the anchor-based window can end in the
+            # past.
+            team_window = resolve_team_period_window(db, team_for_key, region_id)
+            if team_window.source == "subscription_ledger":
+                info["budget_duration"] = team_window.budget_duration
+                budget_reset_at = team_window.period_end
+                period_start = team_window.period_start
         return PrivateAIKeySpend.model_validate(
             {
                 "spend": info.get("spend", 0.0),
@@ -2147,7 +2214,7 @@ async def update_team_budget(
         # A null max_budget must NOT clear the LiteLLM cap for purchase-gated
         # teams — that would grant unlimited usage. Clamp to the purchased total.
         effective_max_budget = _compute_pool_monthly_effective_budget(
-            purchased_total=available_total,
+            remaining_budget=available_total,
             period_baseline_spend=month_start_spend,
             monthly_cap=(
                 body.max_budget if body.max_budget is not None else available_total
@@ -2208,8 +2275,8 @@ async def update_team_budget(
         "Updates a team-scoped per-member budget (`max_budget_in_team`) for the "
         "specified user.\n\n"
         "Request body accepts only `max_budget`.\n"
-        "`budget_duration` is derived server-side and returned in the response "
-        "(monthly `1mo` when set)."
+        "`budget_duration` is always null: the workspace billing cycle owns the "
+        "member cap period."
     ),
     response_description="Updated team-member budget state.",
 )
@@ -2250,13 +2317,25 @@ async def update_team_member_budget(
             detail="max_budget is required for team-member budget updates",
         )
 
-    effective_duration = _effective_monthly_budget_duration(body.max_budget)
+    # The membership spend counter is never reset, so the cap is pushed as a
+    # ceiling on the spend the member already has. A LiteLLM read failure must
+    # surface: pushing the flat cap would block a member who is already past it.
+    try:
+        team_info = await service.get_team_info(lite_team_id)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        # The team is gone on the LiteLLM side; the worker recreates it and the
+        # next cycle re-anchors the cap, so store the row with a zero baseline.
+        team_info = {}
+    member_spend = membership_spend_by_user(team_info).get(str(user_id), 0.0)
+
     await service.update_team_member(
         team_id=lite_team_id,
         user_id=str(user_id),
         role=team_role_for_litellm(user),
-        max_budget_in_team=body.max_budget,
-        budget_duration=effective_duration,
+        max_budget_in_team=member_spend + body.max_budget,
+        clear_budget_duration=True,
     )
     _upsert_spend_cap(
         db,
@@ -2265,7 +2344,7 @@ async def update_team_member_budget(
         team_id=team_id,
         user_id=user_id,
         max_budget=body.max_budget,
-        budget_duration=effective_duration,
+        budget_duration=None,
     )
     invalidate_user_spend_cache(db, user.email)
     db.commit()
@@ -2277,7 +2356,7 @@ async def update_team_member_budget(
         team_id=team_id,
         user_id=user_id,
         max_budget=body.max_budget,
-        budget_duration=effective_duration,
+        budget_duration=None,
         note="This budget is scoped to the user within the specified team.",
     )
 
@@ -2453,6 +2532,8 @@ async def clear_team_member_budget(
         user_id=str(user_id),
         role=team_role_for_litellm(user),
         max_budget_in_team=None,
+        clear_max_budget_in_team=True,
+        clear_budget_duration=True,
     )
     _delete_spend_cap(
         db, scope="team_member", region_id=region_id, team_id=team_id, user_id=user_id
@@ -2468,7 +2549,10 @@ async def clear_team_member_budget(
         user_id=user_id,
         max_budget=None,
         budget_duration=None,
-        note="Cleared team-member budget override.",
+        note=(
+            "Cleared team-member budget override; the member follows the team "
+            "budget again."
+        ),
     )
 
 
@@ -2478,9 +2562,9 @@ async def clear_team_member_budget(
     summary="Update key budget",
     description=(
         "Updates key-level budget override for the specified key.\n\n"
-        "Request body accepts only `max_budget`.\n"
-        "`budget_duration` is derived server-side and returned in the response "
-        "(monthly `1mo` when set, `null` when clearing max_budget)."
+        "Request body accepts only `max_budget`; any other field is a 422.\n"
+        "`budget_duration` is always `null` for keys: the cap period is owned "
+        "by the billing ledger, not by LiteLLM."
     ),
     response_description="Updated key budget state.",
 )
@@ -2501,76 +2585,38 @@ async def update_key_budget(
     # Defence-in-depth scope gate (issue #600): enforce declared team scope
     # before the budget write, even for system-admin callers.
     enforce_declared_team_scope(key, team_id, db)
-    owner = None
-    team_for_budget_check = None
     if key.team_id is not None:
-        team_for_budget_check = (
-            db.query(DBTeam)
-            .filter(DBTeam.id == key.team_id, DBTeam.deleted_at.is_(None))
-            .first()
-        )
         _assert_team_budget_write_access(current_user, role, key.team_id)
     else:
         owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
         if not owner:
             raise HTTPException(status_code=404, detail="Key owner not found")
         _assert_user_budget_write_access(current_user, role, owner)
-        if owner.team_id is not None:
-            team_for_budget_check = (
-                db.query(DBTeam)
-                .filter(DBTeam.id == owner.team_id, DBTeam.deleted_at.is_(None))
-                .first()
-            )
 
     region = _get_region_or_404(db, region_id)
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
-    # Key cap windows for POOL teams are 31d (not calendar-month 1mo).
-    # Cap amount changes should not re-anchor/reset duration once set.
-    effective_duration = _effective_monthly_budget_duration(body.max_budget)
-    configured_key_cap_existing = _get_spend_cap_max_budget(
-        db,
-        scope="key",
-        region_id=region_id,
-        team_id=key.team_id,
-        user_id=key.owner_id,
-        key_id=key_id,
-    )
-    if (
-        team_for_budget_check is not None
-        and team_for_budget_check.budget_type == BudgetType.POOL
-    ):
-        if body.max_budget is None:
-            effective_duration = None
-        elif configured_key_cap_existing is None:
-            effective_duration = "31d"
-        else:
-            # Preserve existing key duration anchor when only cap value changes.
-            effective_duration = None
-
-    await service.update_key_budget(
-        litellm_token=key.litellm_token,
-        budget_duration=effective_duration,
-        max_budget=body.max_budget,
-        clear_max_budget=body.max_budget is None,
-    )
-    existing_key_cap_row = (
-        db.query(DBSpendCap)
-        .filter(
-            DBSpendCap.scope == "key",
-            DBSpendCap.region_id == region_id,
-            DBSpendCap.team_id == key.team_id,
-            DBSpendCap.user_id == key.owner_id,
-            DBSpendCap.key_id == key_id,
+    # A gated team that has never purchased keeps its keys at zero, so a cap
+    # set now is stored but not pushed: writing it would lift the gate and let
+    # one request through. The first purchase applies the stored cap.
+    gate_locked = _key_gate_locked(db, key, region_id)
+    if gate_locked:
+        await service.update_key_budget(
+            litellm_token=key.litellm_token,
+            budget_duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
+            max_budget=0.0,
+            clear_max_budget=False,
         )
-        .first()
-    )
-    cap_duration_to_store = (
-        effective_duration
-        if effective_duration is not None
-        else (existing_key_cap_row.budget_duration if existing_key_cap_row else None)
-    )
+    else:
+        # The ledger owns the key cap period, so LiteLLM must never reset key
+        # spend on its own.
+        await service.update_key_budget(
+            litellm_token=key.litellm_token,
+            max_budget=body.max_budget,
+            clear_max_budget=body.max_budget is None,
+            clear_budget_duration=True,
+        )
 
     _upsert_spend_cap(
         db,
@@ -2580,7 +2626,7 @@ async def update_key_budget(
         user_id=key.owner_id,
         key_id=key_id,
         max_budget=body.max_budget,
-        budget_duration=cap_duration_to_store,
+        budget_duration=None,
     )
     _invalidate_key_related_user_spend_cache(db, key)
     configured_key_cap = _get_spend_cap_max_budget(
@@ -2608,7 +2654,12 @@ async def update_key_budget(
             else info.get("max_budget")
         ),
         budget_duration=info.get("budget_duration"),
-        note="If key has team_id, team/team-member budgets may take precedence during enforcement.",
+        note=(
+            "Cap stored. The team has not purchased yet, so the key stays at a "
+            "zero budget and the cap applies from the first purchase."
+            if gate_locked
+            else "If key has team_id, team/team-member budgets may take precedence during enforcement."
+        ),
     )
 
 
@@ -2675,37 +2726,10 @@ async def clear_key_budget(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
 
-    # A gated pool team that has never purchased keeps its keys at a zero
-    # max_budget, which is the only thing stopping inference: LiteLLM denies a
-    # key at spend >= max_budget but a team only at spend > max_budget, so a
-    # cleared key would pass its first request against the team's $0 budget.
-    # Re-apply the gate instead of clearing. The first purchase clears it, and
-    # from then on this endpoint behaves normally.
-    # Resolve the team the same way key creation does: the key's own team, or
-    # the owner's team for a user-scoped key. Reading only key.team_id would
-    # miss a user key whose owner sits in a gated team.
-    gate_team_id = key.team_id
-    if gate_team_id is None and key.owner_id is not None:
-        gate_team_id = (
-            db.query(DBUser.team_id).filter(DBUser.id == key.owner_id).scalar()
-        )
-    gate_team = (
-        db.query(DBTeam).filter(DBTeam.id == gate_team_id).first()
-        if gate_team_id is not None
-        else None
-    )
-
-    gate_key = False
-    if gate_team is not None and gate_team.requires_pool_purchase_gate:
-        # Serialise against a concurrent first purchase. That path clears key
-        # gates in LiteLLM before committing its purchase row, so an unlocked
-        # check can still read "never purchased" and re-gate a key the purchase
-        # just funded, leaving it unable to serve requests. Taking the same
-        # region lock means whichever runs first wins: a purchase in flight
-        # blocks this until it commits, and a clear in flight makes the purchase
-        # wait and then clear the gate itself.
-        _lock_region_or_404(db, region_id)
-        gate_key = not pool_team_has_ever_purchased(db, gate_team_id, region_id)
+    # Re-apply the gate instead of clearing, so a cleared key cannot pass its
+    # first request against the team's $0 budget. The first purchase clears
+    # it, and from then on this endpoint behaves normally.
+    gate_key = _key_gate_locked(db, key, region_id)
 
     if gate_key:
         await service.update_key_budget(
@@ -2717,7 +2741,6 @@ async def clear_key_budget(
     else:
         await service.update_key_budget(
             litellm_token=key.litellm_token,
-            budget_duration=None,
             max_budget=None,
             clear_max_budget=True,
             clear_budget_duration=True,

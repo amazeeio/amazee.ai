@@ -15,9 +15,10 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 from unittest.mock import patch, AsyncMock
 from app.api.budgets import (
+    _sync_pool_key_effective_budgets,
     sync_pool_team_budgets,
-    sync_pool_team_monthly_caps,
 )
+from app.core.config import settings
 
 
 @pytest.mark.skip(reason="Fixture isolation issue - passes when run with fresh DB")
@@ -904,7 +905,7 @@ def test_pool_purchase_rolls_back_team_budget_when_key_sync_fails(
     assert first_call.kwargs == {
         "team_id": f"{test_region.name}_{test_team.id}",
         "max_budget": 50.0,
-        "budget_duration": "31d",
+        "clear_budget_duration": True,
     }
     assert rollback_call.kwargs == {
         "team_id": f"{test_region.name}_{test_team.id}",
@@ -1390,80 +1391,6 @@ async def test_sync_pool_team_budgets_uses_team_only_propagation(
     assert mock_propagate.call_args.kwargs["apply_to_keys"] is False
 
 
-@pytest.mark.asyncio
-async def test_sync_pool_team_monthly_caps_rollover_updates_effective_budget(
-    db, test_team, test_region
-):
-    test_team.budget_type = "pool"
-    db.add(test_team)
-    db.add(
-        DBPoolPurchase(
-            team_id=test_team.id,
-            region_id=test_region.id,
-            amount_cents=5000,
-            currency="usd",
-            purchased_at=datetime.now(UTC),
-            stripe_payment_id=f"pi_rollover_{int(time.time() * 1000000)}",
-            created_at=datetime.now(UTC),
-        )
-    )
-    db.add(
-        DBPeriodicBudgetLedgerEntry(
-            team_id=test_team.id,
-            region_id=test_region.id,
-            entry_type="topup",
-            source_payment_id=None,
-            source_invoice_id=None,
-            stripe_payment_id=f"pi_rollover_ledger_{int(time.time() * 1000000)}",
-            amount_cents=5000,
-            consumed_cents=0,
-            purchased_at=datetime.now(UTC),
-            effective_period_start=None,
-            effective_period_end=None,
-            expires_at=datetime.now(UTC) + timedelta(days=365),
-            rolled_over_from_id=None,
-            is_active=True,
-        )
-    )
-    today = datetime.now(UTC).date()
-    prev_month_anchor = (
-        datetime(today.year - 1, 12, 1, tzinfo=UTC).date()
-        if today.month == 1
-        else datetime(today.year, today.month - 1, 1, tzinfo=UTC).date()
-    )
-    cap = DBSpendCap(
-        scope="team",
-        region_id=test_region.id,
-        team_id=test_team.id,
-        max_budget=10.0,
-        budget_duration="1mo",
-        month_anchor=prev_month_anchor,
-        month_start_spend=7.0,
-    )
-    db.add(cap)
-    db.commit()
-
-    with (
-        patch(
-            "app.api.budgets.LiteLLMService.get_team_info", new_callable=AsyncMock
-        ) as mock_get_team_info,
-        patch(
-            "app.api.budgets.LiteLLMService.update_team_budget", new_callable=AsyncMock
-        ) as mock_update_team_budget,
-    ):
-        mock_get_team_info.return_value = {"team_info": {"spend": 20.0}}
-        result = await sync_pool_team_monthly_caps(db)
-
-    assert result["errors"] == []
-    assert result["teams_updated"] == 1
-    db.refresh(cap)
-    assert cap.month_anchor == today.replace(day=1)
-    assert cap.month_start_spend == 20.0
-    mock_update_team_budget.assert_awaited_once()
-    assert mock_update_team_budget.await_args.kwargs["max_budget"] == 30.0
-    assert mock_update_team_budget.await_args.kwargs["budget_duration"] == "365d"
-
-
 def test_pool_purchase_locks_region_row_against_concurrent_deactivation(
     client, admin_token, db, test_team, test_region
 ):
@@ -1518,3 +1445,97 @@ def test_pool_purchase_locks_region_row_against_concurrent_deactivation(
         "region row must be locked FOR UPDATE so a concurrent deactivation "
         f"cannot commit mid-purchase; got: {region_selects}"
     )
+
+
+def _seed_pool_keys_for_sync(db, test_team, test_region):
+    """One key with a configured cap, one without, both in the same region."""
+    test_team.budget_type = "pool"
+    db.add(test_team)
+    capped = DBPrivateAIKey(
+        name="capped-sync-key",
+        litellm_token="capped-sync-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    uncapped = DBPrivateAIKey(
+        name="uncapped-sync-key",
+        litellm_token="uncapped-sync-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add_all([capped, uncapped])
+    db.commit()
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            key_id=capped.id,
+            max_budget=25.0,
+            budget_duration="1mo",
+        )
+    )
+    db.commit()
+    return capped, uncapped
+
+
+@pytest.mark.asyncio
+async def test_sync_pool_keys_resets_spend_on_purchase(db, test_team, test_region):
+    """A top-up starts a new cap period: spend=0.0 and no LiteLLM duration."""
+    capped, uncapped = _seed_pool_keys_for_sync(db, test_team, test_region)
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.update_key_budget = AsyncMock()
+        mock_instance.update_key_duration = AsyncMock()
+        errors = await _sync_pool_key_effective_budgets(
+            db, team_id=test_team.id, region=test_region, purchased_total=50.0
+        )
+
+    assert errors == []
+    by_token = {
+        call.kwargs["litellm_token"]: call.kwargs
+        for call in mock_instance.update_key_budget.await_args_list
+    }
+    assert len(by_token) == 2
+    capped_kwargs = by_token[capped.litellm_token]
+    assert capped_kwargs["max_budget"] == 25.0
+    assert capped_kwargs.get("budget_duration") is None
+    assert capped_kwargs["clear_budget_duration"] is True
+    assert capped_kwargs["spend"] == 0.0
+    uncapped_kwargs = by_token[uncapped.litellm_token]
+    assert uncapped_kwargs["clear_max_budget"] is True
+    assert uncapped_kwargs["clear_budget_duration"] is True
+    assert uncapped_kwargs["spend"] == 0.0
+
+    duration_tokens = {
+        call.kwargs["litellm_token"]: call.kwargs["duration"]
+        for call in mock_instance.update_key_duration.await_args_list
+    }
+    expected = f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
+    assert duration_tokens == {
+        capped.litellm_token: expected,
+        uncapped.litellm_token: expected,
+    }
+
+
+@pytest.mark.asyncio
+async def test_sync_pool_keys_keeps_spend_on_expiry(db, test_team, test_region):
+    """Expiry sync only re-applies the cap; it must not reset key spend."""
+    _seed_pool_keys_for_sync(db, test_team, test_region)
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.update_key_budget = AsyncMock()
+        mock_instance.update_key_duration = AsyncMock()
+        errors = await _sync_pool_key_effective_budgets(
+            db, team_id=test_team.id, region=test_region, purchased_total=0.0
+        )
+
+    assert errors == []
+    assert len(mock_instance.update_key_budget.await_args_list) == 2
+    for call in mock_instance.update_key_budget.await_args_list:
+        assert call.kwargs["spend"] is None
+        assert call.kwargs.get("budget_duration") is None
+        assert call.kwargs["clear_budget_duration"] is True
+    mock_instance.update_key_duration.assert_not_awaited()

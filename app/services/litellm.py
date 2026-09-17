@@ -43,6 +43,19 @@ INFERENCE_ONLY_ROUTES = ["llm_api_routes", "/model/info"]
 MODEL_HTTP_TIMEOUT = 30.0
 
 
+def membership_spend_by_user(team_info: dict) -> dict[str, float]:
+    """Map user id to membership spend from a /team/info response.
+
+    The spend lives in the top-level team_memberships list, not in the nested
+    team_info object; /user/info would give the cross-team total instead.
+    """
+    return {
+        str(membership["user_id"]): float(membership.get("spend") or 0.0)
+        for membership in (team_info.get("team_memberships") or [])
+        if membership.get("user_id") is not None
+    }
+
+
 def hash_litellm_token(litellm_token: str) -> str:
     """Hash a LiteLLM key the way LiteLLM stores it internally.
 
@@ -159,13 +172,14 @@ class LiteLLMService:
         email: str,
         name: str,
         user_id: int,
-        team_id: str,
+        team_id: Optional[str] = None,
         duration: Optional[str] = f"{DEFAULT_KEY_DURATION}d",
         max_budget: Optional[float] = DEFAULT_MAX_SPEND,
         rpm_limit: Optional[int] = DEFAULT_RPM_PER_KEY,
         apply_limits: bool = True,
         blocked: Optional[bool] = None,
         allowed_routes: Optional[list[str]] = None,
+        key: Optional[str] = None,
     ) -> str:
         """Create a new API key for LiteLLM
 
@@ -173,6 +187,8 @@ class LiteLLMService:
             allowed_routes: Restrict the key to these LiteLLM routes (exact
                 paths, wildcards or route-group names such as
                 ``llm_api_routes``). None means no route restriction.
+            key: Reuse this key value instead of letting LiteLLM mint one, so a
+                token we already store keeps working after the key is rebuilt.
         """
         try:
             logger.info(
@@ -197,16 +213,20 @@ class LiteLLMService:
                 # If still empty, use a safe default that's guaranteed to be valid
                 clean_alias = f"key-{user_id or 'unknown'}"
 
-            metadata = {"service_account_id": email or "unknown"}
-            metadata["amazeeai_private_ai_key_name"] = actual_name
-
-            # Add user_id to metadata if provided
-            metadata["amazeeai_user_id"] = str(user_id or None)
-            metadata["amazeeai_team_id"] = team_id
-
+            metadata = {
+                "amazeeai_private_ai_key_name": actual_name,
+                "amazeeai_user_id": str(user_id or None),
+            }
             request_data["key_alias"] = clean_alias
             request_data["metadata"] = metadata
-            request_data["team_id"] = team_id
+            if team_id is not None:
+                # LiteLLM refuses to create a service-account key without a team,
+                # so a teamless key carries no service_account_id either.
+                metadata["service_account_id"] = email or "unknown"
+                metadata["amazeeai_team_id"] = team_id
+                request_data["team_id"] = team_id
+            if key:
+                request_data["key"] = key
             if blocked is not None:
                 request_data["blocked"] = blocked
             if allowed_routes:
@@ -288,6 +308,30 @@ class LiteLLMService:
                 if hasattr(e, "response") and e.response is not None
                 else status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to delete LiteLLM key: {error_msg}",
+            )
+
+    async def delete_team(self, team_id: str) -> bool:
+        """Delete a LiteLLM team"""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/team/delete",
+                    json={"team_ids": [team_id]},
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                )
+
+                # Treat 404 (team not found) as success
+                if response.status_code == 404:
+                    return True
+
+                response.raise_for_status()
+                return True
+        except httpx.HTTPStatusError as e:
+            status_code, error_msg, _ = self._parse_http_error(e)
+            logger.error(f"Error deleting LiteLLM team: {error_msg}")
+            raise HTTPException(
+                status_code=status_code,
+                detail=f"Failed to delete LiteLLM team: {error_msg}",
             )
 
     async def get_key_info(self, litellm_token: str) -> dict:
@@ -425,6 +469,59 @@ class LiteLLMService:
             raise HTTPException(
                 status_code=status_code,
                 detail=f"Failed to list LiteLLM keys: {error_msg}",
+            )
+
+    async def get_team_spend_in_range(
+        self, team_id: str, start: datetime, end: datetime
+    ) -> float:
+        """Sum a team's spend from LiteLLM's spend logs over a time window.
+
+        The team's live ``spend`` counter is reset whenever LiteLLM runs a
+        budget cycle on it, so it cannot be trusted to show what a past period
+        cost. The spend logs survive that reset and are the only per-request
+        record of it. Returns dollars.
+        """
+        page_size = 100
+        total = 0.0
+        page = 1
+        start_date = start.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        end_date = end.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            async with httpx.AsyncClient() as client:
+                while True:
+                    response = await client.get(
+                        f"{self.api_url}/spend/logs/v2",
+                        headers={"Authorization": f"Bearer {self.master_key}"},
+                        params={
+                            "team_id": team_id,
+                            "start_date": start_date,
+                            "end_date": end_date,
+                            "page": page,
+                            "page_size": page_size,
+                        },
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    rows = [r for r in (data.get("data") or []) if isinstance(r, dict)]
+                    for row in rows:
+                        total += float(row.get("spend") or 0.0)
+                    # Stop on a short or empty page; total_pages is only a
+                    # secondary check, since it is not always present.
+                    if len(rows) < page_size:
+                        break
+                    total_pages = data.get("total_pages") or 0
+                    if total_pages and page >= total_pages:
+                        break
+                    page += 1
+            return total
+        except httpx.HTTPStatusError as e:
+            status_code, error_msg, _ = self._parse_http_error(e)
+            logger.error(
+                "Error getting LiteLLM spend logs for team %s: %s", team_id, error_msg
+            )
+            raise HTTPException(
+                status_code=status_code,
+                detail=f"Failed to get LiteLLM team spend logs: {error_msg}",
             )
 
     async def get_key_last_used(self, litellm_token: str) -> Optional[datetime]:
@@ -754,12 +851,14 @@ class LiteLLMService:
         clear_max_budget: bool = False,
         clear_budget_duration: bool = False,
         blocked: Optional[bool] = None,
+        spend: Optional[float] = None,
     ) -> None:
         """Update budget fields for a LiteLLM key.
 
         When clear_max_budget=True, max_budget is explicitly sent as null.
         When clear_budget_duration=True, budget_duration is explicitly sent as null.
         This method intentionally avoids updating key duration/expiry.
+        spend=0.0 starts a new cap period without touching expiry.
         """
         try:
             request_data = {
@@ -771,6 +870,8 @@ class LiteLLMService:
                 request_data["max_budget"] = max_budget
             if blocked is not None:
                 request_data["blocked"] = blocked
+            if spend is not None:
+                request_data["spend"] = spend
 
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -818,7 +919,7 @@ class LiteLLMService:
     async def set_key_restrictions(
         self,
         litellm_token: str,
-        duration: str,
+        duration: Optional[str],
         budget_amount: float,
         rpm_limit: int,
         budget_duration: Optional[str] = None,
@@ -828,17 +929,21 @@ class LiteLLMService:
         """Set the restrictions for a LiteLLM API key.
 
         Args:
+            duration: New key expiry. None leaves the current expiry alone,
+                      because /key/update reads duration as a new expires
+                      timestamp, not as a budget cycle.
             spend: When provided, overrides the key's spend counter
                    (e.g. 0.0 to reset spend at billing cycle start).
         """
         try:
             request_data = {
                 "key": litellm_token,
-                "duration": duration,
                 "budget_duration": budget_duration,
                 "max_budget": budget_amount,
                 "rpm_limit": rpm_limit,
             }
+            if duration is not None:
+                request_data["duration"] = duration
             if spend is not None:
                 request_data["spend"] = spend
             if blocked is not None:
@@ -851,15 +956,10 @@ class LiteLLMService:
                 )
                 response.raise_for_status()
         except httpx.HTTPStatusError as e:
-            error_msg = str(e)
-            if hasattr(e, "response") and e.response is not None:
-                try:
-                    error_details = e.response.json()
-                    error_msg = f"Status {e.response.status_code}: {error_details}"
-                except ValueError:
-                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            # Callers branch on the upstream status, a missing key must stay a 404.
+            status_code, error_msg, _ = self._parse_http_error(e)
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=status_code,
                 detail=f"Failed to set LiteLLM key restrictions: {error_msg}",
             )
 
@@ -917,15 +1017,10 @@ class LiteLLMService:
                 response.raise_for_status()
                 return response.json()
         except httpx.HTTPStatusError as e:
-            error_msg = str(e)
-            if hasattr(e, "response") and e.response is not None:
-                try:
-                    error_details = e.response.json()
-                    error_msg = f"Status {e.response.status_code}: {error_details}"
-                except ValueError:
-                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            # Callers branch on the upstream status, a missing team must stay a 404.
+            status_code, error_msg, _ = self._parse_http_error(e)
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=status_code,
                 detail=f"Failed to get LiteLLM team info: {error_msg}",
             )
 
@@ -1416,18 +1511,24 @@ class LiteLLMService:
         user_id: str,
         role: str,
         max_budget_in_team: Optional[float] = None,
-        budget_duration: Optional[str] = None,
+        clear_max_budget_in_team: bool = False,
+        clear_budget_duration: bool = False,
     ) -> None:
         """Update a user's role/budget within a LiteLLM team.
 
-        LiteLLM's /team/member_update ignores budget_duration (issue #25509).
-        When budget_duration is provided, this method performs a two-step write:
-        1. /team/member_update  -> sets max_budget_in_team
-        2. /budget/update       -> sets budget_duration on the membership budget
+        With clear_budget_duration=True the membership duration is cleared in
+        two steps: /team/member_update sends budget_duration as an explicit
+        null, then /budget/update repeats it on the membership budget row.
+        Current LiteLLM merges the field on member_update; older builds dropped
+        it, which is why the second write stays.
+        With clear_max_budget_in_team=True both writes send the budget as an
+        explicit null, so the two rows agree.
         """
         payload = {"team_id": team_id, "user_id": user_id, "role": role}
-        if max_budget_in_team is not None:
+        if clear_max_budget_in_team or max_budget_in_team is not None:
             payload["max_budget_in_team"] = max_budget_in_team
+        if clear_budget_duration:
+            payload["budget_duration"] = None
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -1438,49 +1539,41 @@ class LiteLLMService:
                 response.raise_for_status()
         except httpx.HTTPStatusError as e:
             status_code, error_msg, response_text = self._parse_http_error(e)
-            if self._is_idempotent_litellm_error(
+            if not self._is_idempotent_litellm_error(
                 status_code,
                 response_text,
                 ["not found", "does not exist", "not a member", "already", "no change"],
             ):
-                logger.info(
-                    "LiteLLM member update noop team=%s user=%s; continuing",
-                    team_id,
-                    user_id,
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to update LiteLLM team member: {error_msg}",
                 )
-                if budget_duration is not None and max_budget_in_team is not None:
-                    await self._update_membership_budget_duration(
-                        team_id=team_id,
-                        user_id=user_id,
-                        max_budget=max_budget_in_team,
-                        budget_duration=budget_duration,
-                    )
-                return
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to update LiteLLM team member: {error_msg}",
+            logger.info(
+                "LiteLLM member update noop team=%s user=%s; continuing",
+                team_id,
+                user_id,
             )
 
-        if budget_duration is not None and max_budget_in_team is not None:
+        if clear_budget_duration:
             await self._update_membership_budget_duration(
                 team_id=team_id,
                 user_id=user_id,
                 max_budget=max_budget_in_team,
-                budget_duration=budget_duration,
+                clear_max_budget=clear_max_budget_in_team,
             )
 
     async def _update_membership_budget_duration(
         self,
         team_id: str,
         user_id: str,
-        max_budget: float,
-        budget_duration: str,
+        max_budget: Optional[float],
+        clear_max_budget: bool = False,
     ) -> None:
-        """Set budget_duration on a team membership's budget table.
+        """Clear budget_duration on a team membership's budget table.
 
-        Workaround for LiteLLM issue #25509 where /team/member_update
-        ignores budget_duration. We look up the membership budget_id
-        via /user/info, then POST it via /budget/update.
+        Older LiteLLM builds drop budget_duration on /team/member_update, so
+        the membership budget_id is looked up via /user/info and nulled
+        directly via /budget/update.
         """
         try:
             async with httpx.AsyncClient() as client:
@@ -1515,20 +1608,20 @@ class LiteLLMService:
                 )
                 return
 
+            budget_payload = {"budget_id": budget_id}
+            if clear_max_budget or max_budget is not None:
+                budget_payload["max_budget"] = max_budget
+            budget_payload["budget_duration"] = None
+
             async with httpx.AsyncClient() as client:
                 resp = await client.post(
                     f"{self.api_url}/budget/update",
                     headers={"Authorization": f"Bearer {self.master_key}"},
-                    json={
-                        "budget_id": budget_id,
-                        "max_budget": max_budget,
-                        "budget_duration": budget_duration,
-                    },
+                    json=budget_payload,
                 )
                 resp.raise_for_status()
                 logger.info(
-                    "Updated membership budget_duration=%s for team=%s user=%s",
-                    budget_duration,
+                    "Cleared membership budget_duration for team=%s user=%s",
                     team_id,
                     user_id,
                 )
