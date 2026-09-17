@@ -8,6 +8,7 @@ from sqlalchemy import false
 
 from app.core.config import settings
 from app.core.worker import (
+    _previous_period_spend_baseline_cents,
     _record_periodic_payment_direct,
     apply_billing_cycle_for_team,
     reanchor_member_caps,
@@ -1632,6 +1633,40 @@ def test_subscription_deactivate_fifo_debits_topup_on_cancellation(
         f"Expected key budget_amount ~{topup_remaining}, got {actual_key_budget}."
     )
     assert mock_litellm.set_key_restrictions.await_args.kwargs["duration"] is None
+
+
+def test_previous_period_spend_baseline_prefers_the_newest_snapshot(
+    db, test_team, test_region
+):
+    """A deactivation snapshot shares period_start with the cycle row."""
+    period_start = datetime.now(UTC) - timedelta(days=31)
+    # The deactivation row closes the window early, so it is a second row on
+    # the same period_start.
+    for total_spend, source, period_end in (
+        (10.0, "moad_subscription_cycle", period_start + timedelta(days=31)),
+        (12.0, "moad_subscription_deactivate", period_start + timedelta(days=5)),
+    ):
+        db.add(
+            DBTeamSpendPeriod(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                budget_type=test_team.budget_type,
+                period_start=period_start,
+                period_end=period_end,
+                total_spend=total_spend,
+                source=source,
+            )
+        )
+        db.commit()
+
+    baseline = _previous_period_spend_baseline_cents(
+        db,
+        team_id=test_team.id,
+        region_id=test_region.id,
+        current_period_start=datetime.now(UTC),
+    )
+
+    assert baseline == 1200
 
 
 def _seed_deactivate_period(db, team, region, *, baseline_spend):
