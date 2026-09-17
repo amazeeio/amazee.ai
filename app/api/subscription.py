@@ -548,6 +548,17 @@ async def subscription_deactivate(
             currency="usd",
             payment_type="deactivation",
         )
+        if payment_id is not None:
+            # Without the stamp the idempotent skip at the top never fires and
+            # a retry runs the whole deactivation again.
+            payment_row = (
+                db.query(DBPeriodicPayment)
+                .filter(DBPeriodicPayment.id == payment_id)
+                .first()
+            )
+            if payment_row is not None:
+                payment_row.sync_status = "success"
+                db.commit()
 
         _write_audit_log(
             db,
