@@ -246,63 +246,57 @@ async def _sync_pool_key_effective_budgets(
     )
     semaphore = asyncio.Semaphore(10)
 
-    async def _sync_key_budget(key: DBPrivateAIKey) -> str | None:
-        try:
-            async with semaphore:
-                # Without a user-defined cap the key carries no max_budget at
-                # all, so the team-level pool governs its spend.
-                configured_cap = cap_map.get(key.id)
-                await service.update_key_budget(
-                    litellm_token=key.litellm_token,
-                    max_budget=configured_cap,
-                    clear_max_budget=configured_cap is None,
-                    clear_budget_duration=True,
-                    blocked=False,
-                    spend=None,
-                )
-                if purchased_total > 0:
-                    # A purchase extends the key's expiry to match the credit's
-                    # POOL_PURCHASE_EXPIRY_DAYS shelf life. update_key_budget
-                    # deliberately never touches key duration/expiry, so without
-                    # this the key keeps whatever (possibly short) expiry an
-                    # earlier billing/trial path stamped — letting a paid,
-                    # in-credit key expire mid-period while its balance is
-                    # healthy (issue #631).
-                    await service.update_key_duration(
-                        litellm_token=key.litellm_token,
-                        duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
-                    )
-            return None
-        except Exception as exc:
-            return f"Key {key.id}: {str(exc)}"
+    async def _for_each_key(action) -> list[str]:
+        async def _run(key: DBPrivateAIKey) -> str | None:
+            try:
+                async with semaphore:
+                    await action(key)
+                return None
+            except Exception as exc:
+                return f"Key {key.id}: {str(exc)}"
 
-    budget_errors = [
-        error
-        for error in await asyncio.gather(*[_sync_key_budget(key) for key in keys])
-        if error is not None
-    ]
+        return [
+            error
+            for error in await asyncio.gather(*[_run(key) for key in keys])
+            if error is not None
+        ]
+
+    async def _sync_key_budget(key: DBPrivateAIKey) -> None:
+        # Without a user-defined cap the key carries no max_budget at all, so
+        # the team-level pool governs its spend.
+        configured_cap = cap_map.get(key.id)
+        await service.update_key_budget(
+            litellm_token=key.litellm_token,
+            max_budget=configured_cap,
+            clear_max_budget=configured_cap is None,
+            clear_budget_duration=True,
+            blocked=False,
+            spend=None,
+        )
+        if purchased_total > 0:
+            # A purchase extends the key's expiry to match the credit's
+            # POOL_PURCHASE_EXPIRY_DAYS shelf life. update_key_budget
+            # deliberately never touches key duration/expiry, so without this
+            # the key keeps whatever (possibly short) expiry an earlier
+            # billing/trial path stamped — letting a paid, in-credit key
+            # expire mid-period while its balance is healthy (issue #631).
+            await service.update_key_duration(
+                litellm_token=key.litellm_token,
+                duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
+            )
+
+    budget_errors = await _for_each_key(_sync_key_budget)
     if budget_errors or purchased_total <= 0:
         return budget_errors
 
     # A purchase restarts the period, so key spend goes back to zero. It is a
     # second pass because a sibling failure rolls the team budget back while
     # LiteLLM keeps the zeroed key counter.
-    async def _reset_key_spend(key: DBPrivateAIKey) -> str | None:
-        try:
-            async with semaphore:
-                await service.update_key_budget(
-                    litellm_token=key.litellm_token,
-                    spend=0.0,
-                )
-            return None
-        except Exception as exc:
-            return f"Key {key.id}: {str(exc)}"
-
-    return [
-        error
-        for error in await asyncio.gather(*[_reset_key_spend(key) for key in keys])
-        if error is not None
-    ]
+    return await _for_each_key(
+        lambda key: service.update_key_budget(
+            litellm_token=key.litellm_token, spend=0.0
+        )
+    )
 
 
 @router.post(
