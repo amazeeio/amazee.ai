@@ -1767,6 +1767,63 @@ def test_subscription_deactivate_uses_spend_logs_when_litellm_still_has_a_cycle(
     assert mock_litellm.get_team_spend_in_range.await_args.args[1] == period_start
 
 
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+@patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_fails_when_settlement_fails(
+    mock_litellm_class,
+    mock_record_payment,
+    _mock_capture_spend,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """A failed settlement must stop the deactivation, not cancel silently."""
+    sub_entry, _period_start = _seed_deactivate_period(
+        db, test_team, test_region, baseline_spend=50.0
+    )
+    mock_record_payment.return_value = 993
+
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={"team_info": {"spend": 2.0, "max_budget": 100.0}}
+    )
+    mock_litellm.get_team_spend_in_range = AsyncMock(side_effect=Exception("logs down"))
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    response = client.post(
+        "/billing/subscription/deactivate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_cancel_settle_fail",
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+            "reason": "cancelled",
+        },
+    )
+
+    assert response.status_code == 502
+    db.refresh(sub_entry)
+    assert sub_entry.is_active is True
+    assert sub_entry.consumed_cents == 0
+    mock_litellm.update_team_budget.assert_not_awaited()
+    mock_litellm.set_key_restrictions.assert_not_awaited()
+    audit = (
+        db.query(DBAuditLog)
+        .filter(DBAuditLog.event_type == "subscription.deactivate")
+        .order_by(DBAuditLog.id.desc())
+        .first()
+    )
+    assert audit is not None
+    assert audit.details["outcome"] == "settlement_failed"
+
+
 def test_subscription_deactivate_endpoint_idempotent(
     client, admin_token, db, test_team
 ):

@@ -350,7 +350,9 @@ async def subscription_deactivate(
             # Debit mid-period spend against top-up entries so that
             # compute_active_topup_remaining reflects actual remaining balance.
             # Without this, FIFO never runs on the cancel path (no invoice),
-            # and consumed_cents stays stale — leaking top-up credits.
+            # and consumed_cents stays stale — leaking top-up credits. A
+            # swallowed failure here would deactivate a team whose spend was
+            # never debited, so a failed settlement ends the request.
             try:
                 team_info_resp = await litellm_service.get_team_info(lite_team_id)
                 team_info = team_info_resp.get("team_info", team_info_resp)
@@ -400,6 +402,27 @@ async def subscription_deactivate(
                     )
             except Exception as exc:
                 db.rollback()
+                if current_team_spend is not None:
+                    # The team info was read, so the failure is in the
+                    # settlement itself and the period stays unsettled.
+                    _write_audit_log(
+                        db,
+                        "subscription.deactivate",
+                        "deactivate",
+                        str(team.id),
+                        502,
+                        {
+                            "transaction_id": request.transaction_id,
+                            "region_id": request.region_id,
+                            "reason": request.reason,
+                            "outcome": "settlement_failed",
+                            "error": str(exc),
+                        },
+                    )
+                    raise HTTPException(
+                        status_code=502,
+                        detail="Cannot settle the current period; deactivation must be retried",
+                    )
                 logger.warning(
                     "Failed to run FIFO allocation on cancellation for team %s: %s",
                     team.id,
