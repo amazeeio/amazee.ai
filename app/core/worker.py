@@ -723,7 +723,9 @@ async def reanchor_member_caps(
 
     LiteLLM never resets the membership spend counter, so the cap is re-anchored
     on the counter. A member without a cap row keeps the team ceiling, and a
-    member missing from the /team/info response is logged and skipped.
+    member missing from the /team/info response is pushed with spend 0.0,
+    because LiteLLM creates the membership row only when a budget is first set.
+    A cap whose user row is gone from our DB is logged and skipped.
     """
     errors: list[str] = []
     member_spend = membership_spend_by_user(team_info)
@@ -739,16 +741,18 @@ async def reanchor_member_caps(
     for cap in member_caps:
         member_key = str(cap.user_id)
         member_user = db.query(DBUser).filter(DBUser.id == cap.user_id).first()
-        if member_key not in member_spend or not member_user:
+        if not member_user:
             logger.warning(
-                "Team %s in region %s: user %s has a member cap but no LiteLLM "
-                "membership; skipping",
+                "Team %s in region %s: user %s has a member cap but no user row; "
+                "skipping",
                 team_id,
                 region.name,
                 cap.user_id,
             )
             continue
-        member_max_budget = member_spend[member_key] + float(cap.max_budget)
+        has_membership = member_key in member_spend
+        member_spend_value = member_spend.get(member_key, 0.0)
+        member_max_budget = member_spend_value + float(cap.max_budget)
         try:
             await litellm_service.update_team_member(
                 team_id=lite_team_id,
@@ -759,12 +763,13 @@ async def reanchor_member_caps(
             )
             logger.info(
                 "Updated member %s ceiling in team %s: spend=%s cap=%s "
-                "max_budget_in_team=%s",
+                "max_budget_in_team=%s%s",
                 cap.user_id,
                 team_id,
-                member_spend[member_key],
+                member_spend_value,
                 cap.max_budget,
                 member_max_budget,
+                "" if has_membership else " (membership row missing)",
             )
         except Exception as e:
             error_msg = (

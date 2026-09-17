@@ -1,13 +1,16 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import false
 
 from app.core.config import settings
 from app.core.worker import (
     _record_periodic_payment_direct,
     apply_billing_cycle_for_team,
+    reanchor_member_caps,
     reconcile_periodic_team_budget_drift,
 )
 from app.db.models import (
@@ -2406,7 +2409,7 @@ async def test_apply_billing_cycle_for_team_leaves_member_without_cap_alone(
 @patch("app.core.worker.compute_active_topup_remaining", return_value=0)
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.worker.LimitService")
-async def test_apply_billing_cycle_for_team_skips_member_missing_from_litellm(
+async def test_apply_billing_cycle_for_team_caps_member_missing_from_litellm_memberships(
     mock_limit_service,
     mock_litellm_class,
     _mock_topup,
@@ -2416,6 +2419,7 @@ async def test_apply_billing_cycle_for_team_skips_member_missing_from_litellm(
     test_region,
     caplog,
 ):
+    """LiteLLM writes the membership row on the first budget push, so push it."""
     db.add(
         DBSpendCap(
             scope="team_member",
@@ -2429,12 +2433,16 @@ async def test_apply_billing_cycle_for_team_skips_member_missing_from_litellm(
     db.commit()
     mock_litellm = _member_cycle_mocks(mock_limit_service, mock_litellm_class, [])
 
-    with caplog.at_level("WARNING"):
+    with caplog.at_level("INFO"):
         errors = await _run_member_cycle(db, test_team, test_region)
 
     assert errors == []
-    mock_litellm.update_team_member.assert_not_awaited()
-    assert str(test_team_user.id) in caplog.text
+    mock_litellm.update_team_member.assert_awaited_once()
+    kwargs = mock_litellm.update_team_member.await_args.kwargs
+    assert kwargs["user_id"] == str(test_team_user.id)
+    assert kwargs["max_budget_in_team"] == 5.0
+    assert kwargs["clear_budget_duration"] is True
+    assert "membership row missing" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -2606,3 +2614,52 @@ async def test_apply_billing_cycle_for_team_fails_when_the_second_team_read_fail
     assert payment.sync_status == "sync_failed"
     mock_litellm.update_team_budget.assert_not_awaited()
     mock_litellm.update_team_member.assert_not_awaited()
+
+
+def test_reanchor_member_caps_skips_member_whose_user_row_is_gone(
+    db, test_team, test_team_user, test_region, monkeypatch, caplog
+):
+    """A cap row whose user is gone has nobody to cap."""
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=test_team_user.id,
+            max_budget=5.0,
+        )
+    )
+    db.commit()
+    # A foreign key keeps the user row alive while a cap points at it, so the
+    # missing-user path is reproduced by hiding the row from the query.
+    real_query = db.query
+
+    def query_without_users(model, *args, **kwargs):
+        if model is DBUser:
+            return real_query(model, *args, **kwargs).filter(false())
+        return real_query(model, *args, **kwargs)
+
+    monkeypatch.setattr(db, "query", query_without_users)
+    litellm_service = AsyncMock()
+
+    with caplog.at_level("WARNING"):
+        errors = asyncio.run(
+            reanchor_member_caps(
+                db=db,
+                litellm_service=litellm_service,
+                region=test_region,
+                team_id=test_team.id,
+                lite_team_id=LiteLLMService.format_team_id(
+                    test_region.name, test_team.id
+                ),
+                team_info={
+                    "team_memberships": [
+                        {"user_id": str(test_team_user.id), "spend": 1.0}
+                    ]
+                },
+            )
+        )
+
+    assert errors == []
+    litellm_service.update_team_member.assert_not_awaited()
+    assert str(test_team_user.id) in caplog.text
