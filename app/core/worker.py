@@ -1027,6 +1027,9 @@ async def apply_billing_cycle_for_team(
                             team_id=lite_team_id,
                             apply_limits=False,
                             key=key.litellm_token,
+                            # Born blocked so a failed limit write cannot leave
+                            # the key live and uncapped; the call below unblocks.
+                            blocked=True,
                             # Same route restriction normal provisioning applies,
                             # or a rebuilt trial key would come back unrestricted.
                             allowed_routes=(
