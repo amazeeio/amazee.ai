@@ -16,6 +16,7 @@ from app.core.config import settings
 from app.core.security import get_password_hash
 from datetime import datetime, UTC
 from unittest.mock import patch, AsyncMock
+import pytest
 from fastapi import HTTPException
 
 
@@ -1964,6 +1965,49 @@ def test_remove_user_from_team_deletes_member_cap(
         .count()
     )
     assert remaining == 0
+
+
+def test_remove_user_from_team_keeps_member_cap_when_sync_fails(
+    client, admin_token, db, test_team, test_region
+):
+    """A restored membership must keep its cap."""
+    member = DBUser(
+        email="capped-stayer@example.com", team_id=test_team.id, role="read_only"
+    )
+    db.add(member)
+    db.commit()
+    db.refresh(member)
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=member.id,
+            max_budget=5.0,
+        )
+    )
+    db.commit()
+
+    with patch(
+        "app.api.users.sync_remove_user_from_team",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("litellm down"),
+    ):
+        with pytest.raises(RuntimeError):
+            client.post(
+                f"/users/{member.id}/remove-from-team",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+
+    remaining = (
+        db.query(DBSpendCap)
+        .filter(
+            DBSpendCap.scope == "team_member",
+            DBSpendCap.user_id == member.id,
+        )
+        .count()
+    )
+    assert remaining == 1
 
 
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
