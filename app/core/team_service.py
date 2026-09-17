@@ -19,7 +19,7 @@ from app.db.models import (
     DBUser,
 )
 from app.services.access_groups import effective_team_group_slugs
-from app.services.litellm import LiteLLMService
+from app.services.litellm import LiteLLMService, membership_max_budget_by_user
 from fastapi import HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -258,6 +258,54 @@ async def reprovision_litellm_team(
         )
 
 
+def _capped_member_ids(db: Session, team_id: int, region_id: int) -> set[int]:
+    """User ids of the team members that carry a member cap in this region."""
+    rows = (
+        db.query(DBSpendCap.user_id)
+        .filter(
+            DBSpendCap.scope == "team_member",
+            DBSpendCap.team_id == team_id,
+            DBSpendCap.region_id == region_id,
+            DBSpendCap.max_budget.isnot(None),
+        )
+        .all()
+    )
+    return {row[0] for row in rows if row[0] is not None}
+
+
+async def _reanchor_member_caps_or_fail(
+    db: Session,
+    litellm_service: LiteLLMService,
+    team: DBTeam,
+    region: DBRegion,
+    lite_team_id: str,
+    team_info: dict,
+    user_ids: set[int],
+) -> None:
+    """Push the member caps back on; a team without them is not usable, so a
+    failed push ends the caller's request."""
+    # Local import: worker imports this module at module level.
+    from app.core.worker import reanchor_member_caps
+
+    cap_errors = await reanchor_member_caps(
+        db, litellm_service, region, team.id, lite_team_id, team_info, user_ids=user_ids
+    )
+    if cap_errors:
+        logger.error(
+            "Failed to re-anchor member caps in region %s for team %s: %s",
+            region.name,
+            team.id,
+            "; ".join(cap_errors),
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Member caps could not be restored for LiteLLM team "
+                f"{lite_team_id}: {'; '.join(cap_errors)}"
+            ),
+        )
+
+
 async def get_team_info_or_recreate(
     db: Session,
     team: DBTeam,
@@ -271,7 +319,7 @@ async def get_team_info_or_recreate(
     """
     lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
     try:
-        return await litellm_service.get_team_info(lite_team_id)
+        team_info = await litellm_service.get_team_info(lite_team_id)
     except HTTPException as exc:
         if exc.status_code != 404:
             raise
@@ -292,31 +340,27 @@ async def get_team_info_or_recreate(
         # The rebuilt memberships carry no member budget, so the caps go back
         # on here; not every caller re-anchors them afterwards.
         team_info = await litellm_service.get_team_info(lite_team_id)
-        if (
-            db.query(DBSpendCap.id)
-            .filter(
-                DBSpendCap.scope == "team_member",
-                DBSpendCap.team_id == team.id,
-                DBSpendCap.region_id == region.id,
-                DBSpendCap.max_budget.isnot(None),
+        capped_ids = _capped_member_ids(db, team.id, region.id)
+        if capped_ids:
+            await _reanchor_member_caps_or_fail(
+                db, litellm_service, team, region, lite_team_id, team_info, capped_ids
             )
-            .first()
-        ):
-            # Local import: worker imports this module at module level.
-            from app.core.worker import reanchor_member_caps
-
-            cap_errors = await reanchor_member_caps(
-                db, litellm_service, region, team.id, lite_team_id, team_info
-            )
-            if cap_errors:
-                logger.error(
-                    "Failed to re-anchor member caps in region %s after "
-                    "recreating team %s: %s",
-                    region.name,
-                    team.id,
-                    "; ".join(cap_errors),
-                )
         return team_info
+
+    # A retry after a failed re-anchor finds the team present, so the members
+    # left without a ceiling are repaired here. A member that already carries
+    # one is skipped: re-pushing it would hand out a fresh allowance.
+    ceilings = membership_max_budget_by_user(team_info)
+    missing_ceiling = {
+        user_id
+        for user_id in _capped_member_ids(db, team.id, region.id)
+        if ceilings.get(str(user_id)) is None
+    }
+    if missing_ceiling:
+        await _reanchor_member_caps_or_fail(
+            db, litellm_service, team, region, lite_team_id, team_info, missing_ceiling
+        )
+    return team_info
 
 
 async def restore_soft_deleted_team(db: Session, team: DBTeam) -> dict:

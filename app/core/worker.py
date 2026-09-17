@@ -486,7 +486,9 @@ def _previous_period_spend_baseline_cents(
             DBTeamSpendPeriod.region_id == region_id,
             DBTeamSpendPeriod.period_start < current_period_start,
         )
-        .order_by(DBTeamSpendPeriod.period_start.desc())
+        # A deactivation snapshot shares its period_start with the cycle row
+        # that opened the period, so the newest row wins.
+        .order_by(DBTeamSpendPeriod.period_start.desc(), DBTeamSpendPeriod.id.desc())
         .first()
     )
     if row is None or row[0] is None:
