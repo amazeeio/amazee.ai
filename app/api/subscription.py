@@ -401,33 +401,26 @@ async def subscription_deactivate(
                         spend_cents=incremental_spend_cents,
                     )
             except Exception as exc:
+                # Whatever failed here, the period was not debited, so the
+                # deactivation must not go through on this attempt.
                 db.rollback()
-                if current_team_spend is not None:
-                    # The team info was read, so the failure is in the
-                    # settlement itself and the period stays unsettled.
-                    _write_audit_log(
-                        db,
-                        "subscription.deactivate",
-                        "deactivate",
-                        str(team.id),
-                        502,
-                        {
-                            "transaction_id": request.transaction_id,
-                            "region_id": request.region_id,
-                            "reason": request.reason,
-                            "outcome": "settlement_failed",
-                            "error": str(exc),
-                        },
-                    )
-                    raise HTTPException(
-                        status_code=502,
-                        detail="Cannot settle the current period; deactivation must be retried",
-                    )
-                logger.warning(
-                    "Failed to run FIFO allocation on cancellation for team %s: %s",
-                    team.id,
-                    exc,
-                    exc_info=True,
+                _write_audit_log(
+                    db,
+                    "subscription.deactivate",
+                    "deactivate",
+                    str(team.id),
+                    502,
+                    {
+                        "transaction_id": request.transaction_id,
+                        "region_id": request.region_id,
+                        "reason": request.reason,
+                        "outcome": "settlement_failed",
+                        "error": str(exc),
+                    },
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail="Cannot settle the current period; deactivation must be retried",
                 )
 
         # Deactivation immediately ends active subscription windows.
