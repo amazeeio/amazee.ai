@@ -244,8 +244,6 @@ async def _sync_pool_key_effective_budgets(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     semaphore = asyncio.Semaphore(10)
-    # A purchase restarts the period, so key spend goes back to zero.
-    spend_reset = 0.0 if purchased_total > 0 else None
 
     async def _sync_key_budget(key: DBPrivateAIKey) -> str | None:
         try:
@@ -259,7 +257,7 @@ async def _sync_pool_key_effective_budgets(
                     clear_max_budget=configured_cap is None,
                     clear_budget_duration=True,
                     blocked=False,
-                    spend=spend_reset,
+                    spend=None,
                 )
                 if purchased_total > 0:
                     # A purchase extends the key's expiry to match the credit's
@@ -277,9 +275,31 @@ async def _sync_pool_key_effective_budgets(
         except Exception as exc:
             return f"Key {key.id}: {str(exc)}"
 
-    return [
+    budget_errors = [
         error
         for error in await asyncio.gather(*[_sync_key_budget(key) for key in keys])
+        if error is not None
+    ]
+    if budget_errors or purchased_total <= 0:
+        return budget_errors
+
+    # A purchase restarts the period, so key spend goes back to zero. It is a
+    # second pass because a sibling failure rolls the team budget back while
+    # LiteLLM keeps the zeroed key counter.
+    async def _reset_key_spend(key: DBPrivateAIKey) -> str | None:
+        try:
+            async with semaphore:
+                await service.update_key_budget(
+                    litellm_token=key.litellm_token,
+                    spend=0.0,
+                )
+            return None
+        except Exception as exc:
+            return f"Key {key.id}: {str(exc)}"
+
+    return [
+        error
+        for error in await asyncio.gather(*[_reset_key_spend(key) for key in keys])
         if error is not None
     ]
 
