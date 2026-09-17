@@ -40,7 +40,7 @@ from app.services.litellm import (
 from app.services.ses import SESService
 from app.core.team_service import (
     get_team_keys_by_region,
-    reprovision_litellm_team,
+    get_team_info_or_recreate,
     get_team_region_litellm_keys,
     is_anonymous_trial_team,
     soft_delete_team,
@@ -565,7 +565,9 @@ async def _sync_periodic_ledger_for_period(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
         lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
-        team_info_resp = await litellm_service.get_team_info(lite_team_id)
+        team_info_resp = await get_team_info_or_recreate(
+            db, team, region, litellm_service
+        )
         team_info = team_info_resp.get("team_info", team_info_resp)
         snapshot_total_spend = float(team_info.get("spend", 0.0) or 0.0)
         litellm_cycle_active = bool(team_info.get("budget_duration"))
@@ -834,30 +836,9 @@ async def apply_billing_cycle_for_team(
         team_max_budget = per_region_budget
         current_team_spend = 0.0
         try:
-            try:
-                team_info_resp = await litellm_service.get_team_info(lite_team_id)
-            except HTTPException as exc:
-                if exc.status_code != 404:
-                    raise
-                # The team was removed on the LiteLLM side; recreate it so the
-                # budget update below has something to attach to.
-                logger.info(
-                    "LiteLLM team %s missing in region %s, recreating it",
-                    lite_team_id,
-                    region.name,
-                )
-                # The team took its users and memberships with it, so rebuild
-                # them too; a bare team would accept no key.
-                await reprovision_litellm_team(
-                    db,
-                    team,
-                    region,
-                    litellm_service,
-                    db.query(DBUser).filter(DBUser.team_id == team.id).all(),
-                )
-                # The rebuilt memberships carry no member budget, so the member
-                # cap push below needs the fresh membership list.
-                team_info_resp = await litellm_service.get_team_info(lite_team_id)
+            team_info_resp = await get_team_info_or_recreate(
+                db, team, region, litellm_service
+            )
             team_info = team_info_resp.get("team_info", team_info_resp)
             current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
 
