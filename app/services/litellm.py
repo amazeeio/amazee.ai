@@ -56,6 +56,25 @@ def membership_spend_by_user(team_info: dict) -> dict[str, float]:
     }
 
 
+def membership_max_budget_by_user(team_info: dict) -> dict[str, float | None]:
+    """Map user id to the member ceiling from a /team/info response.
+
+    LiteLLM keeps the ceiling in the membership's budget table; a member with
+    no budget row maps to None and runs on the team ceiling.
+    """
+    ceilings: dict[str, float | None] = {}
+    for membership in team_info.get("team_memberships") or []:
+        user_id = membership.get("user_id")
+        if user_id is None:
+            continue
+        budget_table = membership.get("litellm_budget_table") or {}
+        max_budget = budget_table.get("max_budget")
+        if max_budget is None:
+            max_budget = membership.get("max_budget_in_team")
+        ceilings[str(user_id)] = None if max_budget is None else float(max_budget)
+    return ceilings
+
+
 def hash_litellm_token(litellm_token: str) -> str:
     """Hash a LiteLLM key the way LiteLLM stores it internally.
 

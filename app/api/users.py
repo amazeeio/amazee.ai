@@ -1137,6 +1137,13 @@ async def add_user_to_team(
 
     # Add user to team
     db_user.team_id = team_operation.team_id
+    # A cap left behind by an interrupted removal must not follow the user back
+    # in, so the membership starts without one.
+    db.query(DBSpendCap).filter(
+        DBSpendCap.scope == "team_member",
+        DBSpendCap.team_id == team_operation.team_id,
+        DBSpendCap.user_id == db_user.id,
+    ).delete(synchronize_session=False)
     try:
         db.commit()
         db.refresh(db_user)
@@ -1239,6 +1246,17 @@ async def remove_user_from_team(
                 db_user.id,
             )
         raise
+
+    # A member cap belongs to the membership, so it goes with it; a rejoin
+    # would otherwise silently inherit the old limit. Dropped only once the
+    # removal stuck, or the failure path above would restore a member whose
+    # cap is already gone.
+    db.query(DBSpendCap).filter(
+        DBSpendCap.scope == "team_member",
+        DBSpendCap.team_id == previous_team_id,
+        DBSpendCap.user_id == db_user.id,
+    ).delete(synchronize_session=False)
+    db.commit()
 
     # No counter update here: the member counter is re-derived from the real
     # members on the next check, so the freed seat is picked up there.
