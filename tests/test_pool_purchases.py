@@ -901,6 +901,61 @@ def test_pool_purchase_recreates_a_team_missing_in_litellm(
     assert payment.sync_status == "success"
 
 
+@patch("app.core.team_service.effective_team_group_slugs", return_value=["group-a"])
+def test_pool_purchase_reanchors_member_caps_after_a_team_recreate(
+    _mock_slugs, client, admin_token, db, test_team, test_region, test_team_user
+):
+    """A rebuilt membership carries no member budget, so the cap goes back on."""
+    test_team.budget_type = "pool"
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=test_team_user.id,
+            max_budget=5.0,
+        )
+    )
+    db.commit()
+    payment_id = f"pi_missing_team_caps_{int(time.time() * 1000000)}"
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            side_effect=[
+                HTTPException(status_code=404, detail="Team not found"),
+                {
+                    "team_info": {"max_budget": 0.0, "spend": 0.0},
+                    "team_memberships": [
+                        {"user_id": str(test_team_user.id), "spend": 2.0}
+                    ],
+                },
+            ]
+        )
+        mock_instance.create_team = AsyncMock()
+        mock_instance.create_user = AsyncMock()
+        mock_instance.add_team_member = AsyncMock()
+        mock_instance.update_team_member = AsyncMock()
+        mock_instance.update_team_budget = AsyncMock()
+
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00Z",
+                "stripe_payment_id": payment_id,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 201
+    mock_instance.update_team_member.assert_awaited_once()
+    kwargs = mock_instance.update_team_member.await_args.kwargs
+    assert kwargs["user_id"] == str(test_team_user.id)
+    assert kwargs["max_budget_in_team"] == 7.0
+
+
 def test_pool_purchase_rolls_back_team_budget_when_key_sync_fails(
     client, admin_token, db, test_team, test_region
 ):
