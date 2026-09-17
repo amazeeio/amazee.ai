@@ -448,6 +448,23 @@ def _delete_key_rows(db: Session, key: DBPrivateAIKey) -> None:
     db.query(DBBudgetAlertState).filter(DBBudgetAlertState.key_id == key.id).delete(
         synchronize_session=False
     )
+    # The audit row shares the delete's transaction, so it cannot outlive a rollback.
+    db.add(
+        DBAuditLog(
+            event_type="private_ai_key.delete",
+            resource_type="private_ai_key",
+            resource_id=str(key.id),
+            action="delete",
+            user_id=None,
+            request_source=None,
+            details={
+                "team_id": key.team_id,
+                "region_id": key.region_id,
+                "key_name": key.name,
+                "source": "trial_cleanup",
+            },
+        )
+    )
     db.delete(key)
 
 

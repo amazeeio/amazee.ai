@@ -421,6 +421,17 @@ async def test_delete_removes_remote_resources_then_rows(
     postgres.delete_database.assert_awaited_once()
     assert db.query(DBPrivateAIKey).filter_by(id=key_id).first() is None
     assert db.query(DBUser).filter_by(id=user_id).first() is None
+    audit = (
+        db.query(DBAuditLog)
+        .filter(
+            DBAuditLog.resource_type == "private_ai_key",
+            DBAuditLog.action == "delete",
+            DBAuditLog.resource_id == str(key_id),
+        )
+        .all()
+    )
+    assert len(audit) == 1
+    assert audit[0].user_id is None
 
 
 @pytest.mark.asyncio
@@ -448,6 +459,15 @@ async def test_dead_litellm_leaves_every_row_in_place(
     assert not result.rows_deleted
     postgres.delete_database.assert_not_awaited()
     assert db.query(DBPrivateAIKey).filter_by(id=key_id).first() is not None
+    assert (
+        db.query(DBAuditLog)
+        .filter(
+            DBAuditLog.resource_type == "private_ai_key",
+            DBAuditLog.resource_id == str(key_id),
+        )
+        .count()
+        == 0
+    )
 
 
 @pytest.mark.asyncio

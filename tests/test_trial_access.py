@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from unittest.mock import Mock, AsyncMock, patch
 from app.api.auth import generate_trial_access
 from app.core.limit_service import LimitService
-from app.db.models import DBUser, DBTeam, DBPrivateAIKey, DBRegion
+from app.db.models import DBAuditLog, DBUser, DBTeam, DBPrivateAIKey, DBRegion
 from app.schemas.limits import OwnerType
 from app.schemas.models import Token
 from fastapi import Response
@@ -232,6 +232,83 @@ async def test_generate_trial_access_cleanup_on_key_creation_failure(
     mock_limit_service.delete_limits.assert_called_once_with(
         OwnerType.USER, mock_user.id, commit=False
     )
+
+
+@pytest.mark.asyncio
+async def test_generate_trial_access_cleanup_audits_the_deleted_key(
+    mock_auth_deps,
+    db: Session,
+):
+    """A key deleted by the signup cleanup leaves an audit row behind."""
+    mock_db = Mock(spec=Session)
+
+    mock_region = Mock(spec=DBRegion)
+    mock_region.id = 1
+    mock_region.litellm_api_url = "http://test"
+    mock_region.litellm_api_key = "test"
+
+    def get_mock_query(model):
+        q = Mock()
+        if model is DBRegion:
+            q.filter.return_value.first.return_value = mock_region
+        elif model is DBTeam:
+            q.filter.return_value.with_for_update.return_value.first.return_value = None
+        else:
+            q.filter.return_value.first.return_value = None
+            q.filter.return_value.scalar.return_value = 0
+        return q
+
+    mock_db.query.side_effect = get_mock_query
+
+    mock_user = Mock(spec=DBUser)
+    mock_user.id = 1
+    mock_user.email = "trial-user@example.com"
+    mock_user.receive_marketing_updates = False
+    mock_auth_deps["create_user"].return_value = mock_user
+
+    mock_team = Mock(spec=DBTeam)
+    mock_team.id = 12
+    mock_team.set_by_context = "anonymous-trial-generation"
+    mock_auth_deps["register_team"].return_value = mock_team
+
+    mock_auth_deps["create_key"].return_value = Mock(
+        id=7, litellm_token="sk-trial", name="Trial Key"
+    )
+    # The failure lands after the key exists, so the cleanup deletes it.
+    mock_auth_deps["create_token"].side_effect = RuntimeError("token failed")
+    delete_key = AsyncMock()
+    mock_auth_deps["litellm_cls"].return_value.delete_key = delete_key
+
+    mock_limit_service = Mock(spec=LimitService)
+    mock_limit_service.set_limit.return_value = {
+        "id": 1,
+        "owner_type": "user",
+        "owner_id": 1,
+        "resource": "max_budget",
+        "limit_type": "data_plane",
+        "unit": "dollar",
+        "max_value": 10.0,
+        "current_value": 0.0,
+        "limited_by": "manual",
+        "set_by": "test",
+        "created_at": "2024-01-01T00:00:00",
+        "updated_at": "2024-01-01T00:00:00",
+    }
+
+    with pytest.raises(HTTPException):
+        await generate_trial_access(
+            Mock(), Mock(spec=Response), mock_db, mock_limit_service
+        )
+
+    delete_key.assert_awaited_once_with("sk-trial")
+    audit_rows = [
+        call.args[0]
+        for call in mock_db.add.call_args_list
+        if isinstance(call.args[0], DBAuditLog)
+    ]
+    assert len(audit_rows) == 1
+    assert audit_rows[0].resource_type == "private_ai_key"
+    assert audit_rows[0].action == "delete"
 
 
 @patch("app.db.postgres.PostgresManager.create_database")
