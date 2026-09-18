@@ -47,6 +47,7 @@ from app.core.config import settings
 from app.core.limit_service import (
     LimitService,
     DEFAULT_KEY_DURATION,
+    DEFAULT_KEY_EXPIRY,
     DEFAULT_MAX_SPEND,
     DEFAULT_RPM_PER_KEY,
 )
@@ -549,6 +550,7 @@ async def create_llm_token(
         INFERENCE_ONLY_ROUTES if is_anonymous_trial_team(effective_team) else None
     )
 
+    key_expiry = DEFAULT_KEY_EXPIRY
     if (owner is not None and owner.team_id) or team_id:
         if settings.ENABLE_LIMITS and not is_pool_team:
             limit_service.check_key_limits(owner.team_id or team_id, owner_id)
@@ -565,6 +567,11 @@ async def create_llm_token(
         days_left_in_period = DEFAULT_KEY_DURATION
         max_max_spend = DEFAULT_MAX_SPEND
         max_rpm_limit = DEFAULT_RPM_PER_KEY
+        # polydock-engine owns the `dod-` name convention. These Drupal-demo
+        # keys get their budget once and the key dies with it.
+        if private_ai_key.name.startswith("dod-"):
+            key_expiry = f"{DEFAULT_KEY_DURATION}d"
+            days_left_in_period = None
 
     if team is not None:
         owner_email = team.admin_email
@@ -614,6 +621,7 @@ async def create_llm_token(
             rpm_limit=max_rpm_limit,
             apply_limits=not is_pool_team,
             allowed_routes=allowed_routes,
+            expiry=key_expiry,
         )
         if is_pool_team and not has_pool_purchase:
             # Gate the key with a zero budget instead of LiteLLM's `blocked`
