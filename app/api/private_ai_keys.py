@@ -47,6 +47,7 @@ from app.core.config import settings
 from app.core.limit_service import (
     LimitService,
     DEFAULT_KEY_DURATION,
+    DEFAULT_KEY_EXPIRY,
     DEFAULT_MAX_SPEND,
     DEFAULT_RPM_PER_KEY,
 )
@@ -284,10 +285,18 @@ async def create_private_ai_key(
     - For team workflows with shared pool budget, prefer team-owned keys
       (`team_id`).
 
-    Requests without the `X-Amazee-Source` header from non-admin users are
-    delegated to the moad dashboard backend (Drupal onboarding flow).
+    Requests from non-admin users are delegated to the moad dashboard backend
+    (Drupal onboarding flow), unless the caller belongs to a team and sends the
+    `X-Amazee-Source` header. A non-admin without a team is always delegated.
     """
-    bypass_delegation = bool(request.headers.get("X-Amazee-Source"))
+    # The header is client-supplied, so it only opts a caller out of the moad
+    # delegation when that caller has a team. A teamless non-admin taking the
+    # direct path would get a key on the teamless defaults, with the full
+    # per-key budget and no team to gate it.
+    bypass_delegation = (
+        bool(request.headers.get("X-Amazee-Source"))
+        and current_user.team_id is not None
+    )
     return await _create_private_ai_key(
         private_ai_key=private_ai_key,
         current_user=current_user,
@@ -313,18 +322,32 @@ async def _create_private_ai_key(
     (``/internal/provision-key``, ``generate-trial-access``) that already
     operate in a trusted server-side context.
     """
+    # Check the declared ownership before delegating. Delegation provisions
+    # for the caller only and ignores owner_id/team_id, so a cross-team
+    # request must still be refused here instead of quietly becoming a key
+    # for the caller.
+    _validate_permissions_and_get_ownership_info(
+        private_ai_key.owner_id,
+        private_ai_key.team_id,
+        current_user,
+        user_role,
+        db,
+    )
+
     # --- moad delegation ---
-    # Delegate to moad when:
-    #   - the caller has not opted out via bypass_delegation (set from the
-    #     X-Amazee-Source header by the route handler, or True for internal
-    #     callers), AND
-    #   - the user is not a system admin (admins always create keys directly).
-    # The Drupal module never sends X-Amazee-Source so its requests always
-    # reach moad.
+    # The direct path is only for:
+    #   - system admins (they always create keys directly), or
+    #   - internal callers that passed bypass_delegation=True in Python
+    #     (/internal/provision-key, generate-trial-access), or
+    #   - a non-admin with a team who sent the X-Amazee-Source header (our own
+    #     frontend); the route handler drops that opt-out for a teamless
+    #     caller, because the direct path would hand them the default per-key
+    #     budget with no team to gate it.
+    # The Drupal module sends no header, so its requests always reach moad.
     if not bypass_delegation and not current_user.is_admin:
         logger.info(
             f"[drupal-attribution] delegating key creation to moad for "
-            f"{current_user.email} (reason: no bypass header and non-admin user)"
+            f"{current_user.email} (reason: non-admin user without a direct-path opt-out)"
         )
         return await _delegate_to_moad(private_ai_key, current_user, db)
 
@@ -549,6 +572,7 @@ async def create_llm_token(
         INFERENCE_ONLY_ROUTES if is_anonymous_trial_team(effective_team) else None
     )
 
+    key_expiry = DEFAULT_KEY_EXPIRY
     if (owner is not None and owner.team_id) or team_id:
         if settings.ENABLE_LIMITS and not is_pool_team:
             limit_service.check_key_limits(owner.team_id or team_id, owner_id)
@@ -565,6 +589,11 @@ async def create_llm_token(
         days_left_in_period = DEFAULT_KEY_DURATION
         max_max_spend = DEFAULT_MAX_SPEND
         max_rpm_limit = DEFAULT_RPM_PER_KEY
+        # polydock-engine owns the `dod-` name convention. These Drupal-demo
+        # keys get their budget once and the key dies with it.
+        if private_ai_key.name.startswith("dod-"):
+            key_expiry = f"{DEFAULT_KEY_DURATION}d"
+            days_left_in_period = None
 
     if team is not None:
         owner_email = team.admin_email
@@ -607,13 +636,14 @@ async def create_llm_token(
             team_id=LiteLLMService.format_team_id(region.name, litellm_team)
             if litellm_team is not None
             else None,
-            duration=f"{days_left_in_period}d"
+            budget_duration=f"{days_left_in_period}d"
             if days_left_in_period is not None
             else None,
             max_budget=max_max_spend,
             rpm_limit=max_rpm_limit,
             apply_limits=not is_pool_team,
             allowed_routes=allowed_routes,
+            expiry=key_expiry,
         )
         if is_pool_team and not has_pool_purchase:
             # Gate the key with a zero budget instead of LiteLLM's `blocked`

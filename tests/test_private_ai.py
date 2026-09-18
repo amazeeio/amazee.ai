@@ -18,6 +18,7 @@ from httpx import HTTPStatusError
 from fastapi import status, HTTPException
 from app.core.config import settings
 from app.core.limit_service import (
+    DEFAULT_KEY_DURATION,
     DEFAULT_MAX_SPEND,
     DEFAULT_RPM_PER_KEY,
     LimitService,
@@ -1469,6 +1470,86 @@ def test_create_llm_token_with_expiration(
     assert call_args["json"]["budget_duration"] == "30d"  # Verify 1 month
     assert call_args["json"]["max_budget"] == DEFAULT_MAX_SPEND
     assert call_args["json"]["rpm_limit"] == DEFAULT_RPM_PER_KEY
+
+
+def _key_generate_body(mock_client, name):
+    """The /key/generate body sent for the key with this name"""
+    calls = [
+        call
+        for call in mock_client.post.call_args_list
+        if str(call.args[0]).endswith("/key/generate")
+        and call.kwargs.get("json", {})
+        .get("metadata", {})
+        .get("amazeeai_private_ai_key_name")
+        == name
+    ]
+    assert len(calls) == 1
+    return calls[0].kwargs["json"]
+
+
+@patch("httpx.AsyncClient")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_create_llm_token_dod_key_expires_in_30_days_and_never_resets(
+    mock_client_class, client, admin_token, test_region, mock_httpx_post_client
+):
+    """A dod- key lives 30 days and its budget is never reset"""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"region_id": test_region.id, "name": "dod-demo-site"},
+    )
+    assert response.status_code == 200
+
+    body = _key_generate_body(mock_httpx_post_client, "dod-demo-site")
+    assert body["duration"] == "30d"
+    assert "budget_duration" not in body
+    assert body["max_budget"] == DEFAULT_MAX_SPEND
+    assert body["rpm_limit"] == DEFAULT_RPM_PER_KEY
+
+    # The prefix match is exact and case-sensitive
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"region_id": test_region.id, "name": "Dod-demo-site"},
+    )
+    assert response.status_code == 200
+
+    body = _key_generate_body(mock_httpx_post_client, "Dod-demo-site")
+    assert body["duration"] == "365d"
+    assert body["budget_duration"] == "30d"
+
+
+@patch("httpx.AsyncClient")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_create_llm_token_for_team_key_keeps_yearly_expiry_and_reset(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    test_team,
+    mock_httpx_post_client,
+):
+    """A team key keeps the yearly expiry and the team's reset cycle"""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Team Key",
+            "team_id": test_team.id,
+        },
+    )
+    assert response.status_code == 200
+
+    body = _key_generate_body(mock_httpx_post_client, "Team Key")
+    assert body["duration"] == "365d"
+    assert body["budget_duration"] == f"{DEFAULT_KEY_DURATION}d"
+    assert body["max_budget"] is not None
+    assert body["rpm_limit"] is not None
 
 
 @patch("httpx.AsyncClient")
