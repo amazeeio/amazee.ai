@@ -507,6 +507,7 @@ async def subscription_deactivate(
                 team_info = team_info_resp.get("team_info", team_info_resp)
                 current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
                 current_spend_cents = int(round(current_team_spend * 100))
+                litellm_cycle_active = bool(team_info.get("budget_duration"))
                 snapshot_row = _latest_spend_snapshot(
                     db, team_id=team.id, region_id=region.id
                 )
@@ -515,12 +516,35 @@ async def subscription_deactivate(
                     if snapshot_row is not None
                     else None
                 )
-                retry_window_start = existing.payment_date or snapshot_row.period_start
-                if baseline_cents is not None and current_spend_cents >= baseline_cents:
+                # created_at is the last resort: the window must never be
+                # None, the log read below takes it as its lower bound.
+                retry_window_start = (
+                    existing.payment_date
+                    or (snapshot_row.period_start if snapshot_row is not None else None)
+                    or existing.created_at
+                )
+                if (
+                    not litellm_cycle_active
+                    and baseline_cents is not None
+                    and current_spend_cents >= baseline_cents
+                ):
                     incremental_spend_cents = current_spend_cents - baseline_cents
                 else:
-                    # No snapshot, or a counter below it: read the window from
-                    # the spend logs, which survive a counter reset.
+                    # No snapshot, a counter below it, or a LiteLLM cycle still
+                    # running on this team: the counter can have been reset
+                    # between the attempts, so subtracting the baseline would
+                    # undercount and hand back credit the team already spent.
+                    # The spend logs survive a reset.
+                    logger.warning(
+                        "LiteLLM team spend counter is not trustworthy on "
+                        "cancellation retry for team_id=%s region_id=%s: live=%s "
+                        "cents, baseline=%s cents, litellm_cycle_active=%s",
+                        team.id,
+                        region.id,
+                        current_spend_cents,
+                        baseline_cents,
+                        litellm_cycle_active,
+                    )
                     logged_spend = await litellm_service.get_team_spend_in_range(
                         lite_team_id,
                         retry_window_start,

@@ -2029,9 +2029,7 @@ def test_subscription_deactivate_retry_after_litellm_failure_completes(
     assert first.status_code == 502
     payment = (
         db.query(DBPeriodicPayment)
-        .filter(
-            DBPeriodicPayment.stripe_payment_id == "txn_cancel_retry_after_fail"
-        )
+        .filter(DBPeriodicPayment.stripe_payment_id == "txn_cancel_retry_after_fail")
         .first()
     )
     assert payment.sync_status == "sync_failed"
@@ -2215,6 +2213,98 @@ def test_subscription_deactivate_retry_debits_spend_since_the_first_attempt(
         .total_spend
         == 12.0
     )
+
+
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_retry_reads_logs_while_a_litellm_cycle_runs(
+    mock_litellm_class,
+    _mock_capture_spend,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """A retry must not subtract its baseline from a counter LiteLLM can reset.
+
+    The first attempt fails before the team budget write, so the team keeps its
+    LiteLLM cycle. If that cycle resets the counter and the team spends past the
+    recorded baseline again, subtracting the baseline undercounts and leaves the
+    team top-up credit it already used.
+    """
+    sub_entry, period_start = _seed_deactivate_period(
+        db, test_team, test_region, baseline_spend=4.0
+    )
+    _seed_deactivate_key(db, test_team, test_region, "deactivate-retry-cycle-key")
+    topup = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="topup",
+        stripe_payment_id="pi_topup_retry_cycle",
+        amount_cents=5000,
+        consumed_cents=0,
+        purchased_at=datetime.now(UTC) - timedelta(days=1),
+        expires_at=datetime.now(UTC) + timedelta(days=30),
+        is_active=True,
+    )
+    db.add(topup)
+    db.add(
+        DBTeamSpendPeriod(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            budget_type=test_team.budget_type,
+            period_start=period_start,
+            period_end=period_start + timedelta(days=31),
+            total_spend=4.0,
+            source="moad_subscription_cycle",
+        )
+    )
+    db.commit()
+
+    mock_litellm = mock_litellm_class.return_value
+    # First attempt: no cycle on the team yet in this read, counter trusted.
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 10.0}})
+    mock_litellm.update_team_budget = AsyncMock(side_effect=Exception("litellm down"))
+    mock_litellm.set_key_restrictions = AsyncMock()
+    mock_litellm.get_team_spend_in_range = AsyncMock(return_value=12.0)
+
+    payload = {
+        "transaction_id": "txn_cancel_retry_cycle",
+        "team_id": test_team.id,
+        "region_id": test_region.id,
+        "reason": "cancelled",
+    }
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    first = client.post(
+        "/billing/subscription/deactivate", headers=headers, json=payload
+    )
+    assert first.status_code == 502
+    db.refresh(sub_entry)
+    assert sub_entry.consumed_cents == 600
+
+    # The budget write never landed, so the team still carries its cycle. The
+    # counter reset and climbed back to 12.00, above the 10.00 snapshot the
+    # failed attempt recorded. The logs hold the real 12.00 for the window.
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={"team_info": {"spend": 12.0, "budget_duration": "31d"}}
+    )
+    mock_litellm.update_team_budget.side_effect = None
+    mock_litellm.update_team_budget.return_value = None
+
+    second = client.post(
+        "/billing/subscription/deactivate", headers=headers, json=payload
+    )
+
+    assert second.status_code == 200
+    mock_litellm.get_team_spend_in_range.assert_awaited_once()
+    db.refresh(topup)
+    # The logged 12.00, not the 2.00 a baseline subtraction would have found.
+    assert topup.consumed_cents == 1200
 
 
 @patch(
@@ -3276,9 +3366,7 @@ async def test_apply_billing_cycle_for_team_reanchors_member_caps_after_recreate
             HTTPException(status_code=404, detail="Team not found"),
             {
                 "team_info": {"spend": 0.0},
-                "team_memberships": [
-                    {"user_id": str(test_team_user.id), "spend": 0.0}
-                ],
+                "team_memberships": [{"user_id": str(test_team_user.id), "spend": 0.0}],
             },
         ]
     )
