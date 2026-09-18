@@ -2,7 +2,9 @@
 Tests for Drupal-origin moad delegation via X-Amazee-Source header.
 
 POST /private-ai-keys delegates to moad by default (no header = Drupal).
-When X-Amazee-Source: frontend is present the direct creation path is used.
+When X-Amazee-Source: frontend is present, a caller with a team takes the
+direct creation path. A teamless non-admin is delegated whatever the header
+says.
 """
 
 import asyncio
@@ -22,13 +24,14 @@ from tests.conftest import TestingSessionLocal, engine
 EMAIL = "test-drupal@example.com"
 
 
-def _make_user(db, email=EMAIL, role=UserRole.DEFAULT, is_admin=False):
+def _make_user(db, email=EMAIL, role=UserRole.DEFAULT, is_admin=False, team_id=None):
     user = DBUser(
         email=email,
         hashed_password=get_password_hash("testpassword"),
         is_active=True,
         is_admin=is_admin,
         role=role,
+        team_id=team_id,
     )
     db.add(user)
     db.commit()
@@ -109,25 +112,28 @@ def test_no_header_delegates_to_moad(
 
 
 # ---------------------------------------------------------------------------
-# 2. With header → direct creation (frontend / admin path)
+# 2. With header → direct creation, but only for a caller with a team
 # ---------------------------------------------------------------------------
 
 
 @patch("app.api.private_ai_keys.settings")
 @patch("httpx.AsyncClient")
 def test_with_header_bypasses_moad(
-    mock_client_cls, mock_settings, client, db, test_region
+    mock_client_cls, mock_settings, client, db, test_region, test_team
 ):
-    """A non-admin DEFAULT user with X-Amazee-Source header must NOT be delegated.
+    """A non-admin team member with the X-Amazee-Source header must NOT be
+    delegated. This is the legacy frontend flow.
 
     This specifically exercises the header bypass path, not the admin exemption.
     """
     mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
     mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
 
-    # Deliberately non-admin DEFAULT user — bypass must come from the header,
-    # not the is_admin exemption.
-    user = _make_user(db, is_admin=False)
+    # Deliberately non-admin — bypass must come from the header, not the
+    # is_admin exemption. A user with a team must carry a team role.
+    user = _make_user(
+        db, is_admin=False, role=UserRole.KEY_CREATOR, team_id=test_team.id
+    )
     token = _login(client, user)
 
     mock_http = AsyncMock()
@@ -167,6 +173,61 @@ def test_with_header_bypasses_moad(
     ]
     assert provision_key_calls == [], f"Unexpected moad call(s): {provision_key_calls}"
     mock_llm.assert_called_once()
+
+
+@patch("app.api.private_ai_keys.settings")
+@patch("httpx.AsyncClient")
+def test_teamless_non_admin_with_header_is_still_delegated(
+    mock_client_cls, mock_settings, client, db, test_region
+):
+    """The header must not give a teamless non-admin the direct path.
+
+    Anyone can send X-Amazee-Source. On the direct path a teamless caller
+    lands in the teamless defaults and gets a key with the full per-key
+    budget and no team to gate it, so this caller is delegated to moad.
+    """
+    mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+    mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+
+    user = _make_user(db, is_admin=False)
+    assert user.team_id is None
+    token = _login(client, user)
+
+    litellm_token = "teamless-key-001"
+    db.add(
+        DBPrivateAIKey(
+            name="pre-seeded-key",
+            litellm_token=litellm_token,
+            litellm_api_url="http://test-llm",
+            database_name="db",
+            database_host="host",
+            database_username="u",
+            database_password="p",
+            region_id=test_region.id,
+        )
+    )
+    db.commit()
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"llm": {"token": litellm_token}}
+
+    mock_http = AsyncMock()
+    mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+    mock_http.__aexit__ = AsyncMock(return_value=False)
+    mock_http.post = AsyncMock(return_value=mock_response)
+    mock_client_cls.return_value = mock_http
+
+    with patch(
+        "app.api.private_ai_keys.create_llm_token", new_callable=AsyncMock
+    ) as mock_llm:
+        # client fixture sends X-Amazee-Source: frontend automatically
+        response = _post_key(client, token, test_region.id)
+
+    assert response.status_code == 200
+    # No key was minted on this backend; moad owns the provisioning
+    mock_llm.assert_not_called()
+    assert "provision-key" in mock_http.post.call_args[0][0]
 
 
 # ---------------------------------------------------------------------------
