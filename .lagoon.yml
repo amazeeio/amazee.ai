@@ -57,11 +57,22 @@ environments:
         command: python scripts/trigger_eol_scan_job.py
         service: backend
     routes:
+      # api.enterprise.mirantis.com is parked ahead of the Mirantis Enterprise
+      # AI rebrand: routed so Lagoon issues the cert and DNS/CDN can go live
+      # now, but 301'd at the ingress rather than served. The backend is a
+      # python service, so there is no nginx image to carry a redirects-map and
+      # the redirect belongs on the ingress. When the rebrand flips, swap the
+      # host and the redirect target.
       - backend:
         - api.amazee.ai:
             tls-acme: true
             insecure: Redirect
             hstsEnabled: true
+        - api.enterprise.mirantis.com:
+            tls-acme: true
+            insecure: Redirect
+            annotations:
+              nginx.ingress.kubernetes.io/permanent-redirect: https://api.amazee.ai$request_uri
 
       - frontend:
         - dashboard.amazee.ai:
