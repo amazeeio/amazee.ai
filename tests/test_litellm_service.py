@@ -193,8 +193,8 @@ def test_create_key_with_limits_requires_non_none_values(test_region):
                 name="Test Key",
                 user_id=123,
                 team_id="team-456",
-                duration=None,
-                max_budget=100.0,
+                budget_duration="30d",
+                max_budget=None,
                 rpm_limit=500,
                 apply_limits=True,
             )
@@ -202,8 +202,62 @@ def test_create_key_with_limits_requires_non_none_values(test_region):
 
     assert (
         str(exc_info.value)
-        == "duration, max_budget, and rpm_limit are required when apply_limits=True"
+        == "max_budget and rpm_limit are required when apply_limits=True"
     )
+
+
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+@patch("httpx.AsyncClient")
+def test_create_key_without_budget_duration_omits_the_field(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    """No budget_duration means LiteLLM never resets the key's budget"""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.create_key(
+            email="test@example.com",
+            name="dod-demo-site",
+            user_id=123,
+            apply_limits=True,
+            budget_duration=None,
+            max_budget=27.0,
+            rpm_limit=500,
+        )
+    )
+
+    request_json = mock_httpx_post_client.post.call_args.kwargs["json"]
+    assert "budget_duration" not in request_json
+    assert request_json["max_budget"] == 27.0
+    assert request_json["rpm_limit"] == 500
+    assert request_json["duration"] == "365d"
+
+
+@patch("httpx.AsyncClient")
+def test_create_key_expiry_sets_duration(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    """expiry is the key lifetime, sent to LiteLLM as duration"""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.create_key(
+            email="test@example.com",
+            name="Test Key",
+            user_id=123,
+            expiry="30d",
+        )
+    )
+
+    assert mock_httpx_post_client.post.call_args.kwargs["json"]["duration"] == "30d"
 
 
 @patch("httpx.AsyncClient")
