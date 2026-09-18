@@ -607,7 +607,7 @@ async def create_llm_token(
             team_id=LiteLLMService.format_team_id(region.name, litellm_team)
             if litellm_team is not None
             else None,
-            duration=f"{days_left_in_period}d"
+            budget_duration=f"{days_left_in_period}d"
             if days_left_in_period is not None
             else None,
             max_budget=max_max_spend,
