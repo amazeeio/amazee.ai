@@ -5027,6 +5027,244 @@ def test_team_spend_breakdown_member_never_sees_unattributed(
     assert data["totals"]["spend"] == 3.0
 
 
+def _key_breakdown_rows(hash_a: str, hash_b: str, hash_c: str) -> list[dict]:
+    """One day of activity over three keys, with a per-model split for hash_a."""
+    return [
+        {
+            "date": "2025-06-01",
+            "metrics": {"spend": 6.0, "api_requests": 6},
+            "breakdown": {
+                "api_keys": {
+                    hash_a: {
+                        "metrics": {"spend": 2.0, "api_requests": 2},
+                        "metadata": {"key_alias": "alias-a"},
+                    },
+                    hash_b: {
+                        "metrics": {"spend": 3.0, "api_requests": 3},
+                        "metadata": {"key_alias": "alias-b"},
+                    },
+                    hash_c: {
+                        "metrics": {"spend": 1.0, "api_requests": 1},
+                        "metadata": {"key_alias": "alias-c"},
+                    },
+                },
+                "models": {
+                    "bedrock/claude": {
+                        "metrics": {"spend": 6.0},
+                        "api_key_breakdown": {
+                            hash_a: {"metrics": {"spend": 2.0}},
+                            hash_b: {"metrics": {"spend": 3.0}},
+                            hash_c: {"metrics": {"spend": 1.0}},
+                        },
+                    },
+                },
+            },
+        },
+        {
+            "date": "2025-06-02",
+            "metrics": {"spend": 1.0, "api_requests": 1},
+            "breakdown": {
+                "api_keys": {
+                    hash_a: {
+                        "metrics": {"spend": 1.0, "api_requests": 1},
+                        "metadata": {"key_alias": "alias-a"},
+                    },
+                },
+            },
+        },
+    ]
+
+
+@patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
+def test_team_daily_activity_key_breakdown_admin_sees_all(
+    mock_activity, client, team_admin_token, test_team, test_team_user, test_region, db
+):
+    user_key = DBPrivateAIKey(
+        name="daily-user-key",
+        litellm_token="sk-daily-user-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+    )
+    service_key = DBPrivateAIKey(
+        name="daily-service-key",
+        litellm_token="sk-daily-service-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add_all([user_key, service_key])
+    db.commit()
+
+    mock_activity.return_value = _key_breakdown_rows(
+        LiteLLMService.hash_token("sk-daily-user-token"),
+        LiteLLMService.hash_token("sk-daily-service-token"),
+        "hash-of-a-key-we-no-longer-hold",
+    )
+
+    url = f"/spend/{test_region.id}/team/{test_team.id}/daily-activity"
+    headers = {"Authorization": f"Bearer {team_admin_token}"}
+
+    response = client.get(
+        url, params={"include_key_breakdown": "true"}, headers=headers
+    )
+    assert response.status_code == 200
+    activity = response.json()["activity"]
+
+    day_one = activity[0]["key_breakdown"]
+    assert [k["spend"] for k in day_one] == [3.0, 2.0, 1.0]
+    service_item, user_item, unattributed = day_one
+    assert service_item["key_id"] == service_key.id
+    assert service_item["kind"] == "service"
+    assert service_item["masked"] == "sk-daily"
+    assert user_item["key_id"] == user_key.id
+    assert user_item["kind"] == "user"
+    assert user_item["owner_id"] == test_team_user.id
+    # Nulls are dropped from the response, so a key we no longer hold carries
+    # neither an id nor an owner.
+    assert "key_id" not in unattributed
+    assert "kind" not in unattributed
+    assert unattributed["key_name"] == "alias-c"
+
+    # The second day only has the user key.
+    assert [k["key_id"] for k in activity[1]["key_breakdown"]] == [user_key.id]
+
+    # Without the flag the field is absent.
+    response = client.get(url, headers=headers)
+    assert response.status_code == 200
+    assert "key_breakdown" not in response.json()["activity"][0]
+
+
+@patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
+def test_team_daily_activity_key_breakdown_member_sees_own_keys_only(
+    mock_activity,
+    client,
+    team_key_creator_token,
+    test_team,
+    test_team_key_creator,
+    test_region,
+    db,
+):
+    own_key = DBPrivateAIKey(
+        name="daily-own-key",
+        litellm_token="sk-daily-own-token",
+        region_id=test_region.id,
+        owner_id=test_team_key_creator.id,
+    )
+    service_key = DBPrivateAIKey(
+        name="daily-service-key",
+        litellm_token="sk-daily-service-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add_all([own_key, service_key])
+    db.commit()
+
+    mock_activity.return_value = _key_breakdown_rows(
+        LiteLLMService.hash_token("sk-daily-own-token"),
+        LiteLLMService.hash_token("sk-daily-service-token"),
+        "hash-of-a-key-we-no-longer-hold",
+    )
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/daily-activity",
+        params={"include_key_breakdown": "true"},
+        headers={"Authorization": f"Bearer {team_key_creator_token}"},
+    )
+    assert response.status_code == 200
+    activity = response.json()["activity"]
+
+    # A member sees neither the team's service key nor a key we no longer hold.
+    for row in activity:
+        assert [k["key_id"] for k in row["key_breakdown"]] == [own_key.id]
+
+
+@patch("app.api.spend.LiteLLMService.get_user_daily_activity", new_callable=AsyncMock)
+def test_user_daily_activity_key_breakdown(
+    mock_activity,
+    client,
+    team_admin_token,
+    test_team,
+    test_team_user,
+    test_team_key_creator,
+    test_region,
+    db,
+):
+    own_key = DBPrivateAIKey(
+        name="daily-own-key",
+        litellm_token="sk-daily-own-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+    )
+    other_key = DBPrivateAIKey(
+        name="daily-other-key",
+        litellm_token="sk-daily-other-token",
+        region_id=test_region.id,
+        owner_id=test_team_key_creator.id,
+    )
+    db.add_all([own_key, other_key])
+    db.commit()
+
+    mock_activity.return_value = _key_breakdown_rows(
+        LiteLLMService.hash_token("sk-daily-own-token"),
+        LiteLLMService.hash_token("sk-daily-other-token"),
+        "hash-of-a-key-we-no-longer-hold",
+    )
+
+    response = client.get(
+        f"/spend/{test_region.id}/user/{test_team_user.id}/daily-activity",
+        params={"include_key_breakdown": "true"},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    activity = response.json()["activity"]
+
+    # Another member's key and an unattributed one are not this user's usage.
+    for row in activity:
+        assert [k["key_id"] for k in row["key_breakdown"]] == [own_key.id]
+    assert activity[0]["key_breakdown"][0]["kind"] == "user"
+
+
+@patch("app.api.spend.LiteLLMService.get_daily_activity", new_callable=AsyncMock)
+def test_key_daily_activity_key_breakdown(
+    mock_get_daily_activity,
+    client,
+    team_admin_token,
+    test_team_user,
+    test_region,
+    db,
+):
+    key = DBPrivateAIKey(
+        name="daily-single-key",
+        litellm_token="sk-daily-single-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team_user.team_id,
+    )
+    db.add(key)
+    db.commit()
+
+    mock_get_daily_activity.return_value = _key_breakdown_rows(
+        LiteLLMService.hash_token("sk-daily-single-token"),
+        "hash-of-another-key",
+        "hash-of-a-key-we-no-longer-hold",
+    )
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/daily-activity",
+        params={"include_key_breakdown": "true"},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    activity = response.json()["activity"]
+
+    # The route is scoped to one key, so no other key can appear.
+    for row in activity:
+        assert len(row["key_breakdown"]) == 1
+        item = row["key_breakdown"][0]
+        assert item["key_id"] == key.id
+        assert item["kind"] == "user"
+        assert item["masked"] == "sk-daily"
+
+
 @patch("app.api.spend.LiteLLMService.get_daily_activity", new_callable=AsyncMock)
 def test_key_daily_activity_folds_dates_split_across_pages(
     mock_get_daily_activity, client, team_admin_token, test_team_user, test_region, db
