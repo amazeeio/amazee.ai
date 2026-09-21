@@ -687,6 +687,21 @@ class BreakdownModelItem(UsageMetrics):
     model: str = Field(
         description="LiteLLM model name, e.g. 'bedrock/us.anthropic.claude-sonnet-4-6'.",
     )
+    custom_llm_provider: Optional[str] = Field(
+        default=None,
+        description=(
+            "Provider serving this model, from LiteLLM /model/info. Null when "
+            "the lookup fails or the deployment is no longer configured."
+        ),
+    )
+    model_group: Optional[str] = Field(
+        default=None,
+        description=(
+            "Public model name this deployment is served under, from LiteLLM "
+            "/model/info. Null when the lookup fails or the deployment is no "
+            "longer configured."
+        ),
+    )
     # `model` is a normal field here; opt out of pydantic's protected `model_`
     # namespace so it doesn't warn/clash.
     model_config = ConfigDict(from_attributes=True, protected_namespaces=())
@@ -738,6 +753,21 @@ class DailyActivityModelBreakdown(BaseModel):
 
     model: str = Field(
         description="LiteLLM model name, e.g. 'bedrock/us.anthropic.claude-sonnet-4-6'.",
+    )
+    custom_llm_provider: Optional[str] = Field(
+        default=None,
+        description=(
+            "Provider serving this model, from LiteLLM /model/info. Null when "
+            "the lookup fails or the deployment is no longer configured."
+        ),
+    )
+    model_group: Optional[str] = Field(
+        default=None,
+        description=(
+            "Public model name this deployment is served under, from LiteLLM "
+            "/model/info. Null when the lookup fails or the deployment is no "
+            "longer configured."
+        ),
     )
     spend: float = 0.0
     prompt_tokens: int = 0

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import UTC, date, datetime, timedelta
 
@@ -272,10 +273,9 @@ def _daily_metric_fields(metrics: dict) -> dict:
 
 
 # Metric field names shared by every daily-activity row, read off the schema so
-# folding cannot silently miss a field added later.
-UsageMetricFields = tuple(
-    name for name in DailyActivityModelBreakdown.model_fields if name != "model"
-)
+# folding cannot silently miss a metric added later. `UsageMetrics` carries the
+# metrics alone, so no descriptive field can slip into the sums.
+UsageMetricFields = tuple(UsageMetrics.model_fields)
 
 
 def _row_model_breakdown(row: dict) -> list[DailyActivityModelBreakdown]:
@@ -302,6 +302,7 @@ def _rows_to_daily_activity(
     key_by_hash: dict[str, DBPrivateAIKey] | None = None,
     visible_owner_id: int | None = None,
     include_unattributed: bool = False,
+    model_map: dict[str, tuple] | None = None,
 ) -> list[KeyDailyActivityRow]:
     """Map raw LiteLLM daily-activity rows to daily-activity response rows.
 
@@ -343,7 +344,9 @@ def _rows_to_daily_activity(
     activity = [
         KeyDailyActivityRow(
             date=row_date,
-            breakdown=_sorted_model_breakdown(models_by_date.get(row_date, {}))
+            breakdown=_sorted_model_breakdown(
+                models_by_date.get(row_date, {}), model_map
+            )
             if include_breakdown
             else None,
             key_breakdown=_key_items(
@@ -351,6 +354,7 @@ def _rows_to_daily_activity(
                 key_by_hash,
                 visible_owner_id,
                 include_unattributed,
+                model_map,
             )
             if key_by_hash is not None
             else None,
@@ -432,9 +436,13 @@ def _sum_metrics(items: list[UsageMetrics]) -> dict:
     }
 
 
-def _build_key_item(slot: dict, db_key: DBPrivateAIKey | None) -> BreakdownKeyItem:
+def _build_key_item(
+    slot: dict,
+    db_key: DBPrivateAIKey | None,
+    model_map: dict[str, tuple] | None = None,
+) -> BreakdownKeyItem:
     models = [
-        BreakdownModelItem(model=name, **metrics)
+        BreakdownModelItem(model=name, **_model_fields(name, model_map), **metrics)
         for name, metrics in slot["models"].items()
     ]
     models.sort(key=lambda m: m.spend, reverse=True)
@@ -464,6 +472,7 @@ def _key_items(
     key_by_hash: dict[str, DBPrivateAIKey],
     visible_owner_id: int | None,
     include_unattributed: bool,
+    model_map: dict[str, tuple] | None = None,
 ) -> list[BreakdownKeyItem]:
     """Turn folded per-key totals into visible key items, biggest spend first.
 
@@ -475,11 +484,11 @@ def _key_items(
         db_key = key_by_hash.get(hashed)
         if db_key is None:
             if include_unattributed:
-                items.append(_build_key_item(slot, None))
+                items.append(_build_key_item(slot, None, model_map))
             continue
         if visible_owner_id is not None and db_key.owner_id != visible_owner_id:
             continue
-        items.append(_build_key_item(slot, db_key))
+        items.append(_build_key_item(slot, db_key, model_map))
     items.sort(key=lambda k: k.spend, reverse=True)
     return items
 
@@ -508,12 +517,56 @@ def _keys_by_hash(
     }
 
 
+# One LiteLLM call, same budget as a per-region /public/models fetch.
+_MODEL_INFO_TIMEOUT = 10.0
+
+
+async def _model_map(service: LiteLLMService) -> dict[str, tuple]:
+    """Map each deployment model to its provider and model group.
+
+    LiteLLM's daily payload names the deployment model but says nothing about
+    its provider or alias, so `/model/info` is the only source. A failed lookup
+    leaves both fields null rather than failing the whole usage request.
+    """
+    try:
+        info = await asyncio.wait_for(
+            service.get_model_info(), timeout=_MODEL_INFO_TIMEOUT
+        )
+    except Exception as exc:
+        logger.warning("Model info lookup failed, provider left unresolved: %s", exc)
+        return {}
+
+    mapping: dict[str, tuple] = {}
+    for item in info.get("data") or []:
+        name = (item.get("litellm_params") or {}).get("model")
+        if not name:
+            continue
+        # Several deployments can share one model; the first one wins.
+        mapping.setdefault(
+            name,
+            (
+                (item.get("model_info") or {}).get("litellm_provider"),
+                item.get("model_name"),
+            ),
+        )
+    return mapping
+
+
+def _model_fields(name: str, model_map: dict[str, tuple] | None) -> dict:
+    """Provider and model group for one deployment model, empty when unknown."""
+    provider, model_group = (model_map or {}).get(name, (None, None))
+    return {"custom_llm_provider": provider, "model_group": model_group}
+
+
 def _sorted_model_breakdown(
     models: dict[str, dict],
+    model_map: dict[str, tuple] | None = None,
 ) -> list[DailyActivityModelBreakdown]:
     """Build a per-model breakdown list from folded totals, biggest spend first."""
     breakdown = [
-        DailyActivityModelBreakdown(model=name, **totals)
+        DailyActivityModelBreakdown(
+            model=name, **_model_fields(name, model_map), **totals
+        )
         for name, totals in models.items()
     ]
     breakdown.sort(key=lambda b: b.spend, reverse=True)
@@ -1824,6 +1877,11 @@ async def get_key_daily_activity(
         start_date=start_date.isoformat(),
         end_date=end_date.isoformat(),
     )
+    model_map = (
+        await _model_map(service)
+        if (include_breakdown or include_key_breakdown)
+        else None
+    )
 
     # The route is already scoped to one key, so the day's per-key split can
     # only describe that key.
@@ -1842,6 +1900,7 @@ async def get_key_daily_activity(
             rows,
             include_breakdown=include_breakdown,
             key_by_hash=key_by_hash,
+            model_map=model_map,
         ),
     )
 
@@ -1922,6 +1981,11 @@ async def get_user_daily_activity(
         start_date=start_date.isoformat(),
         end_date=end_date.isoformat(),
     )
+    model_map = (
+        await _model_map(service)
+        if (include_breakdown or include_key_breakdown)
+        else None
+    )
 
     return UserDailyActivityResponse(
         region_id=region_id,
@@ -1933,6 +1997,7 @@ async def get_user_daily_activity(
             include_breakdown=include_breakdown,
             key_by_hash=_keys_by_hash(db, region_id) if include_key_breakdown else None,
             visible_owner_id=user_id,
+            model_map=model_map,
         ),
     )
 
@@ -2020,6 +2085,11 @@ async def get_team_daily_activity(
         start_date=start_date.isoformat(),
         end_date=end_date.isoformat(),
     )
+    model_map = (
+        await _model_map(service)
+        if (include_breakdown or include_key_breakdown)
+        else None
+    )
 
     # Same rule as the team breakdown: a team admin sees the whole team, any
     # other member only their own keys.
@@ -2038,6 +2108,7 @@ async def get_team_daily_activity(
             else None,
             visible_owner_id=None if sees_whole_team else current_user.id,
             include_unattributed=sees_whole_team,
+            model_map=model_map,
         ),
     )
 
