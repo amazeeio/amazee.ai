@@ -272,30 +272,6 @@ def _daily_metric_fields(metrics: dict) -> dict:
     }
 
 
-# Metric field names shared by every daily-activity row, read off the schema so
-# folding cannot silently miss a metric added later. `UsageMetrics` carries the
-# metrics alone, so no descriptive field can slip into the sums.
-UsageMetricFields = tuple(UsageMetrics.model_fields)
-
-
-def _row_model_breakdown(row: dict) -> list[DailyActivityModelBreakdown]:
-    """Build the per-model breakdown for one raw LiteLLM daily row.
-
-    Reads ``breakdown.models`` (a dict keyed by model name) and returns a list
-    ordered by descending spend. Returns an empty list when LiteLLM reports no
-    model breakdown for the day.
-    """
-    models = ((row.get("breakdown") or {}).get("models")) or {}
-    breakdown = [
-        DailyActivityModelBreakdown(
-            model=name, **_daily_metric_fields(entry.get("metrics") or {})
-        )
-        for name, entry in models.items()
-    ]
-    breakdown.sort(key=lambda b: b.spend, reverse=True)
-    return breakdown
-
-
 def _rows_to_daily_activity(
     rows: list[dict],
     include_breakdown: bool = False,
@@ -328,18 +304,15 @@ def _rows_to_daily_activity(
         row_date = row.get("date")
         if not row_date:
             continue
-        rows_by_date.setdefault(row_date, []).append(row)
-        totals = by_date.setdefault(row_date, {})
-        for name, value in _daily_metric_fields(row.get("metrics") or {}).items():
-            totals[name] = totals.get(name, 0) + value
+        if key_by_hash is not None:
+            rows_by_date.setdefault(row_date, []).append(row)
+        _accumulate(by_date.setdefault(row_date, {}), row.get("metrics") or {})
 
         if not include_breakdown:
             continue
         day_models = models_by_date.setdefault(row_date, {})
-        for entry in _row_model_breakdown(row):
-            model_totals = day_models.setdefault(entry.model, {})
-            for name in UsageMetricFields:
-                model_totals[name] = model_totals.get(name, 0) + getattr(entry, name)
+        for name, entry in ((row.get("breakdown") or {}).get("models") or {}).items():
+            _accumulate(day_models.setdefault(name, {}), entry.get("metrics") or {})
 
     activity = [
         KeyDailyActivityRow(
