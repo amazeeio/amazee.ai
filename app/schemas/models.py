@@ -684,6 +684,8 @@ class DailyActivityModelBreakdown(BaseModel):
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
     request_count: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
     # `model` is a normal field here; opt out of pydantic's protected `model_`
     # namespace so it doesn't warn/clash.
     model_config = ConfigDict(from_attributes=True, protected_namespaces=())
@@ -712,6 +714,14 @@ class KeyDailyActivityRow(BaseModel):
     request_count: int = Field(
         default=0,
         description="Number of API requests made with this key on this day.",
+    )
+    successful_requests: int = Field(
+        default=0,
+        description="Requests on this day that LiteLLM completed without error.",
+    )
+    failed_requests: int = Field(
+        default=0,
+        description="Requests on this day that LiteLLM reported as failed.",
     )
     breakdown: Optional[List[DailyActivityModelBreakdown]] = Field(
         default=None,
@@ -776,6 +786,8 @@ class UsageMetrics(BaseModel):
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
     request_count: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
     model_config = ConfigDict(from_attributes=True)
 
 

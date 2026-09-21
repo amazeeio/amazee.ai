@@ -266,6 +266,8 @@ def _daily_metric_fields(metrics: dict) -> dict:
         "cache_read_input_tokens": _int("cache_read_input_tokens"),
         "cache_creation_input_tokens": _int("cache_creation_input_tokens"),
         "request_count": _int("api_requests"),
+        "successful_requests": _int("successful_requests"),
+        "failed_requests": _int("failed_requests"),
     }
 
 
