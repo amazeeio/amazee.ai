@@ -813,6 +813,24 @@ class BreakdownKeyItem(UsageMetrics):
         ),
     )
     key_name: Optional[str] = None
+    masked: Optional[str] = Field(
+        default=None,
+        description=(
+            "First 8 characters of the key's token, enough to recognise it. "
+            "Null when we no longer hold the key."
+        ),
+    )
+    kind: Optional[Literal["user", "service"]] = Field(
+        default=None,
+        description=(
+            "'user' for a key owned by a person, 'service' for a team-owned "
+            "key. Null when we no longer hold the key, so its owner is unknown."
+        ),
+    )
+    owner_id: Optional[int] = Field(
+        default=None,
+        description="Owner of the key. Null for service and unattributed keys.",
+    )
     models: List[BreakdownModelItem] = Field(
         default_factory=list,
         description="Per-model usage for this key, ordered by descending spend.",

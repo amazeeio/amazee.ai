@@ -426,9 +426,17 @@ def _build_key_item(slot: dict, db_key: DBPrivateAIKey | None) -> BreakdownKeyIt
     # only reports it inside the model split, fall back to summing the models so
     # its spend still reaches the user and team totals.
     metrics = slot["metrics"] or _sum_metrics(models)
+    token = db_key.litellm_token if db_key else None
     return BreakdownKeyItem(
         key_id=db_key.id if db_key else None,
         key_name=db_key.name if db_key else slot.get("alias"),
+        masked=token[:8] if token else None,
+        # A key with no owner belongs to the team itself, so it stands for a
+        # site or an automation rather than a person.
+        kind=("user" if db_key.owner_id is not None else "service")
+        if db_key
+        else None,
+        owner_id=db_key.owner_id if db_key else None,
         models=models,
         **metrics,
     )
