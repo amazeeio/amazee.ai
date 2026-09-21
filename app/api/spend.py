@@ -297,7 +297,11 @@ def _row_model_breakdown(row: dict) -> list[DailyActivityModelBreakdown]:
 
 
 def _rows_to_daily_activity(
-    rows: list[dict], include_breakdown: bool = False
+    rows: list[dict],
+    include_breakdown: bool = False,
+    key_by_hash: dict[str, DBPrivateAIKey] | None = None,
+    visible_owner_id: int | None = None,
+    include_unattributed: bool = False,
 ) -> list[KeyDailyActivityRow]:
     """Map raw LiteLLM daily-activity rows to daily-activity response rows.
 
@@ -305,7 +309,9 @@ def _rows_to_daily_activity(
     are skipped and the result is ordered ascending by date. LiteLLM's
     ``breakdown`` block (per model/provider/key) is dropped by default to keep
     the response flat; when ``include_breakdown`` is set, the per-model slice is
-    attached to each row's ``breakdown`` field.
+    attached to each row's ``breakdown`` field. Passing ``key_by_hash`` also
+    attaches the day's per-key slice to ``key_breakdown``, limited to the keys
+    the caller may see.
 
     A date can arrive more than once. LiteLLM paginates over the underlying
     per-key, per-model rows and aggregates each page on its own, so a day
@@ -315,11 +321,13 @@ def _rows_to_daily_activity(
     """
     by_date: dict[str, dict] = {}
     models_by_date: dict[str, dict[str, dict]] = {}
+    rows_by_date: dict[str, list[dict]] = {}
 
     for row in rows:
         row_date = row.get("date")
         if not row_date:
             continue
+        rows_by_date.setdefault(row_date, []).append(row)
         totals = by_date.setdefault(row_date, {})
         for name, value in _daily_metric_fields(row.get("metrics") or {}).items():
             totals[name] = totals.get(name, 0) + value
@@ -337,6 +345,14 @@ def _rows_to_daily_activity(
             date=row_date,
             breakdown=_sorted_model_breakdown(models_by_date.get(row_date, {}))
             if include_breakdown
+            else None,
+            key_breakdown=_key_items(
+                _team_breakdown_from_rows(rows_by_date[row_date])[0],
+                key_by_hash,
+                visible_owner_id,
+                include_unattributed,
+            )
+            if key_by_hash is not None
             else None,
             **totals,
         )
@@ -427,19 +443,45 @@ def _build_key_item(slot: dict, db_key: DBPrivateAIKey | None) -> BreakdownKeyIt
     # its spend still reaches the user and team totals.
     metrics = slot["metrics"] or _sum_metrics(models)
     token = db_key.litellm_token if db_key else None
+    # A key with no owner belongs to the team itself, so it stands for a site
+    # or an automation rather than a person.
+    kind = None
+    if db_key:
+        kind = "user" if db_key.owner_id is not None else "service"
     return BreakdownKeyItem(
         key_id=db_key.id if db_key else None,
         key_name=db_key.name if db_key else slot.get("alias"),
         masked=token[:8] if token else None,
-        # A key with no owner belongs to the team itself, so it stands for a
-        # site or an automation rather than a person.
-        kind=("user" if db_key.owner_id is not None else "service")
-        if db_key
-        else None,
+        kind=kind,
         owner_id=db_key.owner_id if db_key else None,
         models=models,
         **metrics,
     )
+
+
+def _key_items(
+    per_key: dict[str, dict],
+    key_by_hash: dict[str, DBPrivateAIKey],
+    visible_owner_id: int | None,
+    include_unattributed: bool,
+) -> list[BreakdownKeyItem]:
+    """Turn folded per-key totals into visible key items, biggest spend first.
+
+    A caller limited to their own keys never sees a key we no longer hold,
+    because its owner is unknowable.
+    """
+    items = []
+    for hashed, slot in per_key.items():
+        db_key = key_by_hash.get(hashed)
+        if db_key is None:
+            if include_unattributed:
+                items.append(_build_key_item(slot, None))
+            continue
+        if visible_owner_id is not None and db_key.owner_id != visible_owner_id:
+            continue
+        items.append(_build_key_item(slot, db_key))
+    items.sort(key=lambda k: k.spend, reverse=True)
+    return items
 
 
 def _keys_by_hash(
@@ -1724,6 +1766,14 @@ async def get_key_daily_activity(
             "Defaults to false, leaving the flat response unchanged."
         ),
     ),
+    include_key_breakdown: bool = Query(
+        False,
+        description=(
+            "When true, include a per-key breakdown on each daily row, "
+            "ordered by descending spend. Defaults to false, leaving the "
+            "flat response unchanged."
+        ),
+    ),
     team_id: int | None = Query(
         None,
         description=(
@@ -1775,12 +1825,24 @@ async def get_key_daily_activity(
         end_date=end_date.isoformat(),
     )
 
+    # The route is already scoped to one key, so the day's per-key split can
+    # only describe that key.
+    key_by_hash = (
+        {LiteLLMService.hash_token(key.litellm_token): key}
+        if include_key_breakdown and key.litellm_token
+        else None
+    )
+
     return KeyDailyActivityResponse(
         region_id=region_id,
         key_id=key_id,
         start_date=start_date,
         end_date=end_date,
-        activity=_rows_to_daily_activity(rows, include_breakdown=include_breakdown),
+        activity=_rows_to_daily_activity(
+            rows,
+            include_breakdown=include_breakdown,
+            key_by_hash=key_by_hash,
+        ),
     )
 
 
@@ -1831,6 +1893,14 @@ async def get_user_daily_activity(
             "Defaults to false, leaving the flat response unchanged."
         ),
     ),
+    include_key_breakdown: bool = Query(
+        False,
+        description=(
+            "When true, include a per-key breakdown on each daily row, "
+            "ordered by descending spend. Limited to the keys this user "
+            "owns. Defaults to false, leaving the flat response unchanged."
+        ),
+    ),
     current_user: DBUser = Depends(get_current_user_from_auth),
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
@@ -1858,7 +1928,12 @@ async def get_user_daily_activity(
         user_id=user_id,
         start_date=start_date,
         end_date=end_date,
-        activity=_rows_to_daily_activity(rows, include_breakdown=include_breakdown),
+        activity=_rows_to_daily_activity(
+            rows,
+            include_breakdown=include_breakdown,
+            key_by_hash=_keys_by_hash(db, region_id) if include_key_breakdown else None,
+            visible_owner_id=user_id,
+        ),
     )
 
 
@@ -1909,6 +1984,16 @@ async def get_team_daily_activity(
             "Defaults to false, leaving the flat response unchanged."
         ),
     ),
+    include_key_breakdown: bool = Query(
+        False,
+        description=(
+            "When true, include a per-key breakdown on each daily row, "
+            "ordered by descending spend. A team admin sees every key, "
+            "including keys we no longer hold; any other member sees only "
+            "their own. Defaults to false, leaving the flat response "
+            "unchanged."
+        ),
+    ),
     current_user: DBUser = Depends(get_current_user_from_auth),
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
@@ -1936,12 +2021,24 @@ async def get_team_daily_activity(
         end_date=end_date.isoformat(),
     )
 
+    # Same rule as the team breakdown: a team admin sees the whole team, any
+    # other member only their own keys.
+    sees_whole_team = current_user.is_admin or user_role == UserRole.TEAM_ADMIN
+
     return TeamDailyActivityResponse(
         region_id=region_id,
         team_id=team_id,
         start_date=start_date,
         end_date=end_date,
-        activity=_rows_to_daily_activity(rows, include_breakdown=include_breakdown),
+        activity=_rows_to_daily_activity(
+            rows,
+            include_breakdown=include_breakdown,
+            key_by_hash=_keys_by_hash(db, region_id, team_id=team_id)
+            if include_key_breakdown
+            else None,
+            visible_owner_id=None if sees_whole_team else current_user.id,
+            include_unattributed=sees_whole_team,
+        ),
     )
 
 
