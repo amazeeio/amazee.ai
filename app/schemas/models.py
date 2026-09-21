@@ -666,6 +666,68 @@ class KeyLastUsedResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class UsageMetrics(BaseModel):
+    """Usage totals for one slice of the team breakdown."""
+
+    spend: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    request_count: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BreakdownModelItem(UsageMetrics):
+    """One model's share of a key's usage over the requested range."""
+
+    model: str = Field(
+        description="LiteLLM model name, e.g. 'bedrock/us.anthropic.claude-sonnet-4-6'.",
+    )
+    # `model` is a normal field here; opt out of pydantic's protected `model_`
+    # namespace so it doesn't warn/clash.
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+
+class BreakdownKeyItem(UsageMetrics):
+    """One key's usage over the requested range, split by model."""
+
+    key_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "Our private AI key id. Null when LiteLLM reports usage for a key "
+            "we no longer hold, e.g. one deleted inside the date range."
+        ),
+    )
+    key_name: Optional[str] = None
+    masked: Optional[str] = Field(
+        default=None,
+        description=(
+            "First 8 characters of the key's token, enough to recognise it. "
+            "Null when we no longer hold the key."
+        ),
+    )
+    kind: Optional[Literal["user", "service"]] = Field(
+        default=None,
+        description=(
+            "'user' for a key owned by a person, 'service' for a team-owned "
+            "key. Null when we no longer hold the key, so its owner is unknown."
+        ),
+    )
+    owner_id: Optional[int] = Field(
+        default=None,
+        description="Owner of the key. Null for service and unattributed keys.",
+    )
+    models: List[BreakdownModelItem] = Field(
+        default_factory=list,
+        description="Per-model usage for this key, ordered by descending spend.",
+    )
+    model_config = ConfigDict(from_attributes=True)
+
+
 class DailyActivityModelBreakdown(BaseModel):
     """Per-model slice of a day's usage, taken from LiteLLM's breakdown block.
 
@@ -731,6 +793,14 @@ class KeyDailyActivityRow(BaseModel):
             "otherwise."
         ),
     )
+    key_breakdown: Optional[List[BreakdownKeyItem]] = Field(
+        default=None,
+        description=(
+            "Per-key usage for this day, ordered by descending spend. Only "
+            "populated when the request sets include_key_breakdown=true; "
+            "omitted otherwise."
+        ),
+    )
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -772,68 +842,6 @@ class TeamDailyActivityResponse(BaseModel):
             "Per-day usage rows aggregated across all of the team's keys, "
             "ordered ascending by date. Days with no usage are omitted."
         )
-    )
-    model_config = ConfigDict(from_attributes=True)
-
-
-class UsageMetrics(BaseModel):
-    """Usage totals for one slice of the team breakdown."""
-
-    spend: float = 0.0
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-    cache_read_input_tokens: int = 0
-    cache_creation_input_tokens: int = 0
-    request_count: int = 0
-    successful_requests: int = 0
-    failed_requests: int = 0
-    model_config = ConfigDict(from_attributes=True)
-
-
-class BreakdownModelItem(UsageMetrics):
-    """One model's share of a key's usage over the requested range."""
-
-    model: str = Field(
-        description="LiteLLM model name, e.g. 'bedrock/us.anthropic.claude-sonnet-4-6'.",
-    )
-    # `model` is a normal field here; opt out of pydantic's protected `model_`
-    # namespace so it doesn't warn/clash.
-    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
-
-
-class BreakdownKeyItem(UsageMetrics):
-    """One key's usage over the requested range, split by model."""
-
-    key_id: Optional[int] = Field(
-        default=None,
-        description=(
-            "Our private AI key id. Null when LiteLLM reports usage for a key "
-            "we no longer hold, e.g. one deleted inside the date range."
-        ),
-    )
-    key_name: Optional[str] = None
-    masked: Optional[str] = Field(
-        default=None,
-        description=(
-            "First 8 characters of the key's token, enough to recognise it. "
-            "Null when we no longer hold the key."
-        ),
-    )
-    kind: Optional[Literal["user", "service"]] = Field(
-        default=None,
-        description=(
-            "'user' for a key owned by a person, 'service' for a team-owned "
-            "key. Null when we no longer hold the key, so its owner is unknown."
-        ),
-    )
-    owner_id: Optional[int] = Field(
-        default=None,
-        description="Owner of the key. Null for service and unattributed keys.",
-    )
-    models: List[BreakdownModelItem] = Field(
-        default_factory=list,
-        description="Per-model usage for this key, ordered by descending spend.",
     )
     model_config = ConfigDict(from_attributes=True)
 
