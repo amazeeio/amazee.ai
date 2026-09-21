@@ -1,5 +1,6 @@
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from app.core.roles import UserRole
@@ -463,10 +464,18 @@ def test_key_daily_activity(
     assert kwargs["end_date"] == "2025-06-02"
 
 
+@patch("app.api.spend.LiteLLMService.get_model_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.get_daily_activity", new_callable=AsyncMock)
 def test_key_daily_activity_include_breakdown(
-    mock_get_daily_activity, client, team_admin_token, test_team_user, test_region, db
+    mock_get_daily_activity,
+    mock_model_info,
+    client,
+    team_admin_token,
+    test_team_user,
+    test_region,
+    db,
 ):
+    mock_model_info.return_value = {"data": []}
     key = DBPrivateAIKey(
         name="daily-activity-breakdown-key",
         litellm_token="sk-daily-breakdown-token",
@@ -5075,10 +5084,19 @@ def _key_breakdown_rows(hash_a: str, hash_b: str, hash_c: str) -> list[dict]:
     ]
 
 
+@patch("app.api.spend.LiteLLMService.get_model_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
 def test_team_daily_activity_key_breakdown_admin_sees_all(
-    mock_activity, client, team_admin_token, test_team, test_team_user, test_region, db
+    mock_activity,
+    mock_model_info,
+    client,
+    team_admin_token,
+    test_team,
+    test_team_user,
+    test_region,
+    db,
 ):
+    mock_model_info.return_value = {"data": []}
     user_key = DBPrivateAIKey(
         name="daily-user-key",
         litellm_token="sk-daily-user-token",
@@ -5133,9 +5151,11 @@ def test_team_daily_activity_key_breakdown_admin_sees_all(
     assert "key_breakdown" not in response.json()["activity"][0]
 
 
+@patch("app.api.spend.LiteLLMService.get_model_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
 def test_team_daily_activity_key_breakdown_member_sees_own_keys_only(
     mock_activity,
+    mock_model_info,
     client,
     team_key_creator_token,
     test_team,
@@ -5143,6 +5163,7 @@ def test_team_daily_activity_key_breakdown_member_sees_own_keys_only(
     test_region,
     db,
 ):
+    mock_model_info.return_value = {"data": []}
     own_key = DBPrivateAIKey(
         name="daily-own-key",
         litellm_token="sk-daily-own-token",
@@ -5177,9 +5198,11 @@ def test_team_daily_activity_key_breakdown_member_sees_own_keys_only(
         assert [k["key_id"] for k in row["key_breakdown"]] == [own_key.id]
 
 
+@patch("app.api.spend.LiteLLMService.get_model_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.get_user_daily_activity", new_callable=AsyncMock)
 def test_user_daily_activity_key_breakdown(
     mock_activity,
+    mock_model_info,
     client,
     team_admin_token,
     test_team,
@@ -5188,6 +5211,7 @@ def test_user_daily_activity_key_breakdown(
     test_region,
     db,
 ):
+    mock_model_info.return_value = {"data": []}
     own_key = DBPrivateAIKey(
         name="daily-own-key",
         litellm_token="sk-daily-own-token",
@@ -5223,15 +5247,165 @@ def test_user_daily_activity_key_breakdown(
     assert activity[0]["key_breakdown"][0]["kind"] == "user"
 
 
+def _model_info_key(db, test_region, owner):
+    key = DBPrivateAIKey(
+        name="model-info-key",
+        litellm_token="sk-model-info-token",
+        region_id=test_region.id,
+        owner_id=owner.id,
+        team_id=owner.team_id,
+    )
+    db.add(key)
+    db.commit()
+    return key
+
+
+def _model_info_rows(hashed: str) -> list[dict]:
+    """One day over two models, one of them absent from /model/info."""
+    return [
+        {
+            "date": "2025-06-01",
+            "metrics": {"spend": 3.0, "api_requests": 3},
+            "breakdown": {
+                "api_keys": {hashed: {"metrics": {"spend": 3.0}}},
+                "models": {
+                    "bedrock/claude": {
+                        "metrics": {"spend": 2.0},
+                        "api_key_breakdown": {hashed: {"metrics": {"spend": 2.0}}},
+                    },
+                    "bedrock/retired": {
+                        "metrics": {"spend": 1.0},
+                        "api_key_breakdown": {hashed: {"metrics": {"spend": 1.0}}},
+                    },
+                },
+            },
+        },
+    ]
+
+
+@patch("app.api.spend.LiteLLMService.get_model_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.get_daily_activity", new_callable=AsyncMock)
-def test_key_daily_activity_key_breakdown(
+def test_key_daily_activity_model_info_fills_provider_and_group(
     mock_get_daily_activity,
+    mock_model_info,
     client,
     team_admin_token,
     test_team_user,
     test_region,
     db,
 ):
+    key = _model_info_key(db, test_region, test_team_user)
+    mock_get_daily_activity.return_value = _model_info_rows(
+        LiteLLMService.hash_token("sk-model-info-token")
+    )
+    # Two deployments share one model; the first one wins.
+    mock_model_info.return_value = {
+        "data": [
+            {
+                "model_name": "claude-sonnet",
+                "litellm_params": {"model": "bedrock/claude"},
+                "model_info": {"litellm_provider": "bedrock"},
+            },
+            {
+                "model_name": "claude-sonnet-eu",
+                "litellm_params": {"model": "bedrock/claude"},
+                "model_info": {"litellm_provider": "bedrock"},
+            },
+            {
+                "model_name": "titan",
+                "litellm_params": {"model": "bedrock/titan"},
+                "model_info": {"litellm_provider": "bedrock"},
+            },
+        ]
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/daily-activity",
+        params={"include_breakdown": "true", "include_key_breakdown": "true"},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    row = response.json()["activity"][0]
+
+    by_model = {m["model"]: m for m in row["breakdown"]}
+    assert by_model["bedrock/claude"]["custom_llm_provider"] == "bedrock"
+    assert by_model["bedrock/claude"]["model_group"] == "claude-sonnet"
+    # A model no longer in /model/info keeps null fields, which are dropped.
+    assert "custom_llm_provider" not in by_model["bedrock/retired"]
+
+    key_models = {m["model"]: m for m in row["key_breakdown"][0]["models"]}
+    assert key_models["bedrock/claude"]["model_group"] == "claude-sonnet"
+    assert "model_group" not in key_models["bedrock/retired"]
+
+
+@patch("app.api.spend.LiteLLMService.get_model_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.get_daily_activity", new_callable=AsyncMock)
+def test_key_daily_activity_model_info_failure_leaves_fields_null(
+    mock_get_daily_activity,
+    mock_model_info,
+    client,
+    team_admin_token,
+    test_team_user,
+    test_region,
+    db,
+):
+    """A provider lookup is a nicety; usage must still come back without it."""
+    key = _model_info_key(db, test_region, test_team_user)
+    mock_get_daily_activity.return_value = _model_info_rows(
+        LiteLLMService.hash_token("sk-model-info-token")
+    )
+    mock_model_info.side_effect = httpx.ConnectError("litellm unreachable")
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/daily-activity",
+        params={"include_breakdown": "true"},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    row = response.json()["activity"][0]
+    assert row["spend"] == 3.0
+    for model in row["breakdown"]:
+        assert "custom_llm_provider" not in model
+        assert "model_group" not in model
+
+
+@patch("app.api.spend.LiteLLMService.get_model_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.get_daily_activity", new_callable=AsyncMock)
+def test_key_daily_activity_without_breakdown_skips_model_info(
+    mock_get_daily_activity,
+    mock_model_info,
+    client,
+    team_admin_token,
+    test_team_user,
+    test_region,
+    db,
+):
+    key = _model_info_key(db, test_region, test_team_user)
+    mock_get_daily_activity.return_value = _model_info_rows(
+        LiteLLMService.hash_token("sk-model-info-token")
+    )
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/daily-activity",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    # No breakdown was asked for, so the extra LiteLLM call is not made.
+    mock_model_info.assert_not_awaited()
+
+
+@patch("app.api.spend.LiteLLMService.get_model_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.get_daily_activity", new_callable=AsyncMock)
+def test_key_daily_activity_key_breakdown(
+    mock_get_daily_activity,
+    mock_model_info,
+    client,
+    team_admin_token,
+    test_team_user,
+    test_region,
+    db,
+):
+    mock_model_info.return_value = {"data": []}
     key = DBPrivateAIKey(
         name="daily-single-key",
         litellm_token="sk-daily-single-token",
@@ -5265,14 +5439,22 @@ def test_key_daily_activity_key_breakdown(
         assert item["masked"] == "sk-daily"
 
 
+@patch("app.api.spend.LiteLLMService.get_model_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.get_daily_activity", new_callable=AsyncMock)
 def test_key_daily_activity_folds_dates_split_across_pages(
-    mock_get_daily_activity, client, team_admin_token, test_team_user, test_region, db
+    mock_get_daily_activity,
+    mock_model_info,
+    client,
+    team_admin_token,
+    test_team_user,
+    test_region,
+    db,
 ):
     """LiteLLM aggregates each page on its own, so one day can arrive twice.
 
     Emitting both would show the caller two partial days for the same date.
     """
+    mock_model_info.return_value = {"data": []}
     key = DBPrivateAIKey(
         name="paged-activity-key",
         litellm_token="sk-paged-token",
