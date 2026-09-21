@@ -743,44 +743,13 @@ class BreakdownKeyItem(UsageMetrics):
     model_config = ConfigDict(from_attributes=True)
 
 
-class DailyActivityModelBreakdown(BaseModel):
+class DailyActivityModelBreakdown(BreakdownModelItem):
     """Per-model slice of a day's usage, taken from LiteLLM's breakdown block.
 
     Only present on daily-activity rows when the request opts in with
     ``include_breakdown=true``. The metric fields mirror the flat row and, for
     a given day, sum to the row's aggregate totals.
     """
-
-    model: str = Field(
-        description="LiteLLM model name, e.g. 'bedrock/us.anthropic.claude-sonnet-4-6'.",
-    )
-    custom_llm_provider: Optional[str] = Field(
-        default=None,
-        description=(
-            "Provider serving this model, from LiteLLM /model/info. Null when "
-            "the lookup fails or the deployment is no longer configured."
-        ),
-    )
-    model_group: Optional[str] = Field(
-        default=None,
-        description=(
-            "Public model name this deployment is served under, from LiteLLM "
-            "/model/info. Null when the lookup fails or the deployment is no "
-            "longer configured."
-        ),
-    )
-    spend: float = 0.0
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-    cache_read_input_tokens: int = 0
-    cache_creation_input_tokens: int = 0
-    request_count: int = 0
-    successful_requests: int = 0
-    failed_requests: int = 0
-    # `model` is a normal field here; opt out of pydantic's protected `model_`
-    # namespace so it doesn't warn/clash.
-    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
 
 
 class KeyDailyActivityRow(BaseModel):
