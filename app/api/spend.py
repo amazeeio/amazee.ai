@@ -47,7 +47,6 @@ from app.schemas.limits import OwnerType, ResourceType
 from app.api.users import invalidate_user_spend_cache
 from app.schemas.models import (
     BreakdownKeyItem,
-    BreakdownModelItem,
     BreakdownUserItem,
     BudgetType,
     DailyActivityModelBreakdown,
@@ -414,11 +413,7 @@ def _build_key_item(
     db_key: DBPrivateAIKey | None,
     model_map: dict[str, tuple] | None = None,
 ) -> BreakdownKeyItem:
-    models = [
-        BreakdownModelItem(model=name, **_model_fields(name, model_map), **metrics)
-        for name, metrics in slot["models"].items()
-    ]
-    models.sort(key=lambda m: m.spend, reverse=True)
+    models = _sorted_model_breakdown(slot["models"], model_map)
     # A key normally appears under `breakdown.api_keys` as well, but if LiteLLM
     # only reports it inside the model split, fall back to summing the models so
     # its spend still reaches the user and team totals.
