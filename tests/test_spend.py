@@ -488,6 +488,8 @@ def test_key_daily_activity_include_breakdown(
                 "cache_read_input_tokens": 40,
                 "cache_creation_input_tokens": 10,
                 "api_requests": 5,
+                "successful_requests": 4,
+                "failed_requests": 1,
             },
             "breakdown": {
                 "models": {
@@ -509,6 +511,8 @@ def test_key_daily_activity_include_breakdown(
                             "cache_read_input_tokens": 40,
                             "cache_creation_input_tokens": 10,
                             "api_requests": 3,
+                            "successful_requests": 3,
+                            "failed_requests": 0,
                         }
                     },
                 }
@@ -530,6 +534,8 @@ def test_key_daily_activity_include_breakdown(
     # Flat aggregate is unchanged by the opt-in.
     assert row["spend"] == 3.0
     assert row["request_count"] == 5
+    assert row["successful_requests"] == 4
+    assert row["failed_requests"] == 1
     # Breakdown is present and ordered by descending spend.
     breakdown = row["breakdown"]
     assert [m["model"] for m in breakdown] == ["pricey-model", "cheap-model"]
@@ -539,8 +545,12 @@ def test_key_daily_activity_include_breakdown(
     assert pricey["cache_read_input_tokens"] == 40
     assert pricey["cache_creation_input_tokens"] == 10
     assert pricey["request_count"] == 3
-    # Missing cache fields on a model default to 0.
+    assert pricey["successful_requests"] == 3
+    assert pricey["failed_requests"] == 0
+    # Missing cache and request-outcome fields on a model default to 0.
     assert breakdown[1]["cache_read_input_tokens"] == 0
+    assert breakdown[1]["successful_requests"] == 0
+    assert breakdown[1]["failed_requests"] == 0
 
 
 @patch("app.api.spend.LiteLLMService.get_daily_activity", new_callable=AsyncMock)
@@ -4732,6 +4742,8 @@ def _breakdown_rows(hash_a: str, hash_b: str) -> list[dict]:
                             "prompt_tokens": 150,
                             "total_tokens": 200,
                             "api_requests": 2,
+                            "successful_requests": 1,
+                            "failed_requests": 1,
                         },
                         "metadata": {"key_alias": "alias-a"},
                     },
@@ -4823,6 +4835,8 @@ def test_team_spend_breakdown_groups_by_user_key_and_model(
     # Team total is the sum of every visible key, across both days.
     assert data["totals"]["spend"] == 4.0
     assert data["totals"]["request_count"] == 4
+    assert data["totals"]["successful_requests"] == 1
+    assert data["totals"]["failed_requests"] == 1
 
     assert len(data["users"]) == 1
     user = data["users"][0]
@@ -4835,6 +4849,8 @@ def test_team_spend_breakdown_groups_by_user_key_and_model(
     assert key["key_id"] == user_key.id
     assert key["key_name"] == "user-key"
     assert key["spend"] == 3.0
+    assert key["successful_requests"] == 1
+    assert key["failed_requests"] == 1
     # Ordered by descending spend; the per-model split sums to the key total.
     assert [m["model"] for m in key["models"]] == ["bedrock/claude", "bedrock/titan"]
     assert sum(m["spend"] for m in key["models"]) == 3.0
