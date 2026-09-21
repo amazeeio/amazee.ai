@@ -5438,6 +5438,17 @@ def test_key_daily_activity_key_breakdown(
         assert item["kind"] == "user"
         assert item["masked"] == "sk-daily"
 
+    # A key with no token cannot match anything LiteLLM reports.
+    key.litellm_token = None
+    db.commit()
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/daily-activity",
+        params={"include_key_breakdown": "true"},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["activity"][0]["key_breakdown"] == []
+
 
 @patch("app.api.spend.LiteLLMService.get_model_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.get_daily_activity", new_callable=AsyncMock)

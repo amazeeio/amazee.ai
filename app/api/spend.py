@@ -1884,12 +1884,15 @@ async def get_key_daily_activity(
     )
 
     # The route is already scoped to one key, so the day's per-key split can
-    # only describe that key.
-    key_by_hash = (
-        {LiteLLMService.hash_token(key.litellm_token): key}
-        if include_key_breakdown and key.litellm_token
-        else None
-    )
+    # only describe that key. Without a token nothing can match, which is an
+    # empty breakdown, not a missing one.
+    key_by_hash = None
+    if include_key_breakdown:
+        key_by_hash = (
+            {LiteLLMService.hash_token(key.litellm_token): key}
+            if key.litellm_token
+            else {}
+        )
 
     return KeyDailyActivityResponse(
         region_id=region_id,
