@@ -4848,6 +4848,9 @@ def test_team_spend_breakdown_groups_by_user_key_and_model(
     key = user["keys"][0]
     assert key["key_id"] == user_key.id
     assert key["key_name"] == "user-key"
+    assert key["kind"] == "user"
+    assert key["owner_id"] == test_team_user.id
+    assert key["masked"] == "sk-user-"
     assert key["spend"] == 3.0
     assert key["successful_requests"] == 1
     assert key["failed_requests"] == 1
@@ -4859,6 +4862,9 @@ def test_team_spend_breakdown_groups_by_user_key_and_model(
     assert len(data["service_keys"]) == 1
     assert data["service_keys"][0]["key_id"] == service_key.id
     assert data["service_keys"][0]["spend"] == 1.0
+    assert data["service_keys"][0]["kind"] == "service"
+    assert data["service_keys"][0]["owner_id"] is None
+    assert data["service_keys"][0]["masked"] == "sk-servi"
 
 
 @patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
@@ -4930,6 +4936,11 @@ def test_team_spend_breakdown_keeps_keys_we_no_longer_hold(
         "alias-a",
         "alias-b",
     ]
+    # We do not hold these keys, so nothing can be said about their owner.
+    for item in data["unattributed_keys"]:
+        assert item["kind"] is None
+        assert item["owner_id"] is None
+        assert item["masked"] is None
 
 
 @patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
