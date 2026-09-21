@@ -485,17 +485,20 @@ def _keys_by_hash(
     }
 
 
-# One LiteLLM call, same budget as a per-region /public/models fetch.
 _MODEL_INFO_TIMEOUT = 10.0
 
 
-async def _model_map(service: LiteLLMService) -> dict[str, tuple]:
+async def _model_map(service: LiteLLMService, wanted: bool) -> dict[str, tuple] | None:
     """Map each deployment model to its provider and model group.
 
     LiteLLM's daily payload names the deployment model but says nothing about
     its provider or alias, so `/model/info` is the only source. A failed lookup
-    leaves both fields null rather than failing the whole usage request.
+    leaves both fields null rather than failing the whole usage request, and a
+    request with no model list to fill (``wanted`` false) makes no call at all.
     """
+    if not wanted:
+        return None
+
     try:
         info = await asyncio.wait_for(
             service.get_model_info(), timeout=_MODEL_INFO_TIMEOUT
@@ -1845,11 +1848,7 @@ async def get_key_daily_activity(
         start_date=start_date.isoformat(),
         end_date=end_date.isoformat(),
     )
-    model_map = (
-        await _model_map(service)
-        if (include_breakdown or include_key_breakdown)
-        else None
-    )
+    model_map = await _model_map(service, include_breakdown or include_key_breakdown)
 
     # The route is already scoped to one key, so the day's per-key split can
     # only describe that key. Without a token nothing can match, which is an
@@ -1952,11 +1951,7 @@ async def get_user_daily_activity(
         start_date=start_date.isoformat(),
         end_date=end_date.isoformat(),
     )
-    model_map = (
-        await _model_map(service)
-        if (include_breakdown or include_key_breakdown)
-        else None
-    )
+    model_map = await _model_map(service, include_breakdown or include_key_breakdown)
 
     return UserDailyActivityResponse(
         region_id=region_id,
@@ -2056,11 +2051,7 @@ async def get_team_daily_activity(
         start_date=start_date.isoformat(),
         end_date=end_date.isoformat(),
     )
-    model_map = (
-        await _model_map(service)
-        if (include_breakdown or include_key_breakdown)
-        else None
-    )
+    model_map = await _model_map(service, include_breakdown or include_key_breakdown)
 
     # Same rule as the team breakdown: a team admin sees the whole team, any
     # other member only their own keys.
