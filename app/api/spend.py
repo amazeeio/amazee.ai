@@ -2158,24 +2158,26 @@ async def get_team_spend_breakdown(
 
     per_key, _ = _team_breakdown_from_rows(rows)
 
+    # A caller limited to their own keys cannot be shown a key we no longer
+    # hold, because its owner is unknowable.
+    items = _key_items(
+        per_key,
+        key_by_hash,
+        visible_owner_id,
+        include_unattributed=visible_owner_id is None,
+    )
+
+    # Already ordered by descending spend, so every bucket keeps that order.
     user_keys: dict[int, list[BreakdownKeyItem]] = defaultdict(list)
     service_keys: list[BreakdownKeyItem] = []
     unattributed_keys: list[BreakdownKeyItem] = []
-    for hashed, slot in per_key.items():
-        db_key = key_by_hash.get(hashed)
-        if db_key is None:
-            # We no longer hold this key, so its owner is unknowable. A caller
-            # limited to their own keys cannot be shown it without guessing.
-            if visible_owner_id is None:
-                unattributed_keys.append(_build_key_item(slot, None))
-            continue
-        if visible_owner_id is not None and db_key.owner_id != visible_owner_id:
-            continue
-        item = _build_key_item(slot, db_key)
-        if db_key.owner_id is None:
+    for item in items:
+        if item.kind is None:
+            unattributed_keys.append(item)
+        elif item.kind == "service":
             service_keys.append(item)
         else:
-            user_keys[db_key.owner_id].append(item)
+            user_keys[item.owner_id].append(item)
 
     emails = (
         {
@@ -2190,14 +2192,12 @@ async def get_team_spend_breakdown(
         BreakdownUserItem(
             user_id=owner_id,
             email=emails.get(owner_id),
-            keys=sorted(items, key=lambda k: k.spend, reverse=True),
-            **_sum_metrics(items),
+            keys=keys,
+            **_sum_metrics(keys),
         )
-        for owner_id, items in user_keys.items()
+        for owner_id, keys in user_keys.items()
     ]
     users.sort(key=lambda u: u.spend, reverse=True)
-    service_keys.sort(key=lambda k: k.spend, reverse=True)
-    unattributed_keys.sort(key=lambda k: k.spend, reverse=True)
 
     # Sum the visible rows rather than reusing LiteLLM's day totals, so a
     # member's totals cover only their own keys.
