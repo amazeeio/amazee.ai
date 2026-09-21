@@ -442,6 +442,30 @@ def _build_key_item(slot: dict, db_key: DBPrivateAIKey | None) -> BreakdownKeyIt
     )
 
 
+def _keys_by_hash(
+    db: Session, region_id: int, team_id: int | None = None
+) -> dict[str, DBPrivateAIKey]:
+    """Map the region's keys by hashed token, the way LiteLLM identifies them.
+
+    LiteLLM identifies a key by its hashed token, so hash ours to match. With a
+    ``team_id``, keys owned by a member of that team are included even when the
+    key itself is user-owned, because that is how a member's usage reaches the
+    team view.
+    """
+    query = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.region_id == region_id)
+    if team_id is not None:
+        query = query.outerjoin(DBUser, DBPrivateAIKey.owner_id == DBUser.id).filter(
+            or_(DBPrivateAIKey.team_id == team_id, DBUser.team_id == team_id)
+        )
+    # `litellm_token` has no unique constraint, so order the rows to make the
+    # winner deterministic if two ever carry the same token.
+    return {
+        LiteLLMService.hash_token(k.litellm_token): k
+        for k in query.order_by(DBPrivateAIKey.id).all()
+        if k.litellm_token
+    }
+
+
 def _sorted_model_breakdown(
     models: dict[str, dict],
 ) -> list[DailyActivityModelBreakdown]:
@@ -2000,26 +2024,7 @@ async def get_team_spend_breakdown(
         end_date=end_date.isoformat(),
     )
 
-    # LiteLLM identifies a key by its hashed token, so hash ours to match. Keys
-    # owned by a member of this team are included even when the key itself is
-    # user-owned, because that is how a member's usage reaches the team view.
-    db_keys = (
-        db.query(DBPrivateAIKey)
-        .outerjoin(DBUser, DBPrivateAIKey.owner_id == DBUser.id)
-        .filter(
-            DBPrivateAIKey.region_id == region_id,
-            or_(DBPrivateAIKey.team_id == team_id, DBUser.team_id == team_id),
-        )
-        # `litellm_token` has no unique constraint, so order the rows to make
-        # the winner deterministic if two ever carry the same token.
-        .order_by(DBPrivateAIKey.id)
-        .all()
-    )
-    key_by_hash = {
-        LiteLLMService.hash_token(k.litellm_token): k
-        for k in db_keys
-        if k.litellm_token
-    }
+    key_by_hash = _keys_by_hash(db, region_id, team_id=team_id)
 
     per_key, _ = _team_breakdown_from_rows(rows)
 
