@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -7,7 +8,7 @@ from app.core.roles import UserRole
 from datetime import UTC, datetime, timedelta
 from sqlalchemy.exc import IntegrityError
 
-from app.api.spend import _lock_region_or_404
+from app.api.spend import _lock_region_or_404, _model_map, _model_map_cache
 from app.core.config import settings
 from app.core.security import get_password_hash
 from app.services.litellm import LiteLLMService
@@ -22,6 +23,57 @@ from app.db.models import (
     DBTeamRegion,
     DBUser,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_model_map_cache():
+    """Each test patches `get_model_info` on its own, so start from an empty cache."""
+    _model_map_cache.clear()
+    yield
+    _model_map_cache.clear()
+
+
+def _model_info_payload(model="bedrock/claude", provider="bedrock", group="claude"):
+    return {
+        "data": [
+            {
+                "model_name": group,
+                "litellm_params": {"model": model},
+                "model_info": {"litellm_provider": provider},
+            }
+        ]
+    }
+
+
+@pytest.mark.asyncio
+async def test_model_map_reuses_cached_mapping_within_ttl():
+    service = SimpleNamespace(
+        api_url="https://cache-test",
+        get_model_info=AsyncMock(return_value=_model_info_payload()),
+    )
+
+    first = await _model_map(service, True)
+    second = await _model_map(service, True)
+
+    assert first == {"bedrock/claude": ("bedrock", "claude")}
+    assert second == first
+    assert service.get_model_info.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_model_map_does_not_cache_failed_lookup():
+    service = SimpleNamespace(
+        api_url="https://cache-test",
+        get_model_info=AsyncMock(side_effect=Exception("boom")),
+    )
+
+    assert await _model_map(service, True) == {}
+
+    service.get_model_info.side_effect = None
+    service.get_model_info.return_value = _model_info_payload()
+
+    assert await _model_map(service, True) == {"bedrock/claude": ("bedrock", "claude")}
+    assert service.get_model_info.await_count == 2
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
