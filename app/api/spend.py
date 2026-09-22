@@ -787,6 +787,30 @@ def _assert_team_access(current_user: DBUser, role: str, team_id: int) -> None:
         )
 
 
+def _hide_tokens_unless_owned(
+    activity: list[KeyDailyActivityRow],
+    current_user: DBUser,
+    role: str,
+    owner_id: int | None,
+) -> None:
+    """Blank key tokens when the caller may see the usage but not the keys.
+
+    A teammate with the key-creator or read-only role may read another member's
+    activity, but `GET /private-ai-keys` shows them only their own keys. The
+    token audience has to match that, so it stays admins, team admins and the
+    owner.
+    """
+    if (
+        current_user.is_admin
+        or role == UserRole.TEAM_ADMIN
+        or (owner_id is not None and owner_id == current_user.id)
+    ):
+        return
+    for row in activity:
+        for item in row.key_breakdown or []:
+            item.litellm_token = None
+
+
 def _assert_user_access(current_user: DBUser, role: str, target_user: DBUser) -> None:
     if current_user.is_admin:
         return
@@ -1872,17 +1896,20 @@ async def get_key_daily_activity(
             else {}
         )
 
+    activity = _rows_to_daily_activity(
+        rows,
+        include_breakdown=include_breakdown,
+        key_by_hash=key_by_hash,
+        model_map=model_map,
+    )
+    _hide_tokens_unless_owned(activity, current_user, user_role, key.owner_id)
+
     return KeyDailyActivityResponse(
         region_id=region_id,
         key_id=key_id,
         start_date=start_date,
         end_date=end_date,
-        activity=_rows_to_daily_activity(
-            rows,
-            include_breakdown=include_breakdown,
-            key_by_hash=key_by_hash,
-            model_map=model_map,
-        ),
+        activity=activity,
     )
 
 
@@ -1964,18 +1991,21 @@ async def get_user_daily_activity(
     )
     model_map = await _model_map(service, include_breakdown or include_key_breakdown)
 
+    activity = _rows_to_daily_activity(
+        rows,
+        include_breakdown=include_breakdown,
+        key_by_hash=_keys_by_hash(db, region_id) if include_key_breakdown else None,
+        visible_owner_id=user_id,
+        model_map=model_map,
+    )
+    _hide_tokens_unless_owned(activity, current_user, user_role, user_id)
+
     return UserDailyActivityResponse(
         region_id=region_id,
         user_id=user_id,
         start_date=start_date,
         end_date=end_date,
-        activity=_rows_to_daily_activity(
-            rows,
-            include_breakdown=include_breakdown,
-            key_by_hash=_keys_by_hash(db, region_id) if include_key_breakdown else None,
-            visible_owner_id=user_id,
-            model_map=model_map,
-        ),
+        activity=activity,
     )
 
 
