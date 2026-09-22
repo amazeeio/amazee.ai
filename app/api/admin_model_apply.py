@@ -322,7 +322,9 @@ def _apply_deployments(
     to_sync: Set[int] = set()
     existing = {a.region_id: a for a in db.query(DBModelRegion).filter_by(model_id=model.id).all()}
     for region_id, (override, groups_override) in desired.items():
-        groups_override = sorted(set(groups_override)) if groups_override is not None else None
+        # `[]` would store a real override with no groups: synced untagged,
+        # callable by nobody. Treat it as "no override" (inherit) instead.
+        groups_override = sorted(set(groups_override)) if groups_override else None
         assoc = existing.get(region_id)
         stored = assoc.litellm_params_override if assoc else None
         resolved = _merge_credential_sentinels(override or {}, stored) or None
