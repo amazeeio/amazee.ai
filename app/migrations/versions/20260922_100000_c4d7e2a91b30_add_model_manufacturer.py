@@ -1,7 +1,7 @@
 """add manufacturer_name / manufacturer_website to models
 
 Revision ID: c4d7e2a91b30
-Revises: b2b96f127b9f
+Revises: f2c5a0821a29
 Create Date: 2026-09-22 10:00:00.000000
 """
 
@@ -11,7 +11,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "c4d7e2a91b30"
-down_revision = "b2b96f127b9f"
+down_revision = "f2c5a0821a29"
 branch_labels = None
 depends_on = None
 
