@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -486,6 +487,11 @@ def _keys_by_hash(
 
 
 _MODEL_INFO_TIMEOUT = 10.0
+_MODEL_MAP_TTL = 300.0
+# Keyed by region URL, holding (expires_at, mapping). The cache sits here and
+# not in the service because `get_model_deployments` writes model access
+# policies and must always see a live `/model/info`.
+_model_map_cache: dict[str, tuple[float, dict[str, tuple]]] = {}
 
 
 async def _model_map(service: LiteLLMService, wanted: bool) -> dict[str, tuple] | None:
@@ -498,6 +504,10 @@ async def _model_map(service: LiteLLMService, wanted: bool) -> dict[str, tuple] 
     """
     if not wanted:
         return None
+
+    cached = _model_map_cache.get(service.api_url)
+    if cached and cached[0] > time.monotonic():
+        return cached[1]
 
     try:
         info = await asyncio.wait_for(
@@ -520,6 +530,7 @@ async def _model_map(service: LiteLLMService, wanted: bool) -> dict[str, tuple] 
                 item.get("model_name"),
             ),
         )
+    _model_map_cache[service.api_url] = (time.monotonic() + _MODEL_MAP_TTL, mapping)
     return mapping
 
 
