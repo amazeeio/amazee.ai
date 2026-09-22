@@ -33,15 +33,12 @@ def _clear_model_map_cache():
     _model_map_cache.clear()
 
 
-def _model_info_payload(model="bedrock/claude", provider="bedrock", group="claude"):
+def _model_entry(model, provider, group):
+    """One `/model/info` deployment entry."""
     return {
-        "data": [
-            {
-                "model_name": group,
-                "litellm_params": {"model": model},
-                "model_info": {"litellm_provider": provider},
-            }
-        ]
+        "model_name": group,
+        "litellm_params": {"model": model},
+        "model_info": {"litellm_provider": provider},
     }
 
 
@@ -49,7 +46,9 @@ def _model_info_payload(model="bedrock/claude", provider="bedrock", group="claud
 async def test_model_map_reuses_cached_mapping_within_ttl():
     service = SimpleNamespace(
         api_url="https://cache-test",
-        get_model_info=AsyncMock(return_value=_model_info_payload()),
+        get_model_info=AsyncMock(
+            return_value={"data": [_model_entry("bedrock/claude", "bedrock", "claude")]}
+        ),
     )
 
     first = await _model_map(service, True)
@@ -70,7 +69,9 @@ async def test_model_map_does_not_cache_failed_lookup():
     assert await _model_map(service, True) == {}
 
     service.get_model_info.side_effect = None
-    service.get_model_info.return_value = _model_info_payload()
+    service.get_model_info.return_value = {
+        "data": [_model_entry("bedrock/claude", "bedrock", "claude")]
+    }
 
     assert await _model_map(service, True) == {"bedrock/claude": ("bedrock", "claude")}
     assert service.get_model_info.await_count == 2
@@ -80,7 +81,9 @@ async def test_model_map_does_not_cache_failed_lookup():
 async def test_model_map_falls_back_to_expired_mapping_when_lookup_fails():
     service = SimpleNamespace(
         api_url="https://cache-test",
-        get_model_info=AsyncMock(return_value=_model_info_payload()),
+        get_model_info=AsyncMock(
+            return_value={"data": [_model_entry("bedrock/claude", "bedrock", "claude")]}
+        ),
     )
     mapping = await _model_map(service, True)
 
@@ -4987,16 +4990,8 @@ def test_team_spend_breakdown_fills_provider_and_group(
     )
     mock_model_info.return_value = {
         "data": [
-            {
-                "model_name": "claude-sonnet",
-                "litellm_params": {"model": "bedrock/claude"},
-                "model_info": {"litellm_provider": "bedrock"},
-            },
-            {
-                "model_name": "titan",
-                "litellm_params": {"model": "bedrock/titan"},
-                "model_info": {"litellm_provider": "bedrock"},
-            },
+            _model_entry("bedrock/claude", "bedrock", "claude-sonnet"),
+            _model_entry("bedrock/titan", "bedrock", "titan"),
         ]
     }
 
