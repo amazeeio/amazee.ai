@@ -28,6 +28,8 @@ def _payload(region_name: str) -> dict:
                 "provider": "bedrock",
                 "type": "chat",
                 "description": "General chat",
+                "manufacturer_name": "Anthropic",
+                "manufacturer_website": "https://www.anthropic.com",
                 "litellm_params": {"model": "bedrock/anthropic.claude-sonnet"},
                 "access_groups": ["default-models"],
                 "deployments": [
@@ -75,6 +77,8 @@ def test_apply_creates_everything(mock_svc, client, admin_token, db, test_region
     group = db.query(DBModelAccessGroup).filter_by(slug="default-models").one()
     assert db.query(DBModelAccessGroupRegion).filter_by(group_id=group.id).count() == 1
     model = db.query(DBModel).filter_by(model_id="claude-sonnet").one()
+    assert model.manufacturer_name == "Anthropic"
+    assert model.manufacturer_website == "https://www.anthropic.com"
     alias = db.query(DBModel).filter_by(model_id="chat").one()
     assert alias.is_alias is True
     target = db.query(DBModelAliasTarget).filter_by(alias_model_id=alias.id).one()
@@ -542,3 +546,130 @@ def test_apply_requires_admin(client, test_token, test_region):
         json=_payload(test_region.name),
     )
     assert res.status_code in (401, 403)
+
+
+@patch("app.services.model_sync.LiteLLMService")
+def test_apply_deployment_access_groups_override_per_region(
+    mock_svc, client, admin_token, db, test_region
+):
+    """One model, GA in one region and preview in another: the deployment's
+    access_groups replaces the model-level groups for that region only."""
+    from app.db.models import DBRegion
+    from app.services.access_groups import model_access_group_slugs, region_access_group_members
+
+    region2 = DBRegion(
+        name="second-region",
+        litellm_api_url="https://second-litellm.com",
+        litellm_api_key="key2",
+        is_active=True,
+    )
+    db.add(region2)
+    db.commit()
+
+    payload = _payload(test_region.name)
+    payload["access_groups"][0]["regions"].append("second-region")
+    payload["access_groups"].append(
+        {
+            "slug": "preview",
+            "label": "Preview",
+            "description": None,
+            "regions": [test_region.name, "second-region"],
+        }
+    )
+    payload["models"][0]["deployments"].append(
+        {"region": "second-region", "access_groups": ["preview"]}
+    )
+    res = _apply(client, admin_token, payload)
+    assert res.status_code == 200, res.text
+
+    model = db.query(DBModel).filter_by(model_id="claude-sonnet").one()
+    assoc = db.query(DBModelRegion).filter_by(model_id=model.id, region_id=region2.id).one()
+    assert assoc.access_groups_override == ["preview"]
+    assert model_access_group_slugs(db, model.id, test_region.id) == ["default-models"]
+    assert model_access_group_slugs(db, model.id, region2.id) == ["preview"]
+    assert region_access_group_members(db, test_region.id) == {
+        "default-models": ["claude-sonnet"],
+        "preview": [],
+    }
+    assert region_access_group_members(db, region2.id) == {
+        "default-models": [],
+        "preview": ["claude-sonnet"],
+    }
+
+    # Dropping the override goes back to inheriting, and resyncs only that region.
+    db.query(DBModelRegion).update({"sync_status": "synced"})
+    db.commit()
+    del payload["models"][0]["deployments"][1]["access_groups"]
+    res = _apply(client, admin_token, payload)
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["syncs_scheduled"] == 1
+    assert [(c["key"], c["detail"]) for c in data["changes"]] == [
+        ("claude-sonnet@second-region", "access_groups")
+    ]
+    db.expire_all()
+    assert model_access_group_slugs(db, model.id, region2.id) == ["default-models"]
+
+
+def test_apply_deployment_access_groups_must_be_defined(client, admin_token, test_region):
+    payload = _payload(test_region.name)
+    payload["models"][0]["deployments"][0]["access_groups"] = ["nope"]
+    res = _apply(client, admin_token, payload)
+    assert res.status_code == 400
+    assert "nope" in res.text
+
+
+def test_apply_deployment_access_groups_must_be_deployed_to_region(client, admin_token, test_region):
+    """An override naming a group that is not deployed to the region would
+    leave the deployment live but untagged — callable by nobody — so reject it."""
+    payload = _payload(test_region.name)
+    payload["access_groups"].append(
+        {"slug": "preview", "label": "Preview", "description": None, "regions": []}
+    )
+    payload["models"][0]["deployments"][0]["access_groups"] = ["preview"]
+    res = _apply(client, admin_token, payload)
+    assert res.status_code == 400
+    assert "not deployed to that region" in res.text
+
+
+@patch("app.services.model_sync.LiteLLMService")
+def test_apply_deployment_access_groups_empty_list_means_inherit(
+    mock_svc, client, admin_token, db, test_region
+):
+    """`access_groups: []` must not be stored as a real override with no
+    groups (synced untagged, callable by nobody); it means inherit."""
+    payload = _payload(test_region.name)
+    payload["models"][0]["deployments"][0]["access_groups"] = []
+    res = _apply(client, admin_token, payload)
+    assert res.status_code == 200, res.text
+    model = db.query(DBModel).filter_by(model_id="claude-sonnet").one()
+    assoc = db.query(DBModelRegion).filter_by(model_id=model.id, region_id=test_region.id).one()
+    assert assoc.access_groups_override is None
+
+
+def test_apply_alias_cannot_carry_deployment_access_groups(client, admin_token, test_region):
+    """Aliases take their groups from the regional target; a deployment row on
+    an alias (with or without access_groups) is rejected outright."""
+    payload = _payload(test_region.name)
+    payload["models"][1]["deployments"] = [
+        {"region": test_region.name, "access_groups": ["default-models"]}
+    ]
+    res = _apply(client, admin_token, payload)
+    assert res.status_code == 400
+    assert "derived from alias_targets" in res.text
+
+
+def test_apply_override_in_skipped_region_does_not_block_apply(client, admin_token, test_region):
+    """The region-deployment check only judges regions this environment
+    resolves: an override on a row for an unknown region is skipped with the
+    row, never a 400 for the managed regions."""
+    payload = _payload(test_region.name)
+    payload["access_groups"].append(
+        {"slug": "preview", "label": "Preview", "description": None, "regions": []}
+    )
+    payload["models"][0]["deployments"].append(
+        {"region": "no-such-region", "access_groups": ["preview"]}
+    )
+    res = _apply(client, admin_token, payload)
+    assert res.status_code == 200, res.text
+    assert res.json()["skipped_regions"] == [{"region": "no-such-region", "reason": "unknown"}]

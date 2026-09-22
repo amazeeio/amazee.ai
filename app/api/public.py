@@ -6,15 +6,18 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.core.config import catalog_manages, settings
 from app.core.security import get_current_user_from_auth
 from app.db.database import get_db
 from app.db.models import (
     DBModel,
+    DBModelAccessGroup,
     DBModelAccessGroupModel,
     DBModelAccessGroupRegion,
+    DBModelAliasTarget,
+    DBModelRegion,
     DBRegion,
     DBTeamModelAccessGroup,
     DBTeamRegion,
@@ -253,9 +256,28 @@ _MANUFACTURER_RULES: list[dict[str, str | None]] = [
 ]
 
 
+def _catalog_manufacturers(db: Session) -> dict[str, tuple[str, str | None]]:
+    """``{model_id.lower(): (name, website)}`` from the model catalog, for live
+    models. Lowercased so a LiteLLM ``model_name`` that differs from the
+    catalog id only in case still finds its manufacturer."""
+    rows = (
+        db.query(
+            DBModel.model_id, DBModel.manufacturer_name, DBModel.manufacturer_website
+        )
+        .filter(DBModel.deleted_at.is_(None), DBModel.manufacturer_name.isnot(None))
+        .all()
+    )
+    return {model_id.lower(): (name, website) for model_id, name, website in rows}
+
+
 def _infer_manufacturer(
-    model_id: str, item: dict[str, Any]
+    model_id: str,
+    item: dict[str, Any],
+    catalog: dict[str, tuple[str, str | None]] | None = None,
 ) -> PublicModelManufacturer | None:
+    """The catalog's manufacturer when it has one; otherwise the keyword
+    rules below. ponytail: the rules go once every model carries a catalog
+    manufacturer — dedicated regions still serve models the catalog never saw."""
     model_info = item.get("model_info", {})
     provider = str(model_info.get("litellm_provider") or "").lower()
     normalized_model_id = model_id.lower()
@@ -263,12 +285,15 @@ def _infer_manufacturer(
     name: str | None = None
     website: str | None = None
 
-    for rule in _MANUFACTURER_RULES:
-        keyword = str(rule["keyword"])
-        if keyword in normalized_model_id or keyword in provider:
-            name = rule["name"]
-            website = rule["website"]
-            break
+    if catalog and normalized_model_id in catalog:
+        name, website = catalog[normalized_model_id]
+    else:
+        for rule in _MANUFACTURER_RULES:
+            keyword = str(rule["keyword"])
+            if keyword in normalized_model_id or keyword in provider:
+                name = rule["name"]
+                website = rule["website"]
+                break
 
     if name is None:
         return None
@@ -564,6 +589,7 @@ def _extract_model_summary(
     profit_margin: float,
     alias_map: dict[str, str] | None = None,
     eol_dates: dict[str, str] | None = None,
+    manufacturers: dict[str, tuple[str, str | None]] | None = None,
 ) -> PublicModelSummary:
     model_info = item.get("model_info", {})
     model_id = item.get("model_name") or model_info.get("key") or "unknown"
@@ -613,7 +639,7 @@ def _extract_model_summary(
         context_length=context_length,
         max_output_tokens=model_info.get("max_output_tokens"),
         description=_build_description(model_type, capabilities, context_length),
-        manufacturer=_infer_manufacturer(model_id, item),
+        manufacturer=_infer_manufacturer(model_id, item, manufacturers),
         capabilities=capabilities,
         pricing=PublicModelPricing(
             input_cost_per_token=input_cost_per_token,
@@ -689,7 +715,13 @@ def _filter_region_groups_by_access(
     the caller can actually call — and would make the listing move whenever an
     apply rewrites the (global, region-less) model->group memberships.
 
-    Query cost is fixed per request (at most three queries) regardless of how
+    A deployment with access_groups_override belongs to exactly those groups
+    in its region, whatever the model-level memberships say. An alias is
+    judged by its regional target: LiteLLM expands a model_group_alias into
+    a copy of the target, tags included, so the target's groups are what
+    the proxy authorizes against.
+
+    Query cost is fixed per request (a handful of queries) regardless of how
     many regions are enforced — this is a high-traffic endpoint.
     """
     if user is not None and user.is_admin:
@@ -744,6 +776,40 @@ def _filter_region_groups_by_access(
     names_by_group: dict[int, set[str]] = {}
     for group_id, model_name in rows:
         names_by_group.setdefault(group_id, set()).add(model_name)
+    slug_by_id = dict(
+        db.query(DBModelAccessGroup.id, DBModelAccessGroup.slug)
+        .filter(DBModelAccessGroup.id.in_(all_group_ids))
+        .all()
+    )
+    target_model = aliased(DBModel)
+    alias_targets: dict[tuple[int, str], str] = {
+        (region_id, alias_name): target_name
+        for region_id, alias_name, target_name in (
+            db.query(DBModelAliasTarget.region_id, DBModel.model_id, target_model.model_id)
+            .join(DBModel, DBModel.id == DBModelAliasTarget.alias_model_id)
+            .join(target_model, target_model.id == DBModelAliasTarget.target_model_id)
+            .filter(
+                DBModelAliasTarget.region_id.in_(allowed_group_ids.keys()),
+                DBModel.deleted_at.is_(None),
+                target_model.deleted_at.is_(None),
+            )
+            .all()
+        )
+    }
+    overrides: dict[tuple[int, str], set[str]] = {
+        (region_id, model_name): set(slugs)
+        for region_id, model_name, slugs in (
+            db.query(DBModelRegion.region_id, DBModel.model_id, DBModelRegion.access_groups_override)
+            .join(DBModel, DBModel.id == DBModelRegion.model_id)
+            .filter(
+                DBModelRegion.region_id.in_(allowed_group_ids.keys()),
+                DBModelRegion.is_active.is_(True),
+                DBModelRegion.access_groups_override.isnot(None),
+                DBModel.deleted_at.is_(None),
+            )
+            .all()
+        )
+    }
 
     filtered: list[PublicRegionModels] = []
     for group in region_groups:
@@ -754,11 +820,20 @@ def _filter_region_groups_by_access(
         allowed: set[str] = set().union(
             *(names_by_group.get(gid, set()) for gid in allowed_group_ids[region.id])
         )
+        allowed_slugs = {slug_by_id[gid] for gid in allowed_group_ids[region.id] if gid in slug_by_id}
+
+        def visible(model_name: str, region_id: int = region.id) -> bool:
+            effective = alias_targets.get((region_id, model_name), model_name)
+            override = overrides.get((region_id, effective))
+            if override is None:
+                return effective in allowed
+            return bool(override & allowed_slugs)
+
         filtered.append(
             PublicRegionModels(
                 region=group.region,
                 status=group.status,
-                models=[m for m in group.models if m.model_id in allowed],
+                models=[m for m in group.models if visible(m.model_id)],
             )
         )
     return filtered
@@ -823,6 +898,7 @@ async def _fetch_region_model_group(
     service: LiteLLMService,
     region_name: str,
     eol_dates: dict[str, str] | None = None,
+    manufacturers: dict[str, tuple[str, str | None]] | None = None,
 ) -> PublicRegionModels:
     async with _REGION_SEMAPHORE:
         try:
@@ -845,7 +921,9 @@ async def _fetch_region_model_group(
                 region=region_name,
                 status="ga",
                 models=[
-                    _extract_model_summary(item, profit_margin, alias_map, eol_dates)
+                    _extract_model_summary(
+                        item, profit_margin, alias_map, eol_dates, manufacturers
+                    )
                     for item in items
                 ],
             )
@@ -877,6 +955,7 @@ async def list_public_models(
     now = datetime.now(UTC)
     alias_filters = _parse_alias_filters(alias)
     eol_dates = eol_dates_by_model(db)
+    manufacturers = _catalog_manufacturers(db)
 
     # --- Public regions (cached globally) ---
     if _models_cache["expires_at"] > now:
@@ -908,6 +987,7 @@ async def list_public_models(
                     ),
                     region.name,
                     eol_dates,
+                    manufacturers,
                 )
                 for region in regions_to_fetch
             ]
@@ -992,6 +1072,7 @@ async def list_public_models(
                             ),
                             region.name,
                             eol_dates,
+                            manufacturers,
                         )
                         for region in dedicated_to_fetch
                     ]

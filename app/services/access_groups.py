@@ -37,9 +37,24 @@ logger = logging.getLogger(__name__)
 ACCESS_GROUP_MANAGED_DESCRIPTION = "Managed by the amazee.ai model catalog"
 
 
+def region_group_slugs(db: Session, region_id: int) -> set[str]:
+    """Slugs of every group deployed to the region."""
+    rows = (
+        db.query(DBModelAccessGroup.slug)
+        .join(DBModelAccessGroupRegion, DBModelAccessGroupRegion.group_id == DBModelAccessGroup.id)
+        .filter(DBModelAccessGroupRegion.region_id == region_id)
+        .all()
+    )
+    return {slug for (slug,) in rows}
+
+
 def model_access_group_slugs(db: Session, model_pk: int, region_id: int) -> list[str]:
-    """Slugs for a model deployment in a region: groups that contain the model
-    AND are deployed to that region."""
+    """Slugs for a model deployment in a region: the deployment's
+    access_groups_override when set, else the groups that contain the model —
+    either way restricted to groups deployed to that region."""
+    assoc = db.query(DBModelRegion).filter_by(model_id=model_pk, region_id=region_id).first()
+    if assoc is not None and assoc.access_groups_override is not None:
+        return sorted(set(assoc.access_groups_override) & region_group_slugs(db, region_id))
     rows = (
         db.query(DBModelAccessGroup.slug)
         .join(DBModelAccessGroupModel, DBModelAccessGroupModel.group_id == DBModelAccessGroup.id)
@@ -88,6 +103,27 @@ def region_access_group_members(db: Session, region_id: int) -> dict[str, list[s
     )
     for slug, model_id in rows:
         members.setdefault(slug, []).append(model_id)
+    # A deployment with access_groups_override belongs to exactly those groups
+    # here, whatever the model-level memberships say.
+    overridden = (
+        db.query(DBModel.model_id, DBModelRegion.access_groups_override)
+        .join(DBModelRegion, DBModelRegion.model_id == DBModel.id)
+        .filter(
+            DBModelRegion.region_id == region_id,
+            DBModelRegion.is_active.is_(True),
+            DBModelRegion.access_groups_override.isnot(None),
+            DBModel.deleted_at.is_(None),
+            DBModel.is_active_globally.is_(True),
+            DBModel.is_alias.is_(False),
+        )
+        .all()
+    )
+    for model_id, slugs in overridden:
+        for slug in members:
+            members[slug] = [m for m in members[slug] if m != model_id]
+        for slug in slugs:
+            if slug in members:
+                members[slug].append(model_id)
     return {slug: sorted(ids) for slug, ids in members.items()}
 
 

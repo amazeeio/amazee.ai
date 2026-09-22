@@ -768,6 +768,11 @@ class DBModel(Base):
     context_length = Column(Integer, nullable=True)
     max_output_tokens = Column(Integer, nullable=True)
     description = Column(String, nullable=True)
+    # Who made the model (Anthropic, Moonshot AI, …) as opposed to who serves
+    # it (`provider`). Set by the model catalog; /public/models serves these
+    # verbatim instead of guessing from the model id.
+    manufacturer_name = Column(String, nullable=True)
+    manufacturer_website = Column(String, nullable=True)
     real_eol = Column(DateTime(timezone=True), nullable=True)
     override_eol = Column(DateTime(timezone=True), nullable=True)
     # Written only by the EOL scan, from the upstream Bedrock catalog. Kept
@@ -959,6 +964,9 @@ class DBModelRegion(Base):
     # catalog model use a different backend ID (e.g. bedrock inference
     # profile) per region.
     litellm_params_override = Column(JSON, nullable=True)
+    # Group slugs that replace the model's group memberships in this region
+    # only (e.g. GA in one region, preview in another). None = inherit.
+    access_groups_override = Column(JSON(none_as_null=True), nullable=True)
     sync_status = Column(String, default="pending", nullable=False)
     sync_error = Column(String, nullable=True)
     synced_at = Column(DateTime(timezone=True), nullable=True)
