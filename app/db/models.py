@@ -768,6 +768,11 @@ class DBModel(Base):
     context_length = Column(Integer, nullable=True)
     max_output_tokens = Column(Integer, nullable=True)
     description = Column(String, nullable=True)
+    # Who made the model (Anthropic, Moonshot AI, …) as opposed to who serves
+    # it (`provider`). Set by the model catalog; /public/models serves these
+    # verbatim instead of guessing from the model id.
+    manufacturer_name = Column(String, nullable=True)
+    manufacturer_website = Column(String, nullable=True)
     real_eol = Column(DateTime(timezone=True), nullable=True)
     override_eol = Column(DateTime(timezone=True), nullable=True)
     # Written only by the EOL scan, from the upstream Bedrock catalog. Kept
