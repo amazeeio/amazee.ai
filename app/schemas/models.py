@@ -666,17 +666,9 @@ class KeyLastUsedResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class DailyActivityModelBreakdown(BaseModel):
-    """Per-model slice of a day's usage, taken from LiteLLM's breakdown block.
+class UsageMetrics(BaseModel):
+    """Usage totals for one slice of the team breakdown."""
 
-    Only present on daily-activity rows when the request opts in with
-    ``include_breakdown=true``. The metric fields mirror the flat row and, for
-    a given day, sum to the row's aggregate totals.
-    """
-
-    model: str = Field(
-        description="LiteLLM model name, e.g. 'bedrock/us.anthropic.claude-sonnet-4-6'.",
-    )
     spend: float = 0.0
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -684,9 +676,82 @@ class DailyActivityModelBreakdown(BaseModel):
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
     request_count: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BreakdownModelItem(UsageMetrics):
+    """One model's share of a key's usage over the requested range."""
+
+    model: str = Field(
+        description="LiteLLM model name, e.g. 'bedrock/us.anthropic.claude-sonnet-4-6'.",
+    )
+    custom_llm_provider: Optional[str] = Field(
+        default=None,
+        description=(
+            "Provider serving this model, from LiteLLM /model/info. Null when "
+            "the lookup fails or the deployment is no longer configured."
+        ),
+    )
+    model_group: Optional[str] = Field(
+        default=None,
+        description=(
+            "Public model name this deployment is served under, from LiteLLM "
+            "/model/info. Null when the lookup fails or the deployment is no "
+            "longer configured."
+        ),
+    )
     # `model` is a normal field here; opt out of pydantic's protected `model_`
     # namespace so it doesn't warn/clash.
     model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+
+class BreakdownKeyItem(UsageMetrics):
+    """One key's usage over the requested range, split by model."""
+
+    key_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "Our private AI key id. Null when LiteLLM reports usage for a key "
+            "we no longer hold, e.g. one deleted inside the date range."
+        ),
+    )
+    key_name: Optional[str] = None
+    litellm_token: Optional[str] = Field(
+        default=None,
+        description=(
+            "The key's LiteLLM token, the same value GET /private-ai-keys "
+            "returns. Null when we no longer hold the key, or when the caller "
+            "may see the usage but not the key: only admins, team admins and "
+            "the key owner get the token."
+        ),
+    )
+    kind: Optional[Literal["user", "service"]] = Field(
+        default=None,
+        description=(
+            "'user' for a key owned by a person, 'service' for a team-owned "
+            "key. Null when we no longer hold the key, so its owner is unknown."
+        ),
+    )
+    owner_id: Optional[int] = Field(
+        default=None,
+        description="Owner of the key. Null for service and unattributed keys.",
+    )
+    models: List[BreakdownModelItem] = Field(
+        default_factory=list,
+        description="Per-model usage for this key, ordered by descending spend.",
+    )
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DailyActivityModelBreakdown(BreakdownModelItem):
+    """Per-model slice of a day's usage, taken from LiteLLM's breakdown block.
+
+    Only present on daily-activity rows when the request opts in with
+    ``include_breakdown=true``. The metric fields mirror the flat row and, for
+    a given day, sum to the row's aggregate totals.
+    """
 
 
 class KeyDailyActivityRow(BaseModel):
@@ -713,12 +778,28 @@ class KeyDailyActivityRow(BaseModel):
         default=0,
         description="Number of API requests made with this key on this day.",
     )
+    successful_requests: int = Field(
+        default=0,
+        description="Requests on this day that LiteLLM completed without error.",
+    )
+    failed_requests: int = Field(
+        default=0,
+        description="Requests on this day that LiteLLM reported as failed.",
+    )
     breakdown: Optional[List[DailyActivityModelBreakdown]] = Field(
         default=None,
         description=(
             "Per-model usage for this day, ordered by descending spend. Only "
             "populated when the request sets include_breakdown=true; omitted "
             "otherwise."
+        ),
+    )
+    key_breakdown: Optional[List[BreakdownKeyItem]] = Field(
+        default=None,
+        description=(
+            "Per-key usage for this day, ordered by descending spend. Only "
+            "populated when the request sets include_key_breakdown=true; "
+            "omitted otherwise."
         ),
     )
     model_config = ConfigDict(from_attributes=True)
@@ -762,48 +843,6 @@ class TeamDailyActivityResponse(BaseModel):
             "Per-day usage rows aggregated across all of the team's keys, "
             "ordered ascending by date. Days with no usage are omitted."
         )
-    )
-    model_config = ConfigDict(from_attributes=True)
-
-
-class UsageMetrics(BaseModel):
-    """Usage totals for one slice of the team breakdown."""
-
-    spend: float = 0.0
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-    cache_read_input_tokens: int = 0
-    cache_creation_input_tokens: int = 0
-    request_count: int = 0
-    model_config = ConfigDict(from_attributes=True)
-
-
-class BreakdownModelItem(UsageMetrics):
-    """One model's share of a key's usage over the requested range."""
-
-    model: str = Field(
-        description="LiteLLM model name, e.g. 'bedrock/us.anthropic.claude-sonnet-4-6'.",
-    )
-    # `model` is a normal field here; opt out of pydantic's protected `model_`
-    # namespace so it doesn't warn/clash.
-    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
-
-
-class BreakdownKeyItem(UsageMetrics):
-    """One key's usage over the requested range, split by model."""
-
-    key_id: Optional[int] = Field(
-        default=None,
-        description=(
-            "Our private AI key id. Null when LiteLLM reports usage for a key "
-            "we no longer hold, e.g. one deleted inside the date range."
-        ),
-    )
-    key_name: Optional[str] = None
-    models: List[BreakdownModelItem] = Field(
-        default_factory=list,
-        description="Per-model usage for this key, ordered by descending spend.",
     )
     model_config = ConfigDict(from_attributes=True)
 
