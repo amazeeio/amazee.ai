@@ -959,6 +959,9 @@ class DBModelRegion(Base):
     # catalog model use a different backend ID (e.g. bedrock inference
     # profile) per region.
     litellm_params_override = Column(JSON, nullable=True)
+    # Group slugs that replace the model's group memberships in this region
+    # only (e.g. GA in one region, preview in another). None = inherit.
+    access_groups_override = Column(JSON(none_as_null=True), nullable=True)
     sync_status = Column(String, default="pending", nullable=False)
     sync_error = Column(String, nullable=True)
     synced_at = Column(DateTime(timezone=True), nullable=True)
