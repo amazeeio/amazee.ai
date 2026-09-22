@@ -1461,6 +1461,8 @@ class ApplyModelSpec(BaseModel):
     context_length: Optional[int] = None
     max_output_tokens: Optional[int] = None
     description: Optional[str] = None
+    manufacturer_name: Optional[str] = None
+    manufacturer_website: Optional[str] = None
     real_eol: Optional[datetime] = None
     override_eol: Optional[datetime] = None
     litellm_params: Optional[dict] = None

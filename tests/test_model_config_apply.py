@@ -28,6 +28,8 @@ def _payload(region_name: str) -> dict:
                 "provider": "bedrock",
                 "type": "chat",
                 "description": "General chat",
+                "manufacturer_name": "Anthropic",
+                "manufacturer_website": "https://www.anthropic.com",
                 "litellm_params": {"model": "bedrock/anthropic.claude-sonnet"},
                 "access_groups": ["default-models"],
                 "deployments": [
@@ -75,6 +77,8 @@ def test_apply_creates_everything(mock_svc, client, admin_token, db, test_region
     group = db.query(DBModelAccessGroup).filter_by(slug="default-models").one()
     assert db.query(DBModelAccessGroupRegion).filter_by(group_id=group.id).count() == 1
     model = db.query(DBModel).filter_by(model_id="claude-sonnet").one()
+    assert model.manufacturer_name == "Anthropic"
+    assert model.manufacturer_website == "https://www.anthropic.com"
     alias = db.query(DBModel).filter_by(model_id="chat").one()
     assert alias.is_alias is True
     target = db.query(DBModelAliasTarget).filter_by(alias_model_id=alias.id).one()

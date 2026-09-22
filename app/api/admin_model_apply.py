@@ -237,6 +237,8 @@ _CATALOG_FIELDS = (
     "context_length",
     "max_output_tokens",
     "description",
+    "manufacturer_name",
+    "manufacturer_website",
     "real_eol",
     "override_eol",
 )
