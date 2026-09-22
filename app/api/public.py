@@ -257,7 +257,9 @@ _MANUFACTURER_RULES: list[dict[str, str | None]] = [
 
 
 def _catalog_manufacturers(db: Session) -> dict[str, tuple[str, str | None]]:
-    """``{model_id: (name, website)}`` from the model catalog, for live models."""
+    """``{model_id.lower(): (name, website)}`` from the model catalog, for live
+    models. Lowercased so a LiteLLM ``model_name`` that differs from the
+    catalog id only in case still finds its manufacturer."""
     rows = (
         db.query(
             DBModel.model_id, DBModel.manufacturer_name, DBModel.manufacturer_website
@@ -265,7 +267,7 @@ def _catalog_manufacturers(db: Session) -> dict[str, tuple[str, str | None]]:
         .filter(DBModel.deleted_at.is_(None), DBModel.manufacturer_name.isnot(None))
         .all()
     )
-    return {model_id: (name, website) for model_id, name, website in rows}
+    return {model_id.lower(): (name, website) for model_id, name, website in rows}
 
 
 def _infer_manufacturer(
@@ -283,8 +285,8 @@ def _infer_manufacturer(
     name: str | None = None
     website: str | None = None
 
-    if catalog and model_id in catalog:
-        name, website = catalog[model_id]
+    if catalog and normalized_model_id in catalog:
+        name, website = catalog[normalized_model_id]
     else:
         for rule in _MANUFACTURER_RULES:
             keyword = str(rule["keyword"])

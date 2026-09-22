@@ -114,7 +114,8 @@ def test_public_models_manufacturer_comes_from_catalog(client, db):
             return_value={
                 "data": [
                     {
-                        "model_name": "muse-glimmer-30b",
+                        # Case differs from the catalog id on purpose.
+                        "model_name": "Muse-Glimmer-30B",
                         "litellm_params": {},
                         "model_info": {"litellm_provider": "deepinfra", "mode": "chat"},
                     },
@@ -133,9 +134,9 @@ def test_public_models_manufacturer_comes_from_catalog(client, db):
         assert response.status_code == 200
         models = {m["model_id"]: m for m in response.json()[0]["models"]}
         # Nothing in the id says "Meta" — only the catalog knows.
-        assert models["muse-glimmer-30b"]["manufacturer"]["name"] == "Meta"
+        assert models["Muse-Glimmer-30B"]["manufacturer"]["name"] == "Meta"
         assert (
-            models["muse-glimmer-30b"]["manufacturer"]["website"]
+            models["Muse-Glimmer-30B"]["manufacturer"]["website"]
             == "https://ai.meta.com/llama"
         )
         # Models the catalog has not annotated still fall back to the rules.
