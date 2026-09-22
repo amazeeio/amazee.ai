@@ -718,11 +718,11 @@ class BreakdownKeyItem(UsageMetrics):
         ),
     )
     key_name: Optional[str] = None
-    masked: Optional[str] = Field(
+    litellm_token: Optional[str] = Field(
         default=None,
         description=(
-            "First 8 characters of the key's token, enough to recognise it. "
-            "Null when we no longer hold the key."
+            "The key's LiteLLM token, the same value GET /private-ai-keys "
+            "returns. Null when we no longer hold the key."
         ),
     )
     kind: Optional[Literal["user", "service"]] = Field(
