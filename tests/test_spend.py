@@ -5392,6 +5392,73 @@ def test_user_daily_activity_key_breakdown(
     assert activity[0]["key_breakdown"][0]["kind"] == "user"
 
 
+@patch("app.api.spend.LiteLLMService.get_model_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.get_user_daily_activity", new_callable=AsyncMock)
+def test_user_daily_activity_key_breakdown_hides_other_users_tokens(
+    mock_activity,
+    mock_model_info,
+    client,
+    team_key_creator_token,
+    test_team,
+    test_team_user,
+    test_team_key_creator,
+    test_region,
+    db,
+):
+    mock_model_info.return_value = {"data": []}
+    other_key = DBPrivateAIKey(
+        name="daily-other-key",
+        litellm_token="sk-daily-other-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+    )
+    own_key = DBPrivateAIKey(
+        name="daily-own-key",
+        litellm_token="sk-daily-own-token",
+        region_id=test_region.id,
+        owner_id=test_team_key_creator.id,
+    )
+    db.add_all([other_key, own_key])
+    db.commit()
+
+    headers = {"Authorization": f"Bearer {team_key_creator_token}"}
+    mock_activity.return_value = _key_breakdown_rows(
+        LiteLLMService.hash_token("sk-daily-other-token"),
+        "hash-of-another-key",
+        "hash-of-a-key-we-no-longer-hold",
+    )
+
+    # A key creator may read a teammate's usage, but the key list never shows
+    # them that teammate's keys, so the token is dropped.
+    response = client.get(
+        f"/spend/{test_region.id}/user/{test_team_user.id}/daily-activity",
+        params={"include_key_breakdown": "true"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    item = response.json()["activity"][0]["key_breakdown"][0]
+    assert item["key_id"] == other_key.id
+    assert item["key_name"] == "daily-other-key"
+    assert item["spend"] > 0
+    # Nulls are dropped from this response, so a hidden token is absent.
+    assert "litellm_token" not in item
+
+    mock_activity.return_value = _key_breakdown_rows(
+        LiteLLMService.hash_token("sk-daily-own-token"),
+        "hash-of-another-key",
+        "hash-of-a-key-we-no-longer-hold",
+    )
+    response = client.get(
+        f"/spend/{test_region.id}/user/{test_team_key_creator.id}/daily-activity",
+        params={"include_key_breakdown": "true"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    own_item = response.json()["activity"][0]["key_breakdown"][0]
+    assert own_item["key_id"] == own_key.id
+    assert own_item["litellm_token"] == "sk-daily-own-token"
+
+
 def _model_info_key(db, test_region, owner):
     key = DBPrivateAIKey(
         name="model-info-key",
