@@ -4859,7 +4859,7 @@ def test_team_spend_breakdown_groups_by_user_key_and_model(
     assert key["key_name"] == "user-key"
     assert key["kind"] == "user"
     assert key["owner_id"] == test_team_user.id
-    assert key["masked"] == "sk-user-"
+    assert key["litellm_token"] == "sk-user-token"
     assert key["spend"] == 3.0
     assert key["successful_requests"] == 1
     assert key["failed_requests"] == 1
@@ -4873,7 +4873,7 @@ def test_team_spend_breakdown_groups_by_user_key_and_model(
     assert data["service_keys"][0]["spend"] == 1.0
     assert data["service_keys"][0]["kind"] == "service"
     assert data["service_keys"][0]["owner_id"] is None
-    assert data["service_keys"][0]["masked"] == "sk-servi"
+    assert data["service_keys"][0]["litellm_token"] == "sk-service-token"
 
 
 @patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
@@ -4949,7 +4949,7 @@ def test_team_spend_breakdown_keeps_keys_we_no_longer_hold(
     for item in data["unattributed_keys"]:
         assert item["kind"] is None
         assert item["owner_id"] is None
-        assert item["masked"] is None
+        assert item["litellm_token"] is None
 
 
 @patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
@@ -5132,7 +5132,7 @@ def test_team_daily_activity_key_breakdown_admin_sees_all(
     service_item, user_item, unattributed = day_one
     assert service_item["key_id"] == service_key.id
     assert service_item["kind"] == "service"
-    assert service_item["masked"] == "sk-daily"
+    assert service_item["litellm_token"] == "sk-daily-service-token"
     assert user_item["key_id"] == user_key.id
     assert user_item["kind"] == "user"
     assert user_item["owner_id"] == test_team_user.id
@@ -5436,7 +5436,7 @@ def test_key_daily_activity_key_breakdown(
         item = row["key_breakdown"][0]
         assert item["key_id"] == key.id
         assert item["kind"] == "user"
-        assert item["masked"] == "sk-daily"
+        assert item["litellm_token"] == "sk-daily-single-token"
 
     # A key with no token cannot match anything LiteLLM reports.
     key.litellm_token = None

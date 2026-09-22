@@ -427,7 +427,7 @@ def _build_key_item(
     return BreakdownKeyItem(
         key_id=db_key.id if db_key else None,
         key_name=db_key.name if db_key else slot.get("alias"),
-        masked=token[:8] if token else None,
+        litellm_token=token,
         kind=kind,
         owner_id=db_key.owner_id if db_key else None,
         models=models,
