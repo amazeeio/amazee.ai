@@ -82,6 +82,69 @@ def test_public_models_returns_aggregated_data(client, db):
         assert "pricing" in first_model
 
 
+def test_public_models_manufacturer_comes_from_catalog(client, db):
+    """A catalog manufacturer beats the model-id keyword rules."""
+    _clear_public_models_cache()
+    region = DBRegion(
+        name="eu-central-1",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="user",
+        postgres_admin_password="pass",
+        litellm_api_url="https://litellm.example",
+        litellm_api_key="key",
+        is_active=True,
+        is_dedicated=False,
+    )
+    db.add(region)
+    db.add(
+        DBModel(
+            model_id="muse-glimmer-30b",
+            display_name="muse-glimmer-30b",
+            provider="deepinfra",
+            type="chat",
+            manufacturer_name="Meta",
+            manufacturer_website="https://ai.meta.com/llama",
+        )
+    )
+    db.commit()
+    with patch("app.api.public.LiteLLMService") as mock_service_cls:
+        mock_service = mock_service_cls.return_value
+        mock_service.get_model_info = AsyncMock(
+            return_value={
+                "data": [
+                    {
+                        # Case differs from the catalog id on purpose.
+                        "model_name": "Muse-Glimmer-30B",
+                        "litellm_params": {},
+                        "model_info": {"litellm_provider": "deepinfra", "mode": "chat"},
+                    },
+                    {
+                        "model_name": "claude-3-5-sonnet-20241022",
+                        "litellm_params": {},
+                        "model_info": {
+                            "litellm_provider": "bedrock_converse",
+                            "mode": "chat",
+                        },
+                    },
+                ]
+            }
+        )
+        response = client.get("/public/models")
+        assert response.status_code == 200
+        models = {m["model_id"]: m for m in response.json()[0]["models"]}
+        # Nothing in the id says "Meta" — only the catalog knows.
+        assert models["Muse-Glimmer-30B"]["manufacturer"]["name"] == "Meta"
+        assert (
+            models["Muse-Glimmer-30B"]["manufacturer"]["website"]
+            == "https://ai.meta.com/llama"
+        )
+        # Models the catalog has not annotated still fall back to the rules.
+        assert (
+            models["claude-3-5-sonnet-20241022"]["manufacturer"]["name"] == "Anthropic"
+        )
+
+
 def test_public_models_includes_unavailable_region(client, db):
     _clear_public_models_cache()
     region = DBRegion(
@@ -288,7 +351,9 @@ def test_public_models_pricing_falls_back_to_default_margin(client, db):
         assert pricing[
             "cache_creation_input_cost_above_1hr_per_million_tokens"
         ] == pytest.approx(11.0)
-        assert pricing["cache_read_input_cost_per_million_tokens"] == pytest.approx(0.55)
+        assert pricing["cache_read_input_cost_per_million_tokens"] == pytest.approx(
+            0.55
+        )
 
 
 def test_public_models_pricing_missing_values(client, db):
@@ -1258,7 +1323,6 @@ def test_public_models_ignores_soft_deleted_model_rows(client, db):
         response = client.get("/public/models")
 
     assert _models_by_id(response)["claude-3-haiku"]["eol_date"] is None
-
 
 
 @pytest.mark.parametrize(

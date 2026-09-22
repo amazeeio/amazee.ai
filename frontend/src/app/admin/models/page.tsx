@@ -37,6 +37,7 @@ interface AdminModelRegionResponse {
   sync_error: string | null;
   synced_at: string | null;
   litellm_params_override?: Record<string, any> | null;
+  access_groups_override?: string[] | null;
 }
 
 interface AdminModelAliasTarget {
