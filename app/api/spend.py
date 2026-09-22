@@ -2168,6 +2168,7 @@ async def get_team_spend_breakdown(
     key_by_hash = _keys_by_hash(db, region_id, team_id=team_id)
 
     per_key, _ = _team_breakdown_from_rows(rows)
+    model_map = await _model_map(service, True)
 
     # A caller limited to their own keys cannot be shown a key we no longer
     # hold, because its owner is unknowable.
@@ -2176,6 +2177,7 @@ async def get_team_spend_breakdown(
         key_by_hash,
         visible_owner_id,
         include_unattributed=visible_owner_id is None,
+        model_map=model_map,
     )
 
     # Already ordered by descending spend, so every bucket keeps that order.

@@ -230,10 +230,18 @@ def test_spend_read_on_region_without_litellm_credentials_is_unavailable(
     assert response.status_code == 503
 
 
+@patch("app.api.spend.LiteLLMService.get_model_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
 def test_get_team_breakdown_allows_inactive_region(
-    mock_get_team_daily_activity, client, team_admin_token, test_team, test_region, db
+    mock_get_team_daily_activity,
+    mock_model_info,
+    client,
+    team_admin_token,
+    test_team,
+    test_region,
+    db,
 ):
+    mock_model_info.return_value = {"data": []}
     # The breakdown route is a read, so it has to survive its region retiring
     # like every other spend read.
     test_region.is_active = False
@@ -4861,10 +4869,19 @@ def _breakdown_rows(hash_a: str, hash_b: str) -> list[dict]:
     ]
 
 
+@patch("app.api.spend.LiteLLMService.get_model_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
 def test_team_spend_breakdown_groups_by_user_key_and_model(
-    mock_activity, client, team_admin_token, test_team, test_team_user, test_region, db
+    mock_activity,
+    mock_model_info,
+    client,
+    team_admin_token,
+    test_team,
+    test_team_user,
+    test_region,
+    db,
 ):
+    mock_model_info.return_value = {"data": []}
     user_key = DBPrivateAIKey(
         name="user-key",
         litellm_token="sk-user-token",
@@ -4928,9 +4945,64 @@ def test_team_spend_breakdown_groups_by_user_key_and_model(
     assert data["service_keys"][0]["litellm_token"] == "sk-service-token"
 
 
+@patch("app.api.spend.LiteLLMService.get_model_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
+def test_team_spend_breakdown_fills_provider_and_group(
+    mock_activity,
+    mock_model_info,
+    client,
+    team_admin_token,
+    test_team,
+    test_team_user,
+    test_region,
+    db,
+):
+    user_key = DBPrivateAIKey(
+        name="user-key",
+        litellm_token="sk-user-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+    )
+    db.add(user_key)
+    db.commit()
+
+    mock_activity.return_value = _breakdown_rows(
+        LiteLLMService.hash_token("sk-user-token"),
+        "hash-of-a-key-we-no-longer-hold",
+    )
+    mock_model_info.return_value = {
+        "data": [
+            {
+                "model_name": "claude-sonnet",
+                "litellm_params": {"model": "bedrock/claude"},
+                "model_info": {"litellm_provider": "bedrock"},
+            },
+            {
+                "model_name": "titan",
+                "litellm_params": {"model": "bedrock/titan"},
+                "model_info": {"litellm_provider": "bedrock"},
+            },
+        ]
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/breakdown",
+        params={"start_date": "2025-06-01", "end_date": "2025-06-02"},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+
+    models = {m["model"]: m for m in response.json()["users"][0]["keys"][0]["models"]}
+    assert models["bedrock/claude"]["custom_llm_provider"] == "bedrock"
+    assert models["bedrock/claude"]["model_group"] == "claude-sonnet"
+    assert models["bedrock/titan"]["model_group"] == "titan"
+
+
+@patch("app.api.spend.LiteLLMService.get_model_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
 def test_team_spend_breakdown_member_sees_only_own_keys(
     mock_activity,
+    mock_model_info,
     client,
     team_key_creator_token,
     test_team,
@@ -4938,6 +5010,7 @@ def test_team_spend_breakdown_member_sees_only_own_keys(
     test_region,
     db,
 ):
+    mock_model_info.return_value = {"data": []}
     own_key = DBPrivateAIKey(
         name="own-key",
         litellm_token="sk-own-token",
@@ -4971,11 +5044,19 @@ def test_team_spend_breakdown_member_sees_only_own_keys(
     assert [u["user_id"] for u in data["users"]] == [test_team_key_creator.id]
 
 
+@patch("app.api.spend.LiteLLMService.get_model_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
 def test_team_spend_breakdown_keeps_keys_we_no_longer_hold(
-    mock_activity, client, team_admin_token, test_team, test_region, db
+    mock_activity,
+    mock_model_info,
+    client,
+    team_admin_token,
+    test_team,
+    test_region,
+    db,
 ):
     """A key deleted inside the range still has spend; drop it and totals lie."""
+    mock_model_info.return_value = {"data": []}
     mock_activity.return_value = _breakdown_rows(
         "hash-of-deleted-a", "hash-of-deleted-b"
     )
@@ -5004,10 +5085,19 @@ def test_team_spend_breakdown_keeps_keys_we_no_longer_hold(
         assert item["litellm_token"] is None
 
 
+@patch("app.api.spend.LiteLLMService.get_model_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
 def test_team_spend_breakdown_key_seen_only_in_model_split(
-    mock_activity, client, team_admin_token, test_team, test_team_user, test_region, db
+    mock_activity,
+    mock_model_info,
+    client,
+    team_admin_token,
+    test_team,
+    test_team_user,
+    test_region,
+    db,
 ):
+    mock_model_info.return_value = {"data": []}
     """LiteLLM may report a key only inside the per-model breakdown.
 
     Reading the key total from `breakdown.api_keys` alone would then score it
@@ -5052,9 +5142,11 @@ def test_team_spend_breakdown_key_seen_only_in_model_split(
     assert data["users"][0]["keys"][0]["request_count"] == 2
 
 
+@patch("app.api.spend.LiteLLMService.get_model_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
 def test_team_spend_breakdown_member_never_sees_unattributed(
     mock_activity,
+    mock_model_info,
     client,
     team_key_creator_token,
     test_team,
@@ -5062,6 +5154,7 @@ def test_team_spend_breakdown_member_never_sees_unattributed(
     test_region,
     db,
 ):
+    mock_model_info.return_value = {"data": []}
     own_key = DBPrivateAIKey(
         name="own-key",
         litellm_token="sk-own-token",
