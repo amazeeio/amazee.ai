@@ -780,6 +780,7 @@ def _filter_region_groups_by_access(
             .join(DBModel, DBModel.id == DBModelRegion.model_id)
             .filter(
                 DBModelRegion.region_id.in_(allowed_group_ids.keys()),
+                DBModelRegion.is_active.is_(True),
                 DBModelRegion.access_groups_override.isnot(None),
                 DBModel.deleted_at.is_(None),
             )

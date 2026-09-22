@@ -628,6 +628,21 @@ def test_apply_deployment_access_groups_must_be_deployed_to_region(client, admin
     assert "not deployed to that region" in res.text
 
 
+@patch("app.services.model_sync.LiteLLMService")
+def test_apply_deployment_access_groups_empty_list_means_inherit(
+    mock_svc, client, admin_token, db, test_region
+):
+    """`access_groups: []` must not be stored as a real override with no
+    groups (synced untagged, callable by nobody); it means inherit."""
+    payload = _payload(test_region.name)
+    payload["models"][0]["deployments"][0]["access_groups"] = []
+    res = _apply(client, admin_token, payload)
+    assert res.status_code == 200, res.text
+    model = db.query(DBModel).filter_by(model_id="claude-sonnet").one()
+    assoc = db.query(DBModelRegion).filter_by(model_id=model.id, region_id=test_region.id).one()
+    assert assoc.access_groups_override is None
+
+
 def test_apply_alias_cannot_carry_deployment_access_groups(client, admin_token, test_region):
     """Aliases take their groups from the regional target; a deployment row on
     an alias (with or without access_groups) is rejected outright."""
