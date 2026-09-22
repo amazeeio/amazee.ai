@@ -722,7 +722,9 @@ class BreakdownKeyItem(UsageMetrics):
         default=None,
         description=(
             "The key's LiteLLM token, the same value GET /private-ai-keys "
-            "returns. Null when we no longer hold the key."
+            "returns. Null when we no longer hold the key, or when the caller "
+            "may see the usage but not the key: only admins, team admins and "
+            "the key owner get the token."
         ),
     )
     kind: Optional[Literal["user", "service"]] = Field(
