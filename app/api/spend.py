@@ -419,7 +419,6 @@ def _build_key_item(
     # only reports it inside the model split, fall back to summing the models so
     # its spend still reaches the user and team totals.
     metrics = slot["metrics"] or _sum_metrics(models)
-    token = db_key.litellm_token if db_key else None
     # A key with no owner belongs to the team itself, so it stands for a site
     # or an automation rather than a person.
     kind = None
@@ -428,7 +427,7 @@ def _build_key_item(
     return BreakdownKeyItem(
         key_id=db_key.id if db_key else None,
         key_name=db_key.name if db_key else slot.get("alias"),
-        litellm_token=token,
+        litellm_token=db_key.litellm_token if db_key else None,
         kind=kind,
         owner_id=db_key.owner_id if db_key else None,
         models=models,
