@@ -76,6 +76,21 @@ async def test_model_map_does_not_cache_failed_lookup():
     assert service.get_model_info.await_count == 2
 
 
+@pytest.mark.asyncio
+async def test_model_map_falls_back_to_expired_mapping_when_lookup_fails():
+    service = SimpleNamespace(
+        api_url="https://cache-test",
+        get_model_info=AsyncMock(return_value=_model_info_payload()),
+    )
+    mapping = await _model_map(service, True)
+
+    # Expire the entry, then break the lookup.
+    _model_map_cache["https://cache-test"] = (0.0, mapping)
+    service.get_model_info.side_effect = Exception("boom")
+
+    assert await _model_map(service, True) == mapping
+
+
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
 def test_get_team_spend_by_region(
     mock_get_key_info,

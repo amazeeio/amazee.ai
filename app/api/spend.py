@@ -515,7 +515,9 @@ async def _model_map(service: LiteLLMService, wanted: bool) -> dict[str, tuple] 
         )
     except Exception as exc:
         logger.warning("Model info lookup failed, provider left unresolved: %s", exc)
-        return {}
+        # An expired mapping still names the same models as a minute ago, so it
+        # beats leaving every provider null while LiteLLM is unreachable.
+        return cached[1] if cached else {}
 
     mapping: dict[str, tuple] = {}
     for item in info.get("data") or []:
