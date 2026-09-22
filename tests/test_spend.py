@@ -29,8 +29,6 @@ from app.db.models import (
 def _clear_model_map_cache():
     """Each test patches `get_model_info` on its own, so start from an empty cache."""
     _model_map_cache.clear()
-    yield
-    _model_map_cache.clear()
 
 
 def _model_entry(model, provider, group):
