@@ -6,6 +6,8 @@ name: LiteLLM Integration Gate
 #     from amazeeio/amazeeai-k0rdent-clusters, oldest prod cluster wins)
 #   - amazeeio/litellm-lagoon-base-database at the tag litellm-lagoon pins
 #     (what litellm-jabba / litellm-kessel run)
+# plus a candidate leg: the newest upstream stable release, so breakage in
+# the version we are about to bump to surfaces before the bump PR.
 #
 # Dispatch with an explicit image/tag to gate a candidate bump; green means
 # the backend's budget/spend/cycle/lifecycle behavior holds on that version.
@@ -23,10 +25,28 @@ on:
         required: false
         type: string
   schedule:
-    # Weekly early warning: litellm-lagoon-base rebuilds daily from upstream
-    # stable and jabba/kessel bump ASAP, so upstream breakage should surface
-    # before a human plans a bump.
-    - cron: "0 5 * * 1"
+    # Daily early warning: upstream ships several stable releases a week,
+    # litellm-lagoon-base rebuilds daily and jabba/kessel bump ASAP.
+    - cron: "0 5 * * *"
+  pull_request:
+    branches: [main, dev]
+    # Backend code that talks to LiteLLM, or the suite itself.
+    paths:
+      - "app/services/litellm.py"
+      - "app/services/model_sync.py"
+      - "app/services/access_groups.py"
+      - "app/api/spend.py"
+      - "app/api/budgets.py"
+      - "app/api/subscription.py"
+      - "app/api/teams.py"
+      - "app/api/private_ai_keys.py"
+      - "app/api/users.py"
+      - "app/core/**"
+      - "tests/integration/**"
+      - "docker-compose.yml"
+      - "docker-compose.integration.yml"
+      - "Dockerfile.test"
+      - ".github/workflows/litellm-integration.yml"
 
 permissions:
   contents: read
@@ -40,10 +60,12 @@ jobs:
       # Never interpolate inputs into run: blocks directly (script injection).
       INPUT_IMAGE: ${{ inputs.image }}
       INPUT_TAG: ${{ inputs.tag }}
-      # Fallbacks when resolution fails (keep roughly current; the resolve
-      # step warns whenever these are used).
-      FALLBACK_PROD_TAG: v1.95.0
-      FALLBACK_LAGOON_TAG: v1.96.2
+      EVENT_NAME: ${{ github.event_name }}
+      # Fallbacks when resolution fails (keep roughly current). PR and
+      # dispatch runs warn and use them; scheduled runs fail instead, so a
+      # broken app token can't keep the daily run green on stale versions.
+      FALLBACK_PROD_TAG: v1.101.0
+      FALLBACK_LAGOON_TAG: v1.102.1
     steps:
       # The pinned LiteLLM tags live in two other private repos, which
       # github.token cannot read. If minting fails (missing secret, revoked
@@ -62,6 +84,7 @@ jobs:
         id: matrix
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
+          UPSTREAM_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           valid='^[A-Za-z0-9._/-]+$'
@@ -75,9 +98,20 @@ jobs:
               echo "::error::image/tag contain invalid characters"
               exit 1
             fi
-            echo "matrix=[{\"image\":\"$INPUT_IMAGE\",\"tag\":\"$INPUT_TAG\"}]" >> "$GITHUB_OUTPUT"
+            echo "matrix=[{\"image\":\"$INPUT_IMAGE\",\"tag\":\"$INPUT_TAG\",\"leg\":\"dispatch\"}]" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
+          # Missing pinned tags are a hard error on the schedule (nobody reads
+          # warnings on a green cron run), a warning elsewhere (fork PRs have
+          # no secrets).
+          unresolved() {
+            if [ "$EVENT_NAME" = "schedule" ]; then
+              echo "::error::$1"
+              exit 1
+            fi
+            echo "::warning::$1; using fallback $2"
+          }
 
           # Prod leg: oldest litellm-helm image tag across prod clusters.
           prod_tag=""
@@ -90,7 +124,7 @@ jobs:
             done
           fi
           if [ -z "$prod_tag" ]; then
-            echo "::warning::could not resolve prod LiteLLM tag from amazeeai-k0rdent-clusters; using fallback $FALLBACK_PROD_TAG"
+            unresolved "could not resolve prod LiteLLM tag from amazeeai-k0rdent-clusters" "$FALLBACK_PROD_TAG"
             prod_tag="$FALLBACK_PROD_TAG"
           fi
 
@@ -101,12 +135,28 @@ jobs:
               | base64 -d | sed -n 's/^ARG LITELLM_BASE_TAG=\(.*\)$/\1/p' | head -1 || true)
           fi
           if [ -z "$lagoon_tag" ]; then
-            echo "::warning::could not resolve LITELLM_BASE_TAG from litellm-lagoon; using fallback $FALLBACK_LAGOON_TAG"
+            unresolved "could not resolve LITELLM_BASE_TAG from litellm-lagoon" "$FALLBACK_LAGOON_TAG"
             lagoon_tag="$FALLBACK_LAGOON_TAG"
           fi
 
-          echo "resolved: prod=$prod_tag lagoon=$lagoon_tag"
-          echo "matrix=[{\"image\":\"ghcr.io/berriai/litellm-database\",\"tag\":\"$prod_tag\"},{\"image\":\"ghcr.io/amazeeio/litellm-lagoon-base-database\",\"tag\":\"$lagoon_tag\"}]" >> "$GITHUB_OUTPUT"
+          # Candidate leg: newest upstream stable (public repo, github.token
+          # is enough). Sort by version, not publish date: upstream backports
+          # patches to older lines after newer releases ship.
+          candidate_tag=$(GH_TOKEN="$UPSTREAM_TOKEN" gh api 'repos/BerriAI/litellm/releases?per_page=50' \
+            --jq '.[] | select(.prerelease == false and .draft == false) | .tag_name' 2>/dev/null \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+          if [ -z "$candidate_tag" ]; then
+            echo "::warning::could not resolve latest upstream LiteLLM release; skipping candidate leg"
+          fi
+
+          echo "resolved: prod=$prod_tag lagoon=$lagoon_tag candidate=${candidate_tag:-none}"
+          jq -cn --arg prod "$prod_tag" --arg lagoon "$lagoon_tag" --arg cand "$candidate_tag" '
+            [{image: "ghcr.io/berriai/litellm-database", tag: $prod, leg: "prod"},
+             {image: "ghcr.io/amazeeio/litellm-lagoon-base-database", tag: $lagoon, leg: "lagoon"}]
+            + (if $cand != "" and $cand != $prod
+               then [{image: "ghcr.io/berriai/litellm-database", tag: $cand, leg: "candidate"}]
+               else [] end)
+            | "matrix=\(tojson)"' -r >> "$GITHUB_OUTPUT"
 
   integration:
     needs: resolve
@@ -118,7 +168,7 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.resolve.outputs.matrix) }}
-    name: integration (${{ matrix.image }}:${{ matrix.tag }})
+    name: integration ${{ matrix.leg }} (${{ matrix.image }}:${{ matrix.tag }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -137,3 +187,34 @@ jobs:
           LITELLM_IMAGE: ${{ matrix.image }}
           LITELLM_TAG: ${{ matrix.tag }}
         run: make integration-test
+
+  # Scheduled failures otherwise only email whoever last touched the cron.
+  # PR and dispatch runs are watched by whoever started them.
+  notify:
+    needs: [resolve, integration]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Slack
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.AMAZEE_AI_SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          MATRIX: ${{ needs.resolve.outputs.matrix }}
+        run: |
+          set -euo pipefail
+          legs=$(echo "${MATRIX:-[]}" | jq -r 'map("`\(.leg)` \(.image):\(.tag)") | join("\n")')
+          payload=$(jq -n --arg channel "$SLACK_CHANNEL_ID" --arg url "$WORKFLOW_URL" --arg legs "${legs:-unresolved}" '{
+            channel: $channel,
+            text: ":rotating_light: LiteLLM integration gate failed",
+            blocks: [{type: "section", text: {type: "mrkdwn",
+              text: ":rotating_light: *LiteLLM integration gate failed*\nOne of these LiteLLM versions breaks backend budget/spend/lifecycle behavior (or tag resolution failed):\n\($legs)\n<\($url)|View run>"}}]
+          }')
+          response=$(curl -sS -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$payload")
+          if ! echo "$response" | jq -e '.ok' > /dev/null; then
+            echo "::error::Slack API error: $response"
+            exit 1
+          fi
