@@ -531,8 +531,30 @@ def test_public_listing_includes_public_groups(db, test_region, monkeypatch):
                                  models=[summary("openai/ga"), summary("openai/zdr"), summary("openai/beta")])]
     monkeypatch.setattr(settings, "ENV_SUFFIX", "production")
     monkeypatch.setattr(settings, "CATALOG_MANAGED_REGIONS", test_region.name)
-    listed = [m.model_id for m in _filter_region_groups_by_access(db, groups, None)[0].models]
-    assert listed == ["openai/ga", "openai/zdr"]
+    listed = _filter_region_groups_by_access(db, groups, None)[0].models
+    # Each model carries the groups the caller may see; preview stays hidden.
+    assert [(m.model_id, m.access_groups) for m in listed] == [
+        ("openai/ga", ["default-models"]),
+        ("openai/zdr", ["limited-retention"]),
+    ]
+    # The shared cache entry is not mutated.
+    assert groups[0].models[0].access_groups == []
+
+    from app.api.public import _filter_region_groups_by_access_group
+
+    only_zdr = _filter_region_groups_by_access_group(
+        _filter_region_groups_by_access(db, groups, None), {"limited-retention"}
+    )
+    assert [m.model_id for m in only_zdr[0].models] == ["openai/zdr"]
+
+    # Admins see every model and every group name, preview included.
+    admin = type("Admin", (), {"is_admin": True, "team_id": None})()
+    tagged = {m.model_id: m.access_groups for m in _filter_region_groups_by_access(db, groups, admin)[0].models}
+    assert tagged == {
+        "openai/ga": ["default-models"],
+        "openai/zdr": ["limited-retention"],
+        "openai/beta": ["preview"],
+    }
 
 
 @patch("app.services.model_sync.LiteLLMService")
