@@ -1389,6 +1389,7 @@ class AccessGroupResponse(BaseModel):
     slug: str
     label: str
     description: Optional[str] = None
+    is_public: bool = False
     model_ids: List[int] = Field(default_factory=list)
     region_ids: List[int] = Field(default_factory=list)
     default_in_region_ids: List[int] = Field(default_factory=list)
@@ -1436,6 +1437,8 @@ class ApplyAccessGroupSpec(BaseModel):
     slug: str = Field(min_length=1, max_length=64, pattern=ACCESS_GROUP_SLUG_PATTERN)
     label: str = Field(min_length=1)
     description: Optional[str] = None
+    # listed on /public/models for everyone (see DBModelAccessGroup.is_public)
+    is_public: bool = False
     # region names the group is deployed to
     regions: List[str] = Field(default_factory=list)
 
