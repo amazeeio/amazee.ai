@@ -704,9 +704,9 @@ def _filter_region_groups_by_access(
     db: Session, region_groups: list[PublicRegionModels], user: DBUser | None
 ) -> list[PublicRegionModels]:
     """Access-group enforcement for the catalog: in a region with a default
-    access group, only models in the default group (plus the caller team's
-    opt-ins) are listed — unauthenticated callers see exactly the "available
-    to everyone" default set. Regions without a default are unfiltered
+    access group, only models in the default group, in groups flagged
+    is_public, and in the caller team's opt-ins are listed — unauthenticated
+    callers see the default set plus the public groups. Regions without a default are unfiltered
     (legacy all-models). Admins always see everything.
 
     A region the catalog does not manage is unfiltered too, even if a default
@@ -741,11 +741,22 @@ def _filter_region_groups_by_access(
     if not relevant:
         return region_groups
 
-    # region_id -> allowed group ids: the region default plus the caller
-    # team's opt-in groups deployed to that region.
+    # region_id -> allowed group ids: the region default plus the public and
+    # the caller team's opt-in groups deployed to that region.
     allowed_group_ids: dict[int, set[int]] = {
         r.id: {r.default_access_group_id} for r in relevant
     }
+    public_groups = (
+        db.query(DBModelAccessGroupRegion.group_id, DBModelAccessGroupRegion.region_id)
+        .join(DBModelAccessGroup, DBModelAccessGroup.id == DBModelAccessGroupRegion.group_id)
+        .filter(
+            DBModelAccessGroup.is_public.is_(True),
+            DBModelAccessGroupRegion.region_id.in_(allowed_group_ids.keys()),
+        )
+        .all()
+    )
+    for group_id, region_id in public_groups:
+        allowed_group_ids[region_id].add(group_id)
     team_id = user.team_id if user else None
     if team_id:
         opt_ins = (

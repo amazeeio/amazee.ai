@@ -104,6 +104,22 @@ def test_apply_is_idempotent(mock_svc, client, admin_token, db, test_region):
 
 
 @patch("app.services.model_sync.LiteLLMService")
+def test_apply_sets_access_group_is_public(mock_svc, client, admin_token, db, test_region):
+    payload = _payload(test_region.name)
+    assert _apply(client, admin_token, payload).status_code == 200
+    group = db.query(DBModelAccessGroup).filter_by(slug="default-models").one()
+    assert group.is_public is False
+
+    payload["access_groups"][0]["is_public"] = True
+    res = _apply(client, admin_token, payload)
+    assert res.status_code == 200
+    actions = {(c["entity"], c["key"], c["action"]) for c in res.json()["changes"]}
+    assert ("access_group", "default-models", "update") in actions
+    db.refresh(group)
+    assert group.is_public is True
+
+
+@patch("app.services.model_sync.LiteLLMService")
 def test_apply_reschedules_failed_syncs_without_config_diff(
     mock_svc, client, admin_token, db, test_region
 ):

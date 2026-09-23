@@ -831,6 +831,10 @@ class DBModelAccessGroup(Base):
     slug = Column(String, unique=True, nullable=False, index=True)
     label = Column(String, nullable=False)
     description = Column(String, nullable=True)
+    # Listed on /public/models for every caller, alongside the region default,
+    # whether or not the caller's team has opted in. Listing only: LiteLLM
+    # access is unchanged.
+    is_public = Column(Boolean, nullable=False, default=False, server_default="false")
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
     updated_at = Column(
         DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False
