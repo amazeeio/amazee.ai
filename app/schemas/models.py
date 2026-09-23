@@ -314,6 +314,14 @@ class PublicModelSummary(BaseModel):
     manufacturer: Optional[PublicModelManufacturer] = None
     capabilities: PublicModelCapabilities
     pricing: PublicModelPricing
+    access_groups: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Access groups this model belongs to in this region, limited to the "
+            "groups the caller may see: the region default, public groups and "
+            "the caller team's opt-ins (admins see every group)."
+        ),
+    )
     aliased_to: Optional[str] = Field(
         default=None,
         description=(

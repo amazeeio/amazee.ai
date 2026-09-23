@@ -703,95 +703,81 @@ def _filter_region_groups_by_alias(
 def _filter_region_groups_by_access(
     db: Session, region_groups: list[PublicRegionModels], user: DBUser | None
 ) -> list[PublicRegionModels]:
-    """Access-group enforcement for the catalog: in a region with a default
-    access group, only models in the default group, in groups flagged
-    is_public, and in the caller team's opt-ins are listed — unauthenticated
-    callers see the default set plus the public groups. Regions without a default are unfiltered
-    (legacy all-models). Admins always see everything.
+    """Access-group enforcement for the catalog, and the per-model
+    ``access_groups`` tag.
 
-    A region the catalog does not manage is unfiltered too, even if a default
-    group was set on it by hand: `effective_team_group_slugs` refuses to
-    restrict those teams on LiteLLM, so filtering the listing would hide models
-    the caller can actually call — and would make the listing move whenever an
-    apply rewrites the (global, region-less) model->group memberships.
+    A model's groups in a region follow the same rule as the tags pushed to
+    LiteLLM (``model_access_group_slugs``): the deployment's
+    access_groups_override when set, else the model's groups, either way
+    restricted to groups deployed to the region. An alias is judged by its
+    regional target: LiteLLM expands a model_group_alias into a copy of the
+    target, tags included.
 
-    A deployment with access_groups_override belongs to exactly those groups
-    in its region, whatever the model-level memberships say. An alias is
-    judged by its regional target: LiteLLM expands a model_group_alias into
-    a copy of the target, tags included, so the target's groups are what
-    the proxy authorizes against.
+    A caller may see the region default, groups flagged is_public and their
+    team's opt-ins; admins see every group. In a region with a default
+    access group only models in a group the caller may see are listed, so
+    unauthenticated callers get the default set plus the public groups.
+    Regions without a default are unfiltered (legacy all-models), and so is
+    a region the catalog does not manage, even if a default group was set on
+    it by hand: `effective_team_group_slugs` refuses to restrict those teams
+    on LiteLLM, so filtering would hide models the caller can actually call.
 
     Query cost is fixed per request (a handful of queries) regardless of how
-    many regions are enforced — this is a high-traffic endpoint.
+    many regions are listed — this is a high-traffic endpoint.
     """
-    if user is not None and user.is_admin:
-        return region_groups
-
-    enforced = {
+    is_admin = bool(user is not None and user.is_admin)
+    regions = {
         r.name: r
         for r in db.query(DBRegion)
-        .filter(DBRegion.default_access_group_id.isnot(None))
+        .filter(DBRegion.name.in_({g.region for g in region_groups}))
         .all()
-        if catalog_manages(r.name)
     }
-    if not enforced:
+    if not regions:
         return region_groups
+    region_ids = [r.id for r in regions.values()]
 
-    relevant = [enforced[g.region] for g in region_groups if g.region in enforced]
-    if not relevant:
-        return region_groups
-
-    # region_id -> allowed group ids: the region default plus the public and
-    # the caller team's opt-in groups deployed to that region.
-    allowed_group_ids: dict[int, set[int]] = {
-        r.id: {r.default_access_group_id} for r in relevant
-    }
-    public_groups = (
-        db.query(DBModelAccessGroupRegion.group_id, DBModelAccessGroupRegion.region_id)
-        .join(DBModelAccessGroup, DBModelAccessGroup.id == DBModelAccessGroupRegion.group_id)
-        .filter(
-            DBModelAccessGroup.is_public.is_(True),
-            DBModelAccessGroupRegion.region_id.in_(allowed_group_ids.keys()),
+    # region_id -> {slug: group_id} for every group deployed there.
+    deployed: dict[int, dict[str, int]] = {rid: {} for rid in region_ids}
+    public_slugs: set[str] = set()
+    for group_id, region_id, slug, is_public in (
+        db.query(
+            DBModelAccessGroup.id,
+            DBModelAccessGroupRegion.region_id,
+            DBModelAccessGroup.slug,
+            DBModelAccessGroup.is_public,
         )
+        .join(DBModelAccessGroupRegion, DBModelAccessGroupRegion.group_id == DBModelAccessGroup.id)
+        .filter(DBModelAccessGroupRegion.region_id.in_(region_ids))
         .all()
-    )
-    for group_id, region_id in public_groups:
-        allowed_group_ids[region_id].add(group_id)
-    team_id = user.team_id if user else None
-    if team_id:
-        opt_ins = (
-            db.query(DBTeamModelAccessGroup.group_id, DBModelAccessGroupRegion.region_id)
-            .join(
-                DBModelAccessGroupRegion,
-                DBModelAccessGroupRegion.group_id == DBTeamModelAccessGroup.group_id,
-            )
-            .filter(
-                DBTeamModelAccessGroup.team_id == team_id,
-                DBModelAccessGroupRegion.region_id.in_(allowed_group_ids.keys()),
-            )
-            .all()
-        )
-        for group_id, region_id in opt_ins:
-            allowed_group_ids[region_id].add(group_id)
+    ):
+        deployed[region_id][slug] = group_id
+        if is_public:
+            public_slugs.add(slug)
 
-    all_group_ids = set().union(*allowed_group_ids.values())
-    rows = (
+    group_ids = {gid for slugs in deployed.values() for gid in slugs.values()}
+    slug_by_id = {gid: slug for slugs in deployed.values() for slug, gid in slugs.items()}
+    groups_by_model: dict[str, set[str]] = {}
+    for group_id, model_name in (
         db.query(DBModelAccessGroupModel.group_id, DBModel.model_id)
         .join(DBModel, DBModel.id == DBModelAccessGroupModel.model_id)
         .filter(
-            DBModelAccessGroupModel.group_id.in_(all_group_ids),
+            DBModelAccessGroupModel.group_id.in_(group_ids),
             DBModel.deleted_at.is_(None),
         )
         .all()
-    )
-    names_by_group: dict[int, set[str]] = {}
-    for group_id, model_name in rows:
-        names_by_group.setdefault(group_id, set()).add(model_name)
-    slug_by_id = dict(
-        db.query(DBModelAccessGroup.id, DBModelAccessGroup.slug)
-        .filter(DBModelAccessGroup.id.in_(all_group_ids))
-        .all()
-    )
+    ):
+        groups_by_model.setdefault(model_name, set()).add(slug_by_id[group_id])
+
+    team_slugs: set[str] = set()
+    if user is not None and user.team_id and not is_admin:
+        team_slugs = {
+            slug
+            for (slug,) in db.query(DBModelAccessGroup.slug)
+            .join(DBTeamModelAccessGroup, DBTeamModelAccessGroup.group_id == DBModelAccessGroup.id)
+            .filter(DBTeamModelAccessGroup.team_id == user.team_id)
+            .all()
+        }
+
     target_model = aliased(DBModel)
     alias_targets: dict[tuple[int, str], str] = {
         (region_id, alias_name): target_name
@@ -800,7 +786,7 @@ def _filter_region_groups_by_access(
             .join(DBModel, DBModel.id == DBModelAliasTarget.alias_model_id)
             .join(target_model, target_model.id == DBModelAliasTarget.target_model_id)
             .filter(
-                DBModelAliasTarget.region_id.in_(allowed_group_ids.keys()),
+                DBModelAliasTarget.region_id.in_(region_ids),
                 DBModel.deleted_at.is_(None),
                 target_model.deleted_at.is_(None),
             )
@@ -813,7 +799,7 @@ def _filter_region_groups_by_access(
             db.query(DBModelRegion.region_id, DBModel.model_id, DBModelRegion.access_groups_override)
             .join(DBModel, DBModel.id == DBModelRegion.model_id)
             .filter(
-                DBModelRegion.region_id.in_(allowed_group_ids.keys()),
+                DBModelRegion.region_id.in_(region_ids),
                 DBModelRegion.is_active.is_(True),
                 DBModelRegion.access_groups_override.isnot(None),
                 DBModel.deleted_at.is_(None),
@@ -824,30 +810,46 @@ def _filter_region_groups_by_access(
 
     filtered: list[PublicRegionModels] = []
     for group in region_groups:
-        region = enforced.get(group.region)
+        region = regions.get(group.region)
         if region is None:
             filtered.append(group)
             continue
-        allowed: set[str] = set().union(
-            *(names_by_group.get(gid, set()) for gid in allowed_group_ids[region.id])
-        )
-        allowed_slugs = {slug_by_id[gid] for gid in allowed_group_ids[region.id] if gid in slug_by_id}
+        region_slugs = set(deployed[region.id])
+        default_slug = slug_by_id.get(region.default_access_group_id)
+        enforced = region.default_access_group_id is not None and catalog_manages(region.name)
+        if is_admin:
+            visible_slugs = region_slugs
+        else:
+            visible_slugs = region_slugs & (public_slugs | team_slugs | {default_slug})
 
-        def visible(model_name: str, region_id: int = region.id) -> bool:
-            effective = alias_targets.get((region_id, model_name), model_name)
-            override = overrides.get((region_id, effective))
-            if override is None:
-                return effective in allowed
-            return bool(override & allowed_slugs)
-
+        models: list[PublicModelSummary] = []
+        for model in group.models:
+            effective = alias_targets.get((region.id, model.model_id), model.model_id)
+            member_of = overrides.get((region.id, effective), groups_by_model.get(effective, set()))
+            shown = member_of & visible_slugs
+            if enforced and not is_admin and not shown:
+                continue
+            # Copy: summaries are shared through the module-level cache.
+            models.append(model.model_copy(update={"access_groups": sorted(shown)}))
         filtered.append(
-            PublicRegionModels(
-                region=group.region,
-                status=group.status,
-                models=[m for m in group.models if visible(m.model_id)],
-            )
+            PublicRegionModels(region=group.region, status=group.status, models=models)
         )
     return filtered
+
+
+def _filter_region_groups_by_access_group(
+    region_groups: list[PublicRegionModels], access_groups: set[str]
+) -> list[PublicRegionModels]:
+    if not access_groups:
+        return region_groups
+    return [
+        PublicRegionModels(
+            region=g.region,
+            status=g.status,
+            models=[m for m in g.models if access_groups.intersection(m.access_groups)],
+        )
+        for g in region_groups
+    ]
 
 
 async def _resolve_optional_user(request: Request, db: Session) -> DBUser | None:
@@ -961,10 +963,19 @@ async def list_public_models(
             "comma-separated aliases, e.g. ?alias=gpt-4&alias=claude-3-5"
         ),
     ),
+    access_group: list[str] | None = Query(
+        default=None,
+        description=(
+            "Optional access group filters: list only models in any of these "
+            "groups. Repeat or comma-separate, e.g. "
+            "?access_group=default-models,limited-retention"
+        ),
+    ),
     db: Session = Depends(get_db),
 ):
     now = datetime.now(UTC)
     alias_filters = _parse_alias_filters(alias)
+    access_group_filters = _parse_alias_filters(access_group)
     eol_dates = eol_dates_by_model(db)
     manufacturers = _catalog_manufacturers(db)
 
@@ -1115,6 +1126,7 @@ async def list_public_models(
     request.state._public_models_is_authenticated = user is not None
 
     visible_groups = _filter_region_groups_by_access(db, visible_groups, user)
+    visible_groups = _filter_region_groups_by_access_group(visible_groups, access_group_filters)
     return _filter_region_groups_by_alias(visible_groups, alias_filters)
 
 
