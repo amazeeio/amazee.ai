@@ -544,8 +544,10 @@ class LiteLLMService:
                             "end_date": end_date,
                             "page": page,
                             "page_size": page_size,
-                            # Oldest first, so rows LiteLLM flushes while we page
-                            # land after the current page instead of shifting it.
+                            # Oldest first, so fresh rows mostly land after the
+                            # current page. A row LiteLLM flushes late keeps its
+                            # own startTime, so on a scope with over one page one
+                            # boundary row can still be skipped or repeated.
                             "sort_by": "startTime",
                             "sort_order": "asc",
                         },
