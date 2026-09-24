@@ -2156,7 +2156,7 @@ async def get_team_daily_activity(
 
 
 @router.get(
-    "/{region_id}/team/{team_id}/hourly-activity",
+    "/{region_id}/team/{team_id}/hourly",
     response_model=HourlySpendResponse,
     response_model_exclude_none=True,
     summary="Get team hourly spend by region",
@@ -2207,7 +2207,7 @@ async def get_team_hourly_activity(
 
 
 @router.get(
-    "/{region_id}/team/{team_id}/member/{user_id}/hourly-activity",
+    "/{region_id}/team/{team_id}/member/{user_id}/hourly",
     response_model=HourlySpendResponse,
     response_model_exclude_none=True,
     summary="Get team member hourly spend by region",
@@ -2271,7 +2271,7 @@ async def get_team_member_hourly_activity(
 
 
 @router.get(
-    "/{region_id}/user/{user_id}/hourly-activity",
+    "/{region_id}/user/{user_id}/hourly",
     response_model=HourlySpendResponse,
     response_model_exclude_none=True,
     summary="Get user hourly spend by region",
