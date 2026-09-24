@@ -867,6 +867,45 @@ async def _hourly_spend(
     return start, end, list(buckets.values())
 
 
+def _get_readable_key_or_404(
+    db: Session,
+    key_id: int,
+    region_id: int,
+    team_id: int | None,
+    current_user: DBUser,
+    user_role: str,
+) -> DBPrivateAIKey:
+    """Load a key for a spend read, with the same visibility as private-ai-keys.
+
+    A key the caller may not see is a 404, not a 403, so its id leaks nothing.
+    """
+    key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
+    if not key:
+        raise HTTPException(status_code=404, detail="Private AI Key not found")
+    if key.region_id != region_id:
+        raise HTTPException(
+            status_code=404, detail="Private AI Key not found in region"
+        )
+
+    # Defence-in-depth scope gate (issue #600): enforce declared team scope
+    # even for system-admin callers before applying role-based access.
+    enforce_declared_team_scope(key, team_id, db)
+
+    if current_user.is_admin:
+        return key
+    if user_role in [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR, UserRole.READ_ONLY]:
+        if key.team_id is not None:
+            if key.team_id != current_user.team_id:
+                raise HTTPException(status_code=404, detail="Private AI Key not found")
+        else:
+            owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
+            if not owner or owner.team_id != current_user.team_id:
+                raise HTTPException(status_code=404, detail="Private AI Key not found")
+    elif key.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Private AI Key not found")
+    return key
+
+
 def _assert_team_budget_write_access(
     current_user: DBUser, role: str, team_id: int
 ) -> None:
@@ -1641,32 +1680,9 @@ async def get_key_spend_alias(
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
 ):
-    key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
-    if not key:
-        raise HTTPException(status_code=404, detail="Private AI Key not found")
-    if key.region_id != region_id:
-        raise HTTPException(
-            status_code=404, detail="Private AI Key not found in region"
-        )
-
-    # Defence-in-depth scope gate (issue #600): enforce declared team scope
-    # even for system-admin callers before applying role-based access.
-    enforce_declared_team_scope(key, team_id, db)
-
-    # Reuse authorization semantics from private-ai-keys endpoints.
-    if current_user.is_admin:
-        pass
-    elif user_role in [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR, UserRole.READ_ONLY]:
-        if key.team_id is not None:
-            if key.team_id != current_user.team_id:
-                raise HTTPException(status_code=404, detail="Private AI Key not found")
-        else:
-            owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
-            if not owner or owner.team_id != current_user.team_id:
-                raise HTTPException(status_code=404, detail="Private AI Key not found")
-    else:
-        if key.owner_id != current_user.id:
-            raise HTTPException(status_code=404, detail="Private AI Key not found")
+    key = _get_readable_key_or_404(
+        db, key_id, region_id, team_id, current_user, user_role
+    )
 
     region = _get_region_or_404(db, region_id, include_inactive=True)
     service = LiteLLMService(
@@ -1775,31 +1791,9 @@ async def get_key_last_used(
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
 ):
-    key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
-    if not key:
-        raise HTTPException(status_code=404, detail="Private AI Key not found")
-    if key.region_id != region_id:
-        raise HTTPException(
-            status_code=404, detail="Private AI Key not found in region"
-        )
-
-    # Defence-in-depth scope gate (issue #600).
-    enforce_declared_team_scope(key, team_id, db)
-
-    # Reuse authorization semantics from get_key_spend_alias.
-    if current_user.is_admin:
-        pass
-    elif user_role in [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR, UserRole.READ_ONLY]:
-        if key.team_id is not None:
-            if key.team_id != current_user.team_id:
-                raise HTTPException(status_code=404, detail="Private AI Key not found")
-        else:
-            owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
-            if not owner or owner.team_id != current_user.team_id:
-                raise HTTPException(status_code=404, detail="Private AI Key not found")
-    else:
-        if key.owner_id != current_user.id:
-            raise HTTPException(status_code=404, detail="Private AI Key not found")
+    key = _get_readable_key_or_404(
+        db, key_id, region_id, team_id, current_user, user_role
+    )
 
     region = _get_region_or_404(db, region_id, include_inactive=True)
     service = LiteLLMService(
@@ -1886,31 +1880,9 @@ async def get_key_daily_activity(
 ):
     start_date, end_date = _resolve_daily_activity_range(start_date, end_date)
 
-    key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
-    if not key:
-        raise HTTPException(status_code=404, detail="Private AI Key not found")
-    if key.region_id != region_id:
-        raise HTTPException(
-            status_code=404, detail="Private AI Key not found in region"
-        )
-
-    # Defence-in-depth scope gate (issue #600).
-    enforce_declared_team_scope(key, team_id, db)
-
-    # Reuse authorization semantics from get_key_spend_alias.
-    if current_user.is_admin:
-        pass
-    elif user_role in [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR, UserRole.READ_ONLY]:
-        if key.team_id is not None:
-            if key.team_id != current_user.team_id:
-                raise HTTPException(status_code=404, detail="Private AI Key not found")
-        else:
-            owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
-            if not owner or owner.team_id != current_user.team_id:
-                raise HTTPException(status_code=404, detail="Private AI Key not found")
-    else:
-        if key.owner_id != current_user.id:
-            raise HTTPException(status_code=404, detail="Private AI Key not found")
+    key = _get_readable_key_or_404(
+        db, key_id, region_id, team_id, current_user, user_role
+    )
 
     region = _get_region_or_404(db, region_id, include_inactive=True)
     service = LiteLLMService(
