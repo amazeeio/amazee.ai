@@ -436,6 +436,7 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
             # that are deployed to this region. Always sent (possibly []) so
             # removing a model from its last group clears the tags on the proxy.
             access_groups = model_access_group_slugs(db, model.id, region_id)
+            model_info = {**(model.model_info or {}), **(assoc.model_info_override or {})} or None
             stale_keys = stale_param_keys(db_deployments, params)
             if stale_keys:
                 # /model/update merges into the stored params, so a key the
@@ -448,7 +449,7 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
                 )
                 await litellm_service.add_model(
                     model.model_id, params, access_groups=access_groups,
-                    model_info=model.model_info,
+                    model_info=model_info,
                 )
                 await litellm_service.delete_model(
                     model.model_id, [d["model_info"]["id"] for d in db_deployments]
@@ -457,13 +458,13 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
                 logger.info(f"Updating model '{model.model_id}' in region '{region.name}' (deployments: {deployment_ids})")
                 await litellm_service.update_model(
                     model.model_id, params, deployment_ids, access_groups=access_groups,
-                    model_info=model.model_info,
+                    model_info=model_info,
                 )
             else:
                 logger.info(f"Registering model '{model.model_id}' in region '{region.name}'")
                 await litellm_service.add_model(
                     model.model_id, params, access_groups=access_groups,
-                    model_info=model.model_info,
+                    model_info=model_info,
                 )
         else:
             logger.info(f"Deregistering model '{model.model_id}' from region '{region.name}'")
