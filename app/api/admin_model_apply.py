@@ -84,7 +84,10 @@ def _validate_specs(req: ApplyConfigRequest) -> None:
         )
     known_slugs = set(slugs)
     for spec in req.models:
-        reserved = sorted(set(spec.model_info or {}) & _RESERVED_MODEL_INFO_KEYS)
+        info_keys = set(spec.model_info or {})
+        for d in spec.deployments:
+            info_keys |= set(d.model_info_override or {})
+        reserved = sorted(info_keys & _RESERVED_MODEL_INFO_KEYS)
         if reserved:
             raise _bad_request(
                 f"Model '{spec.model_id}': model_info keys {reserved} are managed by the sync."
@@ -338,16 +341,18 @@ def _apply_deployments(
     db: Session,
     model: DBModel,
     spec_key: str,
-    desired: Dict[int, Tuple[Optional[dict], Optional[List[str]]]],
+    desired: Dict[int, Tuple[Optional[dict], Optional[List[str]], Optional[dict]]],
     region_names: Dict[int, str],
     managed_ids: Set[int],
     changes: List[ApplyChange],
 ) -> Set[int]:
     """Reconcile DBModelRegion rows to `desired` (region_id -> (params
-    override, access-groups override)). Returns region ids needing a sync."""
+    override, access-groups override, model_info override)). Returns region
+    ids needing a sync."""
     to_sync: Set[int] = set()
     existing = {a.region_id: a for a in db.query(DBModelRegion).filter_by(model_id=model.id).all()}
-    for region_id, (override, groups_override) in desired.items():
+    for region_id, (override, groups_override, info_override) in desired.items():
+        info_override = info_override or None
         # `[]` would store a real override with no groups: synced untagged,
         # callable by nobody. Treat it as "no override" (inherit) instead.
         groups_override = sorted(set(groups_override)) if groups_override else None
@@ -368,6 +373,7 @@ def _apply_deployments(
                     sync_status="pending",
                     litellm_params_override=resolved,
                     access_groups_override=groups_override,
+                    model_info_override=info_override,
                 )
             )
             changes.append(
@@ -389,6 +395,9 @@ def _apply_deployments(
         if assoc.access_groups_override != groups_override:
             assoc.access_groups_override = groups_override
             deployment_changed.append("access_groups")
+        if assoc.model_info_override != info_override:
+            assoc.model_info_override = info_override
+            deployment_changed.append("model_info")
         if deployment_changed:
             assoc.sync_status = "pending"
             assoc.sync_error = None
@@ -514,12 +523,12 @@ async def apply_model_config(
                     ApplyChange(entity="alias_target", key=spec.model_id, action="update")
                 )
                 catalog_changed.add(model.id)
-            desired_deployments: Dict[int, Tuple[Optional[dict], Optional[List[str]]]] = {
-                region_id: (None, None) for region_id, _ in desired_targets
+            desired_deployments: Dict[int, Tuple[Optional[dict], Optional[List[str]], Optional[dict]]] = {
+                region_id: (None, None, None) for region_id, _ in desired_targets
             }
         else:
             desired_deployments = {
-                regions[d.region].id: (d.litellm_params_override, d.access_groups)
+                regions[d.region].id: (d.litellm_params_override, d.access_groups, d.model_info_override)
                 for d in spec.deployments
                 if d.region in regions
             }

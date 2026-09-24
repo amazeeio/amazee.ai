@@ -976,6 +976,9 @@ class DBModelRegion(Base):
     # Group slugs that replace the model's group memberships in this region
     # only (e.g. GA in one region, preview in another). None = inherit.
     access_groups_override = Column(JSON(none_as_null=True), nullable=True)
+    # Merged over the model's model_info at sync time. base_model is keyed on
+    # the backend id, which can differ per region (au. vs us. profiles).
+    model_info_override = Column(JSON, nullable=True)
     sync_status = Column(String, default="pending", nullable=False)
     sync_error = Column(String, nullable=True)
     synced_at = Column(DateTime(timezone=True), nullable=True)

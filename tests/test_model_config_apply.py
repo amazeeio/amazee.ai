@@ -135,6 +135,21 @@ def test_apply_model_info_change_resyncs_deployments(mock_svc, client, admin_tok
     model = db.query(DBModel).filter_by(model_id="claude-sonnet").one()
     assert model.model_info == {"base_model": "bedrock/anthropic.claude-sonnet"}
 
+    db.query(DBModelRegion).update({"sync_status": "synced"})
+    db.commit()
+    payload["models"][0]["deployments"][0]["model_info_override"] = {"base_model": "au.x"}
+    res = _apply(client, admin_token, payload)
+    data = res.json()
+    assert {
+        "entity": "deployment",
+        "key": f"claude-sonnet@{test_region.name}",
+        "action": "update",
+        "detail": "model_info",
+    } in data["changes"]
+    assoc = db.query(DBModelRegion).filter_by(model_id=model.id).one()
+    db.refresh(assoc)
+    assert assoc.model_info_override == {"base_model": "au.x"}
+
 
 def test_apply_rejects_sync_managed_model_info_keys(client, admin_token, test_region):
     payload = _payload(test_region.name)
@@ -143,6 +158,12 @@ def test_apply_rejects_sync_managed_model_info_keys(client, admin_token, test_re
     res = _apply(client, admin_token, payload)
     assert res.status_code == 400
     assert "['id']" in res.text
+
+    payload["models"][0]["model_info"] = None
+    payload["models"][0]["deployments"][0]["model_info_override"] = {"access_groups": []}
+    res = _apply(client, admin_token, payload)
+    assert res.status_code == 400
+    assert "['access_groups']" in res.text
 
 
 def test_apply_rejects_model_info_on_alias(client, admin_token, test_region):

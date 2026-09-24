@@ -644,9 +644,11 @@ def test_model_sync_pushes_catalog_model_info(mock_service_cls, client, db, test
     import asyncio
 
     model = _make_model(db)
-    model.model_info = {"base_model": "bedrock_mantle/xai.grok-4.3"}
+    model.model_info = {"base_model": "bedrock_mantle/xai.grok-4.3", "mode": "chat"}
     db.commit()
-    _deploy_model(db, model, test_region, sync_status="pending")
+    assoc = _deploy_model(db, model, test_region, sync_status="pending")
+    assoc.model_info_override = {"base_model": "au.xai.grok-4.3"}
+    db.commit()
     model_pk, region_pk = model.id, test_region.id
 
     instance = mock_service_cls.return_value
@@ -660,8 +662,10 @@ def test_model_sync_pushes_catalog_model_info(mock_service_cls, client, db, test
         asyncio.run(sync_model_to_region_task(model_pk, region_pk))
 
     instance.update_model.assert_called_once()
+    # The deployment's override wins key by key over the model's model_info.
     assert instance.update_model.call_args.kwargs["model_info"] == {
-        "base_model": "bedrock_mantle/xai.grok-4.3"
+        "base_model": "au.xai.grok-4.3",
+        "mode": "chat",
     }
 
 

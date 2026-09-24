@@ -1460,6 +1460,8 @@ class ApplyAccessGroupSpec(BaseModel):
 class ApplyDeploymentSpec(BaseModel):
     region: str
     litellm_params_override: Optional[dict] = None
+    # Merged over the model's model_info in this region only.
+    model_info_override: Optional[dict] = None
     # When set, replaces the model's access_groups in this region only.
     access_groups: Optional[List[str]] = None
 
