@@ -5795,7 +5795,7 @@ def test_team_hourly_activity_groups_rows_by_hour(
     ]
 
     response = client.get(
-        f"/spend/{test_region.id}/team/{test_team.id}/hourly-activity",
+        f"/spend/{test_region.id}/team/{test_team.id}/hourly",
         headers={"Authorization": f"Bearer {team_admin_token}"},
     )
     assert response.status_code == 200
@@ -5825,7 +5825,7 @@ def test_team_hourly_activity_hours_param(
 ):
     mock_get_spend_logs.return_value = []
     response = client.get(
-        f"/spend/{test_region.id}/team/{test_team.id}/hourly-activity",
+        f"/spend/{test_region.id}/team/{test_team.id}/hourly",
         params={"hours": hours},
         headers={"Authorization": f"Bearer {team_admin_token}"},
     )
@@ -5839,7 +5839,7 @@ def test_team_hourly_activity_forbidden_other_team(
     mock_get_spend_logs, client, test_token, test_team, test_region
 ):
     response = client.get(
-        f"/spend/{test_region.id}/team/{test_team.id}/hourly-activity",
+        f"/spend/{test_region.id}/team/{test_team.id}/hourly",
         headers={"Authorization": f"Bearer {test_token}"},
     )
     assert response.status_code == 403
@@ -5852,7 +5852,7 @@ def test_team_member_hourly_activity_filters_by_team_and_user(
 ):
     mock_get_spend_logs.return_value = []
     response = client.get(
-        f"/spend/{test_region.id}/team/{test_team.id}/member/{test_team_user.id}/hourly-activity",
+        f"/spend/{test_region.id}/team/{test_team.id}/member/{test_team_user.id}/hourly",
         headers={"Authorization": f"Bearer {team_admin_token}"},
     )
     assert response.status_code == 200
@@ -5871,7 +5871,7 @@ def test_team_member_hourly_activity_user_not_in_team(
     mock_get_spend_logs, client, team_admin_token, test_team, test_admin, test_region
 ):
     response = client.get(
-        f"/spend/{test_region.id}/team/{test_team.id}/member/{test_admin.id}/hourly-activity",
+        f"/spend/{test_region.id}/team/{test_team.id}/member/{test_admin.id}/hourly",
         headers={"Authorization": f"Bearer {team_admin_token}"},
     )
     assert response.status_code == 404
@@ -5884,7 +5884,7 @@ def test_user_hourly_activity_filters_by_user(
 ):
     mock_get_spend_logs.return_value = []
     response = client.get(
-        f"/spend/{test_region.id}/user/{test_user.id}/hourly-activity",
+        f"/spend/{test_region.id}/user/{test_user.id}/hourly",
         headers={"Authorization": f"Bearer {test_token}"},
     )
     assert response.status_code == 200
@@ -5897,7 +5897,7 @@ def test_user_hourly_activity_forbidden_other_user(
     mock_get_spend_logs, client, test_token, test_admin, test_region
 ):
     response = client.get(
-        f"/spend/{test_region.id}/user/{test_admin.id}/hourly-activity",
+        f"/spend/{test_region.id}/user/{test_admin.id}/hourly",
         headers={"Authorization": f"Bearer {test_token}"},
     )
     assert response.status_code == 403
