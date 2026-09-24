@@ -5913,3 +5913,80 @@ def test_user_hourly_activity_forbidden_other_user(
     )
     assert response.status_code == 403
     mock_iter_spend_logs.assert_not_called()
+
+
+def _hourly_key(db, region, owner, token="sk-hourly-token"):
+    key = DBPrivateAIKey(
+        name="hourly-key",
+        litellm_token=token,
+        region_id=region.id,
+        owner_id=owner.id,
+        team_id=owner.team_id,
+    )
+    db.add(key)
+    db.commit()
+    return key
+
+
+@patch("app.api.spend.LiteLLMService.iter_spend_logs")
+def test_key_hourly_activity_filters_by_hashed_token(
+    mock_iter_spend_logs, client, team_admin_token, test_team_user, test_region, db
+):
+    key = _hourly_key(db, test_region, test_team_user)
+    mock_iter_spend_logs.side_effect = _spend_logs(
+        lambda start: [{"startTime": start.isoformat(), "spend": 1.25}]
+    )
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/hourly",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["key_id"] == key.id
+    assert data["activity"][0]["spend"] == 1.25
+    assert mock_iter_spend_logs.call_args.args[0] == {
+        "api_key": LiteLLMService.hash_token("sk-hourly-token")
+    }
+
+
+@patch("app.api.spend.LiteLLMService.iter_spend_logs")
+def test_key_hourly_activity_without_token_is_zeros(
+    mock_iter_spend_logs, client, team_admin_token, test_team_user, test_region, db
+):
+    # A missing api_key filter would read every key's spend, so never ask.
+    key = _hourly_key(db, test_region, test_team_user, token=None)
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/hourly",
+        params={"hours": 2},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    assert [r["spend"] for r in response.json()["activity"]] == [0.0, 0.0]
+    mock_iter_spend_logs.assert_not_called()
+
+
+@patch("app.api.spend.LiteLLMService.iter_spend_logs")
+def test_key_hourly_activity_other_owner_is_404(
+    mock_iter_spend_logs, client, test_token, test_team_user, test_region, db
+):
+    key = _hourly_key(db, test_region, test_team_user)
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/hourly",
+        headers={"Authorization": f"Bearer {test_token}"},
+    )
+    assert response.status_code == 404
+    mock_iter_spend_logs.assert_not_called()
+
+
+@patch("app.api.spend.LiteLLMService.iter_spend_logs")
+def test_key_hourly_activity_wrong_team_id_is_404(
+    mock_iter_spend_logs, client, team_admin_token, test_team_user, test_region, db
+):
+    key = _hourly_key(db, test_region, test_team_user)
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/hourly",
+        params={"team_id": test_team_user.team_id + 999},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 404
+    mock_iter_spend_logs.assert_not_called()

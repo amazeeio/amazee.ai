@@ -860,6 +860,7 @@ class HourlySpendResponse(BaseModel):
     region_id: int
     team_id: Optional[int] = None
     user_id: Optional[int] = None
+    key_id: Optional[int] = None
     start: datetime = Field(description="Start of the first hour returned (UTC).")
     end: datetime = Field(description="When the data was read (UTC).")
     activity: List[HourlySpendRow] = Field(
