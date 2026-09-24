@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 from datetime import UTC, date, datetime, timedelta
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi import Query
@@ -831,16 +832,46 @@ def _assert_user_access(current_user: DBUser, role: str, target_user: DBUser) ->
     )
 
 
+HoursParam = Annotated[
+    int,
+    Query(
+        ge=1,
+        le=24,
+        description=(
+            "How many hours back from now to return, counting the current "
+            "one. Ignored when day is set."
+        ),
+    ),
+]
+DayParam = Annotated[
+    date | None,
+    Query(
+        description=(
+            "A past UTC day, formatted YYYY-MM-DD. Returns its 24 hours, "
+            "00:00 to 23:00. Must be before today. Takes priority over hours."
+        ),
+    ),
+]
+_HOURLY_SOURCE_NOTE = (
+    "Built from LiteLLM's per-request `/spend/logs/v2` rows, because "
+    "LiteLLM itself only aggregates by day. One call pages through every "
+    "request in the window, so a busy scope costs more. LiteLLM writes "
+    "spend logs in batches, so the last minute or so may be missing."
+)
+
+
 async def _hourly_spend(
-    service: LiteLLMService,
+    region: DBRegion,
     filters: dict | None,
     hours: int,
-    day: date | None = None,
-) -> tuple[datetime, datetime, list[HourlySpendRow]]:
+    day: date | None,
+    **ids: int,
+) -> HourlySpendResponse:
     """Group a scope's spend-log rows into UTC hours, oldest first.
 
     Without ``day`` the rows end with the current, unfinished hour. With it
     they are that past UTC day's 24 hours, and ``hours`` is ignored.
+    ``filters`` of None means the scope has no rows, so LiteLLM is not asked.
 
     LiteLLM keeps only per-day aggregates, so the per-request spend logs are
     the finest record it has.
@@ -865,28 +896,36 @@ async def _hourly_spend(
         start + timedelta(hours=i): HourlySpendRow(hour=start + timedelta(hours=i))
         for i in range(hours)
     }
-    if filters is None:
-        return start, end, list(buckets.values())
-    # Failed calls are logged too, with no spend; they are not usage.
-    filters = {**filters, "status_filter": "success"}
-    async for row in service.iter_spend_logs(filters, start, end):
-        started = row.get("startTime")
-        if not started:
-            continue
-        started = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
-        if started.tzinfo is None:
-            started = started.replace(tzinfo=UTC)
-        bucket = buckets.get(
-            started.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+    if filters is not None:
+        service = LiteLLMService(
+            api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
-        if bucket is None:
-            continue
-        bucket.spend += float(row.get("spend") or 0.0)
-        bucket.prompt_tokens += int(row.get("prompt_tokens") or 0)
-        bucket.completion_tokens += int(row.get("completion_tokens") or 0)
-        bucket.total_tokens += int(row.get("total_tokens") or 0)
-        bucket.request_count += 1
-    return start, end, list(buckets.values())
+        # Failed calls are logged too, with no spend; they are not usage.
+        filters = {**filters, "status_filter": "success"}
+        async for row in service.iter_spend_logs(filters, start, end):
+            started = row.get("startTime")
+            if not started:
+                continue
+            started = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=UTC)
+            bucket = buckets.get(
+                started.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+            )
+            if bucket is None:
+                continue
+            bucket.spend += float(row.get("spend") or 0.0)
+            bucket.prompt_tokens += int(row.get("prompt_tokens") or 0)
+            bucket.completion_tokens += int(row.get("completion_tokens") or 0)
+            bucket.total_tokens += int(row.get("total_tokens") or 0)
+            bucket.request_count += 1
+    return HourlySpendResponse(
+        region_id=region.id,
+        start=start,
+        end=end,
+        activity=list(buckets.values()),
+        **ids,
+    )
 
 
 def _get_readable_key_or_404(
@@ -2156,34 +2195,16 @@ async def get_team_daily_activity(
     summary="Get team hourly spend by region",
     description=(
         "Returns spend, tokens and request count per UTC hour across all of a "
-        "team's keys in the region, for the last `hours` hours (at most 24), or for "
-        "one past UTC day with `day`.\n\n"
-        "Built from LiteLLM's per-request `/spend/logs/v2` rows, because "
-        "LiteLLM itself only aggregates by day. One call pages through every "
-        "request in the window, so a busy scope costs more. LiteLLM writes "
-        "spend logs in batches, so the last minute or so may be missing."
+        "team's keys in the region, for the last `hours` hours (at most 24), or "
+        "for one past UTC day with `day`.\n\n" + _HOURLY_SOURCE_NOTE
     ),
     response_description="Per-hour usage rows for the team, oldest first.",
 )
 async def get_team_hourly_activity(
     region_id: int,
     team_id: int,
-    hours: int = Query(
-        24,
-        ge=1,
-        le=24,
-        description=(
-            "How many hours back from now to return, counting the current "
-            "one. Ignored when day is set."
-        ),
-    ),
-    day: date | None = Query(
-        None,
-        description=(
-            "A past UTC day, formatted YYYY-MM-DD. Returns its 24 hours, "
-            "00:00 to 23:00. Must be before today. Takes priority over hours."
-        ),
-    ),
+    hours: HoursParam = 24,
+    day: DayParam = None,
     current_user: DBUser = Depends(get_current_user_from_auth),
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
@@ -2198,17 +2219,12 @@ async def get_team_hourly_activity(
     _assert_team_access(current_user, user_role, team_id)
 
     region = _get_region_or_404(db, region_id, include_inactive=True)
-    service = LiteLLMService(
-        api_url=region.litellm_api_url, api_key=region.litellm_api_key
-    )
-    start, end, activity = await _hourly_spend(
-        service,
+    return await _hourly_spend(
+        region,
         {"team_id": LiteLLMService.format_team_id(region.name, team_id)},
         hours,
         day,
-    )
-    return HourlySpendResponse(
-        region_id=region_id, team_id=team_id, start=start, end=end, activity=activity
+        team_id=team_id,
     )
 
 
@@ -2221,11 +2237,7 @@ async def get_team_hourly_activity(
         "Returns spend, tokens and request count per UTC hour for one member's "
         "keys inside a team in the region, for the last `hours` hours (at most "
         "24), or for one past UTC day with `day`. Team-owned keys belong to "
-        "no member, so they are not counted.\n\n"
-        "Built from LiteLLM's per-request `/spend/logs/v2` rows, because "
-        "LiteLLM itself only aggregates by day. One call pages through every "
-        "request in the window, so a busy scope costs more. LiteLLM writes "
-        "spend logs in batches, so the last minute or so may be missing."
+        "no member, so they are not counted.\n\n" + _HOURLY_SOURCE_NOTE
     ),
     response_description="Per-hour usage rows for the member, oldest first.",
 )
@@ -2233,22 +2245,8 @@ async def get_team_member_hourly_activity(
     region_id: int,
     team_id: int,
     user_id: int,
-    hours: int = Query(
-        24,
-        ge=1,
-        le=24,
-        description=(
-            "How many hours back from now to return, counting the current "
-            "one. Ignored when day is set."
-        ),
-    ),
-    day: date | None = Query(
-        None,
-        description=(
-            "A past UTC day, formatted YYYY-MM-DD. Returns its 24 hours, "
-            "00:00 to 23:00. Must be before today. Takes priority over hours."
-        ),
-    ),
+    hours: HoursParam = 24,
+    day: DayParam = None,
     current_user: DBUser = Depends(get_current_user_from_auth),
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
@@ -2266,25 +2264,16 @@ async def get_team_member_hourly_activity(
     _assert_user_access(current_user, user_role, target_user)
 
     region = _get_region_or_404(db, region_id, include_inactive=True)
-    service = LiteLLMService(
-        api_url=region.litellm_api_url, api_key=region.litellm_api_key
-    )
-    start, end, activity = await _hourly_spend(
-        service,
+    return await _hourly_spend(
+        region,
         {
             "team_id": LiteLLMService.format_team_id(region.name, team_id),
             "user_id": str(user_id),
         },
         hours,
         day,
-    )
-    return HourlySpendResponse(
-        region_id=region_id,
         team_id=team_id,
         user_id=user_id,
-        start=start,
-        end=end,
-        activity=activity,
     )
 
 
@@ -2295,34 +2284,16 @@ async def get_team_member_hourly_activity(
     summary="Get user hourly spend by region",
     description=(
         "Returns spend, tokens and request count per UTC hour across all of a "
-        "user's keys in the region, for the last `hours` hours (at most 24), or for "
-        "one past UTC day with `day`.\n\n"
-        "Built from LiteLLM's per-request `/spend/logs/v2` rows, because "
-        "LiteLLM itself only aggregates by day. One call pages through every "
-        "request in the window, so a busy scope costs more. LiteLLM writes "
-        "spend logs in batches, so the last minute or so may be missing."
+        "user's keys in the region, for the last `hours` hours (at most 24), or "
+        "for one past UTC day with `day`.\n\n" + _HOURLY_SOURCE_NOTE
     ),
     response_description="Per-hour usage rows for the user, oldest first.",
 )
 async def get_user_hourly_activity(
     region_id: int,
     user_id: int,
-    hours: int = Query(
-        24,
-        ge=1,
-        le=24,
-        description=(
-            "How many hours back from now to return, counting the current "
-            "one. Ignored when day is set."
-        ),
-    ),
-    day: date | None = Query(
-        None,
-        description=(
-            "A past UTC day, formatted YYYY-MM-DD. Returns its 24 hours, "
-            "00:00 to 23:00. Must be before today. Takes priority over hours."
-        ),
-    ),
+    hours: HoursParam = 24,
+    day: DayParam = None,
     current_user: DBUser = Depends(get_current_user_from_auth),
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
@@ -2333,14 +2304,8 @@ async def get_user_hourly_activity(
     _assert_user_access(current_user, user_role, target_user)
 
     region = _get_region_or_404(db, region_id, include_inactive=True)
-    service = LiteLLMService(
-        api_url=region.litellm_api_url, api_key=region.litellm_api_key
-    )
-    start, end, activity = await _hourly_spend(
-        service, {"user_id": str(user_id)}, hours, day
-    )
-    return HourlySpendResponse(
-        region_id=region_id, user_id=user_id, start=start, end=end, activity=activity
+    return await _hourly_spend(
+        region, {"user_id": str(user_id)}, hours, day, user_id=user_id
     )
 
 
@@ -2353,32 +2318,15 @@ async def get_user_hourly_activity(
         "Returns spend, tokens and request count per UTC hour for one key in "
         "the region, for the last `hours` hours (at most 24), or for one past "
         "UTC day with `day`. A key with no LiteLLM token returns zeros.\n\n"
-        "Built from LiteLLM's per-request `/spend/logs/v2` rows, because "
-        "LiteLLM itself only aggregates by day. One call pages through every "
-        "request in the window, so a busy scope costs more. LiteLLM writes "
-        "spend logs in batches, so the last minute or so may be missing."
+        + _HOURLY_SOURCE_NOTE
     ),
     response_description="Per-hour usage rows for the key, oldest first.",
 )
 async def get_key_hourly_activity(
     region_id: int,
     key_id: int,
-    hours: int = Query(
-        24,
-        ge=1,
-        le=24,
-        description=(
-            "How many hours back from now to return, counting the current "
-            "one. Ignored when day is set."
-        ),
-    ),
-    day: date | None = Query(
-        None,
-        description=(
-            "A past UTC day, formatted YYYY-MM-DD. Returns its 24 hours, "
-            "00:00 to 23:00. Must be before today. Takes priority over hours."
-        ),
-    ),
+    hours: HoursParam = 24,
+    day: DayParam = None,
     team_id: int | None = Query(
         None,
         description=(
@@ -2395,9 +2343,6 @@ async def get_key_hourly_activity(
         db, key_id, region_id, team_id, current_user, user_role
     )
     region = _get_region_or_404(db, region_id, include_inactive=True)
-    service = LiteLLMService(
-        api_url=region.litellm_api_url, api_key=region.litellm_api_key
-    )
     # Without a token LiteLLM has no rows for this key; an api_key filter of
     # None would drop the filter and return every key's spend.
     filters = (
@@ -2405,10 +2350,7 @@ async def get_key_hourly_activity(
         if key.litellm_token
         else None
     )
-    start, end, activity = await _hourly_spend(service, filters, hours, day)
-    return HourlySpendResponse(
-        region_id=region_id, key_id=key_id, start=start, end=end, activity=activity
-    )
+    return await _hourly_spend(region, filters, hours, day, key_id=key_id)
 
 
 @router.get(
