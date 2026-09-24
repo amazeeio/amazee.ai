@@ -65,6 +65,10 @@ def _bad_request(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
 
 
+# Set by the sync or by LiteLLM itself on every deployment.
+_RESERVED_MODEL_INFO_KEYS = {"id", "db_model", "access_groups"}
+
+
 def _validate_specs(req: ApplyConfigRequest) -> None:
     model_ids = [m.model_id for m in req.models]
     dupes = sorted({m for m in model_ids if model_ids.count(m) > 1})
@@ -80,10 +84,16 @@ def _validate_specs(req: ApplyConfigRequest) -> None:
         )
     known_slugs = set(slugs)
     for spec in req.models:
+        reserved = sorted(set(spec.model_info or {}) & _RESERVED_MODEL_INFO_KEYS)
+        if reserved:
+            raise _bad_request(
+                f"Model '{spec.model_id}': model_info keys {reserved} are managed by the sync."
+            )
         if spec.is_alias:
-            if spec.litellm_params:
+            if spec.litellm_params or spec.model_info:
                 raise _bad_request(
-                    f"Alias '{spec.model_id}': litellm_params must be empty (params come from the target)."
+                    f"Alias '{spec.model_id}': litellm_params and model_info must be empty "
+                    "(they come from the target)."
                 )
             if spec.deployments:
                 raise _bad_request(
@@ -254,6 +264,7 @@ _CATALOG_FIELDS = (
     "manufacturer_website",
     "real_eol",
     "override_eol",
+    "model_info",
 )
 
 
