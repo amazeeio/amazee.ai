@@ -532,7 +532,8 @@ class LiteLLMService:
         start_date = start.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         end_date = end.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         try:
-            async with httpx.AsyncClient() as client:
+            # Pages run to megabytes, so the 5 s httpx default is too short.
+            async with httpx.AsyncClient(timeout=60.0) as client:
                 while True:
                     response = await client.get(
                         f"{self.api_url}/spend/logs/v2",
@@ -568,6 +569,12 @@ class LiteLLMService:
             raise HTTPException(
                 status_code=status_code,
                 detail=f"Failed to get LiteLLM spend logs: {error_msg}",
+            )
+        except httpx.RequestError as e:
+            logger.error("LiteLLM spend logs unreachable %s: %r", filters, e)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Failed to get LiteLLM spend logs: LiteLLM did not respond",
             )
 
     async def get_key_last_used(self, litellm_token: str) -> Optional[datetime]:
