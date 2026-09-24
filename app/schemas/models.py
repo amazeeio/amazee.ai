@@ -287,10 +287,11 @@ class PublicModelPricing(BaseModel):
 
 
 class PublicModelCapabilities(BaseModel):
-    supports_vision: bool = False
-    supports_function_calling: bool = False
-    supports_reasoning: bool = False
-    supports_prompt_caching: bool = False
+    # null = LiteLLM has no data for the model (not the same as "unsupported")
+    supports_vision: Optional[bool] = None
+    supports_function_calling: Optional[bool] = None
+    supports_reasoning: Optional[bool] = None
+    supports_prompt_caching: Optional[bool] = None
 
 
 class PublicModelManufacturer(BaseModel):
@@ -1482,6 +1483,8 @@ class ApplyModelSpec(BaseModel):
     real_eol: Optional[datetime] = None
     override_eol: Optional[datetime] = None
     litellm_params: Optional[dict] = None
+    # LiteLLM deployment model_info (base_model, supports_*, …); see DBModel.model_info
+    model_info: Optional[dict] = None
     access_groups: List[str] = Field(default_factory=list)  # group slugs
     is_alias: bool = False
     deployments: List[ApplyDeploymentSpec] = Field(default_factory=list)

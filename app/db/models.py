@@ -785,6 +785,11 @@ class DBModel(Base):
     eol_notified_at = Column(DateTime(timezone=True), nullable=True)
     is_active_globally = Column(Boolean, default=True, nullable=False)
     litellm_params = Column(JSON, nullable=True)
+    # Deployment model_info from the catalog (base_model, supports_*, mode,
+    # limits, …), pushed alongside access_groups. base_model points LiteLLM at
+    # a cost-map entry when the backend id has none, so pricing, capabilities
+    # and spend tracking work for models LiteLLM does not know by that name.
+    model_info = Column(JSON, nullable=True)
     # Alias models point at another model per region (model_alias_targets) and
     # inherit the target's effective litellm_params at sync time.
     is_alias = Column(Boolean, default=False, nullable=False)
