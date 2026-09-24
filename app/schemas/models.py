@@ -319,7 +319,10 @@ class PublicModelSummary(BaseModel):
         description=(
             "Access groups this model belongs to in this region, limited to the "
             "groups the caller may see: the region default, public groups and "
-            "the caller team's opt-ins (admins see every group)."
+            "the caller team's opt-ins (admins see every group). Listing only: "
+            "a public group the caller's team has not opted in to is shown but "
+            "its models are not callable by that team, so do not build a model "
+            "picker from this list alone."
         ),
     )
     aliased_to: Optional[str] = Field(
@@ -1377,6 +1380,8 @@ class AdminModelResponse(AdminModelBase):
 ACCESS_GROUP_SLUG_PATTERN = r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
 
 
+# is_public is deliberately absent here and on update: the catalog config
+# (/admin/models/apply) is its only writer.
 class AccessGroupCreate(BaseModel):
     slug: str = Field(min_length=1, max_length=64, pattern=ACCESS_GROUP_SLUG_PATTERN)
     label: str = Field(min_length=1)

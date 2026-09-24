@@ -665,12 +665,12 @@ def _extract_model_summary(
     )
 
 
-def _parse_alias_filters(alias: list[str] | None) -> set[str]:
-    if not alias:
+def _parse_csv_filters(values: list[str] | None) -> set[str]:
+    if not values:
         return set()
     parsed: set[str] = set()
-    for alias_entry in alias:
-        for part in alias_entry.split(","):
+    for entry in values:
+        for part in entry.split(","):
             normalized = _normalize_alias(part)
             if normalized:
                 parsed.add(normalized)
@@ -974,8 +974,8 @@ async def list_public_models(
     db: Session = Depends(get_db),
 ):
     now = datetime.now(UTC)
-    alias_filters = _parse_alias_filters(alias)
-    access_group_filters = _parse_alias_filters(access_group)
+    alias_filters = _parse_csv_filters(alias)
+    access_group_filters = _parse_csv_filters(access_group)
     eol_dates = eol_dates_by_model(db)
     manufacturers = _catalog_manufacturers(db)
 
