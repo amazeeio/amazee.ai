@@ -196,16 +196,29 @@ def _apply_access_groups(
         group = db.query(DBModelAccessGroup).filter_by(slug=spec.slug).first()
         if not group:
             group = DBModelAccessGroup(
-                slug=spec.slug, label=spec.label, description=spec.description
+                slug=spec.slug,
+                label=spec.label,
+                description=spec.description,
+                is_public=spec.is_public,
             )
             db.add(group)
             db.flush()
             changes.append(ApplyChange(entity="access_group", key=spec.slug, action="create"))
-        elif group.label != spec.label or group.description != spec.description:
+        elif (group.label, group.description, bool(group.is_public)) != (
+            spec.label,
+            spec.description,
+            spec.is_public,
+        ):
             group.label = spec.label
             group.description = spec.description
+            group.is_public = spec.is_public
             changes.append(
-                ApplyChange(entity="access_group", key=spec.slug, action="update", detail="label/description")
+                ApplyChange(
+                    entity="access_group",
+                    key=spec.slug,
+                    action="update",
+                    detail="label/description/is_public",
+                )
             )
         desired_regions = {regions[name].id for name in spec.regions if name in regions}
         existing_regions = {
