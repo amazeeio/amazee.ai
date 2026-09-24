@@ -832,7 +832,7 @@ def _assert_user_access(current_user: DBUser, role: str, target_user: DBUser) ->
 
 
 async def _hourly_spend(
-    service: LiteLLMService, filters: dict, hours: int
+    service: LiteLLMService, filters: dict | None, hours: int
 ) -> tuple[datetime, datetime, list[HourlySpendRow]]:
     """Group a scope's spend-log rows into UTC hours, the current one last.
 
@@ -847,6 +847,8 @@ async def _hourly_spend(
         start + timedelta(hours=i): HourlySpendRow(hour=start + timedelta(hours=i))
         for i in range(hours)
     }
+    if filters is None:
+        return start, end, list(buckets.values())
     async for row in service.iter_spend_logs(filters, start, end):
         started = row.get("startTime")
         if not started:
@@ -2284,6 +2286,63 @@ async def get_user_hourly_activity(
     )
     return HourlySpendResponse(
         region_id=region_id, user_id=user_id, start=start, end=end, activity=activity
+    )
+
+
+@router.get(
+    "/{region_id}/key/{key_id}/hourly",
+    response_model=HourlySpendResponse,
+    response_model_exclude_none=True,
+    summary="Get key hourly spend by region",
+    description=(
+        "Returns spend, tokens and request count per UTC hour for one key in "
+        "the region, for the last `hours` hours (at most 24). A key with no "
+        "LiteLLM token returns zeros.\n\n"
+        "Built from LiteLLM's per-request `/spend/logs/v2` rows, because "
+        "LiteLLM itself only aggregates by day. One call pages through every "
+        "request in the window, so a busy scope costs more. LiteLLM writes "
+        "spend logs in batches, so the last minute or so may be missing."
+    ),
+    response_description="Per-hour usage rows for the key, oldest first.",
+)
+async def get_key_hourly_activity(
+    region_id: int,
+    key_id: int,
+    hours: int = Query(
+        24,
+        ge=1,
+        le=24,
+        description="How many UTC hours to return, counting the current one.",
+    ),
+    team_id: int | None = Query(
+        None,
+        description=(
+            "When provided, the key must belong to this team or the request "
+            "404s — a defence-in-depth scope check (issue #600) applied even "
+            "to system-admin callers."
+        ),
+    ),
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    key = _get_readable_key_or_404(
+        db, key_id, region_id, team_id, current_user, user_role
+    )
+    region = _get_region_or_404(db, region_id, include_inactive=True)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+    # Without a token LiteLLM has no rows for this key; an api_key filter of
+    # None would drop the filter and return every key's spend.
+    filters = (
+        {"api_key": LiteLLMService.hash_token(key.litellm_token)}
+        if key.litellm_token
+        else None
+    )
+    start, end, activity = await _hourly_spend(service, filters, hours)
+    return HourlySpendResponse(
+        region_id=region_id, key_id=key_id, start=start, end=end, activity=activity
     )
 
 
