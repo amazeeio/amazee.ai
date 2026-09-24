@@ -1930,3 +1930,25 @@ def test_iter_spend_logs_pages_until_short_page(mock_client_class, test_region):
     assert params["start_date"] == "2025-06-15 10:00:00"
     assert params["end_date"] == "2025-06-15 11:00:00"
     assert params["sort_order"] == "asc"
+
+
+@patch("httpx.AsyncClient")
+def test_iter_spend_logs_unreachable_litellm_is_502(mock_client_class, test_region):
+    """A timeout is a clean 502, not an unhandled 500."""
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = httpx.ReadTimeout("slow")
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+    start = datetime(2025, 6, 15, 10, 0, tzinfo=timezone.utc)
+
+    async def collect():
+        return [row async for row in service.iter_spend_logs({}, start, start)]
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(collect())
+    assert exc.value.status_code == 502
