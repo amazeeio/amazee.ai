@@ -862,11 +862,14 @@ class HourlySpendResponse(BaseModel):
     user_id: Optional[int] = None
     key_id: Optional[int] = None
     start: datetime = Field(description="Start of the first hour returned (UTC).")
-    end: datetime = Field(description="When the data was read (UTC).")
+    end: datetime = Field(
+        description="End of the window (UTC): now, or the midnight after `day`."
+    )
     activity: List[HourlySpendRow] = Field(
         description=(
             "One row per UTC hour, oldest first. Hours with no usage are "
-            "returned with zeros. The last row is the current, unfinished hour."
+            "returned with zeros. Without `day`, the last row is the current, "
+            "unfinished hour."
         )
     )
 

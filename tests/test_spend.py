@@ -5995,3 +5995,46 @@ def test_key_hourly_activity_wrong_team_id_is_404(
     )
     assert response.status_code == 404
     mock_iter_spend_logs.assert_not_called()
+
+
+@patch("app.api.spend.LiteLLMService.iter_spend_logs")
+def test_hourly_day_returns_that_whole_utc_day(
+    mock_iter_spend_logs, client, team_admin_token, test_team, test_region
+):
+    mock_iter_spend_logs.side_effect = _spend_logs(
+        lambda start: [
+            {"startTime": (start + timedelta(hours=23, minutes=59)).isoformat(), "spend": 3.0}
+        ]
+    )
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/hourly",
+        # day wins over hours.
+        params={"day": "2026-01-10", "hours": 6},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert datetime.fromisoformat(data["start"]) == datetime(2026, 1, 10, tzinfo=UTC)
+    assert datetime.fromisoformat(data["end"]) == datetime(2026, 1, 11, tzinfo=UTC)
+    rows = data["activity"]
+    assert [datetime.fromisoformat(r["hour"]).hour for r in rows] == list(range(24))
+    assert rows[23]["spend"] == 3.0
+
+    _filters, start, end = mock_iter_spend_logs.call_args.args
+    assert (start, end) == (datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 1, 11, tzinfo=UTC))
+
+
+@pytest.mark.parametrize("days_ahead", [0, 1])
+@patch("app.api.spend.LiteLLMService.iter_spend_logs")
+def test_hourly_day_today_or_future_is_400(
+    mock_iter_spend_logs, days_ahead, client, team_admin_token, test_team_user, test_region, db
+):
+    key = _hourly_key(db, test_region, test_team_user)
+    day = datetime.now(UTC).date() + timedelta(days=days_ahead)
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/hourly",
+        params={"day": day.isoformat()},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 400
+    mock_iter_spend_logs.assert_not_called()
