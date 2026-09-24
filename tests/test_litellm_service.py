@@ -1895,7 +1895,7 @@ def test_update_team_member_treats_user_not_in_team_as_noop(
 
 
 @patch("httpx.AsyncClient")
-def test_get_spend_logs_pages_until_short_page(mock_client_class, test_region):
+def test_iter_spend_logs_pages_until_short_page(mock_client_class, test_region):
     """Every page is read and the caller's filters ride on each request."""
     full, short = Mock(), Mock()
     full.json.return_value = {"data": [{"spend": 1.0}] * 1000}
@@ -1911,11 +1911,16 @@ def test_get_spend_logs_pages_until_short_page(mock_client_class, test_region):
         api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
     )
     start = datetime(2025, 6, 15, 10, 0, tzinfo=timezone.utc)
-    rows = asyncio.run(
-        service.get_spend_logs(
-            {"team_id": "t", "user_id": "7"}, start, start + timedelta(hours=1)
-        )
-    )
+
+    async def collect():
+        return [
+            row
+            async for row in service.iter_spend_logs(
+                {"team_id": "t", "user_id": "7"}, start, start + timedelta(hours=1)
+            )
+        ]
+
+    rows = asyncio.run(collect())
 
     assert len(rows) == 1001
     assert mock_client.get.call_count == 2
@@ -1924,3 +1929,4 @@ def test_get_spend_logs_pages_until_short_page(mock_client_class, test_region):
     assert params["page"] == 2
     assert params["start_date"] == "2025-06-15 10:00:00"
     assert params["end_date"] == "2025-06-15 11:00:00"
+    assert params["sort_order"] == "asc"

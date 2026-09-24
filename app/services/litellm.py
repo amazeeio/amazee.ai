@@ -13,6 +13,7 @@ from app.core.limit_service import (
     DEFAULT_RPM_PER_KEY,
 )
 from app.core.config import settings
+from collections.abc import AsyncIterator
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -509,13 +510,15 @@ class LiteLLMService:
         cost. The spend logs survive that reset and are the only per-request
         record of it. Returns dollars.
         """
-        rows = await self.get_spend_logs({"team_id": team_id}, start, end)
-        return sum(float(row.get("spend") or 0.0) for row in rows)
+        total = 0.0
+        async for row in self.iter_spend_logs({"team_id": team_id}, start, end):
+            total += float(row.get("spend") or 0.0)
+        return total
 
-    async def get_spend_logs(
+    async def iter_spend_logs(
         self, filters: dict, start: datetime, end: datetime
-    ) -> list[dict]:
-        """Return every ``/spend/logs/v2`` row matching ``filters`` in a window.
+    ) -> AsyncIterator[dict]:
+        """Yield every ``/spend/logs/v2`` row matching ``filters`` in a window.
 
         ``filters`` takes the endpoint's equality filters (``team_id``,
         ``user_id``, ``api_key``). Rows come without the request and response
@@ -524,7 +527,6 @@ class LiteLLMService:
         # ponytail: offset paging, fine for a day of rows; a keyset cursor on
         # startTime if a single scope ever logs far more than that.
         page_size = 1000
-        rows: list[dict] = []
         page = 1
         start_date = start.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         end_date = end.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -540,12 +542,17 @@ class LiteLLMService:
                             "end_date": end_date,
                             "page": page,
                             "page_size": page_size,
+                            # Oldest first, so rows LiteLLM flushes while we page
+                            # land after the current page instead of shifting it.
+                            "sort_by": "startTime",
+                            "sort_order": "asc",
                         },
                     )
                     response.raise_for_status()
                     data = response.json()
                     batch = [r for r in (data.get("data") or []) if isinstance(r, dict)]
-                    rows.extend(batch)
+                    for row in batch:
+                        yield row
                     # Stop on a short or empty page; total_pages is only a
                     # secondary check, since it is not always present.
                     if len(batch) < page_size:
@@ -554,7 +561,6 @@ class LiteLLMService:
                     if total_pages and page >= total_pages:
                         break
                     page += 1
-            return rows
         except httpx.HTTPStatusError as e:
             status_code, error_msg, _ = self._parse_http_error(e)
             logger.error("Error getting LiteLLM spend logs %s: %s", filters, error_msg)

@@ -847,7 +847,7 @@ async def _hourly_spend(
         start + timedelta(hours=i): HourlySpendRow(hour=start + timedelta(hours=i))
         for i in range(hours)
     }
-    for row in await service.get_spend_logs(filters, start, end):
+    async for row in service.iter_spend_logs(filters, start, end):
         started = row.get("startTime")
         if not started:
             continue
