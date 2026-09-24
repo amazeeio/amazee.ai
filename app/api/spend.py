@@ -849,6 +849,8 @@ async def _hourly_spend(
     }
     if filters is None:
         return start, end, list(buckets.values())
+    # Failed calls are logged too, with no spend; they are not usage.
+    filters = {**filters, "status_filter": "success"}
     async for row in service.iter_spend_logs(filters, start, end):
         started = row.get("startTime")
         if not started:

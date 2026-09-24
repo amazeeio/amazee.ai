@@ -520,9 +520,10 @@ class LiteLLMService:
     ) -> AsyncIterator[dict]:
         """Yield every ``/spend/logs/v2`` row matching ``filters`` in a window.
 
-        ``filters`` takes the endpoint's equality filters (``team_id``,
-        ``user_id``, ``api_key``). Rows come without the request and response
-        bodies, so a page of 1000 stays small.
+        ``filters`` takes the endpoint's query filters (``team_id``,
+        ``user_id``, ``api_key``, ``status_filter``). Rows leave out the request
+        and response bodies, but each still carries a large ``metadata`` blob
+        with the model's pricing map, so a full page runs to megabytes.
         """
         # ponytail: offset paging, fine for a day of rows; a keyset cursor on
         # startTime if a single scope ever logs far more than that.

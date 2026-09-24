@@ -5816,7 +5816,7 @@ def test_team_hourly_activity_groups_rows_by_hour(
 
     filters, start, end = mock_iter_spend_logs.call_args.args
     expected_team_id = f"{test_region.name.replace(' ', '_')}_{test_team.id}"
-    assert filters == {"team_id": expected_team_id}
+    assert filters == {"team_id": expected_team_id, "status_filter": "success"}
     now_hour = start + timedelta(hours=23)
     assert now_hour == end.replace(minute=0, second=0, microsecond=0)
     assert datetime.fromisoformat(rows[0]["hour"]) == start
@@ -5874,6 +5874,7 @@ def test_team_member_hourly_activity_filters_by_team_and_user(
     assert filters == {
         "team_id": f"{test_region.name.replace(' ', '_')}_{test_team.id}",
         "user_id": str(test_team_user.id),
+        "status_filter": "success",
     }
 
 
@@ -5900,7 +5901,10 @@ def test_user_hourly_activity_filters_by_user(
     )
     assert response.status_code == 200
     assert response.json()["user_id"] == test_user.id
-    assert mock_iter_spend_logs.call_args.args[0] == {"user_id": str(test_user.id)}
+    assert mock_iter_spend_logs.call_args.args[0] == {
+        "user_id": str(test_user.id),
+        "status_filter": "success",
+    }
 
 
 @patch("app.api.spend.LiteLLMService.iter_spend_logs")
@@ -5945,7 +5949,8 @@ def test_key_hourly_activity_filters_by_hashed_token(
     assert data["key_id"] == key.id
     assert data["activity"][0]["spend"] == 1.25
     assert mock_iter_spend_logs.call_args.args[0] == {
-        "api_key": LiteLLMService.hash_token("sk-hourly-token")
+        "api_key": LiteLLMService.hash_token("sk-hourly-token"),
+        "status_filter": "success",
     }
 
 
