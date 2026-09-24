@@ -500,6 +500,107 @@ def test_public_listing_honors_deployment_access_groups_override(db, test_region
     assert model_access_group_slugs(db, gated.id, test_region.id) == ["preview"]
 
 
+def test_public_listing_includes_public_groups(db, test_region, monkeypatch):
+    """A group flagged is_public is listed for anonymous callers next to the
+    region default; a non-public opt-in group stays hidden."""
+    from app.api.public import _filter_region_groups_by_access
+    from app.core.config import settings
+    from app.schemas.models import (
+        PublicModelCapabilities,
+        PublicModelPricing,
+        PublicModelSummary,
+        PublicRegionModels,
+    )
+
+    ga = _make_model(db, "openai/ga")
+    zdr = _make_model(db, "openai/zdr")
+    beta = _make_model(db, "openai/beta")
+    default = _make_group(db, slug="default-models", model_ids=[ga.id], region_ids=[test_region.id])
+    _make_group(db, slug="limited-retention", model_ids=[zdr.id], region_ids=[test_region.id]).is_public = True
+    _make_group(db, slug="preview", model_ids=[beta.id], region_ids=[test_region.id])
+    test_region.default_access_group_id = default.id
+    db.commit()
+
+    def summary(model_id):
+        return PublicModelSummary(
+            model_id=model_id, display_name=model_id, provider="openai", type="chat",
+            description="", capabilities=PublicModelCapabilities(), pricing=PublicModelPricing(),
+        )
+
+    groups = [PublicRegionModels(region=test_region.name, status="available",
+                                 models=[summary("openai/ga"), summary("openai/zdr"), summary("openai/beta")])]
+    monkeypatch.setattr(settings, "ENV_SUFFIX", "production")
+    monkeypatch.setattr(settings, "CATALOG_MANAGED_REGIONS", test_region.name)
+    listed = _filter_region_groups_by_access(db, groups, None)[0].models
+    # Each model carries the groups the caller may see; preview stays hidden.
+    assert [(m.model_id, m.access_groups) for m in listed] == [
+        ("openai/ga", ["default-models"]),
+        ("openai/zdr", ["limited-retention"]),
+    ]
+    # The shared cache entry is not mutated.
+    assert groups[0].models[0].access_groups == []
+
+    from app.api.public import _filter_region_groups_by_access_group
+
+    only_zdr = _filter_region_groups_by_access_group(
+        _filter_region_groups_by_access(db, groups, None), {"limited-retention"}
+    )
+    assert [m.model_id for m in only_zdr[0].models] == ["openai/zdr"]
+
+    # Admins see every model and every group name, preview included.
+    admin = type("Admin", (), {"is_admin": True, "team_id": None})()
+    tagged = {m.model_id: m.access_groups for m in _filter_region_groups_by_access(db, groups, admin)[0].models}
+    assert tagged == {
+        "openai/ga": ["default-models"],
+        "openai/zdr": ["limited-retention"],
+        "openai/beta": ["preview"],
+    }
+
+
+def test_public_listing_team_opt_in(db, test_region, test_team, monkeypatch):
+    """A team caller sees its non-public opt-in group next to the default and
+    public groups, and the opt-in shows up in the model's tags."""
+    from app.api.public import _filter_region_groups_by_access
+    from app.core.config import settings
+    from app.schemas.models import (
+        PublicModelCapabilities,
+        PublicModelPricing,
+        PublicModelSummary,
+        PublicRegionModels,
+    )
+
+    ga = _make_model(db, "openai/ga")
+    zdr = _make_model(db, "openai/zdr")
+    beta = _make_model(db, "openai/beta")
+    secret = _make_model(db, "openai/secret")
+    default = _make_group(db, slug="default-models", model_ids=[ga.id, beta.id], region_ids=[test_region.id])
+    _make_group(db, slug="limited-retention", model_ids=[zdr.id], region_ids=[test_region.id]).is_public = True
+    preview = _make_group(db, slug="preview", model_ids=[beta.id], region_ids=[test_region.id])
+    _make_group(db, slug="internal", model_ids=[secret.id], region_ids=[test_region.id])
+    db.add(DBTeamModelAccessGroup(team_id=test_team.id, group_id=preview.id))
+    test_region.default_access_group_id = default.id
+    db.commit()
+
+    def summary(model_id):
+        return PublicModelSummary(
+            model_id=model_id, display_name=model_id, provider="openai", type="chat",
+            description="", capabilities=PublicModelCapabilities(), pricing=PublicModelPricing(),
+        )
+
+    groups = [PublicRegionModels(region=test_region.name, status="available",
+                                 models=[summary(m) for m in ("openai/ga", "openai/zdr", "openai/beta", "openai/secret")])]
+    monkeypatch.setattr(settings, "ENV_SUFFIX", "production")
+    monkeypatch.setattr(settings, "CATALOG_MANAGED_REGIONS", test_region.name)
+    member = type("Member", (), {"is_admin": False, "team_id": test_team.id})()
+    listed = _filter_region_groups_by_access(db, groups, member)[0].models
+    # internal is neither default, public nor opted in: hidden.
+    assert [(m.model_id, m.access_groups) for m in listed] == [
+        ("openai/ga", ["default-models"]),
+        ("openai/zdr", ["limited-retention"]),
+        ("openai/beta", ["default-models", "preview"]),
+    ]
+
+
 @patch("app.services.model_sync.LiteLLMService")
 def test_model_sync_pushes_access_groups(mock_service_cls, client, db, test_region):
     from app.services.model_sync import sync_model_to_region_task

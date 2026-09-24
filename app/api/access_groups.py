@@ -43,6 +43,7 @@ def _group_response(db: Session, group: DBModelAccessGroup) -> AccessGroupRespon
         slug=group.slug,
         label=group.label,
         description=group.description,
+        is_public=group.is_public,
         model_ids=sorted(a.model_id for a in group.model_associations),
         region_ids=sorted(a.region_id for a in group.region_associations),
         default_in_region_ids=sorted(r[0] for r in default_in),
