@@ -51,6 +51,8 @@ from app.schemas.models import (
     BreakdownUserItem,
     BudgetType,
     DailyActivityModelBreakdown,
+    HourlySpendResponse,
+    HourlySpendRow,
     KeyDailyActivityResponse,
     KeyDailyActivityRow,
     KeyLastUsedResponse,
@@ -827,6 +829,42 @@ def _assert_user_access(current_user: DBUser, role: str, target_user: DBUser) ->
         status_code=status.HTTP_403_FORBIDDEN,
         detail="Not authorized to perform this action",
     )
+
+
+async def _hourly_spend(
+    service: LiteLLMService, filters: dict, hours: int
+) -> tuple[datetime, datetime, list[HourlySpendRow]]:
+    """Group a scope's spend-log rows into UTC hours, the current one last.
+
+    LiteLLM keeps only per-day aggregates, so the per-request spend logs are
+    the finest record it has.
+    """
+    end = datetime.now(UTC)
+    start = end.replace(minute=0, second=0, microsecond=0) - timedelta(
+        hours=hours - 1
+    )
+    buckets = {
+        start + timedelta(hours=i): HourlySpendRow(hour=start + timedelta(hours=i))
+        for i in range(hours)
+    }
+    for row in await service.get_spend_logs(filters, start, end):
+        started = row.get("startTime")
+        if not started:
+            continue
+        started = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=UTC)
+        bucket = buckets.get(
+            started.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+        )
+        if bucket is None:
+            continue
+        bucket.spend += float(row.get("spend") or 0.0)
+        bucket.prompt_tokens += int(row.get("prompt_tokens") or 0)
+        bucket.completion_tokens += int(row.get("completion_tokens") or 0)
+        bucket.total_tokens += int(row.get("total_tokens") or 0)
+        bucket.request_count += 1
+    return start, end, list(buckets.values())
 
 
 def _assert_team_budget_write_access(
@@ -2114,6 +2152,166 @@ async def get_team_daily_activity(
             include_unattributed=sees_whole_team,
             model_map=model_map,
         ),
+    )
+
+
+@router.get(
+    "/{region_id}/team/{team_id}/hourly-activity",
+    response_model=HourlySpendResponse,
+    response_model_exclude_none=True,
+    summary="Get team hourly spend by region",
+    description=(
+        "Returns spend, tokens and request count per UTC hour across all of a "
+        "team's keys in the region, for the last `hours` hours (at most 24).\n\n"
+        "Built from LiteLLM's per-request `/spend/logs/v2` rows, because "
+        "LiteLLM itself only aggregates by day. One call pages through every "
+        "request in the window, so a busy scope costs more. LiteLLM writes "
+        "spend logs in batches, so the last minute or so may be missing."
+    ),
+    response_description="Per-hour usage rows for the team, oldest first.",
+)
+async def get_team_hourly_activity(
+    region_id: int,
+    team_id: int,
+    hours: int = Query(
+        24,
+        ge=1,
+        le=24,
+        description="How many UTC hours to return, counting the current one.",
+    ),
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    team = (
+        db.query(DBTeam)
+        .filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None))
+        .first()
+    )
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    _assert_team_access(current_user, user_role, team_id)
+
+    region = _get_region_or_404(db, region_id, include_inactive=True)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+    start, end, activity = await _hourly_spend(
+        service,
+        {"team_id": LiteLLMService.format_team_id(region.name, team_id)},
+        hours,
+    )
+    return HourlySpendResponse(
+        region_id=region_id, team_id=team_id, start=start, end=end, activity=activity
+    )
+
+
+@router.get(
+    "/{region_id}/team/{team_id}/member/{user_id}/hourly-activity",
+    response_model=HourlySpendResponse,
+    response_model_exclude_none=True,
+    summary="Get team member hourly spend by region",
+    description=(
+        "Returns spend, tokens and request count per UTC hour for one member's "
+        "keys inside a team in the region, for the last `hours` hours (at most "
+        "24). Team-owned keys belong to no member, so they are not counted.\n\n"
+        "Built from LiteLLM's per-request `/spend/logs/v2` rows, because "
+        "LiteLLM itself only aggregates by day. One call pages through every "
+        "request in the window, so a busy scope costs more. LiteLLM writes "
+        "spend logs in batches, so the last minute or so may be missing."
+    ),
+    response_description="Per-hour usage rows for the member, oldest first.",
+)
+async def get_team_member_hourly_activity(
+    region_id: int,
+    team_id: int,
+    user_id: int,
+    hours: int = Query(
+        24,
+        ge=1,
+        le=24,
+        description="How many UTC hours to return, counting the current one.",
+    ),
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    team = (
+        db.query(DBTeam)
+        .filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None))
+        .first()
+    )
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    target_user = db.query(DBUser).filter(DBUser.id == user_id).first()
+    if not target_user or target_user.team_id != team_id:
+        raise HTTPException(status_code=404, detail="User not found in team")
+    _assert_user_access(current_user, user_role, target_user)
+
+    region = _get_region_or_404(db, region_id, include_inactive=True)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+    start, end, activity = await _hourly_spend(
+        service,
+        {
+            "team_id": LiteLLMService.format_team_id(region.name, team_id),
+            "user_id": str(user_id),
+        },
+        hours,
+    )
+    return HourlySpendResponse(
+        region_id=region_id,
+        team_id=team_id,
+        user_id=user_id,
+        start=start,
+        end=end,
+        activity=activity,
+    )
+
+
+@router.get(
+    "/{region_id}/user/{user_id}/hourly-activity",
+    response_model=HourlySpendResponse,
+    response_model_exclude_none=True,
+    summary="Get user hourly spend by region",
+    description=(
+        "Returns spend, tokens and request count per UTC hour across all of a "
+        "user's keys in the region, for the last `hours` hours (at most 24).\n\n"
+        "Built from LiteLLM's per-request `/spend/logs/v2` rows, because "
+        "LiteLLM itself only aggregates by day. One call pages through every "
+        "request in the window, so a busy scope costs more. LiteLLM writes "
+        "spend logs in batches, so the last minute or so may be missing."
+    ),
+    response_description="Per-hour usage rows for the user, oldest first.",
+)
+async def get_user_hourly_activity(
+    region_id: int,
+    user_id: int,
+    hours: int = Query(
+        24,
+        ge=1,
+        le=24,
+        description="How many UTC hours to return, counting the current one.",
+    ),
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    target_user = db.query(DBUser).filter(DBUser.id == user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    _assert_user_access(current_user, user_role, target_user)
+
+    region = _get_region_or_404(db, region_id, include_inactive=True)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+    start, end, activity = await _hourly_spend(
+        service, {"user_id": str(user_id)}, hours
+    )
+    return HourlySpendResponse(
+        region_id=region_id, user_id=user_id, start=start, end=end, activity=activity
     )
 
 
