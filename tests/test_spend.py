@@ -5762,3 +5762,143 @@ def test_key_daily_activity_folds_dates_split_across_pages(
     assert first["breakdown"][1]["spend"] == 0.5
     # Folded rows still add up to what LiteLLM reported for the range.
     assert sum(r["spend"] for r in rows) == 8.5
+
+
+def _this_hour() -> datetime:
+    return datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+
+
+@patch("app.api.spend.LiteLLMService.get_spend_logs", new_callable=AsyncMock)
+def test_team_hourly_activity_groups_rows_by_hour(
+    mock_get_spend_logs, client, team_admin_token, test_team, test_region
+):
+    now_hour = _this_hour()
+    three_ago = now_hour - timedelta(hours=3)
+    mock_get_spend_logs.return_value = [
+        # LiteLLM sends both naive and Z-suffixed timestamps; both are UTC.
+        {
+            "startTime": (now_hour + timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%S"),
+            "spend": 1.5,
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+        },
+        {
+            "startTime": (now_hour + timedelta(seconds=2)).isoformat().replace("+00:00", "Z"),
+            "spend": 0.5,
+            "total_tokens": 7,
+        },
+        {"startTime": (three_ago + timedelta(minutes=30)).isoformat(), "spend": 2.0},
+        # Outside the window: ignored instead of making a 25th row.
+        {"startTime": (now_hour - timedelta(hours=30)).isoformat(), "spend": 99.0},
+        {"spend": 50.0},
+    ]
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/hourly-activity",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["team_id"] == test_team.id
+    assert "user_id" not in data
+    rows = data["activity"]
+    assert len(rows) == 24
+    by_hour = {datetime.fromisoformat(r["hour"]): r for r in rows}
+    assert by_hour[now_hour]["spend"] == 2.0
+    assert by_hour[now_hour]["request_count"] == 2
+    assert by_hour[now_hour]["total_tokens"] == 22
+    assert by_hour[three_ago]["spend"] == 2.0
+    assert sum(r["spend"] for r in rows) == 4.0
+    assert datetime.fromisoformat(rows[0]["hour"]) == now_hour - timedelta(hours=23)
+
+    filters, start, _end = mock_get_spend_logs.await_args.args
+    expected_team_id = f"{test_region.name.replace(' ', '_')}_{test_team.id}"
+    assert filters == {"team_id": expected_team_id}
+    assert start == now_hour - timedelta(hours=23)
+
+
+@pytest.mark.parametrize("hours, status_code, row_count", [(3, 200, 3), (0, 422, None), (25, 422, None)])
+@patch("app.api.spend.LiteLLMService.get_spend_logs", new_callable=AsyncMock)
+def test_team_hourly_activity_hours_param(
+    mock_get_spend_logs, hours, status_code, row_count, client, team_admin_token, test_team, test_region
+):
+    mock_get_spend_logs.return_value = []
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/hourly-activity",
+        params={"hours": hours},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == status_code
+    if row_count is not None:
+        assert len(response.json()["activity"]) == row_count
+
+
+@patch("app.api.spend.LiteLLMService.get_spend_logs", new_callable=AsyncMock)
+def test_team_hourly_activity_forbidden_other_team(
+    mock_get_spend_logs, client, test_token, test_team, test_region
+):
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/hourly-activity",
+        headers={"Authorization": f"Bearer {test_token}"},
+    )
+    assert response.status_code == 403
+    mock_get_spend_logs.assert_not_awaited()
+
+
+@patch("app.api.spend.LiteLLMService.get_spend_logs", new_callable=AsyncMock)
+def test_team_member_hourly_activity_filters_by_team_and_user(
+    mock_get_spend_logs, client, team_admin_token, test_team, test_team_user, test_region
+):
+    mock_get_spend_logs.return_value = []
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/member/{test_team_user.id}/hourly-activity",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["team_id"] == test_team.id
+    assert data["user_id"] == test_team_user.id
+    filters = mock_get_spend_logs.await_args.args[0]
+    assert filters == {
+        "team_id": f"{test_region.name.replace(' ', '_')}_{test_team.id}",
+        "user_id": str(test_team_user.id),
+    }
+
+
+@patch("app.api.spend.LiteLLMService.get_spend_logs", new_callable=AsyncMock)
+def test_team_member_hourly_activity_user_not_in_team(
+    mock_get_spend_logs, client, team_admin_token, test_team, test_admin, test_region
+):
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/member/{test_admin.id}/hourly-activity",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 404
+    mock_get_spend_logs.assert_not_awaited()
+
+
+@patch("app.api.spend.LiteLLMService.get_spend_logs", new_callable=AsyncMock)
+def test_user_hourly_activity_filters_by_user(
+    mock_get_spend_logs, client, test_token, test_user, test_region
+):
+    mock_get_spend_logs.return_value = []
+    response = client.get(
+        f"/spend/{test_region.id}/user/{test_user.id}/hourly-activity",
+        headers={"Authorization": f"Bearer {test_token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["user_id"] == test_user.id
+    assert mock_get_spend_logs.await_args.args[0] == {"user_id": str(test_user.id)}
+
+
+@patch("app.api.spend.LiteLLMService.get_spend_logs", new_callable=AsyncMock)
+def test_user_hourly_activity_forbidden_other_user(
+    mock_get_spend_logs, client, test_token, test_admin, test_region
+):
+    response = client.get(
+        f"/spend/{test_region.id}/user/{test_admin.id}/hourly-activity",
+        headers={"Authorization": f"Bearer {test_token}"},
+    )
+    assert response.status_code == 403
+    mock_get_spend_logs.assert_not_awaited()

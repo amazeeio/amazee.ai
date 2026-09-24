@@ -509,8 +509,22 @@ class LiteLLMService:
         cost. The spend logs survive that reset and are the only per-request
         record of it. Returns dollars.
         """
-        page_size = 100
-        total = 0.0
+        rows = await self.get_spend_logs({"team_id": team_id}, start, end)
+        return sum(float(row.get("spend") or 0.0) for row in rows)
+
+    async def get_spend_logs(
+        self, filters: dict, start: datetime, end: datetime
+    ) -> list[dict]:
+        """Return every ``/spend/logs/v2`` row matching ``filters`` in a window.
+
+        ``filters`` takes the endpoint's equality filters (``team_id``,
+        ``user_id``, ``api_key``). Rows come without the request and response
+        bodies, so a page of 1000 stays small.
+        """
+        # ponytail: offset paging, fine for a day of rows; a keyset cursor on
+        # startTime if a single scope ever logs far more than that.
+        page_size = 1000
+        rows: list[dict] = []
         page = 1
         start_date = start.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         end_date = end.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -521,7 +535,7 @@ class LiteLLMService:
                         f"{self.api_url}/spend/logs/v2",
                         headers={"Authorization": f"Bearer {self.master_key}"},
                         params={
-                            "team_id": team_id,
+                            **filters,
                             "start_date": start_date,
                             "end_date": end_date,
                             "page": page,
@@ -530,26 +544,23 @@ class LiteLLMService:
                     )
                     response.raise_for_status()
                     data = response.json()
-                    rows = [r for r in (data.get("data") or []) if isinstance(r, dict)]
-                    for row in rows:
-                        total += float(row.get("spend") or 0.0)
+                    batch = [r for r in (data.get("data") or []) if isinstance(r, dict)]
+                    rows.extend(batch)
                     # Stop on a short or empty page; total_pages is only a
                     # secondary check, since it is not always present.
-                    if len(rows) < page_size:
+                    if len(batch) < page_size:
                         break
                     total_pages = data.get("total_pages") or 0
                     if total_pages and page >= total_pages:
                         break
                     page += 1
-            return total
+            return rows
         except httpx.HTTPStatusError as e:
             status_code, error_msg, _ = self._parse_http_error(e)
-            logger.error(
-                "Error getting LiteLLM spend logs for team %s: %s", team_id, error_msg
-            )
+            logger.error("Error getting LiteLLM spend logs %s: %s", filters, error_msg)
             raise HTTPException(
                 status_code=status_code,
-                detail=f"Failed to get LiteLLM team spend logs: {error_msg}",
+                detail=f"Failed to get LiteLLM spend logs: {error_msg}",
             )
 
     async def get_key_last_used(self, litellm_token: str) -> Optional[datetime]:
