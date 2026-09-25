@@ -9,7 +9,16 @@ permissions:
 
 jobs:
   check-doc-impact:
-    if: github.event.pull_request.merged == true
+    # Skip PRs that only move already-merged work between branches: deploys
+    # (release/* -> main, dev -> main), back-merges (main -> dev), and
+    # release-please version bumps. Their changes were already checked when
+    # the original feature or fix PR merged. Hotfixes straight to main still run.
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.ref != 'main' &&
+      github.event.pull_request.head.ref != 'dev' &&
+      !startsWith(github.event.pull_request.head.ref, 'release/') &&
+      !startsWith(github.event.pull_request.head.ref, 'release-please--')
     permissions:
       contents: read
       pull-requests: read
@@ -114,6 +123,7 @@ jobs:
               echo "has_draft=false" >> "$GITHUB_OUTPUT"
             fi
           else
+            echo "::warning::Draft request failed or returned nothing; the docs issue will have no draft."
             echo "has_draft=false" >> "$GITHUB_OUTPUT"
           fi
         env:
