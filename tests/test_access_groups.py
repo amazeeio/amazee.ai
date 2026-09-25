@@ -639,6 +639,37 @@ def test_model_sync_pushes_access_groups(mock_service_cls, client, db, test_regi
 
 
 @patch("app.services.model_sync.LiteLLMService")
+def test_model_sync_pushes_catalog_model_info(mock_service_cls, client, db, test_region):
+    from app.services.model_sync import sync_model_to_region_task
+    import asyncio
+
+    model = _make_model(db)
+    model.model_info = {"base_model": "bedrock_mantle/xai.grok-4.3", "mode": "chat"}
+    db.commit()
+    assoc = _deploy_model(db, model, test_region, sync_status="pending")
+    assoc.model_info_override = {"base_model": "au.xai.grok-4.3"}
+    db.commit()
+    model_pk, region_pk = model.id, test_region.id
+
+    instance = mock_service_cls.return_value
+    instance.get_model_deployments = AsyncMock(
+        return_value=[{"model_info": {"id": "dep-1", "db_model": True}, "litellm_params": {}}]
+    )
+    instance.update_model = AsyncMock(return_value={})
+    instance.list_access_groups = AsyncMock(return_value=[])
+
+    with patch("app.services.model_sync.get_db", lambda: iter([db])):
+        asyncio.run(sync_model_to_region_task(model_pk, region_pk))
+
+    instance.update_model.assert_called_once()
+    # The deployment's override wins key by key over the model's model_info.
+    assert instance.update_model.call_args.kwargs["model_info"] == {
+        "base_model": "au.xai.grok-4.3",
+        "mode": "chat",
+    }
+
+
+@patch("app.services.model_sync.LiteLLMService")
 def test_model_sync_reconciles_access_group_entities(mock_service_cls, client, db, test_region):
     """Drifted member lists are corrected, stale managed entities are deleted,
     and hand-made entities (no marker description) are never touched."""

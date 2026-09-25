@@ -78,7 +78,8 @@ def test_public_models_returns_aggregated_data(client, db):
         assert first_model["manufacturer"]["website"] == "https://www.anthropic.com"
         assert first_model["manufacturer"]["release_date"] == "2024-10-22"
         assert "max_output_tokens" in first_model
-        assert first_model["capabilities"]["supports_function_calling"] is False
+        # Not in LiteLLM's model_info -> unknown, not "unsupported".
+        assert first_model["capabilities"]["supports_function_calling"] is None
         assert "pricing" in first_model
 
 

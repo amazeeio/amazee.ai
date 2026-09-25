@@ -1725,6 +1725,7 @@ class LiteLLMService:
         model_id: str,
         litellm_params: dict,
         access_groups: Optional[list[str]] = None,
+        model_info: Optional[dict] = None,
     ) -> dict:
         """
         Register a new model in LiteLLM.
@@ -1735,8 +1736,11 @@ class LiteLLMService:
             "model_name": model_id,
             "litellm_params": dict(litellm_params or {}),
         }
+        info = dict(model_info or {})
         if access_groups is not None:
-            payload["model_info"] = {"access_groups": access_groups}
+            info["access_groups"] = access_groups
+        if info:
+            payload["model_info"] = info
         if "model" not in payload["litellm_params"]:
             payload["litellm_params"]["model"] = model_id
 
@@ -1793,6 +1797,7 @@ class LiteLLMService:
         litellm_params: dict,
         deployment_ids: Optional[list[str]] = None,
         access_groups: Optional[list[str]] = None,
+        model_info: Optional[dict] = None,
     ) -> dict:
         """
         Update an existing model in LiteLLM.
@@ -1817,16 +1822,16 @@ class LiteLLMService:
         try:
             async with httpx.AsyncClient(timeout=MODEL_HTTP_TIMEOUT) as client:
                 for dep_id in deployment_ids:
-                    model_info: dict = {"id": dep_id}
+                    info: dict = {**(model_info or {}), "id": dep_id}
                     if access_groups is not None:
-                        model_info["access_groups"] = access_groups
+                        info["access_groups"] = access_groups
                     response = await client.post(
                         f"{self.api_url}/model/update",
                         headers={"Authorization": f"Bearer {self.master_key}"},
                         json={
                             "model_name": model_id,
                             "litellm_params": params,
-                            "model_info": model_info,
+                            "model_info": info,
                         },
                     )
                     response.raise_for_status()
