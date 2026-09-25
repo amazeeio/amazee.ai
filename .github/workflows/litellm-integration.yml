@@ -186,7 +186,8 @@ jobs:
         env:
           LITELLM_IMAGE: ${{ matrix.image }}
           LITELLM_TAG: ${{ matrix.tag }}
-        run: make integration-test
+        # Newer LiteLLM refuses the sk-1234 default; a throwaway key per run.
+        run: LITELLM_MASTER_KEY="sk-$(openssl rand -hex 32)" make integration-test
 
   # Scheduled failures otherwise only email whoever last touched the cron.
   # PR and dispatch runs are watched by whoever started them.
