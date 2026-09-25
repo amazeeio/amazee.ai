@@ -858,6 +858,33 @@ class TeamDailyActivityResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class HourlySpendRow(BaseModel):
+    hour: datetime = Field(description="Start of the UTC hour this row covers.")
+    spend: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    request_count: int = 0
+
+
+class HourlySpendResponse(BaseModel):
+    region_id: int
+    team_id: Optional[int] = None
+    user_id: Optional[int] = None
+    key_id: Optional[int] = None
+    start: datetime = Field(description="Start of the first hour returned (UTC).")
+    end: datetime = Field(
+        description="End of the window (UTC): now, or the midnight after `day`."
+    )
+    activity: List[HourlySpendRow] = Field(
+        description=(
+            "One row per UTC hour, oldest first. Hours with no usage are "
+            "returned with zeros. Without `day`, the last row is the current, "
+            "unfinished hour."
+        )
+    )
+
+
 class BreakdownUserItem(UsageMetrics):
     """One team member's usage over the requested range, split by key."""
 

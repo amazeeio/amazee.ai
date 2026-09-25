@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 from datetime import UTC, date, datetime, timedelta
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi import Query
@@ -51,6 +52,8 @@ from app.schemas.models import (
     BreakdownUserItem,
     BudgetType,
     DailyActivityModelBreakdown,
+    HourlySpendResponse,
+    HourlySpendRow,
     KeyDailyActivityResponse,
     KeyDailyActivityRow,
     KeyLastUsedResponse,
@@ -829,6 +832,141 @@ def _assert_user_access(current_user: DBUser, role: str, target_user: DBUser) ->
     )
 
 
+HoursParam = Annotated[
+    int,
+    Query(
+        ge=1,
+        le=24,
+        description=(
+            "How many hours back from now to return, counting the current "
+            "one. Ignored when day is set."
+        ),
+    ),
+]
+DayParam = Annotated[
+    date | None,
+    Query(
+        description=(
+            "A past UTC day, formatted YYYY-MM-DD. Returns its 24 hours, "
+            "00:00 to 23:00. Must be before today. Takes priority over hours."
+        ),
+    ),
+]
+_HOURLY_SOURCE_NOTE = (
+    "Built from LiteLLM's per-request `/spend/logs/v2` rows, because "
+    "LiteLLM itself only aggregates by day. One call pages through every "
+    "request in the window, so a busy scope costs more. LiteLLM writes "
+    "spend logs in batches, so the last minute or so may be missing."
+)
+
+
+async def _hourly_spend(
+    region: DBRegion,
+    filters: dict | None,
+    hours: int,
+    day: date | None,
+    **ids: int,
+) -> HourlySpendResponse:
+    """Group a scope's spend-log rows into UTC hours, oldest first.
+
+    Without ``day`` the rows end with the current, unfinished hour. With it
+    they are that past UTC day's 24 hours, and ``hours`` is ignored.
+    ``filters`` of None means the scope has no rows, so LiteLLM is not asked.
+
+    LiteLLM keeps only per-day aggregates, so the per-request spend logs are
+    the finest record it has.
+    """
+    now = datetime.now(UTC)
+    if day is None:
+        end = now
+        start = now.replace(minute=0, second=0, microsecond=0) - timedelta(
+            hours=hours - 1
+        )
+    else:
+        # Today is still running; the default window already covers it.
+        if day >= now.date():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="day must be before today (UTC)",
+            )
+        start = datetime(day.year, day.month, day.day, tzinfo=UTC)
+        end = start + timedelta(days=1)
+        hours = 24
+    buckets = {
+        start + timedelta(hours=i): HourlySpendRow(hour=start + timedelta(hours=i))
+        for i in range(hours)
+    }
+    if filters is not None:
+        service = LiteLLMService(
+            api_url=region.litellm_api_url, api_key=region.litellm_api_key
+        )
+        # Failed calls are logged too, with no spend; they are not usage.
+        filters = {**filters, "status_filter": "success"}
+        async for row in service.iter_spend_logs(filters, start, end):
+            started = row.get("startTime")
+            if not started:
+                continue
+            started = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=UTC)
+            bucket = buckets.get(
+                started.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+            )
+            if bucket is None:
+                continue
+            bucket.spend += float(row.get("spend") or 0.0)
+            bucket.prompt_tokens += int(row.get("prompt_tokens") or 0)
+            bucket.completion_tokens += int(row.get("completion_tokens") or 0)
+            bucket.total_tokens += int(row.get("total_tokens") or 0)
+            bucket.request_count += 1
+    return HourlySpendResponse(
+        region_id=region.id,
+        start=start,
+        end=end,
+        activity=list(buckets.values()),
+        **ids,
+    )
+
+
+def _get_readable_key_or_404(
+    db: Session,
+    key_id: int,
+    region_id: int,
+    team_id: int | None,
+    current_user: DBUser,
+    user_role: str,
+) -> DBPrivateAIKey:
+    """Load a key for a spend read, with the same visibility as private-ai-keys.
+
+    A key the caller may not see is a 404, not a 403, so its id leaks nothing.
+    """
+    key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
+    if not key:
+        raise HTTPException(status_code=404, detail="Private AI Key not found")
+    if key.region_id != region_id:
+        raise HTTPException(
+            status_code=404, detail="Private AI Key not found in region"
+        )
+
+    # Defence-in-depth scope gate (issue #600): enforce declared team scope
+    # even for system-admin callers before applying role-based access.
+    enforce_declared_team_scope(key, team_id, db)
+
+    if current_user.is_admin:
+        return key
+    if user_role in [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR, UserRole.READ_ONLY]:
+        if key.team_id is not None:
+            if key.team_id != current_user.team_id:
+                raise HTTPException(status_code=404, detail="Private AI Key not found")
+        else:
+            owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
+            if not owner or owner.team_id != current_user.team_id:
+                raise HTTPException(status_code=404, detail="Private AI Key not found")
+    elif key.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Private AI Key not found")
+    return key
+
+
 def _assert_team_budget_write_access(
     current_user: DBUser, role: str, team_id: int
 ) -> None:
@@ -1603,32 +1741,9 @@ async def get_key_spend_alias(
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
 ):
-    key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
-    if not key:
-        raise HTTPException(status_code=404, detail="Private AI Key not found")
-    if key.region_id != region_id:
-        raise HTTPException(
-            status_code=404, detail="Private AI Key not found in region"
-        )
-
-    # Defence-in-depth scope gate (issue #600): enforce declared team scope
-    # even for system-admin callers before applying role-based access.
-    enforce_declared_team_scope(key, team_id, db)
-
-    # Reuse authorization semantics from private-ai-keys endpoints.
-    if current_user.is_admin:
-        pass
-    elif user_role in [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR, UserRole.READ_ONLY]:
-        if key.team_id is not None:
-            if key.team_id != current_user.team_id:
-                raise HTTPException(status_code=404, detail="Private AI Key not found")
-        else:
-            owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
-            if not owner or owner.team_id != current_user.team_id:
-                raise HTTPException(status_code=404, detail="Private AI Key not found")
-    else:
-        if key.owner_id != current_user.id:
-            raise HTTPException(status_code=404, detail="Private AI Key not found")
+    key = _get_readable_key_or_404(
+        db, key_id, region_id, team_id, current_user, user_role
+    )
 
     region = _get_region_or_404(db, region_id, include_inactive=True)
     service = LiteLLMService(
@@ -1737,31 +1852,9 @@ async def get_key_last_used(
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
 ):
-    key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
-    if not key:
-        raise HTTPException(status_code=404, detail="Private AI Key not found")
-    if key.region_id != region_id:
-        raise HTTPException(
-            status_code=404, detail="Private AI Key not found in region"
-        )
-
-    # Defence-in-depth scope gate (issue #600).
-    enforce_declared_team_scope(key, team_id, db)
-
-    # Reuse authorization semantics from get_key_spend_alias.
-    if current_user.is_admin:
-        pass
-    elif user_role in [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR, UserRole.READ_ONLY]:
-        if key.team_id is not None:
-            if key.team_id != current_user.team_id:
-                raise HTTPException(status_code=404, detail="Private AI Key not found")
-        else:
-            owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
-            if not owner or owner.team_id != current_user.team_id:
-                raise HTTPException(status_code=404, detail="Private AI Key not found")
-    else:
-        if key.owner_id != current_user.id:
-            raise HTTPException(status_code=404, detail="Private AI Key not found")
+    key = _get_readable_key_or_404(
+        db, key_id, region_id, team_id, current_user, user_role
+    )
 
     region = _get_region_or_404(db, region_id, include_inactive=True)
     service = LiteLLMService(
@@ -1848,31 +1941,9 @@ async def get_key_daily_activity(
 ):
     start_date, end_date = _resolve_daily_activity_range(start_date, end_date)
 
-    key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
-    if not key:
-        raise HTTPException(status_code=404, detail="Private AI Key not found")
-    if key.region_id != region_id:
-        raise HTTPException(
-            status_code=404, detail="Private AI Key not found in region"
-        )
-
-    # Defence-in-depth scope gate (issue #600).
-    enforce_declared_team_scope(key, team_id, db)
-
-    # Reuse authorization semantics from get_key_spend_alias.
-    if current_user.is_admin:
-        pass
-    elif user_role in [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR, UserRole.READ_ONLY]:
-        if key.team_id is not None:
-            if key.team_id != current_user.team_id:
-                raise HTTPException(status_code=404, detail="Private AI Key not found")
-        else:
-            owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
-            if not owner or owner.team_id != current_user.team_id:
-                raise HTTPException(status_code=404, detail="Private AI Key not found")
-    else:
-        if key.owner_id != current_user.id:
-            raise HTTPException(status_code=404, detail="Private AI Key not found")
+    key = _get_readable_key_or_404(
+        db, key_id, region_id, team_id, current_user, user_role
+    )
 
     region = _get_region_or_404(db, region_id, include_inactive=True)
     service = LiteLLMService(
@@ -2115,6 +2186,171 @@ async def get_team_daily_activity(
             model_map=model_map,
         ),
     )
+
+
+@router.get(
+    "/{region_id}/team/{team_id}/hourly",
+    response_model=HourlySpendResponse,
+    response_model_exclude_none=True,
+    summary="Get team hourly spend by region",
+    description=(
+        "Returns spend, tokens and request count per UTC hour across all of a "
+        "team's keys in the region, for the last `hours` hours (at most 24), or "
+        "for one past UTC day with `day`.\n\n" + _HOURLY_SOURCE_NOTE
+    ),
+    response_description="Per-hour usage rows for the team, oldest first.",
+)
+async def get_team_hourly_activity(
+    region_id: int,
+    team_id: int,
+    hours: HoursParam = 24,
+    day: DayParam = None,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    team = (
+        db.query(DBTeam)
+        .filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None))
+        .first()
+    )
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    _assert_team_access(current_user, user_role, team_id)
+
+    region = _get_region_or_404(db, region_id, include_inactive=True)
+    return await _hourly_spend(
+        region,
+        {"team_id": LiteLLMService.format_team_id(region.name, team_id)},
+        hours,
+        day,
+        team_id=team_id,
+    )
+
+
+@router.get(
+    "/{region_id}/team/{team_id}/member/{user_id}/hourly",
+    response_model=HourlySpendResponse,
+    response_model_exclude_none=True,
+    summary="Get team member hourly spend by region",
+    description=(
+        "Returns spend, tokens and request count per UTC hour for one member's "
+        "keys inside a team in the region, for the last `hours` hours (at most "
+        "24), or for one past UTC day with `day`. Team-owned keys belong to "
+        "no member, so they are not counted.\n\n" + _HOURLY_SOURCE_NOTE
+    ),
+    response_description="Per-hour usage rows for the member, oldest first.",
+)
+async def get_team_member_hourly_activity(
+    region_id: int,
+    team_id: int,
+    user_id: int,
+    hours: HoursParam = 24,
+    day: DayParam = None,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    team = (
+        db.query(DBTeam)
+        .filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None))
+        .first()
+    )
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    target_user = db.query(DBUser).filter(DBUser.id == user_id).first()
+    if not target_user or target_user.team_id != team_id:
+        raise HTTPException(status_code=404, detail="User not found in team")
+    _assert_user_access(current_user, user_role, target_user)
+
+    region = _get_region_or_404(db, region_id, include_inactive=True)
+    return await _hourly_spend(
+        region,
+        {
+            "team_id": LiteLLMService.format_team_id(region.name, team_id),
+            "user_id": str(user_id),
+        },
+        hours,
+        day,
+        team_id=team_id,
+        user_id=user_id,
+    )
+
+
+@router.get(
+    "/{region_id}/user/{user_id}/hourly",
+    response_model=HourlySpendResponse,
+    response_model_exclude_none=True,
+    summary="Get user hourly spend by region",
+    description=(
+        "Returns spend, tokens and request count per UTC hour across all of a "
+        "user's keys in the region, for the last `hours` hours (at most 24), or "
+        "for one past UTC day with `day`.\n\n" + _HOURLY_SOURCE_NOTE
+    ),
+    response_description="Per-hour usage rows for the user, oldest first.",
+)
+async def get_user_hourly_activity(
+    region_id: int,
+    user_id: int,
+    hours: HoursParam = 24,
+    day: DayParam = None,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    target_user = db.query(DBUser).filter(DBUser.id == user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    _assert_user_access(current_user, user_role, target_user)
+
+    region = _get_region_or_404(db, region_id, include_inactive=True)
+    return await _hourly_spend(
+        region, {"user_id": str(user_id)}, hours, day, user_id=user_id
+    )
+
+
+@router.get(
+    "/{region_id}/key/{key_id}/hourly",
+    response_model=HourlySpendResponse,
+    response_model_exclude_none=True,
+    summary="Get key hourly spend by region",
+    description=(
+        "Returns spend, tokens and request count per UTC hour for one key in "
+        "the region, for the last `hours` hours (at most 24), or for one past "
+        "UTC day with `day`. A key with no LiteLLM token returns zeros.\n\n"
+        + _HOURLY_SOURCE_NOTE
+    ),
+    response_description="Per-hour usage rows for the key, oldest first.",
+)
+async def get_key_hourly_activity(
+    region_id: int,
+    key_id: int,
+    hours: HoursParam = 24,
+    day: DayParam = None,
+    team_id: int | None = Query(
+        None,
+        description=(
+            "When provided, the key must belong to this team or the request "
+            "404s — a defence-in-depth scope check (issue #600) applied even "
+            "to system-admin callers."
+        ),
+    ),
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    key = _get_readable_key_or_404(
+        db, key_id, region_id, team_id, current_user, user_role
+    )
+    region = _get_region_or_404(db, region_id, include_inactive=True)
+    # Without a token LiteLLM has no rows for this key; an api_key filter of
+    # None would drop the filter and return every key's spend.
+    filters = (
+        {"api_key": LiteLLMService.hash_token(key.litellm_token)}
+        if key.litellm_token
+        else None
+    )
+    return await _hourly_spend(region, filters, hours, day, key_id=key_id)
 
 
 @router.get(
