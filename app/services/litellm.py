@@ -13,6 +13,7 @@ from app.core.limit_service import (
     DEFAULT_RPM_PER_KEY,
 )
 from app.core.config import settings
+from collections.abc import AsyncIterator
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -509,47 +510,73 @@ class LiteLLMService:
         cost. The spend logs survive that reset and are the only per-request
         record of it. Returns dollars.
         """
-        page_size = 100
         total = 0.0
+        async for row in self.iter_spend_logs({"team_id": team_id}, start, end):
+            total += float(row.get("spend") or 0.0)
+        return total
+
+    async def iter_spend_logs(
+        self, filters: dict, start: datetime, end: datetime
+    ) -> AsyncIterator[dict]:
+        """Yield every ``/spend/logs/v2`` row matching ``filters`` in a window.
+
+        ``filters`` takes the endpoint's query filters (``team_id``,
+        ``user_id``, ``api_key``, ``status_filter``). Rows leave out the request
+        and response bodies, but each still carries a large ``metadata`` blob
+        with the model's pricing map, so a full page runs to megabytes.
+        """
+        # ponytail: offset paging, fine for a day of rows; a keyset cursor on
+        # startTime if a single scope ever logs far more than that.
+        page_size = 1000
         page = 1
         start_date = start.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         end_date = end.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         try:
-            async with httpx.AsyncClient() as client:
+            # Pages run to megabytes, so the 5 s httpx default is too short.
+            async with httpx.AsyncClient(timeout=60.0) as client:
                 while True:
                     response = await client.get(
                         f"{self.api_url}/spend/logs/v2",
                         headers={"Authorization": f"Bearer {self.master_key}"},
                         params={
-                            "team_id": team_id,
+                            **filters,
                             "start_date": start_date,
                             "end_date": end_date,
                             "page": page,
                             "page_size": page_size,
+                            # Oldest first, so fresh rows mostly land after the
+                            # current page. A row LiteLLM flushes late keeps its
+                            # own startTime, so on a scope with over one page one
+                            # boundary row can still be skipped or repeated.
+                            "sort_by": "startTime",
+                            "sort_order": "asc",
                         },
                     )
                     response.raise_for_status()
                     data = response.json()
-                    rows = [r for r in (data.get("data") or []) if isinstance(r, dict)]
-                    for row in rows:
-                        total += float(row.get("spend") or 0.0)
+                    batch = [r for r in (data.get("data") or []) if isinstance(r, dict)]
+                    for row in batch:
+                        yield row
                     # Stop on a short or empty page; total_pages is only a
                     # secondary check, since it is not always present.
-                    if len(rows) < page_size:
+                    if len(batch) < page_size:
                         break
                     total_pages = data.get("total_pages") or 0
                     if total_pages and page >= total_pages:
                         break
                     page += 1
-            return total
         except httpx.HTTPStatusError as e:
             status_code, error_msg, _ = self._parse_http_error(e)
-            logger.error(
-                "Error getting LiteLLM spend logs for team %s: %s", team_id, error_msg
-            )
+            logger.error("Error getting LiteLLM spend logs %s: %s", filters, error_msg)
             raise HTTPException(
                 status_code=status_code,
-                detail=f"Failed to get LiteLLM team spend logs: {error_msg}",
+                detail=f"Failed to get LiteLLM spend logs: {error_msg}",
+            )
+        except httpx.RequestError as e:
+            logger.error("LiteLLM spend logs unreachable %s: %r", filters, e)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Failed to get LiteLLM spend logs: LiteLLM did not respond",
             )
 
     async def get_key_last_used(self, litellm_token: str) -> Optional[datetime]:
