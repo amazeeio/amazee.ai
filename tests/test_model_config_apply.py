@@ -120,6 +120,62 @@ def test_apply_sets_access_group_is_public(mock_svc, client, admin_token, db, te
 
 
 @patch("app.services.model_sync.LiteLLMService")
+def test_apply_model_info_change_resyncs_deployments(mock_svc, client, admin_token, db, test_region):
+    payload = _payload(test_region.name)
+    assert _apply(client, admin_token, payload).status_code == 200
+    db.query(DBModelRegion).update({"sync_status": "synced"})
+    db.commit()
+
+    payload["models"][0]["model_info"] = {"base_model": "bedrock/anthropic.claude-sonnet"}
+    res = _apply(client, admin_token, payload)
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert {"entity": "model", "key": "claude-sonnet", "action": "update", "detail": "model_info"} in data["changes"]
+    assert data["syncs_scheduled"] == 1
+    model = db.query(DBModel).filter_by(model_id="claude-sonnet").one()
+    assert model.model_info == {"base_model": "bedrock/anthropic.claude-sonnet"}
+
+    db.query(DBModelRegion).update({"sync_status": "synced"})
+    db.commit()
+    payload["models"][0]["deployments"][0]["model_info_override"] = {"base_model": "au.x"}
+    res = _apply(client, admin_token, payload)
+    data = res.json()
+    assert {
+        "entity": "deployment",
+        "key": f"claude-sonnet@{test_region.name}",
+        "action": "update",
+        "detail": "model_info",
+    } in data["changes"]
+    assoc = db.query(DBModelRegion).filter_by(model_id=model.id).one()
+    db.refresh(assoc)
+    assert assoc.model_info_override == {"base_model": "au.x"}
+
+
+def test_apply_rejects_sync_managed_model_info_keys(client, admin_token, test_region):
+    payload = _payload(test_region.name)
+    payload["dry_run"] = True
+    payload["models"][0]["model_info"] = {"id": "x", "base_model": "y"}
+    res = _apply(client, admin_token, payload)
+    assert res.status_code == 400
+    assert "['id']" in res.text
+
+    payload["models"][0]["model_info"] = None
+    payload["models"][0]["deployments"][0]["model_info_override"] = {"access_groups": []}
+    res = _apply(client, admin_token, payload)
+    assert res.status_code == 400
+    assert "['access_groups']" in res.text
+
+
+def test_apply_rejects_model_info_on_alias(client, admin_token, test_region):
+    payload = _payload(test_region.name)
+    payload["dry_run"] = True
+    payload["models"][1]["model_info"] = {"base_model": "y"}
+    res = _apply(client, admin_token, payload)
+    assert res.status_code == 400
+    assert "model_info must be empty" in res.text
+
+
+@patch("app.services.model_sync.LiteLLMService")
 def test_apply_reschedules_failed_syncs_without_config_diff(
     mock_svc, client, admin_token, db, test_region
 ):
