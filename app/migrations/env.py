@@ -7,6 +7,7 @@ from sqlalchemy import pool
 from alembic import context
 
 from app.db.models import Base
+import app.registry.models  # noqa: F401  registers the registry tables on Base
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
