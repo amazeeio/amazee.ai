@@ -123,3 +123,14 @@ class DBRegistryRun(Base):
     status = Column(String, nullable=False, default="running")
     stats = Column(JSON, nullable=True)
     error = Column(String, nullable=True)
+
+
+class DBRegistryModelSupport(Base):
+    """Whether a region's proxy can price a model, from its own price list."""
+
+    __tablename__ = "registry_model_support"
+
+    model_id = Column(Integer, ForeignKey("registry_models.id", ondelete="CASCADE"), primary_key=True)
+    region_id = Column(Integer, ForeignKey("regions.id", ondelete="CASCADE"), primary_key=True)
+    priced = Column(Boolean, nullable=False)
+    checked_at = Column(DateTime(timezone=True), nullable=False)
