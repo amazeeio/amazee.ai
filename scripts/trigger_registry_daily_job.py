@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Daily registry job: refresh registry_models from LiteLLM's model list."""
+"""Daily registry job: refresh the model list, then check what each proxy can price."""
 
 import logging
 import os
@@ -12,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from app.core.locking import release_lock, try_acquire_lock
 from app.db.database import engine
 from app.registry.discovery import run_discovery
+from app.registry.support import run_support_check
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -19,6 +20,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 LOCK_NAME = "registry_daily"
+# Fixed order: the support check compares against the list the first step wrote.
+STEPS = (("model list", run_discovery), ("support check", run_support_check))
 
 
 def main():
@@ -29,11 +32,21 @@ def main():
         if not try_acquire_lock(LOCK_NAME, db, lock_timeout=30):
             logger.warning("Another process holds the %s lock, skipping", LOCK_NAME)
             return
+        failed = False
         try:
-            logger.info("Registry model list: %s", run_discovery(db))
+            for name, step in STEPS:
+                # A failed step is recorded in registry_runs and must not stop the next one.
+                try:
+                    logger.info("Registry %s: %s", name, step(db))
+                except Exception:
+                    logger.exception("Registry %s failed", name)
+                    db.rollback()
+                    failed = True
         finally:
             db.rollback()  # a failed run can leave the session unusable for the lock release
             release_lock(LOCK_NAME, db)
+        if failed:
+            sys.exit(1)
     except Exception:
         logger.exception("Registry daily job failed")
         sys.exit(1)
