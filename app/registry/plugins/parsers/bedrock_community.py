@@ -5,10 +5,9 @@ which AWS regions offer each model. Its prices and limits are skipped:
 LiteLLM's list has them for more models.
 """
 
-from datetime import date
-
 from app.registry import config
-from app.registry.plugins.common import fetch_json
+from app.registry.litellm import fetch_json
+from app.registry.values import as_date
 
 SOURCE = "bedrock_community"
 ORDER = 20
@@ -18,10 +17,8 @@ PRICE_ROLE = "fill"  # it sends no prices
 def _day(value) -> str | None:
     """`2026-09-08 17:00:00+00:00` -> `2026-09-08`; None when not a date, so
     one bad value drops that date and not the whole source."""
-    try:
-        return date.fromisoformat(str(value)[:10]).isoformat() if value else None
-    except ValueError:
-        return None
+    day = as_date(value)
+    return day.isoformat() if day else None
 
 
 def transform(rows) -> dict:

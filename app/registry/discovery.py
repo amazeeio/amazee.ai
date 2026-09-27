@@ -7,25 +7,17 @@ from decimal import Decimal
 from sqlalchemy.orm import Session
 
 from app.registry import config
-from app.registry.litellm import fetch_model_list, normalize_provider, split_model
-from app.registry.models import DBRegistryModel, DBRegistryModelPrice, DBRegistryProvider, DBRegistryRun
+from app.registry.litellm import fetch_json, our_entries, split_model
+from app.registry.models import DBRegistryModel, DBRegistryModelPrice, DBRegistryProvider, models_by_ident
 from app.registry.plugins.loader import override_sources
 from app.registry.prices import apply_prices, parse_prices, price_fields
+from app.registry.runs import record_run
+from app.registry.values import as_date
 
 logger = logging.getLogger(__name__)
 
 STEP = "litellm-list"
 
-# Columns the list owns. Anything else on the row belongs to us.
-LIST_FIELDS = (
-    "mode",
-    "max_input_tokens",
-    "max_output_tokens",
-    "input_cost_per_token",
-    "output_cost_per_token",
-    "supports",
-    "eol_date",
-)
 
 
 def _as_int(value):
@@ -42,11 +34,6 @@ def _as_decimal(value):
         return None
 
 
-def _as_date(value):
-    try:
-        return date.fromisoformat(str(value)[:10]) if value else None
-    except ValueError:
-        return None
 
 
 def entry_fields(entry: dict) -> dict:
@@ -60,7 +47,7 @@ def entry_fields(entry: dict) -> dict:
         "supports": sorted(
             k.removeprefix("supports_") for k, v in entry.items() if k.startswith("supports_") and v is True
         ),
-        "eol_date": _as_date(entry.get("deprecation_date")),
+        "eol_date": as_date(entry.get("deprecation_date")),
     }
 
 
@@ -74,12 +61,7 @@ def parse_model_list(data: dict, providers: set[str]) -> tuple[dict[tuple[str, s
     models: dict[tuple[str, str], dict] = {}
     from_geo: set[tuple[str, str]] = set()
     variants = 0
-    for key, entry in data.items():
-        if not isinstance(entry, dict) or key == "sample_spec":
-            continue
-        provider = normalize_provider(entry.get("litellm_provider"))
-        if provider not in providers:
-            continue
+    for key, provider, entry in our_entries(data, providers):
         split = split_model(key, provider)
         if split is None:
             variants += 1
@@ -103,10 +85,7 @@ _PLUGIN_FILLED_SPECS = ("mode", "max_input_tokens", "max_output_tokens")
 def apply_model_list(db: Session, listed: dict[tuple[str, str], dict], today: date) -> dict:
     """Insert new models, refresh listed ones, mark the ones that left as removed."""
     providers = {p.name: p.id for p in db.query(DBRegistryProvider).all()}
-    by_ident = {
-        (row_provider, row.model_id): row
-        for row, row_provider in db.query(DBRegistryModel, DBRegistryProvider.name).join(DBRegistryProvider)
-    }
+    by_ident = models_by_ident(db)
     # Only active rows can be newly removed, so only they count here.
     at_risk = {
         ident for ident, row in by_ident.items() if row.source == "litellm" and row.status == "active"
@@ -167,39 +146,21 @@ def apply_model_list(db: Session, listed: dict[tuple[str, str], dict], today: da
 
 
 def run_discovery(db: Session, today: date | None = None) -> dict:
-    run = DBRegistryRun(step=STEP, status="running")
-    db.add(run)
-    db.commit()
-    try:
-        providers = {p.name for p in db.query(DBRegistryProvider).all()}
-        if not providers:
-            # Providers come from the proxy import. Without them every model
-            # would be filtered out, so there is nothing to do yet.
-            logger.warning("No registry providers yet; run the proxy import first")
-            stats = {"listed": 0, "inserted": 0, "updated": 0, "removed": 0}
-        else:
-            data = fetch_model_list(config.LITELLM_LIST_URL)
-            listed, variants = parse_model_list(data, providers)
-            stats = apply_model_list(db, listed, today or date.today())
-            stats["price_variants_skipped"] = variants
-            db.flush()  # new models need ids before their prices are stored
-            stats.update(apply_prices(db, set(listed), parse_prices(data, providers), today or date.today()))
-        run.status, run.stats = "ok", stats
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        run.status, run.error = "failed", str(e)
-        raise
-    finally:
-        finish_run(db, run)
+    return record_run(db, STEP, lambda: _discover(db, today or date.today()))
+
+
+def _discover(db: Session, today: date) -> dict:
+    providers = {p.name for p in db.query(DBRegistryProvider).all()}
+    if not providers:
+        # Providers come from the proxy import. Without them every model
+        # would be filtered out, so there is nothing to do yet.
+        logger.warning("No registry providers yet; run the proxy import first")
+        stats = {"listed": 0, "inserted": 0, "updated": 0, "removed": 0}
+    else:
+        data = fetch_json(config.LITELLM_LIST_URL)
+        listed, variants = parse_model_list(data, providers)
+        stats = apply_model_list(db, listed, today)
+        stats["price_variants_skipped"] = variants
+        db.flush()  # new models need ids before their prices are stored
+        stats.update(apply_prices(db, set(listed), parse_prices(data, providers), today))
     return stats
-
-
-def finish_run(db: Session, run: DBRegistryRun) -> None:
-    """Record the end of a run without hiding the error that ended it."""
-    run.finished_at = datetime.now(UTC)
-    try:
-        db.commit()
-    except Exception:
-        db.rollback()
-        logger.exception("Could not record the end of registry run %s", run.id)

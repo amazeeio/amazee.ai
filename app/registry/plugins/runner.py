@@ -8,22 +8,22 @@ full before anything is written.
 """
 
 import logging
-from datetime import UTC, date, datetime
+from datetime import date
 from types import ModuleType
 
 from sqlalchemy.orm import Session
 
 from app.registry import config
-from app.registry.discovery import finish_run
 from app.registry.models import (
     DBRegistryCloudAvailability,
-    DBRegistryModel,
     DBRegistryModelLifecycle,
-    DBRegistryModelPrice,
-    DBRegistryProvider,
-    DBRegistryRun,
+    models_by_ident,
+    prices_by_model,
 )
 from app.registry.plugins.loader import load_plugins
+from app.registry.prices import set_headline, upsert_scopes
+from app.registry.runs import record_run
+from app.registry.values import is_amount
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ def _scope(name) -> tuple[str, str]:
 def _count(value, what) -> int | None:
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+    if not isinstance(value, int) or not is_amount(value):
         raise ValueError(f"{what} must be a whole number >= 0")
     return value
 
@@ -71,7 +71,7 @@ def validate(output, source: str) -> list[dict]:
             if not isinstance(fields, dict):
                 raise ValueError(f"{ident}: prices for {name!r} must be an object")
             for field, value in fields.items():
-                if "cost" not in field or isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                if "cost" not in field or not is_amount(value):
                     raise ValueError(f"{ident}: bad price {field}={value!r}")
             if fields:
                 prices[_scope(name)] = dict(sorted(fields.items()))
@@ -114,54 +114,28 @@ def _apply_prices(db, model, own, source, role, prices, today, stats, fill_modes
         for p in mine.values():
             db.delete(p)
         return
-    scopes = {(p.scope_kind, p.scope): p for p in own}
-    for key, fields in prices.items():
-        row = scopes.get(key)
-        if row is None:
-            db.add(
-                DBRegistryModelPrice(
-                    model_id=model.id, scope_kind=key[0], scope=key[1], prices=fields,
-                    source=source, last_seen=today,
-                )
-            )
-            stats["price_changes"] += 1
-        else:
-            if row.prices != fields or row.source != source:
-                row.prices, row.source = fields, source
-                stats["price_changes"] += 1
-            row.last_seen = today
+    stats["price_changes"] += upsert_scopes(
+        db, model.id, {(p.scope_kind, p.scope): p for p in own}, prices, source, today
+    )
     for key, row in mine.items():
         if key not in prices:
             if key == ("base", "") and model.prices == row.prices:
                 # The headline came from this row: unknown until the list's
                 # next run prices the model again, not a stale plugin price.
-                _set_headline(model, {})
+                set_headline(model, {})
             db.delete(row)
     # The headline is the base price only; a geo price never stands in for it.
     if ("base", "") in prices:
-        _set_headline(model, prices[("base", "")])
+        set_headline(model, prices[("base", "")])
     if prices:
         stats["priced"] += 1
-
-
-def _set_headline(model, fields: dict) -> None:
-    if model.prices != fields:
-        model.prices = fields
-        model.input_cost_per_token = fields.get("input_cost_per_token")
-        model.output_cost_per_token = fields.get("output_cost_per_token")
-        model.updated_at = datetime.now(UTC)
 
 
 def apply_plugin(
     db: Session, source: str, role: str, records: list[dict], today: date, fill_modes: set | None = None
 ) -> dict:
-    models = {
-        (provider, m.model_id): m
-        for m, provider in db.query(DBRegistryModel, DBRegistryProvider.name).join(DBRegistryProvider)
-    }
-    prices: dict[int, list[DBRegistryModelPrice]] = {}
-    for p in db.query(DBRegistryModelPrice):
-        prices.setdefault(p.model_id, []).append(p)
+    models = models_by_ident(db)
+    prices = prices_by_model(db)
 
     # The models the source's last run listed; a broken source would drop most
     # of them. Older rows are left out: kept history must not raise the bar.
@@ -223,25 +197,14 @@ def apply_plugin(
 
 
 def run_plugin(db: Session, source: str, module: ModuleType | Exception, today: date) -> dict:
-    run = DBRegistryRun(step=f"plugin:{source}", status="running")
-    db.add(run)
-    db.commit()
-    try:
-        if isinstance(module, Exception):
-            raise module
-        records = validate(module.parse(), source)
-        stats = apply_plugin(
-            db, source, module.PRICE_ROLE, records, today, getattr(module, "FILL_MODES", None)
-        )
-        run.status, run.stats = "ok", stats
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        run.status, run.error = "failed", str(e)
-        raise
-    finally:
-        finish_run(db, run)
-    return stats
+    return record_run(db, f"plugin:{source}", lambda: _run(db, source, module, today))
+
+
+def _run(db: Session, source: str, module: ModuleType | Exception, today: date) -> dict:
+    if isinstance(module, Exception):
+        raise module
+    records = validate(module.parse(), source)
+    return apply_plugin(db, source, module.PRICE_ROLE, records, today, getattr(module, "FILL_MODES", None))
 
 
 def run_plugins(db: Session, today: date | None = None) -> dict:

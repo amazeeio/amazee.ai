@@ -9,9 +9,9 @@ from sqlalchemy.orm import Session
 
 from app.db.models import DBRegion
 from app.registry import config
-from app.registry.discovery import finish_run
-from app.registry.litellm import ProxyClient, fetch_model_list
-from app.registry.models import DBRegistryLitellmVersion, DBRegistryProxy, DBRegistryRun
+from app.registry.litellm import ProxyClient, fetch_json
+from app.registry.models import DBRegistryLitellmVersion, DBRegistryProxy
+from app.registry.runs import record_run
 
 logger = logging.getLogger(__name__)
 
@@ -48,50 +48,42 @@ def fetch_release_lists(db: Session, versions: set[str], now: datetime) -> dict:
             failed[version] = row.error
             continue
         try:
-            payload = fetch_model_list(config.RELEASE_LIST_URL.format(version=version))
+            payload = fetch_json(config.RELEASE_LIST_URL.format(version=version))
         except (httpx.HTTPError, ValueError) as e:
             row.error = str(e)
             failed[version] = row.error
             continue
-        row.payload, row.model_count, row.error = payload, len(payload), None
+        row.payload, row.error = payload, None
         fetched.append(version)
     db.flush()
     return {"fetched": fetched, "failed": failed}
 
 
 def run_version_check(db: Session) -> dict:
-    run = DBRegistryRun(step=STEP, status="running")
-    db.add(run)
-    db.commit()
-    try:
-        now = datetime.now(UTC)
-        stats: dict = {"versions": {}, "unknown": []}
-        for region in active_regions(db):
-            try:
-                with ProxyClient(region.litellm_api_url, region.litellm_api_key) as client:
-                    version = client.version()
-            except Exception as e:  # a bad URL or body in one region must not stop the rest
-                logger.warning("Cannot read the LiteLLM version of %s: %s", region.name, e)
-                version = None
-            proxy = db.get(DBRegistryProxy, region.id)
-            if version is None:
-                # Keep the last known version; ren2-us hides /openapi.json.
-                stats["unknown"].append(region.name)
-                version = proxy.litellm_version if proxy else None
-            else:
-                if proxy is None:
-                    proxy = DBRegistryProxy(region_id=region.id)
-                    db.add(proxy)
-                proxy.litellm_version = version
-            if version:
-                stats["versions"][region.name] = version
-        stats.update(fetch_release_lists(db, set(stats["versions"].values()), now))
-        run.status, run.stats = "ok", stats
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        run.status, run.error = "failed", str(e)
-        raise
-    finally:
-        finish_run(db, run)
+    return record_run(db, STEP, lambda: _check_versions(db))
+
+
+def _check_versions(db: Session) -> dict:
+    now = datetime.now(UTC)
+    stats: dict = {"versions": {}, "unknown": []}
+    for region in active_regions(db):
+        try:
+            with ProxyClient(region.litellm_api_url, region.litellm_api_key) as client:
+                version = client.version()
+        except Exception as e:  # a bad URL or body in one region must not stop the rest
+            logger.warning("Cannot read the LiteLLM version of %s: %s", region.name, e)
+            version = None
+        proxy = db.get(DBRegistryProxy, region.id)
+        if version is None:
+            # Keep the last known version; ren2-us hides /openapi.json.
+            stats["unknown"].append(region.name)
+            version = proxy.litellm_version if proxy else None
+        else:
+            if proxy is None:
+                proxy = DBRegistryProxy(region_id=region.id)
+                db.add(proxy)
+            proxy.litellm_version = version
+        if version:
+            stats["versions"][region.name] = version
+    stats.update(fetch_release_lists(db, set(stats["versions"].values()), now))
     return stats

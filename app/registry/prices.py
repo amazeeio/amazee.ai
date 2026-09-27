@@ -5,12 +5,12 @@ deployment. LiteLLM uses a deployment's own price first, so the proxy then
 charges this price whatever its own list says.
 """
 
-from datetime import date
+from datetime import UTC, date, datetime
 
 from sqlalchemy.orm import Session
 
-from app.registry.litellm import normalize_provider, parse_key
-from app.registry.models import DBRegistryModel, DBRegistryModelPrice, DBRegistryProvider
+from app.registry.litellm import our_entries, parse_key
+from app.registry.models import DBRegistryModel, DBRegistryModelPrice, models_by_ident, prices_by_model
 from app.registry.plugins.loader import override_sources
 
 SOURCE = "litellm"
@@ -23,12 +23,7 @@ def price_fields(entry: dict) -> dict:
 def parse_prices(data: dict, providers: set[str]) -> dict[tuple[str, str], dict[tuple[str, str], dict]]:
     """Every priced scope of every model of our providers."""
     prices: dict[tuple[str, str], dict[tuple[str, str], dict]] = {}
-    for key, entry in data.items():
-        if not isinstance(entry, dict) or key == "sample_spec":
-            continue
-        provider = normalize_provider(entry.get("litellm_provider"))
-        if provider not in providers:
-            continue
+    for key, provider, entry in our_entries(data, providers):
         parsed = parse_key(key, provider)
         fields = price_fields(entry)
         if parsed is None or not fields:
@@ -50,52 +45,62 @@ def apply_prices(
     A scope the list dropped is deleted, so it can never be picked. Models
     that left the list, and prices taken from a proxy at import, are kept.
     """
-    model_ids = {
-        (provider, row.model_id): row.id
-        for row, provider in db.query(DBRegistryModel, DBRegistryProvider.name).join(DBRegistryProvider)
+    models = models_by_ident(db)
+    stored = {
+        model_id: {(p.scope_kind, p.scope): p for p in rows} for model_id, rows in prices_by_model(db).items()
     }
-    stored: dict[int, dict[tuple[str, str], DBRegistryModelPrice]] = {}
-    for row in db.query(DBRegistryModelPrice):
-        stored.setdefault(row.model_id, {})[(row.scope_kind, row.scope)] = row
 
     # A first-party plugin's price beats the list's; leave those rows alone.
     locked = override_sources()
     stats = {"price_scopes": 0, "price_changes": 0, "price_scopes_dropped": 0}
     for ident in listed_models:
-        model_id = model_ids.get(ident)
-        if model_id is None:
+        model = models.get(ident)
+        if model is None:
             continue
         wanted = listed_prices.get(ident, {})
-        have = stored.get(model_id, {})
-        for (kind, scope), fields in wanted.items():
-            stats["price_scopes"] += 1
-            row = have.get((kind, scope))
-            if row is None:
-                db.add(
-                    DBRegistryModelPrice(
-                        model_id=model_id,
-                        scope_kind=kind,
-                        scope=scope,
-                        prices=fields,
-                        source=SOURCE,
-                        last_seen=today,
-                    )
-                )
-                stats["price_changes"] += 1
-                continue
-            if row.source in locked:
-                continue
-            # The list's price replaces one the import took from a proxy.
-            if row.prices != fields or row.source != SOURCE:
-                row.prices, row.source = fields, SOURCE
-                stats["price_changes"] += 1
-            row.last_seen = today
+        have = stored.get(model.id, {})
+        stats["price_scopes"] += len(wanted)
+        # The list's price replaces one the import took from a proxy.
+        stats["price_changes"] += upsert_scopes(db, model.id, have, wanted, SOURCE, today, keep=locked)
         for key, row in have.items():
             # Only the list's own scopes are dropped; a proxy price stays.
             if key not in wanted and row.source == SOURCE:
                 db.delete(row)
                 stats["price_scopes_dropped"] += 1
     return stats
+
+
+def upsert_scopes(
+    db: Session, model_id: int, have: dict, wanted: dict, source: str, today: date, keep=frozenset()
+) -> int:
+    """Write `wanted` scopes as `source`'s; rows of a `keep` source stay as
+    they are. Returns how many scopes were added or changed."""
+    changes = 0
+    for (kind, scope), fields in wanted.items():
+        row = have.get((kind, scope))
+        if row is None:
+            db.add(
+                DBRegistryModelPrice(
+                    model_id=model_id, scope_kind=kind, scope=scope, prices=fields,
+                    source=source, last_seen=today,
+                )
+            )
+            changes += 1
+        elif row.source not in keep:
+            if row.prices != fields or row.source != source:
+                row.prices, row.source = fields, source
+                changes += 1
+            row.last_seen = today
+    return changes
+
+
+def set_headline(model: DBRegistryModel, fields: dict) -> None:
+    """The model row's own price fields, from its base price."""
+    if model.prices != fields:
+        model.prices = fields
+        model.input_cost_per_token = fields.get("input_cost_per_token")
+        model.output_cost_per_token = fields.get("output_cost_per_token")
+        model.updated_at = datetime.now(UTC)
 
 
 def pick_price(

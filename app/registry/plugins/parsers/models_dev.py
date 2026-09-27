@@ -7,8 +7,8 @@ prices do not fit per-token fields.
 """
 
 from app.registry import config
-from app.registry.litellm import parse_key
-from app.registry.plugins.common import fetch_json, per_million
+from app.registry.litellm import fetch_json, parse_key
+from app.registry.values import per_unit
 
 SOURCE = "models_dev"
 ORDER = 100  # after first-party plugins, so it only fills what they left
@@ -49,7 +49,7 @@ def transform(data) -> dict:
             # Image and audio models put non-token prices in these fields.
             if (model.get("modalities") or {}).get("output") not in (None, ["text"]):
                 continue
-            fields = {ours: per_million(cost.get(theirs)) for theirs, ours in FIELDS.items()}
+            fields = {ours: per_unit(cost.get(theirs), 1_000_000) for theirs, ours in FIELDS.items()}
             fields = {k: v for k, v in fields.items() if v is not None}
             if not fields:
                 continue

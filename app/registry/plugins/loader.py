@@ -40,13 +40,9 @@ def load_plugins(include_disabled: bool = False) -> dict[str, ModuleType | Excep
             continue
         if include_disabled or source not in config.DISABLED_PLUGINS:
             plugins[source] = module
-    return dict(sorted(plugins.items(), key=lambda item: _run_key(*item)))
-
-
-def _run_key(source: str, module: ModuleType | Exception) -> tuple:
-    if isinstance(module, Exception):
-        return (0, float("-inf"), source)
-    return (1, module.ORDER, source)
+    return dict(
+        sorted(plugins.items(), key=lambda kv: (not isinstance(kv[1], Exception), getattr(kv[1], "ORDER", 0), kv[0]))
+    )
 
 
 def override_sources() -> set[str]:

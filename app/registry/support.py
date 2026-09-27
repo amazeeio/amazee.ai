@@ -12,18 +12,18 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.db.models import DBRegion
-from app.registry.discovery import finish_run, parse_model_list
-from app.registry.litellm import fetch_model_list, parse_key
+from app.registry.discovery import parse_model_list
+from app.registry.litellm import fetch_json, parse_key
 from app.registry.models import (
     DBRegistryCloudAvailability,
     DBRegistryLitellmVersion,
-    DBRegistryModel,
     DBRegistryModelRegion,
     DBRegistryModelSupport,
     DBRegistryProvider,
     DBRegistryProxy,
-    DBRegistryRun,
+    models_by_ident,
 )
+from app.registry.runs import record_run
 from app.registry.versions import active_regions
 
 logger = logging.getLogger(__name__)
@@ -150,58 +150,47 @@ def apply_support(
 
 
 def run_support_check(db: Session) -> dict:
-    run = DBRegistryRun(step=STEP, status="running")
-    db.add(run)
-    db.commit()
+    return record_run(db, STEP, lambda: _check_support(db))
+
+
+def _check_support(db: Session) -> dict:
     stats: dict = {"regions": {}, "unreachable": {}}
-    try:
-        providers = {p.name for p in db.query(DBRegistryProvider)}
-        models = {
-            (provider, row.model_id): row.id
-            for row, provider in db.query(DBRegistryModel, DBRegistryProvider.name).join(DBRegistryProvider)
+    providers = {p.name for p in db.query(DBRegistryProvider)}
+    models = {ident: model.id for ident, model in models_by_ident(db).items()}
+    proxies = {p.region_id: p for p in db.query(DBRegistryProxy)}
+    availability = Availability(db)
+    releases = {
+        row.version: row.payload
+        for row in db.query(DBRegistryLitellmVersion).filter(DBRegistryLitellmVersion.payload.isnot(None))
+    }
+    release_models: dict[str, set] = {}
+    now = datetime.now(UTC)
+    for region in active_regions(db):
+        url = region.litellm_api_url.rstrip("/") + PRICE_LIST_PATH
+        try:
+            price_list = fetch_json(url)
+        except (httpx.HTTPError, ValueError) as e:
+            # Keep the region's last result rather than guess.
+            stats["unreachable"][region.name] = str(e)
+            continue
+        proxy_models = (
+            set(parse_model_list(priced_entries(price_list), providers)[0])
+            if isinstance(price_list, dict)
+            else set()
+        )
+        if not proxy_models:
+            # A broken or empty list must not mark every model unpriced.
+            stats["unreachable"][region.name] = "price list has no priced models of our providers"
+            continue
+        proxy = proxies.get(region.id)
+        version = proxy.litellm_version if proxy else None
+        cloud_regions = proxy.cloud_regions if proxy else {}
+        if version in releases and version not in release_models:
+            release_models[version] = set(parse_model_list(releases[version], providers)[0])
+        stats["regions"][region.name] = {
+            "version": version,
+            **apply_support(
+                db, region, models, proxy_models, release_models.get(version), availability, cloud_regions, now
+            ),
         }
-        proxies = {p.region_id: p for p in db.query(DBRegistryProxy)}
-        availability = Availability(db)
-        releases = {
-            row.version: row.payload
-            for row in db.query(DBRegistryLitellmVersion).filter(DBRegistryLitellmVersion.payload.isnot(None))
-        }
-        release_models: dict[str, set] = {}
-        now = datetime.now(UTC)
-        for region in active_regions(db):
-            url = region.litellm_api_url.rstrip("/") + PRICE_LIST_PATH
-            try:
-                price_list = fetch_model_list(url)
-            except (httpx.HTTPError, ValueError) as e:
-                # Keep the region's last result rather than guess.
-                stats["unreachable"][region.name] = str(e)
-                continue
-            proxy_models = (
-                set(parse_model_list(priced_entries(price_list), providers)[0])
-                if isinstance(price_list, dict)
-                else set()
-            )
-            if not proxy_models:
-                # A broken or empty list must not mark every model unpriced.
-                stats["unreachable"][region.name] = "price list has no priced models of our providers"
-                continue
-            proxy = proxies.get(region.id)
-            version = proxy.litellm_version if proxy else None
-            cloud_regions = proxy.cloud_regions if proxy else {}
-            if version in releases and version not in release_models:
-                release_models[version] = set(parse_model_list(releases[version], providers)[0])
-            stats["regions"][region.name] = {
-                "version": version,
-                **apply_support(
-                    db, region, models, proxy_models, release_models.get(version), availability, cloud_regions, now
-                ),
-            }
-        run.status, run.stats = "ok", stats
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        run.status, run.error = "failed", str(e)
-        raise
-    finally:
-        finish_run(db, run)
     return stats

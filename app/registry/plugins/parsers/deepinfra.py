@@ -3,7 +3,8 @@
 First-party prices, so they beat LiteLLM's. Public, no key needed.
 """
 
-from app.registry.plugins.common import fetch_json, per_million
+from app.registry.litellm import fetch_json
+from app.registry.values import per_unit
 
 SOURCE = "deepinfra_api"
 ORDER = 10
@@ -11,15 +12,15 @@ PRICE_ROLE = "override"
 URL = "https://api.deepinfra.com/v1/openai/models"
 
 PROVIDER = "deepinfra"
-# DeepInfra field -> (LiteLLM field, divisor). Tokens and characters are
-# priced per million, seconds per second. `per_image_unit` is left out: it is
-# not clear that one unit is one image.
+# DeepInfra field -> (LiteLLM field, units it is priced per). Tokens and
+# characters are priced per million, seconds per second. `per_image_unit` is
+# left out: it is not clear that one unit is one image.
 _PRICES = {
-    "input_tokens": ("input_cost_per_token", True),
-    "output_tokens": ("output_cost_per_token", True),
-    "cache_read_tokens": ("cache_read_input_token_cost", True),
-    "input_characters": ("input_cost_per_character", True),
-    "input_seconds": ("input_cost_per_second", False),
+    "input_tokens": ("input_cost_per_token", 1_000_000),
+    "output_tokens": ("output_cost_per_token", 1_000_000),
+    "cache_read_tokens": ("cache_read_input_token_cost", 1_000_000),
+    "input_characters": ("input_cost_per_character", 1_000_000),
+    "input_seconds": ("input_cost_per_second", 1),
 }
 # The first matching tag wins.
 _MODES = (
@@ -32,13 +33,6 @@ _MODES = (
 )
 
 
-def _price(value, per_million_units: bool):
-    if per_million_units:
-        return per_million(value)
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
-        return None
-    return float(value)
-
 
 def transform(payload: dict) -> dict:
     models = []
@@ -48,8 +42,8 @@ def transform(payload: dict) -> dict:
         meta = row.get("metadata") or {}
         pricing = meta.get("pricing") or {}
         base = {}
-        for theirs, (ours, is_per_million) in _PRICES.items():
-            value = _price(pricing.get(theirs), is_per_million)
+        for theirs, (ours, divisor) in _PRICES.items():
+            value = per_unit(pricing.get(theirs), divisor)
             if value is not None:
                 base[ours] = value
         tags = set(meta.get("tags") or [])

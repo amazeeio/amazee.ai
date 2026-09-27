@@ -62,6 +62,16 @@ def split_model(key: str, provider: str) -> tuple[str, bool] | None:
     return parsed[0], parsed[1] == "geo"
 
 
+def our_entries(data: dict, providers: set[str]):
+    """(key, provider, entry) for each list entry of one of our providers."""
+    for key, entry in data.items():
+        if not isinstance(entry, dict) or key == "sample_spec":
+            continue
+        provider = normalize_provider(entry.get("litellm_provider"))
+        if provider in providers:
+            yield key, provider, entry
+
+
 def deployment_provider(litellm_params: dict) -> str | None:
     """The provider a deployment calls, as LiteLLM resolves it."""
     model = litellm_params.get("model") or ""
@@ -73,7 +83,7 @@ def deployment_provider(litellm_params: dict) -> str | None:
     return None
 
 
-def fetch_model_list(url: str) -> dict:
+def fetch_json(url: str):
     response = httpx.get(url, timeout=HTTP_TIMEOUT_SECONDS)
     response.raise_for_status()
     return response.json()
