@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Daily registry job: refresh the model list, then check what each proxy can price."""
+"""Daily registry job: proxy versions, the model list, then what each proxy can price and knows."""
 
 import logging
 import os
@@ -13,6 +13,7 @@ from app.core.locking import release_lock, try_acquire_lock
 from app.db.database import engine
 from app.registry.discovery import run_discovery
 from app.registry.support import run_support_check
+from app.registry.versions import run_version_check
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -20,8 +21,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 LOCK_NAME = "registry_daily"
-# Fixed order: the support check compares against the list the first step wrote.
-STEPS = (("model list", run_discovery), ("support check", run_support_check))
+# Fixed order: the support check compares the proxies with what the first two wrote.
+STEPS = (
+    ("version check", run_version_check),
+    ("model list", run_discovery),
+    ("support check", run_support_check),
+)
 
 
 def main():

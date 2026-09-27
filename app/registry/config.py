@@ -7,7 +7,14 @@ LITELLM_LIST_URL = os.getenv(
     "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
 )
 
-HTTP_TIMEOUT_SECONDS = float(os.getenv("REGISTRY_HTTP_TIMEOUT_SECONDS", "30"))
+# The list as shipped with one release. A proxy that runs that release but
+# loaded `main` can price newer models its code was never tested with.
+RELEASE_LIST_URL = os.getenv(
+    "REGISTRY_LITELLM_RELEASE_LIST_URL",
+    "https://raw.githubusercontent.com/BerriAI/litellm/v{version}/model_prices_and_context_window.json",
+)
+
+HTTP_TIMEOUT_SECONDS =float(os.getenv("REGISTRY_HTTP_TIMEOUT_SECONDS", "30"))
 
 # The list's `litellm_provider` is sometimes a sub-kind of the provider we
 # deploy with. Any `vertex_ai-*` value is handled in code.
