@@ -1,11 +1,16 @@
 """Read-only access to LiteLLM: a proxy's admin API and the public model list."""
 
+import re
+
 import httpx
 
 from app.registry.config import BEDROCK_GEO_PREFIXES, HTTP_TIMEOUT_SECONDS, PROVIDER_ALIASES
 
 # Bedrock route prefixes that pick an API, not a different model.
 _BEDROCK_ROUTES = ("converse/", "invoke/")
+_AWS_REGION_PATH = re.compile(r"^([a-z]{2}(?:-gov)?-[a-z]+-\d+)/([^/]+)$")
+# Azure data zones: `azure/eu/gpt-4o` is gpt-4o priced for the EU zone.
+AZURE_DATA_ZONES = {"us", "eu", "global"}
 
 
 def normalize_provider(name: str | None) -> str | None:
@@ -17,23 +22,44 @@ def normalize_provider(name: str | None) -> str | None:
     return PROVIDER_ALIASES.get(name, name)
 
 
-def split_model(key: str, provider: str) -> tuple[str, bool] | None:
-    """Turn a LiteLLM model string into (model_id, had_geo_prefix).
+def parse_key(key: str, provider: str) -> tuple[str, str, str] | None:
+    """Turn a LiteLLM model string into (model_id, scope_kind, scope).
 
-    Returns None for Bedrock entries priced per AWS region, per commitment or
-    per image size: they are prices of a model, not models.
+    scope_kind is `base`, `geo` (Bedrock `us.x`, Azure `azure/eu/x`) or
+    `cloud_region` (Bedrock `bedrock/us-east-1/x`). Returns None for Bedrock
+    entries priced per commitment or image size, which we do not track.
     """
     rest = key.removeprefix(f"{provider}/")
+    if provider == "azure":
+        zone, sep, tail = rest.partition("/")
+        if sep and zone in AZURE_DATA_ZONES:
+            return tail, "geo", zone
+        return rest, "base", ""
     if not provider.startswith("bedrock"):
-        return rest, False
+        return rest, "base", ""
     for route in _BEDROCK_ROUTES:
         rest = rest.removeprefix(route)
+    region = _AWS_REGION_PATH.match(rest)
+    if region:
+        return region[2], "cloud_region", region[1]
     if "/" in rest:
         return None
     head, sep, tail = rest.partition(".")
     if sep and tail and head in BEDROCK_GEO_PREFIXES:
-        return tail, True
-    return rest, False
+        return tail, "geo", head
+    return rest, "base", ""
+
+
+def split_model(key: str, provider: str) -> tuple[str, bool] | None:
+    """(model_id, had_geo_prefix) for a string that names a model.
+
+    None for entries that only price a model in one AWS region, per
+    commitment or per image size.
+    """
+    parsed = parse_key(key, provider)
+    if parsed is None or parsed[1] == "cloud_region":
+        return None
+    return parsed[0], parsed[1] == "geo"
 
 
 def deployment_provider(litellm_params: dict) -> str | None:

@@ -1,6 +1,6 @@
 import pytest
 
-from app.registry.litellm import deployment_provider, normalize_provider, split_model
+from app.registry.litellm import deployment_provider, normalize_provider, parse_key, split_model
 
 
 @pytest.mark.parametrize(
@@ -32,3 +32,24 @@ def test_deployment_provider():
     assert deployment_provider({"model": "bedrock/us.amazon.nova-micro-v1:0"}) == "bedrock"
     assert deployment_provider({"model": "nova", "custom_llm_provider": "bedrock"}) == "bedrock"
     assert deployment_provider({"model": "amazon.titan-embed-text-v2:0"}) is None
+
+
+@pytest.mark.parametrize(
+    "key, provider, expected",
+    [
+        ("anthropic.claude-x-v1:0", "bedrock", ("anthropic.claude-x-v1:0", "base", "")),
+        ("us.anthropic.claude-x-v1:0", "bedrock", ("anthropic.claude-x-v1:0", "geo", "us")),
+        ("bedrock/us-gov-west-1/anthropic.claude-x-v1:0", "bedrock", ("anthropic.claude-x-v1:0", "cloud_region", "us-gov-west-1")),
+        ("bedrock/ap-northeast-1/1-month-commitment/anthropic.claude-v2:1", "bedrock", None),
+        ("azure/eu/gpt-4o", "azure", ("gpt-4o", "geo", "eu")),
+        ("azure/gpt-4o", "azure", ("gpt-4o", "base", "")),
+        ("deepinfra/meta-llama/Llama-3", "deepinfra", ("meta-llama/Llama-3", "base", "")),
+    ],
+)
+def test_parse_key(key, provider, expected):
+    assert parse_key(key, provider) == expected
+
+
+def test_split_model_skips_region_prices_and_azure_zones_name_the_model():
+    assert split_model("bedrock/us-east-1/anthropic.claude-x-v1:0", "bedrock") is None
+    assert split_model("azure/eu/gpt-4o", "azure") == ("gpt-4o", True)

@@ -67,6 +67,9 @@ def test_support_check_compares_proxy_list(registry_db, proxy_region):
         "priced": 1,
         "unpriced": 2,
         "deployed_unpriced": ["retired"],
+        "deployed_region_unavailable": [],
+        "deployed_needs_profile": [],
+        "deployed_provisioned_only": [],
     }
     support = {
         row.model_id: row.priced
@@ -161,3 +164,97 @@ def test_supported_follows_each_region_release(registry_db, proxy_region):
     assert set(supported(unknown).values()) == {None}
     assert stats["regions"]["local-us1"]["deployed_unsupported"] == ["retired"]
     assert "supported" not in stats["regions"]["unknown"]
+
+
+def test_region_available_and_needs_profile(registry_db, proxy_region):
+    from app.registry.models import DBRegistryCloudAvailability
+
+    ids = _seed(registry_db, proxy_region)
+    registry_db.add(DBRegistryProxy(region_id=proxy_region.id, cloud_regions={"bedrock": "us-east-1"}))
+    for model_id, region, call_types in (
+        ("anthropic.priced-v1:0", "us-east-1", ["INFERENCE_PROFILE"]),
+        ("anthropic.retired-v1:0", "us-west-2", ["ON_DEMAND"]),
+    ):
+        registry_db.add(
+            DBRegistryCloudAvailability(
+                provider="bedrock", model_id=model_id, cloud_region=region,
+                source="bedrock_community", call_types=call_types, last_seen=date(2026, 9, 27),
+            )
+        )
+    registry_db.commit()
+
+    with patch("app.registry.support.fetch_model_list", return_value=PROXY_LIST):
+        stats = run_support_check(registry_db)["regions"]["local-us1"]
+
+    def available(model_id):
+        return registry_db.get(DBRegistryModelSupport, (ids[model_id], proxy_region.id)).region_available
+
+    assert available("anthropic.priced-v1:0") is True
+    assert available("anthropic.retired-v1:0") is False
+    # No source has this model: unknown, not unavailable.
+    assert available("anthropic.new-v1:0") is None
+    assert stats["deployed_region_unavailable"] == ["retired"]
+    # "priced" is deployed with an in-region id but us-east-1 only has a profile.
+    assert stats["deployed_needs_profile"] == ["priced"]
+    assert stats["deployed_provisioned_only"] == []
+
+
+def test_provisioned_only_and_mantle_are_not_profile_problems(registry_db, proxy_region):
+    from app.registry.models import DBRegistryCloudAvailability, DBRegistryModelRegion
+
+    _seed(registry_db, proxy_region)
+    mantle = DBRegistryProvider(name="bedrock_mantle")
+    registry_db.add(mantle)
+    registry_db.flush()
+    opus = DBRegistryModel(
+        provider_id=mantle.id, model_id="anthropic.opus", supports=[], status="active",
+        source="litellm", first_seen=date(2026, 9, 1), last_seen=date(2026, 9, 1),
+    )
+    registry_db.add(opus)
+    registry_db.flush()
+    registry_db.add(
+        DBRegistryModelRegion(
+            model_id=opus.id, region_id=proxy_region.id, model_name="opus",
+            litellm_model="bedrock_mantle/anthropic.opus", enabled=True,
+        )
+    )
+    registry_db.add(
+        DBRegistryProxy(region_id=proxy_region.id, cloud_regions={"bedrock": "us-east-1", "bedrock_mantle": "us-east-1"})
+    )
+    for provider, model_id, call_types in (
+        ("bedrock", "anthropic.priced-v1:0", ["PROVISIONED"]),
+        ("bedrock_mantle", "anthropic.opus", ["INFERENCE_PROFILE"]),
+    ):
+        registry_db.add(
+            DBRegistryCloudAvailability(
+                provider=provider, model_id=model_id, cloud_region="us-east-1",
+                source="bedrock_community", call_types=call_types, last_seen=date(2026, 9, 27),
+            )
+        )
+    registry_db.commit()
+
+    with patch("app.registry.support.fetch_model_list", return_value=PROXY_LIST):
+        stats = run_support_check(registry_db)["regions"]["local-us1"]
+
+    assert stats["deployed_provisioned_only"] == ["priced"]
+    assert stats["deployed_needs_profile"] == []
+
+
+def test_region_unknown_to_every_source_is_not_unavailable(registry_db, proxy_region):
+    from app.registry.models import DBRegistryCloudAvailability
+
+    ids = _seed(registry_db, proxy_region)
+    registry_db.add(DBRegistryProxy(region_id=proxy_region.id, cloud_regions={"bedrock": "eu-central-2"}))
+    registry_db.add(
+        DBRegistryCloudAvailability(
+            provider="bedrock", model_id="anthropic.priced-v1:0", cloud_region="us-east-1",
+            source="bedrock_community", call_types=["ON_DEMAND"], last_seen=date(2026, 9, 27),
+        )
+    )
+    registry_db.commit()
+
+    with patch("app.registry.support.fetch_model_list", return_value=PROXY_LIST):
+        run_support_check(registry_db)
+
+    row = registry_db.get(DBRegistryModelSupport, (ids["anthropic.priced-v1:0"], proxy_region.id))
+    assert row.region_available is None

@@ -77,7 +77,8 @@ class DBRegistryProxy(Base):
 
     region_id = Column(Integer, ForeignKey("regions.id", ondelete="CASCADE"), primary_key=True)
     litellm_version = Column(String, nullable=True)
-    aws_region_name = Column(String, nullable=True)
+    # The cloud region the proxy calls, per provider: {"bedrock": "us-east-1"}.
+    cloud_regions = Column(JSON, nullable=False, default=dict)
     # Set once by the import. After it, the registry owns what runs on the proxy.
     imported_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -143,6 +144,9 @@ class DBRegistryModelSupport(Base):
     # LiteLLM's lists are our source of truth for support. Empty when the
     # version or its release list is unknown.
     supported = Column(Boolean, nullable=True)
+    # Whether the provider offers the model in the proxy's cloud region. Empty
+    # when no source covers the provider, the model or that region.
+    region_available = Column(Boolean, nullable=True)
     checked_at = Column(DateTime(timezone=True), nullable=False)
 
 
@@ -157,3 +161,55 @@ class DBRegistryLitellmVersion(Base):
     payload = Column(JSON, nullable=True)
     # Set when the release list could not be fetched; the next run tries again.
     error = Column(String, nullable=True)
+
+
+PRICE_SCOPE_KINDS = ("base", "geo", "cloud_region")
+
+
+class DBRegistryModelPrice(Base):
+    """A model's price in one scope: base, a geo (`us`, `eu`) or one cloud region."""
+
+    __tablename__ = "registry_model_prices"
+
+    model_id = Column(Integer, ForeignKey("registry_models.id", ondelete="CASCADE"), primary_key=True)
+    scope_kind = Column(String, primary_key=True)
+    # Empty for `base`.
+    scope = Column(String, primary_key=True, default="")
+    prices = Column(JSON, nullable=False)
+    source = Column(String, nullable=False)
+    last_seen = Column(Date, nullable=False)
+
+
+class DBRegistryCloudAvailability(Base):
+    """A provider offers a model in a cloud region, according to one source.
+
+    Keyed by provider name and model id as text: a source can list models
+    the registry does not have yet.
+    """
+
+    __tablename__ = "registry_cloud_availability"
+
+    provider = Column(String, primary_key=True)
+    model_id = Column(String, primary_key=True)
+    cloud_region = Column(String, primary_key=True)
+    source = Column(String, primary_key=True)
+    # How the model can be called there: Bedrock ON_DEMAND, INFERENCE_PROFILE, ...
+    call_types = Column(JSON, nullable=False, default=list)
+    last_seen = Column(Date, nullable=False)
+
+
+class DBRegistryModelLifecycle(Base):
+    """A model's lifecycle as one source states it."""
+
+    __tablename__ = "registry_model_lifecycle"
+
+    provider = Column(String, primary_key=True)
+    model_id = Column(String, primary_key=True)
+    source = Column(String, primary_key=True)
+    # As the source says it, for example ACTIVE or LEGACY.
+    status = Column(String, nullable=True)
+    launched_at = Column(Date, nullable=True)
+    legacy_at = Column(Date, nullable=True)
+    extended_access_until = Column(Date, nullable=True)
+    eol_date = Column(Date, nullable=True)
+    last_seen = Column(Date, nullable=False)

@@ -65,7 +65,7 @@ def test_import_creates_registry_rows(registry_db, proxy_region):
 
     proxy = registry_db.get(DBRegistryProxy, proxy_region.id)
     assert proxy.litellm_version == "1.102.1"
-    assert proxy.aws_region_name == "us-east-1"
+    assert proxy.cloud_regions == {"bedrock": "us-east-1"}
     assert proxy.imported_at is not None
 
 
@@ -117,3 +117,21 @@ def test_zero_prices_from_model_info_are_stored_as_unknown(registry_db, proxy_re
     assert models["openai.gpt-new"].prices == {}
     assert models["amazon.priced"].output_cost_per_token == Decimal("2e-06")
     assert models["amazon.priced"].prices == {"input_cost_per_token": 0, "output_cost_per_token": 2e-06}
+
+
+def test_cloud_regions_per_provider(registry_db, proxy_region):
+    deployments = [
+        {"model_name": "a", "litellm_params": {"model": "bedrock/x", "aws_region_name": "eu-central-1"}, "model_info": {"id": "1"}},
+        {"model_name": "b", "litellm_params": {"model": "bedrock_mantle/y", "litellm_credential_name": "AWS"}, "model_info": {"id": "2"}},
+        {"model_name": "c", "litellm_params": {"model": "vertex_ai/gemini", "vertex_location": "europe-west4"}, "model_info": {"id": "3"}},
+        {"model_name": "d", "litellm_params": {"model": "deepinfra/m"}, "model_info": {"id": "4"}},
+    ]
+
+    import_deployments(registry_db, proxy_region, deployments, None, {"AWS": "eu-central-1"})
+    registry_db.commit()
+
+    assert registry_db.get(DBRegistryProxy, proxy_region.id).cloud_regions == {
+        "bedrock": "eu-central-1",
+        "bedrock_mantle": "eu-central-1",
+        "vertex_ai": "europe-west4",
+    }

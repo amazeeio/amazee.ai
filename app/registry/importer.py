@@ -50,15 +50,25 @@ def _proxy_model_fields(info: dict) -> dict:
     return fields
 
 
-def _proxy_aws_region(deployments: list[dict], credential_regions: dict[str, str]) -> str | None:
+def _proxy_cloud_regions(deployments: list[dict], credential_regions: dict[str, str]) -> dict:
+    """The cloud region each provider on the proxy calls, first one seen wins."""
+    regions: dict[str, str] = {}
     for dep in deployments:
         params = dep.get("litellm_params") or {}
-        region = params.get("aws_region_name") or credential_regions.get(
-            params.get("litellm_credential_name")
-        )
+        provider = deployment_provider(params)
+        if not provider or provider in regions:
+            continue
+        if provider.startswith("bedrock"):
+            region = params.get("aws_region_name") or credential_regions.get(
+                params.get("litellm_credential_name")
+            )
+        elif provider == "vertex_ai":
+            region = params.get("vertex_location")
+        else:
+            region = None
         if region:
-            return region
-    return None
+            regions[provider] = region
+    return regions
 
 
 def import_deployments(
@@ -126,7 +136,7 @@ def import_deployments(
         proxy = DBRegistryProxy(region_id=region.id)
         db.add(proxy)
     proxy.litellm_version = version
-    proxy.aws_region_name = _proxy_aws_region(deployments, credential_regions)
+    proxy.cloud_regions = _proxy_cloud_regions(deployments, credential_regions)
     proxy.imported_at = datetime.now(UTC)
     return stats
 
