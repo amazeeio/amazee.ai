@@ -176,7 +176,15 @@ def run_support_check(db: Session) -> dict:
                 # Keep the region's last result rather than guess.
                 stats["unreachable"][region.name] = str(e)
                 continue
-            proxy_models = set(parse_model_list(priced_entries(price_list), providers)[0])
+            proxy_models = (
+                set(parse_model_list(priced_entries(price_list), providers)[0])
+                if isinstance(price_list, dict)
+                else set()
+            )
+            if not proxy_models:
+                # A broken or empty list must not mark every model unpriced.
+                stats["unreachable"][region.name] = "price list has no priced models of our providers"
+                continue
             proxy = proxies.get(region.id)
             version = proxy.litellm_version if proxy else None
             cloud_regions = proxy.cloud_regions if proxy else {}

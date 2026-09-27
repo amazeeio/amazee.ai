@@ -54,3 +54,10 @@ def test_transform_splits_bedrock_and_mantle():
 def test_transform_rejects_bad_payload(bad):
     with pytest.raises(ValueError):
         bedrock_community.transform(bad)
+
+
+@pytest.mark.parametrize("field", ["regions", "inferenceTypesSupported"])
+def test_transform_rejects_a_string_where_a_list_belongs(field):
+    row = dict(CATALOG[0], **{field: "us-east-1"})
+    with pytest.raises(ValueError, match="not a list"):
+        bedrock_community.transform([row])
