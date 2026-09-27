@@ -21,6 +21,9 @@ BEDROCK_CATALOG_URL = os.getenv(
     "https://raw.githubusercontent.com/amazonbedrockmodels/amazonbedrockmodels.github.io/main/data/models.json",
 )
 
+# models.dev: a fallback price, only for models no other source prices.
+MODELS_DEV_URL = os.getenv("REGISTRY_MODELS_DEV_URL", "https://models.dev/api.json")
+
 HTTP_TIMEOUT_SECONDS = float(os.getenv("REGISTRY_HTTP_TIMEOUT_SECONDS", "30"))
 
 # The list's `litellm_provider` is sometimes a sub-kind of the provider we
