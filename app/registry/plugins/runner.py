@@ -105,10 +105,11 @@ def validate(output, source: str) -> list[dict]:
     return records
 
 
-def _apply_prices(db, model, own, source, role, prices, today, stats):
+def _apply_prices(db, model, own, source, role, prices, today, stats, fill_modes=None):
     mine = {(p.scope_kind, p.scope): p for p in own if p.source == source}
     others = [p for p in own if p.source != source]
-    if role == "fill" and (others or (not own and model.prices)):
+    wrong_mode = fill_modes is not None and model.mode is not None and model.mode not in fill_modes
+    if role == "fill" and (others or (not own and model.prices) or wrong_mode):
         # Another source prices the model, so a fill source steps aside.
         for p in mine.values():
             db.delete(p)
@@ -142,7 +143,9 @@ def _apply_prices(db, model, own, source, role, prices, today, stats):
         stats["priced"] += 1
 
 
-def apply_plugin(db: Session, source: str, role: str, records: list[dict], today: date) -> dict:
+def apply_plugin(
+    db: Session, source: str, role: str, records: list[dict], today: date, fill_modes: set | None = None
+) -> dict:
     models = {
         (provider, m.model_id): m
         for m, provider in db.query(DBRegistryModel, DBRegistryProvider.name).join(DBRegistryProvider)
@@ -176,7 +179,9 @@ def apply_plugin(db: Session, source: str, role: str, records: list[dict], today
             stats["unmatched"] += 1
         else:
             stats["matched"] += 1
-            _apply_prices(db, model, prices.get(model.id, []), source, role, rec["prices"], today, stats)
+            _apply_prices(
+                db, model, prices.get(model.id, []), source, role, rec["prices"], today, stats, fill_modes
+            )
             # Specs only fill gaps: LiteLLM's list stays the source for them.
             for field in ("mode", "max_input_tokens", "max_output_tokens"):
                 if getattr(model, field) is None and rec[field] is not None:
@@ -216,7 +221,9 @@ def run_plugin(db: Session, source: str, module: ModuleType | Exception, today: 
         if isinstance(module, Exception):
             raise module
         records = validate(module.parse(), source)
-        stats = apply_plugin(db, source, module.PRICE_ROLE, records, today)
+        stats = apply_plugin(
+            db, source, module.PRICE_ROLE, records, today, getattr(module, "FILL_MODES", None)
+        )
         run.status, run.stats = "ok", stats
         db.commit()
     except Exception as e:

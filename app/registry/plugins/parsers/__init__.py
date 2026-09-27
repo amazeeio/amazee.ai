@@ -5,6 +5,7 @@ A plugin module defines:
     SOURCE = "unique_name"      # stored as `source` on every row it writes
     ORDER = 10                  # run order: lower first, ties by SOURCE
     PRICE_ROLE = "override"     # "override": beats LiteLLM's price; "fill": only unpriced models
+    FILL_MODES = {"chat"}       # optional, fill only: price only models in these modes, or with none
     def parse() -> dict: ...    # no input: fetches its own source
 
 and returns:
@@ -17,8 +18,7 @@ and returns:
                        "extended_access_until": None, "eol_date": None},
          "regions": [{"cloud_region": "us-east-1", "call_types": ["ON_DEMAND"]}]}]}
 
-All plugins run as one daily step, after LiteLLM's model list and before
-models.dev. Give first-party "override" plugins a lower ORDER than "fill"
+All plugins run as one daily step, after LiteLLM's model list. Give first-party "override" plugins a lower ORDER than "fill"
 ones: a fill plugin then sees the override prices of the same run and steps
 aside.
 
