@@ -117,7 +117,7 @@ def test_apply_refuses_list_that_drops_most_models(registry_db):
 def test_run_discovery_records_run(registry_db):
     _add_provider(registry_db)
     registry_db.commit()
-    with patch("app.registry.discovery.fetch_model_list", return_value=LIST) as fetch:
+    with patch("app.registry.discovery.fetch_json", return_value=LIST) as fetch:
         stats = run_discovery(registry_db, today=date(2026, 9, 26))
 
     fetch.assert_called_once_with(config.LITELLM_LIST_URL)
@@ -129,7 +129,7 @@ def test_run_discovery_records_run(registry_db):
 def test_run_discovery_failed_fetch_writes_no_models(registry_db):
     _add_provider(registry_db)
     registry_db.commit()
-    with patch("app.registry.discovery.fetch_model_list", side_effect=RuntimeError("boom")):
+    with patch("app.registry.discovery.fetch_json", side_effect=RuntimeError("boom")):
         with pytest.raises(RuntimeError):
             run_discovery(registry_db)
 

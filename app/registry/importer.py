@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime
 from sqlalchemy.orm import Session
 
 from app.db.models import DBRegion
-from app.registry.discovery import entry_fields, finish_run
+from app.registry.discovery import entry_fields
 from app.registry.litellm import ProxyClient, deployment_provider, split_model
 from app.registry.models import (
     DBRegistryAccessGroup,
@@ -20,8 +20,8 @@ from app.registry.models import (
     DBRegistryModelRegionGroup,
     DBRegistryProvider,
     DBRegistryProxy,
-    DBRegistryRun,
 )
+from app.registry.runs import record_run
 
 logger = logging.getLogger(__name__)
 
@@ -154,21 +154,12 @@ def import_deployments(
 
 def import_proxy(db: Session, region: DBRegion) -> dict:
     """Read one region's proxy and import it, in one transaction."""
-    run = DBRegistryRun(step=STEP, status="running", stats={"region": region.name})
-    db.add(run)
-    db.commit()
-    try:
-        with ProxyClient(region.litellm_api_url, region.litellm_api_key) as client:
-            deployments = client.model_info()
-            version = client.version()
-            credential_regions = client.credential_regions()
-        stats = import_deployments(db, region, deployments, version, credential_regions)
-        run.status, run.stats = "ok", {"region": region.name, **stats}
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        run.status, run.error = "failed", str(e)
-        raise
-    finally:
-        finish_run(db, run)
-    return run.stats
+    return record_run(db, STEP, lambda: _import(db, region), extra={"region": region.name})
+
+
+def _import(db: Session, region: DBRegion) -> dict:
+    with ProxyClient(region.litellm_api_url, region.litellm_api_key) as client:
+        deployments = client.model_info()
+        version = client.version()
+        credential_regions = client.credential_regions()
+    return import_deployments(db, region, deployments, version, credential_regions)

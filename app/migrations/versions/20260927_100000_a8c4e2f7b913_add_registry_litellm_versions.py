@@ -21,7 +21,6 @@ def upgrade() -> None:
         "registry_litellm_versions",
         sa.Column("version", sa.String(), primary_key=True),
         sa.Column("fetched_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("model_count", sa.Integer(), nullable=True),
         sa.Column("payload", sa.JSON(), nullable=True),
         sa.Column("error", sa.String(), nullable=True),
     )

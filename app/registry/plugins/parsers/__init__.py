@@ -23,7 +23,8 @@ ones: a fill plugin then sees the override prices of the same run and steps
 aside.
 
 Every key but provider and model_id is optional. Prices use LiteLLM's
-per-unit field names (`input_cost_per_token`, ...); the plugin converts units.
+per-unit field names (`input_cost_per_token`, ...); the plugin converts units
+with `app.registry.values.per_unit` and fetches with `app.registry.litellm.fetch_json`.
 Keep fetching in parse() and the mapping in a pure function, so tests can
 feed a saved payload.
 """

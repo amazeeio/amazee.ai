@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 from sqlalchemy import (
     JSON,
     Boolean,
@@ -15,11 +17,8 @@ from sqlalchemy.sql import func
 from app.db.models import Base
 
 # `removed`: the model left LiteLLM's list. The row stays.
-MODEL_STATUSES = ("active", "removed")
-# Where a model row came from. Only rows from the LiteLLM list can be marked
-# removed when they leave it; a model we only know from a proxy never was
-# on the list, so its absence there says nothing.
-MODEL_SOURCES = ("litellm", "proxy")
+
+
 
 
 class DBRegistryProvider(Base):
@@ -52,7 +51,10 @@ class DBRegistryModel(Base):
     # Names of the `supports_*` flags that are true, without the prefix.
     supports = Column(JSON, nullable=False, default=list)
     eol_date = Column(Date, nullable=True)
+    # `active`, or `removed` once the model left LiteLLM's list. The row stays.
     status = Column(String, nullable=False, default="active")
+    # `litellm` or `proxy`. Only rows from the list can be marked removed when
+    # they leave it; a model only a proxy knows never was on the list.
     source = Column(String, nullable=False)
     first_seen = Column(Date, nullable=False)
     last_seen = Column(Date, nullable=False)
@@ -157,13 +159,9 @@ class DBRegistryLitellmVersion(Base):
 
     version = Column(String, primary_key=True)
     fetched_at = Column(DateTime(timezone=True), nullable=False)
-    model_count = Column(Integer, nullable=True)
     payload = Column(JSON, nullable=True)
     # Set when the release list could not be fetched; the next run tries again.
     error = Column(String, nullable=True)
-
-
-PRICE_SCOPE_KINDS = ("base", "geo", "cloud_region")
 
 
 class DBRegistryModelPrice(Base):
@@ -172,6 +170,7 @@ class DBRegistryModelPrice(Base):
     __tablename__ = "registry_model_prices"
 
     model_id = Column(Integer, ForeignKey("registry_models.id", ondelete="CASCADE"), primary_key=True)
+    # `base`, `geo` or `cloud_region`.
     scope_kind = Column(String, primary_key=True)
     # Empty for `base`.
     scope = Column(String, primary_key=True, default="")
@@ -213,3 +212,19 @@ class DBRegistryModelLifecycle(Base):
     extended_access_until = Column(Date, nullable=True)
     eol_date = Column(Date, nullable=True)
     last_seen = Column(Date, nullable=False)
+
+
+def models_by_ident(db) -> dict[tuple[str, str], DBRegistryModel]:
+    """Every registry model by (provider name, model_id)."""
+    return {
+        (provider, model.model_id): model
+        for model, provider in db.query(DBRegistryModel, DBRegistryProvider.name).join(DBRegistryProvider)
+    }
+
+
+def prices_by_model(db) -> dict[int, list[DBRegistryModelPrice]]:
+    """Every price row, grouped by model id."""
+    grouped: dict[int, list[DBRegistryModelPrice]] = defaultdict(list)
+    for price in db.query(DBRegistryModelPrice):
+        grouped[price.model_id].append(price)
+    return grouped

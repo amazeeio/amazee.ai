@@ -59,7 +59,7 @@ def _seed(db, region):
 
 def test_support_check_compares_proxy_list(registry_db, proxy_region):
     ids = _seed(registry_db, proxy_region)
-    with patch("app.registry.support.fetch_model_list", return_value=PROXY_LIST) as fetch:
+    with patch("app.registry.support.fetch_json", return_value=PROXY_LIST) as fetch:
         stats = run_support_check(registry_db)
 
     fetch.assert_called_once_with("http://litellm:4000/public/litellm_model_cost_map")
@@ -84,7 +84,7 @@ def test_support_check_compares_proxy_list(registry_db, proxy_region):
 
     # After a restart the proxy knows the new model; the same rows are updated.
     restarted = {**PROXY_LIST, "anthropic.new-v1:0": {"litellm_provider": "bedrock", "output_cost_per_token": 0}}
-    with patch("app.registry.support.fetch_model_list", return_value=restarted):
+    with patch("app.registry.support.fetch_json", return_value=restarted):
         run_support_check(registry_db)
     assert registry_db.query(DBRegistryModelSupport).count() == 3
     new = registry_db.get(DBRegistryModelSupport, (ids["anthropic.new-v1:0"], proxy_region.id))
@@ -96,7 +96,7 @@ def test_unreachable_proxy_keeps_its_last_result(registry_db, proxy_region):
     other = DBRegion(name="down", litellm_api_url="http://down:4000", litellm_api_key="k", is_active=True)
     registry_db.add(other)
     registry_db.commit()
-    with patch("app.registry.support.fetch_model_list", return_value=PROXY_LIST):
+    with patch("app.registry.support.fetch_json", return_value=PROXY_LIST):
         run_support_check(registry_db)
     before = {
         (r.model_id, r.priced, r.checked_at)
@@ -108,7 +108,7 @@ def test_unreachable_proxy_keeps_its_last_result(registry_db, proxy_region):
             raise httpx.ConnectError("refused")
         return PROXY_LIST
 
-    with patch("app.registry.support.fetch_model_list", side_effect=fetch):
+    with patch("app.registry.support.fetch_json", side_effect=fetch):
         stats = run_support_check(registry_db)
 
     assert "down" in stats["unreachable"] and "local-us1" in stats["regions"]
@@ -150,7 +150,7 @@ def test_supported_follows_each_region_release(registry_db, proxy_region):
     )
     registry_db.commit()
 
-    with patch("app.registry.support.fetch_model_list", return_value=PROXY_LIST):
+    with patch("app.registry.support.fetch_json", return_value=PROXY_LIST):
         stats = run_support_check(registry_db)
 
     def supported(region):
@@ -184,7 +184,7 @@ def test_region_available_and_needs_profile(registry_db, proxy_region):
         )
     registry_db.commit()
 
-    with patch("app.registry.support.fetch_model_list", return_value=PROXY_LIST):
+    with patch("app.registry.support.fetch_json", return_value=PROXY_LIST):
         stats = run_support_check(registry_db)["regions"]["local-us1"]
 
     def available(model_id):
@@ -234,7 +234,7 @@ def test_provisioned_only_and_mantle_are_not_profile_problems(registry_db, proxy
         )
     registry_db.commit()
 
-    with patch("app.registry.support.fetch_model_list", return_value=PROXY_LIST):
+    with patch("app.registry.support.fetch_json", return_value=PROXY_LIST):
         stats = run_support_check(registry_db)["regions"]["local-us1"]
 
     assert stats["deployed_provisioned_only"] == ["priced"]
@@ -254,7 +254,7 @@ def test_region_unknown_to_every_source_is_not_unavailable(registry_db, proxy_re
     )
     registry_db.commit()
 
-    with patch("app.registry.support.fetch_model_list", return_value=PROXY_LIST):
+    with patch("app.registry.support.fetch_json", return_value=PROXY_LIST):
         run_support_check(registry_db)
 
     row = registry_db.get(DBRegistryModelSupport, (ids["anthropic.priced-v1:0"], proxy_region.id))
@@ -264,10 +264,10 @@ def test_region_unknown_to_every_source_is_not_unavailable(registry_db, proxy_re
 @pytest.mark.parametrize("body", [["not", "an", "object"], {}, {"x": {"litellm_provider": "bedrock"}}])
 def test_broken_proxy_price_list_is_skipped(registry_db, proxy_region, body):
     ids = _seed(registry_db, proxy_region)
-    with patch("app.registry.support.fetch_model_list", return_value=PROXY_LIST):
+    with patch("app.registry.support.fetch_json", return_value=PROXY_LIST):
         run_support_check(registry_db)
 
-    with patch("app.registry.support.fetch_model_list", return_value=body):
+    with patch("app.registry.support.fetch_json", return_value=body):
         stats = run_support_check(registry_db)
 
     assert "local-us1" in stats["unreachable"]
