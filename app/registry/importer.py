@@ -42,10 +42,11 @@ def _get_or_create(db: Session, model, defaults: dict | None = None, **keys):
 
 def _proxy_model_fields(info: dict) -> dict:
     fields = entry_fields(info)
-    # /model/info fills both prices with 0 for a model LiteLLM does not know.
+    # /model/info fills prices with 0 for a model LiteLLM does not know.
     # Stored as 0 it would look free, so it is stored as unknown.
-    if not fields["input_cost_per_token"] and not fields["output_cost_per_token"]:
+    if not any(fields["prices"].values()):
         fields["input_cost_per_token"] = fields["output_cost_per_token"] = None
+        fields["prices"] = {}
     return fields
 
 
@@ -111,6 +112,7 @@ def import_deployments(
             litellm_deployment_id=info.get("id"),
             input_cost_per_token=fields["input_cost_per_token"],
             output_cost_per_token=fields["output_cost_per_token"],
+            prices=fields["prices"],
             enabled=True,
         )
         db.add(model_region)

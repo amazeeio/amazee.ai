@@ -54,6 +54,7 @@ def entry_fields(entry: dict) -> dict:
         "max_output_tokens": _as_int(entry.get("max_output_tokens") or entry.get("max_tokens")),
         "input_cost_per_token": _as_decimal(entry.get("input_cost_per_token")),
         "output_cost_per_token": _as_decimal(entry.get("output_cost_per_token")),
+        "prices": {k: v for k, v in sorted(entry.items()) if "cost" in k and v is not None},
         "supports": sorted(
             k.removeprefix("supports_") for k, v in entry.items() if k.startswith("supports_") and v is True
         ),
@@ -94,23 +95,23 @@ def parse_model_list(data: dict, providers: set[str]) -> tuple[dict[tuple[str, s
 
 
 def apply_model_list(db: Session, listed: dict[tuple[str, str], dict], today: date) -> dict:
-    """Insert new models, refresh listed ones, deprecate the ones that left."""
+    """Insert new models, refresh listed ones, mark the ones that left as removed."""
     providers = {p.name: p.id for p in db.query(DBRegistryProvider).all()}
     by_ident = {
         (row_provider, row.model_id): row
         for row, row_provider in db.query(DBRegistryModel, DBRegistryProvider.name).join(DBRegistryProvider)
     }
-    # Only active rows can be newly deprecated, so only they count here.
+    # Only active rows can be newly removed, so only they count here.
     at_risk = {
         ident for ident, row in by_ident.items() if row.source == "litellm" and row.status == "active"
     }
     kept = len(at_risk & listed.keys())
     if at_risk and kept < len(at_risk) * config.MIN_KEPT_RATIO:
         raise RuntimeError(
-            f"list keeps {kept} of {len(at_risk)} known models; refusing to deprecate the rest"
+            f"list keeps {kept} of {len(at_risk)} known models; refusing to remove the rest"
         )
 
-    stats = {"listed": len(listed), "inserted": 0, "updated": 0, "deprecated": 0}
+    stats = {"listed": len(listed), "inserted": 0, "updated": 0, "removed": 0}
     for (provider, model_id), fields in listed.items():
         row = by_ident.get((provider, model_id))
         if row is None:
@@ -138,10 +139,10 @@ def apply_model_list(db: Session, listed: dict[tuple[str, str], dict], today: da
         stats["updated"] += bool(changed)
 
     for ident, row in by_ident.items():
-        if ident not in listed and row.source == "litellm" and row.status != "deprecated":
-            row.status = "deprecated"
+        if ident not in listed and row.source == "litellm" and row.status != "removed":
+            row.status = "removed"
             row.updated_at = datetime.now(UTC)
-            stats["deprecated"] += 1
+            stats["removed"] += 1
     return stats
 
 
@@ -155,7 +156,7 @@ def run_discovery(db: Session, today: date | None = None) -> dict:
             # Providers come from the proxy import. Without them every model
             # would be filtered out, so there is nothing to do yet.
             logger.warning("No registry providers yet; run the proxy import first")
-            stats = {"listed": 0, "inserted": 0, "updated": 0, "deprecated": 0}
+            stats = {"listed": 0, "inserted": 0, "updated": 0, "removed": 0}
         else:
             listed, variants = parse_model_list(fetch_model_list(config.LITELLM_LIST_URL), providers)
             stats = apply_model_list(db, listed, today or date.today())
