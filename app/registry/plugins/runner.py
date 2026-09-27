@@ -1,8 +1,10 @@
 """Run every source plugin, check its output, and write it to the registry.
 
-Plugins only enhance models the registry already has; which models exist
-is decided by LiteLLM's list and the proxy import. A plugin's output is
-untrusted data: it is checked in full before anything is written.
+Prices and specs only go to models the registry already has; which models
+exist is decided by LiteLLM's list and the proxy import. Lifecycle and
+regions are keyed by text, so they are stored for every model a source
+lists, known or not. A plugin's output is untrusted data: it is checked in
+full before anything is written.
 """
 
 import logging
@@ -149,12 +151,16 @@ def apply_plugin(db: Session, source: str, role: str, records: list[dict], today
     for p in db.query(DBRegistryModelPrice):
         prices.setdefault(p.model_id, []).append(p)
 
-    # The models this source wrote before; a broken source would drop most of them.
+    # The models the source's last run listed; a broken source would drop most
+    # of them. Older rows are left out: kept history must not raise the bar.
     by_id = {m.id: ident for ident, m in models.items()}
-    before = {by_id[p.model_id] for rows in prices.values() for p in rows if p.source == source}
-    before |= {
-        (r.provider, r.model_id) for r in db.query(DBRegistryModelLifecycle).filter_by(source=source)
-    }
+    seen = [(by_id[p.model_id], p.last_seen) for rows in prices.values() for p in rows if p.source == source]
+    seen += [
+        ((r.provider, r.model_id), r.last_seen)
+        for r in db.query(DBRegistryModelLifecycle).filter_by(source=source)
+    ]
+    latest = max((day for _, day in seen), default=None)
+    before = {ident for ident, day in seen if day == latest}
     listed = {r["ident"] for r in records}
     if before and len(before & listed) < len(before) * config.MIN_KEPT_RATIO:
         raise RuntimeError(f"{source} keeps {len(before & listed)} of {len(before)} known models; refusing to write")
@@ -168,13 +174,13 @@ def apply_plugin(db: Session, source: str, role: str, records: list[dict], today
         model = models.get(rec["ident"])
         if model is None:
             stats["unmatched"] += 1
-            continue
-        stats["matched"] += 1
-        _apply_prices(db, model, prices.get(model.id, []), source, role, rec["prices"], today, stats)
-        # Specs only fill gaps: LiteLLM's list stays the source for them.
-        for field in ("mode", "max_input_tokens", "max_output_tokens"):
-            if getattr(model, field) is None and rec[field] is not None:
-                setattr(model, field, rec[field])
+        else:
+            stats["matched"] += 1
+            _apply_prices(db, model, prices.get(model.id, []), source, role, rec["prices"], today, stats)
+            # Specs only fill gaps: LiteLLM's list stays the source for them.
+            for field in ("mode", "max_input_tokens", "max_output_tokens"):
+                if getattr(model, field) is None and rec[field] is not None:
+                    setattr(model, field, rec[field])
         provider, model_id = rec["ident"]
         if rec["lifecycle"] is not None:
             row = db.get(DBRegistryModelLifecycle, (provider, model_id, source))
@@ -195,10 +201,10 @@ def apply_plugin(db: Session, source: str, role: str, records: list[dict], today
                 )
             else:
                 row.call_types, row.last_seen = call_types, today
-    # Availability means "offered now": regions this run did not list go.
-    for key, row in availability.items():
-        if key[:2] in listed:
-            db.delete(row)
+    # Availability means "offered now": every region this run did not list
+    # goes, including all regions of a model the source dropped.
+    for row in availability.values():
+        db.delete(row)
     return stats
 
 

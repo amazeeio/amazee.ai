@@ -187,3 +187,46 @@ def test_list_does_not_blank_a_spec_a_plugin_filled(registry_db):
 
     assert stats["updated"] == 0
     assert model.mode == "chat" and model.max_input_tokens == 100
+
+
+def test_lifecycle_and_regions_are_kept_for_unknown_models(registry_db):
+    records = validate(_out([{"provider": "bedrock", "model_id": "not-in-registry",
+                              "lifecycle": {"status": "ACTIVE"}, "regions": [{"cloud_region": "us-east-1"}]}]), "test_src")
+
+    stats = apply_plugin(registry_db, "test_src", "fill", records, TODAY)
+    registry_db.commit()
+
+    assert stats["unmatched"] == 1
+    assert registry_db.get(DBRegistryModelLifecycle, ("bedrock", "not-in-registry", "test_src")) is not None
+    assert registry_db.query(DBRegistryCloudAvailability).filter_by(model_id="not-in-registry").count() == 1
+
+
+def test_a_dropped_model_loses_its_regions_but_keeps_its_lifecycle(registry_db):
+    def run(model_ids, day):
+        records = validate(_out([{"provider": "bedrock", "model_id": m, "lifecycle": {"status": "ACTIVE"},
+                                  "regions": [{"cloud_region": "us-east-1"}]} for m in model_ids]), "test_src")
+        apply_plugin(registry_db, "test_src", "fill", records, day)
+        registry_db.commit()
+
+    run(["a", "b"], TODAY)
+    run(["a"], date(2026, 9, 28))
+
+    assert {r.model_id for r in registry_db.query(DBRegistryCloudAvailability)} == {"a"}
+    assert {r.model_id for r in registry_db.query(DBRegistryModelLifecycle)} == {"a", "b"}
+
+
+def test_guard_counts_only_the_last_run(registry_db):
+    def run(model_ids, day):
+        records = validate(_out([{"provider": "bedrock", "model_id": m, "lifecycle": {"status": "ACTIVE"}}
+                                 for m in model_ids]), "test_src")
+        apply_plugin(registry_db, "test_src", "fill", records, day)
+        registry_db.commit()
+
+    # The list changes by half each day. Counting all six models ever seen,
+    # day 3 would keep 2 of 6 and be refused; against day 2 it keeps 2 of 4.
+    run(["x1", "x2", "x3", "x4"], date(2026, 9, 1))
+    run(["x3", "x4", "y1", "y2"], date(2026, 9, 2))
+    run(["y1", "y2", "y3", "y4"], date(2026, 9, 3))
+
+    with pytest.raises(RuntimeError, match="refusing"):
+        run(["y1"], date(2026, 9, 4))
