@@ -8,7 +8,8 @@ from sqlalchemy.orm import Session
 
 from app.registry import config
 from app.registry.litellm import fetch_model_list, normalize_provider, split_model
-from app.registry.models import DBRegistryModel, DBRegistryProvider, DBRegistryRun
+from app.registry.models import DBRegistryModel, DBRegistryModelPrice, DBRegistryProvider, DBRegistryRun
+from app.registry.plugins.loader import override_sources
 from app.registry.prices import apply_prices, parse_prices, price_fields
 
 logger = logging.getLogger(__name__)
@@ -95,6 +96,10 @@ def parse_model_list(data: dict, providers: set[str]) -> tuple[dict[tuple[str, s
     return models, variants
 
 
+_HEADLINE_PRICE_FIELDS = ("prices", "input_cost_per_token", "output_cost_per_token")
+_PLUGIN_FILLED_SPECS = ("mode", "max_input_tokens", "max_output_tokens")
+
+
 def apply_model_list(db: Session, listed: dict[tuple[str, str], dict], today: date) -> dict:
     """Insert new models, refresh listed ones, mark the ones that left as removed."""
     providers = {p.name: p.id for p in db.query(DBRegistryProvider).all()}
@@ -112,9 +117,20 @@ def apply_model_list(db: Session, listed: dict[tuple[str, str], dict], today: da
             f"list keeps {kept} of {len(at_risk)} known models; refusing to remove the rest"
         )
 
+    # Models whose base price comes from a first-party plugin keep it as
+    # their headline price; the list must not overwrite it every day.
+    locked = {
+        p.model_id
+        for p in db.query(DBRegistryModelPrice).filter(
+            DBRegistryModelPrice.scope_kind == "base",
+            DBRegistryModelPrice.source.in_(override_sources()),
+        )
+    }
     stats = {"listed": len(listed), "inserted": 0, "updated": 0, "removed": 0}
     for (provider, model_id), fields in listed.items():
         row = by_ident.get((provider, model_id))
+        if row is not None and row.id in locked:
+            fields = {k: v for k, v in fields.items() if k not in _HEADLINE_PRICE_FIELDS}
         if row is None:
             db.add(
                 DBRegistryModel(
@@ -129,7 +145,12 @@ def apply_model_list(db: Session, listed: dict[tuple[str, str], dict], today: da
             )
             stats["inserted"] += 1
             continue
-        changed = {k: v for k, v in fields.items() if getattr(row, k) != v}
+        changed = {
+            k: v
+            for k, v in fields.items()
+            # A spec the list lacks may come from a plugin; don't blank it.
+            if getattr(row, k) != v and not (v is None and k in _PLUGIN_FILLED_SPECS)
+        }
         if row.status != "active" or row.source != "litellm":
             changed.update(status="active", source="litellm")
         for k, v in changed.items():

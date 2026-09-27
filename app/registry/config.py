@@ -24,6 +24,11 @@ BEDROCK_CATALOG_URL = os.getenv(
 # models.dev: a fallback price, only for models no other source prices.
 MODELS_DEV_URL = os.getenv("REGISTRY_MODELS_DEV_URL", "https://models.dev/api.json")
 
+# Source plugins to skip, by SOURCE name, comma separated: "deepinfra_api".
+DISABLED_PLUGINS = {
+    name.strip() for name in os.getenv("REGISTRY_DISABLED_PLUGINS", "").split(",") if name.strip()
+}
+
 HTTP_TIMEOUT_SECONDS = float(os.getenv("REGISTRY_HTTP_TIMEOUT_SECONDS", "30"))
 
 # The list's `litellm_provider` is sometimes a sub-kind of the provider we
