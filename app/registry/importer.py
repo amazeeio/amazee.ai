@@ -40,6 +40,15 @@ def _get_or_create(db: Session, model, defaults: dict | None = None, **keys):
     return row
 
 
+def _proxy_model_fields(info: dict) -> dict:
+    fields = entry_fields(info)
+    # /model/info fills both prices with 0 for a model LiteLLM does not know.
+    # Stored as 0 it would look free, so it is stored as unknown.
+    if not fields["input_cost_per_token"] and not fields["output_cost_per_token"]:
+        fields["input_cost_per_token"] = fields["output_cost_per_token"] = None
+    return fields
+
+
 def _proxy_aws_region(deployments: list[dict], credential_regions: dict[str, str]) -> str | None:
     for dep in deployments:
         params = dep.get("litellm_params") or {}
@@ -84,7 +93,7 @@ def import_deployments(
             provider_id=provider.id,
             model_id=split[0],
             defaults={
-                **entry_fields(info),
+                **_proxy_model_fields(info),
                 "status": "active",
                 "source": "proxy",
                 "first_seen": today,

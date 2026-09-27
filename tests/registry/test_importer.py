@@ -91,3 +91,26 @@ def test_import_uses_base_model_and_ignores_duplicate_groups(registry_db, proxy_
     assert registry_db.query(DBRegistryModel).one().model_id == "gpt-4o"
     assert registry_db.query(DBRegistryModelRegion).one().litellm_model == "azure/our-gpt4o-deployment"
     assert registry_db.query(DBRegistryModelRegionGroup).count() == 1
+
+
+def test_zero_prices_from_model_info_are_stored_as_unknown(registry_db, proxy_region):
+    deployments = [
+        {
+            "model_name": "unknown",
+            "litellm_params": {"model": "bedrock/openai.gpt-new"},
+            "model_info": {"id": "u-1", "input_cost_per_token": 0, "output_cost_per_token": 0.0},
+        },
+        {
+            "model_name": "known",
+            "litellm_params": {"model": "bedrock/amazon.priced"},
+            "model_info": {"id": "k-1", "input_cost_per_token": 0, "output_cost_per_token": 2e-06},
+        },
+    ]
+
+    import_deployments(registry_db, proxy_region, deployments, None, {})
+    registry_db.commit()
+
+    models = {m.model_id: m for m in registry_db.query(DBRegistryModel)}
+    assert models["openai.gpt-new"].input_cost_per_token is None
+    assert models["openai.gpt-new"].output_cost_per_token is None
+    assert models["amazon.priced"].output_cost_per_token == Decimal("2e-06")
