@@ -64,3 +64,22 @@ def test_version_check_updates_proxies_and_keeps_unknown(registry_db, proxy_regi
     assert registry_db.get(DBRegistryProxy, proxy_region.id).litellm_version == "1.105.0"
     assert registry_db.get(DBRegistryProxy, hidden.id).litellm_version == "1.101.0"
     assert sorted(stats["fetched"]) == ["1.101.0", "1.105.0"]
+
+
+def test_one_bad_region_does_not_stop_the_others(registry_db, proxy_region):
+    bad = DBRegion(name="bad", litellm_api_url="http://bad-host:4000", litellm_api_key="k", is_active=True)
+    registry_db.add(bad)
+    registry_db.commit()
+
+    def version(self):
+        if "bad-host" in str(self._client.base_url):
+            raise AttributeError("'list' object has no attribute 'get'")
+        return "1.105.0"
+
+    with (
+        patch("app.registry.versions.ProxyClient.version", version),
+        patch("app.registry.versions.fetch_model_list", return_value=RELEASE),
+    ):
+        stats = run_version_check(registry_db)
+
+    assert stats["versions"] == {"local-us1": "1.105.0"} and stats["unknown"] == ["bad"]

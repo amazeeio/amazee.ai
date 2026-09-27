@@ -230,3 +230,43 @@ def test_guard_counts_only_the_last_run(registry_db):
 
     with pytest.raises(RuntimeError, match="refusing"):
         run(["y1"], date(2026, 9, 4))
+
+
+def test_list_without_a_price_keeps_another_sources_headline(registry_db):
+    model = _model(registry_db, "deepinfra", "m", prices={"input_cost_per_token": 1e-06}, source="proxy")
+    _price(registry_db, model, "proxy", 1e-06)
+    registry_db.commit()
+
+    stats = apply_model_list(registry_db, {("deepinfra", "m"): {"prices": {}, "input_cost_per_token": None,
+                                                              "output_cost_per_token": None, "mode": "chat"}}, date(2026, 9, 28))
+
+    assert stats["updated"] == 1  # mode and source still update
+    assert model.prices == {"input_cost_per_token": 1e-06} and model.mode == "chat"
+
+
+def test_override_that_stops_pricing_clears_the_headline_it_set(registry_db):
+    model = _model(registry_db, "deepinfra", "m")
+    _price(registry_db, model, "litellm", 1e-06)
+    registry_db.commit()
+    priced = validate(_out([{"provider": "deepinfra", "model_id": "m", "prices": {"base": {"input_cost_per_token": 2e-06}}}]), "test_src")
+    apply_plugin(registry_db, "test_src", "override", priced, TODAY)
+    registry_db.commit()
+
+    unpriced = validate(_out([{"provider": "deepinfra", "model_id": "m"}]), "test_src")
+    apply_plugin(registry_db, "test_src", "override", unpriced, date(2026, 9, 28))
+    registry_db.commit()
+
+    assert registry_db.get(DBRegistryModelPrice, (model.id, "base", "")) is None
+    assert model.prices == {} and model.input_cost_per_token is None
+
+
+def test_geo_only_price_never_becomes_the_headline(registry_db):
+    model = _model(registry_db, "bedrock", "m", source="proxy")
+    registry_db.commit()
+    records = validate(_out([{"provider": "bedrock", "model_id": "m", "prices": {"geo:us": {"input_cost_per_token": 3e-06}}}]), "test_src")
+
+    apply_plugin(registry_db, "test_src", "fill", records, TODAY)
+    registry_db.commit()
+
+    assert registry_db.get(DBRegistryModelPrice, (model.id, "geo", "us")) is not None
+    assert model.prices == {}

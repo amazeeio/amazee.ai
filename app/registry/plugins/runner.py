@@ -132,15 +132,24 @@ def _apply_prices(db, model, own, source, role, prices, today, stats, fill_modes
             row.last_seen = today
     for key, row in mine.items():
         if key not in prices:
+            if key == ("base", "") and model.prices == row.prices:
+                # The headline came from this row: unknown until the list's
+                # next run prices the model again, not a stale plugin price.
+                _set_headline(model, {})
             db.delete(row)
+    # The headline is the base price only; a geo price never stands in for it.
+    if ("base", "") in prices:
+        _set_headline(model, prices[("base", "")])
     if prices:
-        headline = prices.get(("base", "")) or next(iter(prices.values()))
-        if model.prices != headline:
-            model.prices = headline
-            model.input_cost_per_token = headline.get("input_cost_per_token")
-            model.output_cost_per_token = headline.get("output_cost_per_token")
-            model.updated_at = datetime.now(UTC)
         stats["priced"] += 1
+
+
+def _set_headline(model, fields: dict) -> None:
+    if model.prices != fields:
+        model.prices = fields
+        model.input_cost_per_token = fields.get("input_cost_per_token")
+        model.output_cost_per_token = fields.get("output_cost_per_token")
+        model.updated_at = datetime.now(UTC)
 
 
 def apply_plugin(

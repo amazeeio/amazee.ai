@@ -37,6 +37,14 @@ def transform(rows) -> dict:
         if not model_id:
             raise ValueError("Bedrock catalog row without modelId")
         card = row.get("modelCard") or {}
+        for field, value in (
+            ("regions", row.get("regions")),
+            ("inferenceTypesSupported", row.get("inferenceTypesSupported")),
+            ("mantleRegions", card.get("mantleRegions") if isinstance(card, dict) else None),
+        ):
+            # A string here would become one "region" per character.
+            if value is not None and not isinstance(value, list):
+                raise ValueError(f"{model_id}: {field} is not a list")
         call_types = sorted(row.get("inferenceTypesSupported") or [])
         mantle_regions = set(card.get("mantleRegions") or [])
         if row.get("mantleOnly"):

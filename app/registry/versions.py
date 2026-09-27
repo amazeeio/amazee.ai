@@ -67,8 +67,12 @@ def run_version_check(db: Session) -> dict:
         now = datetime.now(UTC)
         stats: dict = {"versions": {}, "unknown": []}
         for region in active_regions(db):
-            with ProxyClient(region.litellm_api_url, region.litellm_api_key) as client:
-                version = client.version()
+            try:
+                with ProxyClient(region.litellm_api_url, region.litellm_api_key) as client:
+                    version = client.version()
+            except Exception as e:  # a bad URL or body in one region must not stop the rest
+                logger.warning("Cannot read the LiteLLM version of %s: %s", region.name, e)
+                version = None
             proxy = db.get(DBRegistryProxy, region.id)
             if version is None:
                 # Keep the last known version; ren2-us hides /openapi.json.

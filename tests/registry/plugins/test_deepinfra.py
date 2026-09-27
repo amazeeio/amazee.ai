@@ -75,3 +75,11 @@ def test_disabled_plugin_is_skipped(monkeypatch):
 
     monkeypatch.setattr(config, "DISABLED_PLUGINS", {"deepinfra_api"})
     assert "deepinfra_api" not in load_plugins()
+
+
+def test_disabled_override_plugin_keeps_its_precedence(monkeypatch):
+    from app.registry import config
+    from app.registry.plugins.loader import override_sources
+
+    monkeypatch.setattr(config, "DISABLED_PLUGINS", {"deepinfra_api"})
+    assert "deepinfra_api" in override_sources()

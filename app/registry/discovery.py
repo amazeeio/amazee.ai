@@ -119,17 +119,15 @@ def apply_model_list(db: Session, listed: dict[tuple[str, str], dict], today: da
 
     # Models whose base price comes from a first-party plugin keep it as
     # their headline price; the list must not overwrite it every day.
-    locked = {
-        p.model_id
-        for p in db.query(DBRegistryModelPrice).filter(
-            DBRegistryModelPrice.scope_kind == "base",
-            DBRegistryModelPrice.source.in_(override_sources()),
-        )
-    }
+    bases = db.query(DBRegistryModelPrice).filter(DBRegistryModelPrice.scope_kind == "base").all()
+    overrides = override_sources()
+    locked = {p.model_id for p in bases if p.source in overrides}
+    # Priced by a proxy or a plugin: a list entry with no price keeps that.
+    priced_elsewhere = {p.model_id for p in bases if p.source != "litellm"}
     stats = {"listed": len(listed), "inserted": 0, "updated": 0, "removed": 0}
     for (provider, model_id), fields in listed.items():
         row = by_ident.get((provider, model_id))
-        if row is not None and row.id in locked:
+        if row is not None and (row.id in locked or (not fields.get("prices") and row.id in priced_elsewhere)):
             fields = {k: v for k, v in fields.items() if k not in _HEADLINE_PRICE_FIELDS}
         if row is None:
             db.add(

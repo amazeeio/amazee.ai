@@ -2,6 +2,7 @@ from datetime import UTC, date, datetime
 from unittest.mock import patch
 
 import httpx
+import pytest
 
 from app.db.models import DBRegion
 from app.registry.models import (
@@ -258,3 +259,17 @@ def test_region_unknown_to_every_source_is_not_unavailable(registry_db, proxy_re
 
     row = registry_db.get(DBRegistryModelSupport, (ids["anthropic.priced-v1:0"], proxy_region.id))
     assert row.region_available is None
+
+
+@pytest.mark.parametrize("body", [["not", "an", "object"], {}, {"x": {"litellm_provider": "bedrock"}}])
+def test_broken_proxy_price_list_is_skipped(registry_db, proxy_region, body):
+    ids = _seed(registry_db, proxy_region)
+    with patch("app.registry.support.fetch_model_list", return_value=PROXY_LIST):
+        run_support_check(registry_db)
+
+    with patch("app.registry.support.fetch_model_list", return_value=body):
+        stats = run_support_check(registry_db)
+
+    assert "local-us1" in stats["unreachable"]
+    row = registry_db.get(DBRegistryModelSupport, (ids["anthropic.priced-v1:0"], proxy_region.id))
+    assert row.priced is True

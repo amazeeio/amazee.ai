@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 PRICE_ROLES = ("override", "fill")
 
 
-def load_plugins() -> dict[str, ModuleType | Exception]:
+def load_plugins(include_disabled: bool = False) -> dict[str, ModuleType | Exception]:
     """SOURCE -> module for every enabled plugin, in run order: by ORDER, then
     by SOURCE, so the order never depends on file listing. A module that fails
     to load maps its file name to the error, so the runner can record it; it
@@ -38,7 +38,7 @@ def load_plugins() -> dict[str, ModuleType | Exception]:
             logger.error("Plugin %s cannot load: %s", info.name, e)
             plugins[info.name] = e
             continue
-        if source not in config.DISABLED_PLUGINS:
+        if include_disabled or source not in config.DISABLED_PLUGINS:
             plugins[source] = module
     return dict(sorted(plugins.items(), key=lambda item: _run_key(*item)))
 
@@ -50,9 +50,10 @@ def _run_key(source: str, module: ModuleType | Exception) -> tuple:
 
 
 def override_sources() -> set[str]:
-    """Sources whose prices LiteLLM's list must not overwrite."""
+    """Sources whose prices LiteLLM's list must not overwrite. A disabled
+    plugin counts too: switching one off keeps its rows as they are."""
     return {
         source
-        for source, module in load_plugins().items()
+        for source, module in load_plugins(include_disabled=True).items()
         if not isinstance(module, Exception) and module.PRICE_ROLE == "override"
     }
