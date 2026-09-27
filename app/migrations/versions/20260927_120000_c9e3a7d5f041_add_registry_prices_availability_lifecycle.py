@@ -52,6 +52,12 @@ def upgrade() -> None:
         sa.Column("eol_date", sa.Date(), nullable=True),
         sa.Column("last_seen", sa.Date(), nullable=False),
     )
+    # Models only a proxy knows start with the price the import stored.
+    op.execute(
+        "INSERT INTO registry_model_prices (model_id, scope_kind, scope, prices, source, last_seen) "
+        "SELECT id, 'base', '', prices, 'proxy', last_seen FROM registry_models "
+        "WHERE source = 'proxy' AND prices::text <> '{}'"
+    )
     op.add_column(
         "registry_model_support", sa.Column("region_available", sa.Boolean(), nullable=True)
     )
