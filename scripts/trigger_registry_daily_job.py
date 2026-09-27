@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.locking import release_lock, try_acquire_lock
 from app.db.database import engine
+from app.registry.bedrock_community import run_bedrock_catalog
 from app.registry.discovery import run_discovery
 from app.registry.support import run_support_check
 from app.registry.versions import run_version_check
@@ -25,6 +26,7 @@ LOCK_NAME = "registry_daily"
 STEPS = (
     ("version check", run_version_check),
     ("model list", run_discovery),
+    ("bedrock catalog", run_bedrock_catalog),
     ("support check", run_support_check),
 )
 

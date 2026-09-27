@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.registry import config
 from app.registry.litellm import fetch_model_list, normalize_provider, split_model
 from app.registry.models import DBRegistryModel, DBRegistryProvider, DBRegistryRun
+from app.registry.prices import apply_prices, parse_prices, price_fields
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ def entry_fields(entry: dict) -> dict:
         "max_output_tokens": _as_int(entry.get("max_output_tokens") or entry.get("max_tokens")),
         "input_cost_per_token": _as_decimal(entry.get("input_cost_per_token")),
         "output_cost_per_token": _as_decimal(entry.get("output_cost_per_token")),
-        "prices": {k: v for k, v in sorted(entry.items()) if "cost" in k and v is not None},
+        "prices": price_fields(entry),
         "supports": sorted(
             k.removeprefix("supports_") for k, v in entry.items() if k.startswith("supports_") and v is True
         ),
@@ -158,9 +159,12 @@ def run_discovery(db: Session, today: date | None = None) -> dict:
             logger.warning("No registry providers yet; run the proxy import first")
             stats = {"listed": 0, "inserted": 0, "updated": 0, "removed": 0}
         else:
-            listed, variants = parse_model_list(fetch_model_list(config.LITELLM_LIST_URL), providers)
+            data = fetch_model_list(config.LITELLM_LIST_URL)
+            listed, variants = parse_model_list(data, providers)
             stats = apply_model_list(db, listed, today or date.today())
             stats["price_variants_skipped"] = variants
+            db.flush()  # new models need ids before their prices are stored
+            stats.update(apply_prices(db, set(listed), parse_prices(data, providers), today or date.today()))
         run.status, run.stats = "ok", stats
         db.commit()
     except Exception as e:
