@@ -14,6 +14,7 @@ from app.db.database import engine
 from app.registry.bedrock_community import run_bedrock_catalog
 from app.registry.discovery import run_discovery
 from app.registry.models_dev import run_models_dev
+from app.registry.plugins.runner import run_plugins
 from app.registry.support import run_support_check
 from app.registry.versions import run_version_check
 
@@ -27,6 +28,8 @@ LOCK_NAME = "registry_daily"
 STEPS = (
     ("version check", run_version_check),
     ("model list", run_discovery),
+    # First-party plugins before models.dev, so it only fills what is left.
+    ("source plugins", run_plugins),
     # After the model list, so it only fills what LiteLLM left unpriced.
     ("models.dev prices", run_models_dev),
     ("bedrock catalog", run_bedrock_catalog),

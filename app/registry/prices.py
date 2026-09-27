@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.registry.litellm import normalize_provider, parse_key
 from app.registry.models import DBRegistryModel, DBRegistryModelPrice, DBRegistryProvider
+from app.registry.plugins.loader import override_sources
 
 SOURCE = "litellm"
 
@@ -57,6 +58,8 @@ def apply_prices(
     for row in db.query(DBRegistryModelPrice):
         stored.setdefault(row.model_id, {})[(row.scope_kind, row.scope)] = row
 
+    # A first-party plugin's price beats the list's; leave those rows alone.
+    locked = override_sources()
     stats = {"price_scopes": 0, "price_changes": 0, "price_scopes_dropped": 0}
     for ident in listed_models:
         model_id = model_ids.get(ident)
@@ -79,6 +82,8 @@ def apply_prices(
                     )
                 )
                 stats["price_changes"] += 1
+                continue
+            if row.source in locked:
                 continue
             # The list's price replaces one the import took from a proxy.
             if row.prices != fields or row.source != SOURCE:

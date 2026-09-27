@@ -15,6 +15,7 @@ from app.registry import config
 from app.registry.discovery import finish_run
 from app.registry.litellm import fetch_model_list, parse_key
 from app.registry.models import DBRegistryModel, DBRegistryModelPrice, DBRegistryProvider, DBRegistryRun
+from app.registry.plugins.common import per_million
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +57,9 @@ def parse_models_dev(data: dict) -> dict[tuple[str, str], dict[tuple[str, str], 
             if (model.get("modalities") or {}).get("output") not in (None, ["text"]):
                 continue
             fields = {
-                # Rounded so 0.2 per million is stored as 2e-07, not 2.0000000000000002e-07.
-                ours: float(f"{cost[theirs] / 1_000_000:.12g}")
+                ours: per_million(cost[theirs])
                 for theirs, ours in FIELDS.items()
-                if isinstance(cost.get(theirs), (int, float)) and not isinstance(cost.get(theirs), bool)
+                if per_million(cost.get(theirs)) is not None
             }
             if not fields:
                 continue
