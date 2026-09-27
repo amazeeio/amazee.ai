@@ -29,5 +29,5 @@ BEDROCK_GEO_PREFIXES = {
 }
 
 # A list that keeps fewer than this share of the models we already have is
-# treated as a bad fetch, so one broken download cannot deprecate everything.
+# treated as a bad fetch, so one broken download cannot mark everything removed.
 MIN_KEPT_RATIO = 0.5

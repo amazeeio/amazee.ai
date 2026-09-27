@@ -43,6 +43,7 @@ def test_parse_prefers_base_entry_and_filters_providers():
     assert claude["max_output_tokens"] == 8192
     assert claude["supports"] == ["vision"]
     assert claude["eol_date"] == date(2027, 1, 31)
+    assert claude["prices"] == {"input_cost_per_token": 3e-06, "output_cost_per_token": 1.5e-05}
     # A model the list only has with a geo prefix still gets a row.
     assert models[("bedrock", "amazon.only-geo-v1:0")]["input_cost_per_token"] == Decimal("1e-06")
 
@@ -80,22 +81,22 @@ def test_apply_inserts_updates_and_deprecates(registry_db):
     stats = apply_model_list(registry_db, fields, date(2026, 9, 26))
     registry_db.commit()
 
-    assert stats == {"listed": 2, "inserted": 1, "updated": 1, "deprecated": 1}
+    assert stats == {"listed": 2, "inserted": 1, "updated": 1, "removed": 1}
     assert kept.mode == "chat" and kept.last_seen == date(2026, 9, 26)
-    assert gone.status == "deprecated"
+    assert gone.status == "removed"
     # Never on the list, so leaving it means nothing.
     assert from_proxy.status == "active"
     new = registry_db.query(DBRegistryModel).filter_by(model_id="new").one()
     assert new.first_seen == date(2026, 9, 26) and new.source == "litellm"
 
     again = apply_model_list(registry_db, fields, date(2026, 9, 27))
-    assert again == {"listed": 2, "inserted": 0, "updated": 0, "deprecated": 0}
+    assert again == {"listed": 2, "inserted": 0, "updated": 0, "removed": 0}
 
 
-def test_apply_takes_over_proxy_model_and_revives_deprecated(registry_db):
+def test_apply_takes_over_proxy_model_and_revives_removed(registry_db):
     bedrock = _add_provider(registry_db)
     from_proxy = _model(registry_db, bedrock, "a", source="proxy")
-    old = _model(registry_db, bedrock, "b", status="deprecated")
+    old = _model(registry_db, bedrock, "b", status="removed")
     listed = {("bedrock", "a"): {}, ("bedrock", "b"): {}}
 
     apply_model_list(registry_db, listed, date(2026, 9, 26))
@@ -137,15 +138,15 @@ def test_run_discovery_failed_fetch_writes_no_models(registry_db):
     assert run.status == "failed" and run.error == "boom"
 
 
-def test_guard_ignores_models_already_deprecated(registry_db):
+def test_guard_ignores_models_already_removed(registry_db):
     bedrock = _add_provider(registry_db)
     for i in range(4):
-        _model(registry_db, bedrock, f"old{i}", status="deprecated")
+        _model(registry_db, bedrock, f"old{i}", status="removed")
     _model(registry_db, bedrock, "live")
 
     stats = apply_model_list(registry_db, {("bedrock", "live"): {}}, date(2026, 9, 26))
 
-    assert stats["deprecated"] == 0
+    assert stats["removed"] == 0
 
 
 def test_updated_at_moves_only_on_a_real_change(registry_db):
@@ -161,3 +162,23 @@ def test_updated_at_moves_only_on_a_real_change(registry_db):
     apply_model_list(registry_db, {("bedrock", "m"): {"mode": "chat"}}, date(2026, 9, 28))
     registry_db.commit()
     assert row.updated_at > before
+
+
+def test_prices_keep_every_litellm_price_field():
+    listed, _ = parse_model_list(
+        {
+            "vertex_ai/veo-3": {
+                "litellm_provider": "vertex_ai-video-models",
+                "mode": "video_generation",
+                "output_cost_per_second": 0.4,
+                "output_cost_per_second_4k": 0.6,
+                "input_cost_per_token": None,
+            }
+        },
+        {"vertex_ai"},
+    )
+
+    assert listed[("vertex_ai", "veo-3")]["prices"] == {
+        "output_cost_per_second": 0.4,
+        "output_cost_per_second_4k": 0.6,
+    }

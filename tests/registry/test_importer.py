@@ -57,6 +57,7 @@ def test_import_creates_registry_rows(registry_db, proxy_region):
     first = registry_db.query(DBRegistryModelRegion).filter_by(litellm_deployment_id="dep-1").one()
     assert first.litellm_model == "bedrock/us.anthropic.claude-x-v1:0"
     assert first.input_cost_per_token == Decimal("4e-06")
+    assert first.prices == {"input_cost_per_token": 4e-06}
     assert registry_db.query(DBRegistryModelRegion).filter_by(model_id=first.model_id).count() == 2
 
     assert {g.slug for g in registry_db.query(DBRegistryAccessGroup)} == {"preview", "ga"}
@@ -113,4 +114,6 @@ def test_zero_prices_from_model_info_are_stored_as_unknown(registry_db, proxy_re
     models = {m.model_id: m for m in registry_db.query(DBRegistryModel)}
     assert models["openai.gpt-new"].input_cost_per_token is None
     assert models["openai.gpt-new"].output_cost_per_token is None
+    assert models["openai.gpt-new"].prices == {}
     assert models["amazon.priced"].output_cost_per_token == Decimal("2e-06")
+    assert models["amazon.priced"].prices == {"input_cost_per_token": 0, "output_cost_per_token": 2e-06}

@@ -14,9 +14,10 @@ from sqlalchemy.sql import func
 
 from app.db.models import Base
 
-MODEL_STATUSES = ("active", "deprecated")
+# `removed`: the model left LiteLLM's list. The row stays.
+MODEL_STATUSES = ("active", "removed")
 # Where a model row came from. Only rows from the LiteLLM list can be marked
-# deprecated when they leave it; a model we only know from a proxy never was
+# removed when they leave it; a model we only know from a proxy never was
 # on the list, so its absence there says nothing.
 MODEL_SOURCES = ("litellm", "proxy")
 
@@ -45,6 +46,9 @@ class DBRegistryModel(Base):
     max_output_tokens = Column(Integer, nullable=True)
     input_cost_per_token = Column(Numeric, nullable=True)
     output_cost_per_token = Column(Numeric, nullable=True)
+    # Every LiteLLM price field of the model, under LiteLLM's own names:
+    # per token, image, second, character, page and so on. Empty when unknown.
+    prices = Column(JSON, nullable=False, default=dict)
     # Names of the `supports_*` flags that are true, without the prefix.
     supports = Column(JSON, nullable=False, default=list)
     eol_date = Column(Date, nullable=True)
@@ -98,6 +102,8 @@ class DBRegistryModelRegion(Base):
     # The price set on this proxy. Empty when the proxy uses LiteLLM's own price.
     input_cost_per_token = Column(Numeric, nullable=True)
     output_cost_per_token = Column(Numeric, nullable=True)
+    # Every price field set in the deployment's litellm_params.
+    prices = Column(JSON, nullable=False, default=dict)
     enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
