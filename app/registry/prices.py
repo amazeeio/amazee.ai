@@ -47,14 +47,14 @@ def apply_prices(
     """Make the stored scopes of each listed model match the list.
 
     A scope the list dropped is deleted, so it can never be picked. Models
-    that left the list keep their last prices.
+    that left the list, and prices taken from a proxy at import, are kept.
     """
     model_ids = {
         (provider, row.model_id): row.id
         for row, provider in db.query(DBRegistryModel, DBRegistryProvider.name).join(DBRegistryProvider)
     }
     stored: dict[int, dict[tuple[str, str], DBRegistryModelPrice]] = {}
-    for row in db.query(DBRegistryModelPrice).filter_by(source=SOURCE):
+    for row in db.query(DBRegistryModelPrice):
         stored.setdefault(row.model_id, {})[(row.scope_kind, row.scope)] = row
 
     stats = {"price_scopes": 0, "price_changes": 0, "price_scopes_dropped": 0}
@@ -80,12 +80,14 @@ def apply_prices(
                 )
                 stats["price_changes"] += 1
                 continue
-            if row.prices != fields:
-                row.prices = fields
+            # The list's price replaces one the import took from a proxy.
+            if row.prices != fields or row.source != SOURCE:
+                row.prices, row.source = fields, SOURCE
                 stats["price_changes"] += 1
             row.last_seen = today
         for key, row in have.items():
-            if key not in wanted:
+            # Only the list's own scopes are dropped; a proxy price stays.
+            if key not in wanted and row.source == SOURCE:
                 db.delete(row)
                 stats["price_scopes_dropped"] += 1
     return stats

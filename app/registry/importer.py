@@ -16,6 +16,7 @@ from app.registry.models import (
     DBRegistryAccessGroup,
     DBRegistryModel,
     DBRegistryModelRegion,
+    DBRegistryModelPrice,
     DBRegistryModelRegionGroup,
     DBRegistryProvider,
     DBRegistryProxy,
@@ -111,6 +112,16 @@ def import_deployments(
                 "last_seen": today,
             },
         )
+        # A model only the proxy knows starts with the proxy's price. The
+        # daily job keeps it until LiteLLM's list prices the model itself.
+        if model.source == "proxy" and model.prices and db.get(DBRegistryModelPrice, (model.id, "base", "")) is None:
+            db.add(
+                DBRegistryModelPrice(
+                    model_id=model.id, scope_kind="base", scope="", prices=model.prices,
+                    source="proxy", last_seen=today,
+                )
+            )
+            db.flush()
         # Only a price in litellm_params is set on the proxy. model_info
         # carries LiteLLM's own price merged in, which the list already has.
         fields = entry_fields(params)

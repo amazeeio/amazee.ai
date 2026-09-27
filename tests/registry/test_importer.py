@@ -6,6 +6,7 @@ from app.registry.importer import AlreadyImported, import_deployments
 from app.registry.models import (
     DBRegistryAccessGroup,
     DBRegistryModel,
+    DBRegistryModelPrice,
     DBRegistryModelRegion,
     DBRegistryModelRegionGroup,
     DBRegistryProvider,
@@ -135,3 +136,25 @@ def test_cloud_regions_per_provider(registry_db, proxy_region):
         "bedrock_mantle": "eu-central-1",
         "vertex_ai": "europe-west4",
     }
+
+
+def test_import_stores_the_proxy_price_as_base_scope(registry_db, proxy_region):
+    deployments = [
+        {
+            "model_name": "known",
+            "litellm_params": {"model": "bedrock/amazon.priced"},
+            "model_info": {"id": "k-1", "input_cost_per_token": 1e-06, "output_cost_per_token": 2e-06},
+        },
+        {
+            "model_name": "unknown",
+            "litellm_params": {"model": "bedrock/openai.gpt-new"},
+            "model_info": {"id": "u-1", "input_cost_per_token": 0, "output_cost_per_token": 0},
+        },
+    ]
+
+    import_deployments(registry_db, proxy_region, deployments, None, {})
+    registry_db.commit()
+
+    price = registry_db.query(DBRegistryModelPrice).one()
+    assert (price.scope_kind, price.scope, price.source) == ("base", "", "proxy")
+    assert price.prices == {"input_cost_per_token": 1e-06, "output_cost_per_token": 2e-06}

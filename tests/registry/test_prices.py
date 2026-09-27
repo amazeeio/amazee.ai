@@ -99,3 +99,29 @@ def test_pick_price_follows_litellm_order(registry_db):
     # A geo with no price of its own falls back to base.
     assert pick("bedrock/eu.anthropic.claude-x-v1:0", None) == ("base", "")
     assert pick_price(registry_db, _model(registry_db, model_id="unpriced").id, "bedrock", None, None) is None
+
+
+def test_proxy_price_is_kept_until_the_list_prices_the_model(registry_db):
+    model = _model(registry_db, model_id="amazon.new")
+    registry_db.add(
+        DBRegistryModelPrice(
+            model_id=model.id, scope_kind="base", scope="", prices={"input_cost_per_token": 1e-06},
+            source="proxy", last_seen=date(2026, 9, 27),
+        )
+    )
+    registry_db.commit()
+    ident = ("bedrock", "amazon.new")
+
+    # Not on the list: the proxy price stays.
+    apply_prices(registry_db, set(), {}, date(2026, 9, 28))
+    # On the list without a price of its own: still kept.
+    apply_prices(registry_db, {ident}, {}, date(2026, 9, 28))
+    registry_db.commit()
+    row = registry_db.get(DBRegistryModelPrice, (model.id, "base", ""))
+    assert row.source == "proxy" and row.prices == {"input_cost_per_token": 1e-06}
+
+    # The list prices it: the list wins.
+    apply_prices(registry_db, {ident}, {ident: {("base", ""): {"input_cost_per_token": 2e-06}}}, date(2026, 9, 29))
+    registry_db.commit()
+    row = registry_db.get(DBRegistryModelPrice, (model.id, "base", ""))
+    assert row.source == "litellm" and row.prices == {"input_cost_per_token": 2e-06}
