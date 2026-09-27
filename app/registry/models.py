@@ -133,4 +133,21 @@ class DBRegistryModelSupport(Base):
     model_id = Column(Integer, ForeignKey("registry_models.id", ondelete="CASCADE"), primary_key=True)
     region_id = Column(Integer, ForeignKey("regions.id", ondelete="CASCADE"), primary_key=True)
     priced = Column(Boolean, nullable=False)
+    # Whether the release list of the proxy's LiteLLM version has the model.
+    # LiteLLM's lists are our source of truth for support. Empty when the
+    # version or its release list is unknown.
+    supported = Column(Boolean, nullable=True)
     checked_at = Column(DateTime(timezone=True), nullable=False)
+
+
+class DBRegistryLitellmVersion(Base):
+    """LiteLLM's model list as shipped with one release, fetched once."""
+
+    __tablename__ = "registry_litellm_versions"
+
+    version = Column(String, primary_key=True)
+    fetched_at = Column(DateTime(timezone=True), nullable=False)
+    model_count = Column(Integer, nullable=True)
+    payload = Column(JSON, nullable=True)
+    # Set when the release list could not be fetched; the next run tries again.
+    error = Column(String, nullable=True)
