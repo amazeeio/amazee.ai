@@ -287,10 +287,11 @@ class PublicModelPricing(BaseModel):
 
 
 class PublicModelCapabilities(BaseModel):
-    supports_vision: bool = False
-    supports_function_calling: bool = False
-    supports_reasoning: bool = False
-    supports_prompt_caching: bool = False
+    # null = LiteLLM has no data for the model (not the same as "unsupported")
+    supports_vision: Optional[bool] = None
+    supports_function_calling: Optional[bool] = None
+    supports_reasoning: Optional[bool] = None
+    supports_prompt_caching: Optional[bool] = None
 
 
 class PublicModelManufacturer(BaseModel):
@@ -314,6 +315,17 @@ class PublicModelSummary(BaseModel):
     manufacturer: Optional[PublicModelManufacturer] = None
     capabilities: PublicModelCapabilities
     pricing: PublicModelPricing
+    access_groups: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Access groups this model belongs to in this region, limited to the "
+            "groups the caller may see: the region default, public groups and "
+            "the caller team's opt-ins (admins see every group). Listing only: "
+            "a public group the caller's team has not opted in to is shown but "
+            "its models are not callable by that team, so do not build a model "
+            "picker from this list alone."
+        ),
+    )
     aliased_to: Optional[str] = Field(
         default=None,
         description=(
@@ -847,6 +859,33 @@ class TeamDailyActivityResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class HourlySpendRow(BaseModel):
+    hour: datetime = Field(description="Start of the UTC hour this row covers.")
+    spend: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    request_count: int = 0
+
+
+class HourlySpendResponse(BaseModel):
+    region_id: int
+    team_id: Optional[int] = None
+    user_id: Optional[int] = None
+    key_id: Optional[int] = None
+    start: datetime = Field(description="Start of the first hour returned (UTC).")
+    end: datetime = Field(
+        description="End of the window (UTC): now, or the midnight after `day`."
+    )
+    activity: List[HourlySpendRow] = Field(
+        description=(
+            "One row per UTC hour, oldest first. Hours with no usage are "
+            "returned with zeros. Without `day`, the last row is the current, "
+            "unfinished hour."
+        )
+    )
+
+
 class BreakdownUserItem(UsageMetrics):
     """One team member's usage over the requested range, split by key."""
 
@@ -1369,6 +1408,8 @@ class AdminModelResponse(AdminModelBase):
 ACCESS_GROUP_SLUG_PATTERN = r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
 
 
+# is_public is deliberately absent here and on update: the catalog config
+# (/admin/models/apply) is its only writer.
 class AccessGroupCreate(BaseModel):
     slug: str = Field(min_length=1, max_length=64, pattern=ACCESS_GROUP_SLUG_PATTERN)
     label: str = Field(min_length=1)
@@ -1389,6 +1430,7 @@ class AccessGroupResponse(BaseModel):
     slug: str
     label: str
     description: Optional[str] = None
+    is_public: bool = False
     model_ids: List[int] = Field(default_factory=list)
     region_ids: List[int] = Field(default_factory=list)
     default_in_region_ids: List[int] = Field(default_factory=list)
@@ -1436,6 +1478,8 @@ class ApplyAccessGroupSpec(BaseModel):
     slug: str = Field(min_length=1, max_length=64, pattern=ACCESS_GROUP_SLUG_PATTERN)
     label: str = Field(min_length=1)
     description: Optional[str] = None
+    # listed on /public/models for everyone (see DBModelAccessGroup.is_public)
+    is_public: bool = False
     # region names the group is deployed to
     regions: List[str] = Field(default_factory=list)
 
@@ -1443,6 +1487,8 @@ class ApplyAccessGroupSpec(BaseModel):
 class ApplyDeploymentSpec(BaseModel):
     region: str
     litellm_params_override: Optional[dict] = None
+    # Merged over the model's model_info in this region only.
+    model_info_override: Optional[dict] = None
     # When set, replaces the model's access_groups in this region only.
     access_groups: Optional[List[str]] = None
 
@@ -1466,6 +1512,8 @@ class ApplyModelSpec(BaseModel):
     real_eol: Optional[datetime] = None
     override_eol: Optional[datetime] = None
     litellm_params: Optional[dict] = None
+    # LiteLLM deployment model_info (base_model, supports_*, …); see DBModel.model_info
+    model_info: Optional[dict] = None
     access_groups: List[str] = Field(default_factory=list)  # group slugs
     is_alias: bool = False
     deployments: List[ApplyDeploymentSpec] = Field(default_factory=list)

@@ -26,7 +26,7 @@ INTEGRATION_REGION_B = "integration-b"
 
 LITELLM_A_URL = os.getenv("INTEGRATION_LITELLM_A_URL", "http://litellm:4000")
 LITELLM_B_URL = os.getenv("INTEGRATION_LITELLM_B_URL", "http://litellm2:4000")
-LITELLM_MASTER_KEY = "sk-1234"
+LITELLM_MASTER_KEY = os.getenv("LITELLM_MASTER_KEY", "sk-1234")
 _MASTER_AUTH = {"Authorization": f"Bearer {LITELLM_MASTER_KEY}"}
 
 MOCK_MODEL = "mock-gpt"
