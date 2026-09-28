@@ -198,7 +198,7 @@ def test_sync_model_existing_deployment_updates(mock_litellm_class, db, test_reg
     assert assoc.sync_error is None
     mock_instance.add_model.assert_not_called()
     mock_instance.update_model.assert_called_once_with(
-        "test/conflict-sync", {}, ["dep-123"], access_groups=[]
+        "test/conflict-sync", {}, ["dep-123"], access_groups=[], model_info=None
     )
 
 
@@ -708,7 +708,9 @@ def test_sync_recreates_deployment_when_catalog_drops_a_param(mock_litellm_class
     db.refresh(assoc)
     assert assoc.sync_status == "synced"
     mock_instance.update_model.assert_not_called()
-    mock_instance.add_model.assert_called_once_with("test/drop-key", {}, access_groups=[])
+    mock_instance.add_model.assert_called_once_with(
+        "test/drop-key", {}, access_groups=[], model_info=None
+    )
     mock_instance.delete_model.assert_called_once_with("test/drop-key", ["dep-old"])
     assert order == ["add_model", "delete_model"]
 
@@ -851,7 +853,7 @@ def test_sync_keeps_deployment_when_only_proxy_owned_keys_differ(mock_litellm_cl
     db.refresh(assoc)
     assert assoc.sync_status == "synced"
     mock_instance.update_model.assert_called_once_with(
-        "test/keep-id", {"rpm": 10}, ["dep-keep"], access_groups=[]
+        "test/keep-id", {"rpm": 10}, ["dep-keep"], access_groups=[], model_info=None
     )
     mock_instance.add_model.assert_not_called()
     mock_instance.delete_model.assert_not_called()

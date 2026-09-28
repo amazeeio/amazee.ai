@@ -84,7 +84,7 @@ services:
     environment:
         DATABASE_URL: "postgresql://llmproxy:dbpassword9090@litellm_db:5432/litellm"
         STORE_MODEL_IN_DB: "True" # allows adding models to proxy via UI
-        LITELLM_MASTER_KEY: "sk-1234"
+        LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-1234}
     depends_on:
       - litellm_db  # Indicates that this service depends on the 'db' service, ensuring 'db' starts first
     healthcheck:
@@ -104,7 +104,7 @@ services:
     environment:
         DATABASE_URL: "postgresql://llmproxy:dbpassword9090@litellm2_db:5432/litellm"
         STORE_MODEL_IN_DB: "True"
-        LITELLM_MASTER_KEY: "sk-1234"
+        LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-1234}
     depends_on:
       - litellm2_db
     healthcheck:
@@ -124,7 +124,7 @@ services:
     environment:
         DATABASE_URL: "postgresql://llmproxy:dbpassword9090@litellm3_db:5432/litellm"
         STORE_MODEL_IN_DB: "True"
-        LITELLM_MASTER_KEY: "sk-1234"
+        LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-1234}
     depends_on:
       - litellm3_db
     healthcheck:

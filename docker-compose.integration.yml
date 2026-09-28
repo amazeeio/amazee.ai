@@ -37,6 +37,8 @@ services:
       DYNAMODB_ROLE_NAME: test-role
       SES_ROLE_NAME: test-role
       TESTING: "1"
+      # Set it in .env: newer LiteLLM refuses the sk-1234 default.
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-1234}
       ENV_SUFFIX: test
       # Must match the fixed region names in tests/integration/conftest.py.
       AI_TRIAL_REGION: integration-a
