@@ -16,9 +16,8 @@ from collections import Counter
 # Add the parent directory to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from sqlalchemy.orm import sessionmaker
 from app.core.config import catalog_manages
-from app.db.database import engine
+from app.db.database import SessionLocal
 from app.db.models import DBModel, DBModelRegion, DBRegion
 from app.services.model_sync import sync_model_to_region_task
 
@@ -30,12 +29,11 @@ logger = logging.getLogger(__name__)
 
 
 async def main() -> int:
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     db = SessionLocal()
     try:
         # Aliases carry no model_info, and their sync rewrites the region alias map.
         rows = (
-            db.query(DBModelRegion.model_id, DBModelRegion.region_id, DBRegion.name)
+            db.query(DBModelRegion, DBRegion.name)
             .join(DBModel, DBModel.id == DBModelRegion.model_id)
             .join(DBRegion, DBRegion.id == DBModelRegion.region_id)
             .filter(
@@ -48,26 +46,19 @@ async def main() -> int:
             .order_by(DBRegion.name, DBModelRegion.model_id)
             .all()
         )
-        rows = [r for r in rows if catalog_manages(r.name)]
+        rows = [(assoc, name) for assoc, name in rows if catalog_manages(name)]
         logger.info(f"Resyncing {len(rows)} model-region rows")
 
         counts: Counter = Counter()
         failed = []
-        for model_id, region_id, region_name in rows:
-            await sync_model_to_region_task(model_id, region_id)
-            # The task writes through its own session; drop cached state to see it.
-            db.expire_all()
-            assoc = db.query(DBModelRegion).filter_by(model_id=model_id, region_id=region_id).first()
-            status = assoc.sync_status if assoc else "missing"
-            counts[status] += 1
-            if status == "failed":
-                failed.append((model_id, region_name, assoc.sync_error))
+        for assoc, region_name in rows:
+            await sync_model_to_region_task(assoc.model_id, assoc.region_id)
+            db.refresh(assoc)
+            counts[assoc.sync_status] += 1
+            if assoc.sync_status == "failed":
+                failed.append((assoc.model_id, region_name, assoc.sync_error))
 
-        other = len(rows) - counts["synced"] - counts["failed"]
-        print(
-            f"total={len(rows)} synced={counts['synced']} "
-            f"failed={counts['failed']} other={other}"
-        )
+        print(f"total={len(rows)} " + " ".join(f"{k}={v}" for k, v in sorted(counts.items())))
         for model_id, region_name, error in failed:
             print(f"FAILED {model_id} / {region_name} / {error}")
         return 1 if failed else 0
