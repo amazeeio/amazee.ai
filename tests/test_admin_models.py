@@ -203,6 +203,39 @@ def test_sync_model_existing_deployment_updates(mock_litellm_class, db, test_reg
 
 
 @patch("app.services.model_sync.LiteLLMService")
+def test_sync_model_updates_only_db_deployments(mock_litellm_class, db, test_region):
+    """A same-named config-file deployment rejects PATCH, so only the DB id is updated."""
+    from app.services.model_sync import sync_model_to_region_task
+
+    mock_instance = MagicMock()
+    mock_instance.get_model_deployments = AsyncMock(return_value=[
+        {"model_info": {"id": "cfg-1"}},
+        {"model_info": {"id": "dep-db", "db_model": True}},
+    ])
+    mock_instance.add_model = AsyncMock()
+    mock_instance.update_model = AsyncMock(return_value={"status": "success"})
+    mock_instance.list_access_groups = AsyncMock(return_value=[])
+    mock_litellm_class.return_value = mock_instance
+
+    m = DBModel(model_id="test/mixed-sync", display_name="Mixed Sync", provider="test", type="chat")
+    db.add(m)
+    db.commit()
+    assoc = DBModelRegion(model_id=m.id, region_id=test_region.id, is_active=True, sync_status="pending")
+    db.add(assoc)
+    db.commit()
+
+    import asyncio
+    asyncio.run(sync_model_to_region_task(m.id, test_region.id))
+
+    db.refresh(assoc)
+    assert assoc.sync_status == "synced"
+    mock_instance.add_model.assert_not_called()
+    mock_instance.update_model.assert_called_once_with(
+        "test/mixed-sync", {}, ["dep-db"], access_groups=[], model_info=None
+    )
+
+
+@patch("app.services.model_sync.LiteLLMService")
 def test_sync_model_poisoned_session_never_commits_stale_synced(mock_litellm_class, db, test_region):
     """If a failure happens after sync_status='synced' is set in memory AND the
     error-path re-query also fails (poisoned session), the finally block must not
