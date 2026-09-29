@@ -82,7 +82,7 @@ def _sent_params(desired: dict) -> dict:
 
 
 def stale_param_keys(deployments: list[dict], desired: dict) -> set[str]:
-    """Keys live on the proxy that the catalog no longer sends. /model/update
+    """Keys live on the proxy that the catalog no longer sends. PATCH /model/{id}/update
     merges, so these survive every update until the deployment is recreated."""
     sent = set(_sent_params(desired)) | {"model"}
     # LiteLLM stores its own boolean flags (GenericLiteLLMParams defaults such
@@ -413,7 +413,7 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
                 logger.error(f"Sync failed for model_id={model_id}, region_id={region_id}: {assoc.sync_error}")
                 return
         elif assoc.is_active and model.is_active_globally:
-            # LiteLLM keys /model/update and /model/delete on the deployment id
+            # LiteLLM keys PATCH /model/{id}/update and /model/delete on the deployment id
             # (model_info.id), and /model/new allows duplicate model_names — so
             # resolve existing deployment ids first and upsert accordingly,
             # instead of add-then-catch-conflict (which would silently create
@@ -439,7 +439,7 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
             model_info = {**(model.model_info or {}), **(assoc.model_info_override or {})} or None
             stale_keys = stale_param_keys(db_deployments, params)
             if stale_keys:
-                # /model/update merges into the stored params, so a key the
+                # PATCH /model/{id}/update merges into the stored params, so a key the
                 # catalog dropped can only go away by recreating the
                 # deployment. Register the replacement before deleting the
                 # old ids so the model name is never unavailable.
@@ -457,7 +457,8 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
             elif deployment_ids:
                 logger.info(f"Updating model '{model.model_id}' in region '{region.name}' (deployments: {deployment_ids})")
                 await litellm_service.update_model(
-                    model.model_id, params, deployment_ids, access_groups=access_groups,
+                    model.model_id, params, [d["model_info"]["id"] for d in db_deployments],
+                    access_groups=access_groups,
                     model_info=model_info,
                 )
             else:
