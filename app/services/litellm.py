@@ -1785,7 +1785,7 @@ class LiteLLMService:
     async def get_model_deployment_ids(self, model_id: str) -> list[str]:
         """
         Resolve the LiteLLM deployment id(s) for a public model_name.
-        /model/update and /model/delete key on model_info.id, not model_name,
+        PATCH /model/{id}/update and /model/delete key on model_info.id, not model_name,
         and /model/new allows duplicate model_names — so callers must resolve
         ids first to upsert/delete correctly.
         """
@@ -1801,7 +1801,7 @@ class LiteLLMService:
     ) -> dict:
         """
         Update an existing model in LiteLLM.
-        Sends POST /model/update per deployment id (LiteLLM identifies the
+        Sends PATCH /model/{id}/update per deployment id (LiteLLM keys the
         deployment by model_info.id; model_name alone is not accepted).
         access_groups=[] clears the tags; None leaves them untouched.
         """
@@ -1825,8 +1825,10 @@ class LiteLLMService:
                     info: dict = {**(model_info or {}), "id": dep_id}
                     if access_groups is not None:
                         info["access_groups"] = access_groups
-                    response = await client.post(
-                        f"{self.api_url}/model/update",
+                    # POST /model/update ignores model_info on the proxy version we run, so use PATCH.
+                    # PATCH merges model_info and skips None, so a dropped key needs the deployment recreated.
+                    response = await client.patch(
+                        f"{self.api_url}/model/{dep_id}/update",
                         headers={"Authorization": f"Bearer {self.master_key}"},
                         json={
                             "model_name": model_id,
