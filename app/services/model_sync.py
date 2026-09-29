@@ -439,6 +439,11 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
             access_groups = model_access_group_slugs(db, model.id, region_id)
             model_info = {**(model.model_info or {}), **(assoc.model_info_override or {})} or None
             stale_keys = stale_param_keys(db_deployments, params)
+            # PATCH merges model_info too, so a base_model the catalog dropped would keep pricing the model.
+            if not (model_info or {}).get("base_model") and any(
+                (d.get("model_info") or {}).get("base_model") for d in db_deployments
+            ):
+                stale_keys.add("model_info.base_model")
             if stale_keys:
                 # PATCH /model/{id}/update merges into the stored params, so a key the
                 # catalog dropped can only go away by recreating the
