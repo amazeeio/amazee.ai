@@ -46,17 +46,27 @@ async def main() -> int:
             .order_by(DBRegion.name, DBModelRegion.model_id)
             .all()
         )
-        rows = [(assoc, name) for assoc, name in rows if catalog_manages(name)]
+        # Take the ids now: after a rollback, reading them would lazy-load and
+        # hold a transaction open while the sync runs.
+        rows = [
+            (assoc, assoc.model_id, assoc.region_id, name)
+            for assoc, name in rows
+            if catalog_manages(name)
+        ]
+        db.rollback()
         logger.info(f"Resyncing {len(rows)} model-region rows")
 
         counts: Counter = Counter()
         failed = []
-        for assoc, region_name in rows:
-            await sync_model_to_region_task(assoc.model_id, assoc.region_id)
+        for assoc, model_id, region_id, region_name in rows:
+            await sync_model_to_region_task(model_id, region_id)
             db.refresh(assoc)
-            counts[assoc.sync_status] += 1
-            if assoc.sync_status == "failed":
-                failed.append((assoc.model_id, region_name, assoc.sync_error))
+            status, error = assoc.sync_status, assoc.sync_error
+            # End the read so the connection is not idle in a transaction for the whole run.
+            db.rollback()
+            counts[status] += 1
+            if status == "failed":
+                failed.append((model_id, region_name, error))
 
         print(f"total={len(rows)} " + " ".join(f"{k}={v}" for k, v in sorted(counts.items())))
         for model_id, region_name, error in failed:
