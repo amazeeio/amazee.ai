@@ -423,6 +423,7 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
             # Only DB-registered deployments are ours to compare and replace; a
             # same-named config-file entry would otherwise look stale forever.
             db_deployments = [d for d in deployments if d["model_info"].get("db_model")]
+            db_deployment_ids = [d["model_info"]["id"] for d in db_deployments]
             # Base params + per-region override, or the alias target's params.
             params, resolve_error = effective_litellm_params(db, model, region_id)
             pushed_params = params
@@ -451,14 +452,11 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
                     model.model_id, params, access_groups=access_groups,
                     model_info=model_info,
                 )
-                await litellm_service.delete_model(
-                    model.model_id, [d["model_info"]["id"] for d in db_deployments]
-                )
+                await litellm_service.delete_model(model.model_id, db_deployment_ids)
             elif deployment_ids:
                 logger.info(f"Updating model '{model.model_id}' in region '{region.name}' (deployments: {deployment_ids})")
                 await litellm_service.update_model(
-                    model.model_id, params, [d["model_info"]["id"] for d in db_deployments],
-                    access_groups=access_groups,
+                    model.model_id, params, db_deployment_ids, access_groups=access_groups,
                     model_info=model_info,
                 )
             else:
