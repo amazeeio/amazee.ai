@@ -9,9 +9,15 @@ from uuid import uuid4
 
 import pytest
 
-from app.db.models import DBModel, DBModelRegion
+from app.db.models import (
+    DBModel,
+    DBModelAccessGroup,
+    DBModelAccessGroupModel,
+    DBModelAccessGroupRegion,
+    DBModelRegion,
+)
 from app.services.litellm import LiteLLMService
-from app.services.model_sync import reconcile_region_models
+from app.services.model_sync import reconcile_region_models, sync_model_to_region_task
 from tests.integration.conftest import (
     LITELLM_A_URL,
     LITELLM_MASTER_KEY,
@@ -180,3 +186,67 @@ async def test_cross_provider_base_model_does_not_price_spend(
     resp = completion(LITELLM_A_URL, key["litellm_token"], model=name)
     assert resp.status_code == 200, resp.text
     assert await wait_for_key_spend(LITELLM_A_URL, key["litellm_token"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_update_pushes_model_info_and_access_groups_to_existing_deployment(
+    db, litellm_region
+):
+    name = f"update-info-test-{uuid4().hex[:8]}"
+    model = DBModel(
+        model_id=name,
+        display_name=name,
+        provider="openai",
+        type="chat",
+        is_active_globally=True,
+        litellm_params={
+            "model": f"openai/amazee-unknown-{name}",
+            "api_key": "fake-upstream-key",
+            "mock_response": "Hello from an unknown backend.",
+        },
+    )
+    db.add(model)
+    db.flush()
+    assoc = DBModelRegion(model_id=model.id, region_id=litellm_region.id, is_active=True)
+    db.add(assoc)
+    db.commit()
+
+    await reconcile_region_models(db, litellm_region)
+
+    service = LiteLLMService(LITELLM_A_URL, LITELLM_MASTER_KEY)
+    [before] = await service.get_model_deployments(name)
+    dep_id = before["model_info"]["id"]
+    assert not before["model_info"].get("base_model"), before["model_info"]
+    assert not before["model_info"].get("input_cost_per_token"), before["model_info"]
+
+    slug = f"update-info-grp-{uuid4().hex[:8]}"
+    group = DBModelAccessGroup(slug=slug, label=slug)
+    db.add(group)
+    db.flush()
+    link = DBModelAccessGroupModel(group_id=group.id, model_id=model.id)
+    db.add(link)
+    db.add(DBModelAccessGroupRegion(group_id=group.id, region_id=litellm_region.id))
+    model.model_info = {"base_model": BASE_MODEL}
+    db.commit()
+
+    # Called directly: reconcile compares litellm_params only, so it would skip this row.
+    await sync_model_to_region_task(model.id, litellm_region.id)
+
+    [after] = await service.get_model_deployments(name)
+    info = after["model_info"]
+    assert info["id"] == dep_id  # updated in place, not recreated
+    assert info.get("base_model") == BASE_MODEL
+    assert info.get("mode") == "chat"
+    assert info.get("input_cost_per_token"), info
+    assert info.get("access_groups") == [slug]
+    db.refresh(assoc)
+    assert assoc.sync_status == "synced", assoc.sync_error
+
+    db.delete(link)
+    db.commit()
+
+    await sync_model_to_region_task(model.id, litellm_region.id)
+
+    [cleared] = await service.get_model_deployments(name)
+    assert cleared["model_info"].get("access_groups") == []
+    assert cleared["model_info"].get("base_model") == BASE_MODEL
