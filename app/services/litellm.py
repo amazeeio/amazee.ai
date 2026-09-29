@@ -1795,7 +1795,7 @@ class LiteLLMService:
         self,
         model_id: str,
         litellm_params: dict,
-        deployment_ids: Optional[list[str]] = None,
+        deployment_ids: list[str],
         access_groups: Optional[list[str]] = None,
         model_info: Optional[dict] = None,
     ) -> dict:
@@ -1805,8 +1805,6 @@ class LiteLLMService:
         deployment by model_info.id; model_name alone is not accepted).
         access_groups=[] clears the tags; None leaves them untouched.
         """
-        if deployment_ids is None:
-            deployment_ids = await self.get_model_deployment_ids(model_id)
         if not deployment_ids:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
