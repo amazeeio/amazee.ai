@@ -454,6 +454,17 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
                 )
                 await litellm_service.delete_model(model.model_id, db_deployment_ids)
             elif deployment_ids:
+                if not db_deployment_ids:
+                    # Only config-file entries share the name. Adding a DB deployment
+                    # beside them would split traffic, so refuse with a clear reason.
+                    assoc.sync_status = "failed"
+                    assoc.sync_error = (
+                        f"Model '{model.model_id}' exists only in the LiteLLM config file "
+                        "in this region; the catalog cannot manage it."
+                    )
+                    db.commit()
+                    logger.error(f"Sync failed for model_id={model_id}, region_id={region_id}: {assoc.sync_error}")
+                    return
                 logger.info(f"Updating model '{model.model_id}' in region '{region.name}' (deployments: {deployment_ids})")
                 await litellm_service.update_model(
                     model.model_id, params, db_deployment_ids, access_groups=access_groups,
