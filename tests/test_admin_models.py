@@ -236,6 +236,35 @@ def test_sync_model_updates_only_db_deployments(mock_litellm_class, db, test_reg
 
 
 @patch("app.services.model_sync.LiteLLMService")
+def test_sync_model_fails_when_only_config_deployment_exists(mock_litellm_class, db, test_region):
+    """A config-file entry cannot be patched and must not get a DB twin beside it."""
+    from app.services.model_sync import sync_model_to_region_task
+
+    mock_instance = MagicMock()
+    mock_instance.get_model_deployments = AsyncMock(return_value=[{"model_info": {"id": "cfg-1"}}])
+    mock_instance.add_model = AsyncMock()
+    mock_instance.update_model = AsyncMock()
+    mock_instance.list_access_groups = AsyncMock(return_value=[])
+    mock_litellm_class.return_value = mock_instance
+
+    m = DBModel(model_id="test/config-only", display_name="Config Only", provider="test", type="chat")
+    db.add(m)
+    db.commit()
+    assoc = DBModelRegion(model_id=m.id, region_id=test_region.id, is_active=True, sync_status="pending")
+    db.add(assoc)
+    db.commit()
+
+    import asyncio
+    asyncio.run(sync_model_to_region_task(m.id, test_region.id))
+
+    db.refresh(assoc)
+    assert assoc.sync_status == "failed"
+    assert "only in the LiteLLM config file" in assoc.sync_error
+    mock_instance.add_model.assert_not_called()
+    mock_instance.update_model.assert_not_called()
+
+
+@patch("app.services.model_sync.LiteLLMService")
 def test_sync_model_poisoned_session_never_commits_stale_synced(mock_litellm_class, db, test_region):
     """If a failure happens after sync_status='synced' is set in memory AND the
     error-path re-query also fails (poisoned session), the finally block must not
