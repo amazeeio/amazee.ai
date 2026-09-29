@@ -166,7 +166,7 @@ def test_sync_model_existing_deployment_updates(mock_litellm_class, db, test_reg
     from app.services.model_sync import sync_model_to_region_task
 
     mock_instance = MagicMock()
-    mock_instance.get_model_deployments = AsyncMock(return_value=[{"model_info": {"id": "dep-123"}}])
+    mock_instance.get_model_deployments = AsyncMock(return_value=[{"model_info": {"id": "dep-123", "db_model": True}}])
     mock_instance.add_model = AsyncMock()
     mock_instance.update_model = AsyncMock(return_value={"status": "success"})
     mock_instance.list_access_groups = AsyncMock(return_value=[])
@@ -671,7 +671,7 @@ def test_admin_get_model_redacts_credentials(client, admin_token, db):
 
 @patch("app.services.model_sync.LiteLLMService")
 def test_sync_recreates_deployment_when_catalog_drops_a_param(mock_litellm_class, db, test_region):
-    """/model/update merges, so a key the catalog removed survives it. The sync
+    """PATCH /model/{id}/update merges, so a key the catalog removed survives it. The sync
     must register a fresh deployment first (name stays available) and then
     delete the old ids."""
     from app.services.model_sync import sync_model_to_region_task
