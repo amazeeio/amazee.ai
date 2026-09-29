@@ -613,11 +613,11 @@ def _extract_model_summary(
     )
     capabilities = PublicModelCapabilities(
         **{
-            flag: None if model_info.get(flag) is None else bool(model_info[flag])
+            flag: bool(model_info.get(flag))
             for flag in PublicModelCapabilities.model_fields
         }
     )
-    supports_prompt_caching = bool(capabilities.supports_prompt_caching)
+    supports_prompt_caching = capabilities.supports_prompt_caching
 
     aliases = _extract_aliases(item, model_id)
     metadata_raw = model_info.get("metadata") or item.get("metadata")
