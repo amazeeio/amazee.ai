@@ -778,6 +778,53 @@ def test_sync_recreates_deployment_when_catalog_drops_a_param(mock_litellm_class
 
 
 @patch("app.services.model_sync.LiteLLMService")
+def test_sync_recreates_deployment_when_catalog_drops_base_model(mock_litellm_class, db, test_region):
+    """PATCH cannot remove model_info.base_model, so dropping it from the catalog recreates."""
+    from app.services.model_sync import sync_model_to_region_task
+
+    order: list[str] = []
+    mock_instance = MagicMock()
+    mock_instance.get_model_deployments = AsyncMock(
+        return_value=[
+            {
+                "model_name": "test/drop-base",
+                "litellm_params": {"model": "test/drop-base"},
+                "model_info": {"id": "dep-old", "db_model": True, "base_model": "x"},
+            }
+        ]
+    )
+    mock_instance.add_model = AsyncMock(side_effect=lambda *a, **k: order.append("add_model"))
+    mock_instance.delete_model = AsyncMock(side_effect=lambda *a, **k: order.append("delete_model"))
+    mock_instance.update_model = AsyncMock()
+    mock_instance.list_access_groups = AsyncMock(return_value=[])
+    mock_litellm_class.return_value = mock_instance
+
+    m = DBModel(
+        model_id="test/drop-base", display_name="Drop Base", provider="test", type="chat",
+        model_info={"mode": "chat"},
+    )
+    db.add(m)
+    db.commit()
+    assoc = DBModelRegion(
+        model_id=m.id, region_id=test_region.id, is_active=True, sync_status="pending"
+    )
+    db.add(assoc)
+    db.commit()
+
+    import asyncio
+    asyncio.run(sync_model_to_region_task(m.id, test_region.id))
+
+    db.refresh(assoc)
+    assert assoc.sync_status == "synced"
+    mock_instance.update_model.assert_not_called()
+    mock_instance.add_model.assert_called_once_with(
+        "test/drop-base", {}, access_groups=[], model_info={"mode": "chat"}
+    )
+    mock_instance.delete_model.assert_called_once_with("test/drop-base", ["dep-old"])
+    assert order == ["add_model", "delete_model"]
+
+
+@patch("app.services.model_sync.LiteLLMService")
 def test_reconcile_flags_stale_proxy_params_as_drift(mock_litellm_class, db, test_region):
     """A deployment present by name but carrying params the catalog no longer
     has is drift, and the repair recreates it."""
