@@ -12,6 +12,7 @@ import sys
 import asyncio
 import logging
 from collections import Counter
+from datetime import UTC, datetime
 
 # Add the parent directory to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -59,14 +60,20 @@ async def main() -> int:
         counts: Counter = Counter()
         failed = []
         for assoc, model_id, region_id, region_name in rows:
+            started = datetime.now(UTC)
             await sync_model_to_region_task(model_id, region_id)
             db.refresh(assoc)
-            status, error = assoc.sync_status, assoc.sync_error
+            status, error, synced_at = assoc.sync_status, assoc.sync_error, assoc.synced_at
             # End the read so the connection is not idle in a transaction for the whole run.
             db.rollback()
+            # The task can fail to write its status, leaving an old 'synced'; only a fresh synced_at proves this run.
+            if status == "synced" and synced_at is not None and synced_at >= started:
+                counts["synced"] += 1
+                continue
+            if status != "failed":
+                status, error = "unconfirmed", "sync status not updated"
             counts[status] += 1
-            if status == "failed":
-                failed.append((model_id, region_name, error))
+            failed.append((model_id, region_name, error))
 
         print(f"total={len(rows)} " + " ".join(f"{k}={v}" for k, v in sorted(counts.items())))
         for model_id, region_name, error in failed:
