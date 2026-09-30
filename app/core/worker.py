@@ -2131,10 +2131,12 @@ async def hard_delete_expired_teams(db: Session):
                     .all()
                 )
                 for key in db_keys:
-                    key_region = key.region
+                    # A key without a region can still be dropped with the
+                    # credentials of the region that owns its host.
+                    key_region = key.region or regions_by_host.get(key.database_host)
                     if key_region is None:
                         logger.error(
-                            f"Key {key.id} has database {key.database_name} but no region, so no admin credentials exist to drop it"
+                            f"Key {key.id} has database {key.database_name} but no region owns it, so no admin credentials exist to drop it"
                         )
                         continue
                     manager, owner = postgres_manager_for_key(
