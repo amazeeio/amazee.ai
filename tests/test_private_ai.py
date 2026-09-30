@@ -2385,6 +2385,7 @@ def test_get_private_ai_key_no_litellm_token(
         litellm_token=None,
         team_id=test_team.id,
         region_id=test_region.id,
+        updated_at=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
     )
     db.add(test_key)
     db.commit()
@@ -2401,6 +2402,10 @@ def test_get_private_ai_key_no_litellm_token(
     assert data["database_name"] == "test-db-get-no-token"
     assert data["litellm_token"] is None
     assert data["team_id"] == test_team.id
+    assert data["updated_at"] is not None
+    assert datetime.fromisoformat(data["updated_at"]).replace(
+        tzinfo=UTC
+    ) == datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
     mock_get_key_info.assert_not_awaited()
 
     db.delete(test_key)
