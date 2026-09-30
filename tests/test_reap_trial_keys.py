@@ -100,7 +100,7 @@ def patched_services():
     """Stub the two remote calls the reaper makes per key."""
     with (
         patch("app.core.worker.LiteLLMService") as litellm,
-        patch("app.core.worker.PostgresManager") as postgres,
+        patch("app.db.postgres.PostgresManager") as postgres,
     ):
         litellm.return_value = AsyncMock()
         postgres.return_value = AsyncMock()

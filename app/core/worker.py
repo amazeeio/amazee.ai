@@ -29,11 +29,7 @@ from app.core.trial_cleanup import (
     delete_trial_key,
     select_trial_keys,
 )
-from app.db.postgres import (
-    PostgresManager,
-    postgres_manager_for_key,
-    regions_by_postgres_host,
-)
+from app.db.postgres import postgres_manager_for_key, regions_by_postgres_host
 from app.schemas.models import BudgetType
 from app.services.litellm import (
     INFERENCE_ONLY_ROUTES,
@@ -2525,8 +2521,6 @@ async def reap_trial_keys(db: Session):
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
-        postgres_manager = PostgresManager(region=region)
-
         region_failures = 0
         for key in keys:
             result = await delete_trial_key(
@@ -2539,7 +2533,6 @@ async def reap_trial_keys(db: Session):
                 # cases apart; it still guards the manual CLI's unfiltered path.
                 allow_used=True,
                 litellm_service=litellm_service,
-                postgres_manager=postgres_manager,
             )
             totals.add(result)
             if not result.ok:

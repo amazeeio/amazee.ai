@@ -1,5 +1,5 @@
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -432,6 +432,34 @@ async def test_delete_removes_remote_resources_then_rows(
     )
     assert len(audit) == 1
     assert audit[0].user_id is None
+
+
+@pytest.mark.asyncio
+async def test_delete_drops_database_on_the_host_that_owns_it(
+    db: Session, trial_team: DBTeam, old_region: DBRegion
+):
+    """A key's database on another region's host is dropped there."""
+    other = DBRegion(
+        name="amazeeai-other-pg-region",
+        litellm_api_url="http://other-litellm",
+        litellm_api_key="other-key",
+        postgres_host="other-pg",
+        postgres_admin_user="other-admin",
+        postgres_admin_password="other-pw",
+        is_active=True,
+    )
+    db.add(other)
+    _, key = _make_trial_key(db, trial_team, old_region, email="moved@example.com")
+    key.database_host = "other-pg"
+    db.commit()
+    key_id = key.id
+
+    with patch("app.db.postgres.PostgresManager", return_value=AsyncMock()) as pg:
+        result = await delete_trial_key(db, key, old_region, litellm_service=AsyncMock())
+
+    assert result.ok
+    pg.assert_called_once_with(region=other, host="other-pg")
+    assert db.query(DBPrivateAIKey).filter_by(id=key_id).first() is None
 
 
 @pytest.mark.asyncio
