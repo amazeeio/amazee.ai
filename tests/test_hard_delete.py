@@ -884,7 +884,7 @@ async def test_hard_delete_proceeds_when_inactive_region_delete_fails(
 def mock_pg():
     """Patch LiteLLM and Postgres with fresh async mocks; yield the Postgres one."""
     with patch("app.core.worker.LiteLLMService", return_value=AsyncMock()), patch(
-        "app.core.worker.PostgresManager", return_value=AsyncMock()
+        "app.db.postgres.PostgresManager", return_value=AsyncMock()
     ) as pg:
         yield pg
 
