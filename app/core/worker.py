@@ -2134,34 +2134,26 @@ async def hard_delete_expired_teams(db: Session):
                     # A key without a region can still be dropped with the
                     # credentials of the region that owns its host.
                     key_region = key.region or regions_by_host.get(key.database_host)
+                    # Dropping the row without the database would leave a
+                    # database nothing can find again, so any failure keeps
+                    # the team for the next run, on inactive regions too.
                     if key_region is None:
-                        logger.error(
-                            f"Key {key.id} has database {key.database_name} but no region owns it, so no admin credentials exist to drop it"
-                        )
-                        continue
-                    manager, owner = postgres_manager_for_key(
+                        message = f"Key {key.id} has database {key.database_name} but no region owns its host, so no admin credentials exist to drop it; will retry"
+                        logger.error(message)
+                        raise RuntimeError(message)
+                    manager = postgres_manager_for_key(
                         key, key_region, regions_by_host
                     )
-                    host = manager.host
                     try:
                         await manager.delete_database(
                             key.database_name, key.database_username
                         )
                         logger.info(
-                            f"Dropped vector database for key {key.id} on {host} (region {owner.name})"
+                            f"Dropped vector database for key {key.id} on {manager.host}"
                         )
                     except Exception as db_error:
-                        if not owner.is_active:
-                            # An inactive region may be decommissioned for good,
-                            # so it must not hold the deletion back forever.
-                            logger.error(
-                                f"Failed to drop vector database for key {key.id} on {host} in inactive region {owner.name}: {str(db_error)}; continuing"
-                            )
-                            continue
-                        # Dropping the row now would leave a database nothing
-                        # can find again, so keep it and retry on the next run.
                         logger.error(
-                            f"Failed to drop vector database for key {key.id} on {host} in region {owner.name}: {str(db_error)}; will retry"
+                            f"Failed to drop vector database for key {key.id} on {manager.host}: {str(db_error)}; will retry"
                         )
                         raise
 

@@ -128,19 +128,17 @@ def test_postgres_manager_for_key_picks_host_owner():
     other = _region("other.test")
     regions_by_host = {"own.test": own, "other.test": other}
 
-    def owner_and_host(database_host):
+    def user_and_host(database_host, key_region=own):
         key = Mock(database_host=database_host)
-        manager, owner = postgres_manager_for_key(key, own, regions_by_host)
-        return owner, manager.host
+        manager = postgres_manager_for_key(key, key_region, regions_by_host)
+        return manager.admin_user, manager.host
 
-    assert owner_and_host(None) == (own, "own.test")
-    assert owner_and_host("other.test") == (other, "other.test")
-    assert owner_and_host("unknown.test") == (own, "unknown.test")
-
+    assert user_and_host(None) == (own.postgres_admin_user, "own.test")
+    assert user_and_host("other.test") == (other.postgres_admin_user, "other.test")
+    assert user_and_host("unknown.test") == (own.postgres_admin_user, "unknown.test")
+    # An inactive key region gives way to the active region on its host.
     inactive_own = _region("own.test", is_active=False)
-    key = Mock(database_host=None)
-    _, owner = postgres_manager_for_key(key, inactive_own, regions_by_host)
-    assert owner is own
+    assert user_and_host(None, inactive_own) == (own.postgres_admin_user, "own.test")
 
 
 def test_regions_by_postgres_host_prefers_active_on_shared_host():
