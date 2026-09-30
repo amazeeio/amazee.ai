@@ -880,6 +880,15 @@ async def test_hard_delete_proceeds_when_inactive_region_delete_fails(
     assert db.query(DBTeam).filter(DBTeam.id == team_id).first() is None
 
 
+@pytest.fixture
+def mock_pg():
+    """Patch LiteLLM and Postgres with fresh async mocks; yield the Postgres one."""
+    with patch("app.core.worker.LiteLLMService", return_value=AsyncMock()), patch(
+        "app.core.worker.PostgresManager", return_value=AsyncMock()
+    ) as pg:
+        yield pg
+
+
 def _add_db_key(db, team, region, token="test-token", **fields):
     key = DBPrivateAIKey(
         name="db-key",
@@ -924,15 +933,11 @@ def _gone(db, team_id, key_id):
     return team is None and key is None
 
 
-@patch("app.core.worker.PostgresManager")
-@patch("app.core.worker.LiteLLMService")
 @pytest.mark.asyncio
 async def test_hard_delete_drops_vector_database(
-    mock_litellm, mock_pg, db: Session, test_team, test_region
+    mock_pg, db: Session, test_team, test_region
 ):
     """A key with a token and a database has its database and role dropped."""
-    mock_litellm.return_value = AsyncMock()
-    mock_pg.return_value = AsyncMock()
     key_id = _add_db_key(db, test_team, test_region)
     team_id = test_team.id
     _expire(db, test_team)
@@ -944,15 +949,11 @@ async def test_hard_delete_drops_vector_database(
     assert _gone(db, team_id, key_id)
 
 
-@patch("app.core.worker.PostgresManager")
-@patch("app.core.worker.LiteLLMService")
 @pytest.mark.asyncio
 async def test_hard_delete_drops_database_of_tokenless_key(
-    mock_litellm, mock_pg, db: Session, test_team, test_region
+    mock_pg, db: Session, test_team, test_region
 ):
     """A vector-db-only key is not in keys_by_region but is still dropped."""
-    mock_litellm.return_value = AsyncMock()
-    mock_pg.return_value = AsyncMock()
     key_id = _add_db_key(db, test_team, test_region, token=None)
     team_id = test_team.id
     _expire(db, test_team)
@@ -963,15 +964,11 @@ async def test_hard_delete_drops_database_of_tokenless_key(
     assert _gone(db, team_id, key_id)
 
 
-@patch("app.core.worker.PostgresManager")
-@patch("app.core.worker.LiteLLMService")
 @pytest.mark.asyncio
 async def test_hard_delete_keeps_rows_when_drop_fails_in_active_region(
-    mock_litellm, mock_pg, db: Session, test_team, test_region
+    mock_pg, db: Session, test_team, test_region
 ):
     """A failed drop on an active region keeps the rows for the next run."""
-    mock_litellm.return_value = AsyncMock()
-    mock_pg.return_value = AsyncMock()
     mock_pg.return_value.delete_database.side_effect = Exception("down")
     key_id = _add_db_key(db, test_team, test_region)
     team_id = test_team.id
@@ -983,15 +980,11 @@ async def test_hard_delete_keeps_rows_when_drop_fails_in_active_region(
     assert db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
 
 
-@patch("app.core.worker.PostgresManager")
-@patch("app.core.worker.LiteLLMService")
 @pytest.mark.asyncio
 async def test_hard_delete_continues_when_drop_fails_in_inactive_region(
-    mock_litellm, mock_pg, db: Session, test_team, test_region
+    mock_pg, db: Session, test_team, test_region
 ):
     """A failed drop on an inactive region must not block hard delete."""
-    mock_litellm.return_value = AsyncMock()
-    mock_pg.return_value = AsyncMock()
     mock_pg.return_value.delete_database.side_effect = Exception("down")
     test_region.is_active = False
     db.commit()
@@ -1004,15 +997,11 @@ async def test_hard_delete_continues_when_drop_fails_in_inactive_region(
     assert _gone(db, team_id, key_id)
 
 
-@patch("app.core.worker.PostgresManager")
-@patch("app.core.worker.LiteLLMService")
 @pytest.mark.asyncio
 async def test_hard_delete_uses_region_that_owns_key_host(
-    mock_litellm, mock_pg, db: Session, test_team, test_region
+    mock_pg, db: Session, test_team, test_region
 ):
     """A key on another region's host is dropped with that region's credentials."""
-    mock_litellm.return_value = AsyncMock()
-    mock_pg.return_value = AsyncMock()
     other = _add_region(db, "other-host-region", "other-host.example")
     key_id = _add_db_key(
         db, test_team, test_region, database_host="other-host.example"
@@ -1027,15 +1016,11 @@ async def test_hard_delete_uses_region_that_owns_key_host(
     assert _gone(db, team_id, key_id)
 
 
-@patch("app.core.worker.PostgresManager")
-@patch("app.core.worker.LiteLLMService")
 @pytest.mark.asyncio
 async def test_hard_delete_uses_owner_is_active_for_failure_rule(
-    mock_litellm, mock_pg, db: Session, test_team, test_region
+    mock_pg, db: Session, test_team, test_region
 ):
     """An inactive host owner lets the delete go on, even for an active key region."""
-    mock_litellm.return_value = AsyncMock()
-    mock_pg.return_value = AsyncMock()
     mock_pg.return_value.delete_database.side_effect = Exception("down")
     _add_region(db, "other-host-region", "other-host.example", is_active=False)
     key_id = _add_db_key(
@@ -1049,15 +1034,11 @@ async def test_hard_delete_uses_owner_is_active_for_failure_rule(
     assert _gone(db, team_id, key_id)
 
 
-@patch("app.core.worker.PostgresManager")
-@patch("app.core.worker.LiteLLMService")
 @pytest.mark.asyncio
 async def test_hard_delete_prefers_active_region_on_shared_host(
-    mock_litellm, mock_pg, db: Session, test_team, test_region
+    mock_pg, db: Session, test_team, test_region
 ):
     """Two regions on one host: the active one supplies the credentials."""
-    mock_litellm.return_value = AsyncMock()
-    mock_pg.return_value = AsyncMock()
     _add_region(db, "shared-inactive", "shared-host.example", is_active=False)
     active = _add_region(db, "shared-active", "shared-host.example")
     _add_region(db, "shared-inactive-2", "shared-host.example", is_active=False)
@@ -1069,15 +1050,11 @@ async def test_hard_delete_prefers_active_region_on_shared_host(
     mock_pg.assert_called_once_with(region=active, host="shared-host.example")
 
 
-@patch("app.core.worker.PostgresManager")
-@patch("app.core.worker.LiteLLMService")
 @pytest.mark.asyncio
 async def test_hard_delete_falls_back_to_key_region_for_unknown_host(
-    mock_litellm, mock_pg, db: Session, test_team, test_region
+    mock_pg, db: Session, test_team, test_region
 ):
     """A host no region owns is reached with the key's region credentials."""
-    mock_litellm.return_value = AsyncMock()
-    mock_pg.return_value = AsyncMock()
     _add_db_key(db, test_team, test_region, database_host="unknown-host.example")
     _expire(db, test_team)
 
@@ -1086,15 +1063,11 @@ async def test_hard_delete_falls_back_to_key_region_for_unknown_host(
     mock_pg.assert_called_once_with(region=test_region, host="unknown-host.example")
 
 
-@patch("app.core.worker.PostgresManager")
-@patch("app.core.worker.LiteLLMService")
 @pytest.mark.asyncio
 async def test_hard_delete_skips_drop_for_key_without_database(
-    mock_litellm, mock_pg, db: Session, test_team, test_region
+    mock_pg, db: Session, test_team, test_region
 ):
     """A key with no database needs no drop."""
-    mock_litellm.return_value = AsyncMock()
-    mock_pg.return_value = AsyncMock()
     db.add(
         DBPrivateAIKey(
             name="plain-key",
