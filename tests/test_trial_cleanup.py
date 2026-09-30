@@ -520,6 +520,26 @@ async def test_dead_vector_db_host_leaves_rows_in_place(
 
 
 @pytest.mark.asyncio
+async def test_failed_manager_lookup_is_one_failed_key(
+    db: Session, trial_team: DBTeam, old_region: DBRegion
+):
+    _, key = _make_trial_key(db, trial_team, old_region, email="nolookup@example.com")
+    key_id = key.id
+
+    with patch(
+        "app.core.trial_cleanup.regions_by_postgres_host",
+        side_effect=RuntimeError("db gone"),
+    ):
+        result = await delete_trial_key(
+            db, key, old_region, litellm_service=AsyncMock()
+        )
+
+    assert not result.ok
+    assert "database drop failed" in result.error
+    assert db.query(DBPrivateAIKey).filter_by(id=key_id).first() is not None
+
+
+@pytest.mark.asyncio
 async def test_user_kept_while_they_still_own_another_key(
     db: Session, trial_team: DBTeam, old_region: DBRegion, postgres
 ):

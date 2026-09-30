@@ -402,8 +402,10 @@ async def delete_trial_key(
         result.litellm_deleted = True
 
     if key.database_name:
-        manager = postgres_manager_for_key(key, region, regions_by_postgres_host(db))
         try:
+            manager = postgres_manager_for_key(
+                key, region, regions_by_postgres_host(db)
+            )
             await manager.delete_database(key.database_name, key.database_username)
             result.database_deleted = True
         except Exception as e:
