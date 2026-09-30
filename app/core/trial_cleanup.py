@@ -15,9 +15,8 @@ that forgets either one causes damage that is not recoverable:
    LiteLLM key and the Postgres database outlive the row that points at them,
    so dropping the row first strands both with nothing left to find them by.
    If either remote call fails, ``delete_trial_key`` reports it and leaves
-   every row in place to be retried. This is deliberately the opposite of
-   ``hard_delete_expired_teams``, which logs remote failures and deletes the
-   rows regardless.
+   every row in place to be retried. ``hard_delete_expired_teams`` follows the
+   same rule for the vector database on regions that are still active.
 """
 
 import logging

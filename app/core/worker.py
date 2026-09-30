@@ -2013,6 +2013,17 @@ async def hard_delete_expired_teams(db: Session):
 
         logger.info(f"Found {len(teams_to_delete)} teams eligible for hard deletion")
 
+        # A key's database can live on another region's host, and that region
+        # holds the admin credentials for it. On a shared host, an active
+        # region wins so a dead region's credentials are not used.
+        regions_by_host = {}
+        for region in (
+            db.query(DBRegion).filter(DBRegion.postgres_host.is_not(None)).all()
+        ):
+            current = regions_by_host.get(region.postgres_host)
+            if current is None or (region.is_active and not current.is_active):
+                regions_by_host[region.postgres_host] = region
+
         for team in teams_to_delete:
             try:
                 logger.info(
@@ -2110,6 +2121,57 @@ async def hard_delete_expired_teams(db: Session):
                         # next run.
                         logger.error(
                             f"Failed to delete LiteLLM team for team {team.id} in region {region.name}: {str(team_error)}; will retry"
+                        )
+                        raise
+
+                # Drop vector databases before their rows go: the row is the
+                # only record of where each database lives. Token-less
+                # vector-db keys are not in keys_by_region, so query directly.
+                db_keys = (
+                    db.query(DBPrivateAIKey)
+                    .filter(
+                        or_(
+                            DBPrivateAIKey.team_id == team.id,
+                            DBPrivateAIKey.owner_id.in_(team_user_ids),
+                        ),
+                        DBPrivateAIKey.database_name.is_not(None),
+                    )
+                    .all()
+                )
+                for key in db_keys:
+                    key_region = key.region
+                    if key_region is None:
+                        logger.error(
+                            f"Key {key.id} has database {key.database_name} but no region, so no admin credentials exist to drop it"
+                        )
+                        continue
+                    host = key.database_host or key_region.postgres_host
+                    # The region that owns the host holds its credentials, and
+                    # its is_active decides if a failure may be skipped. The
+                    # key's region is the fallback when no region owns the host.
+                    if host == key_region.postgres_host:
+                        owner = key_region
+                    else:
+                        owner = regions_by_host.get(host, key_region)
+                    try:
+                        await PostgresManager(region=owner, host=host).delete_database(
+                            key.database_name, key.database_username
+                        )
+                        logger.info(
+                            f"Dropped vector database for key {key.id} on {host} (region {owner.name})"
+                        )
+                    except Exception as db_error:
+                        if not owner.is_active:
+                            # An inactive region may be decommissioned for good,
+                            # so it must not hold the deletion back forever.
+                            logger.error(
+                                f"Failed to drop vector database for key {key.id} on {host} in inactive region {owner.name}: {str(db_error)}; continuing"
+                            )
+                            continue
+                        # Dropping the row now would leave a database nothing
+                        # can find again, so keep it and retry on the next run.
+                        logger.error(
+                            f"Failed to drop vector database for key {key.id} on {host} in region {owner.name}: {str(db_error)}; will retry"
                         )
                         raise
 
