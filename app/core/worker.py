@@ -2036,6 +2036,10 @@ async def hard_delete_expired_teams(db: Session):
                     .scalars()
                     .all()
                 )
+                team_keys_filter = or_(
+                    DBPrivateAIKey.team_id == team.id,
+                    DBPrivateAIKey.owner_id.in_(team_user_ids),
+                )
 
                 # Also capture emails now (needed for user_spend_cache cleanup)
                 team_user_emails = (
@@ -2130,10 +2134,7 @@ async def hard_delete_expired_teams(db: Session):
                 db_keys = (
                     db.query(DBPrivateAIKey)
                     .filter(
-                        or_(
-                            DBPrivateAIKey.team_id == team.id,
-                            DBPrivateAIKey.owner_id.in_(team_user_ids),
-                        ),
+                        team_keys_filter,
                         DBPrivateAIKey.database_name.is_not(None),
                     )
                     .all()
@@ -2179,12 +2180,7 @@ async def hard_delete_expired_teams(db: Session):
                 # Collect key IDs first so we can clean up spend_caps that reference them
                 team_key_ids = (
                     db.execute(
-                        select(DBPrivateAIKey.id).filter(
-                            or_(
-                                DBPrivateAIKey.team_id == team.id,
-                                DBPrivateAIKey.owner_id.in_(team_user_ids),
-                            )
-                        )
+                        select(DBPrivateAIKey.id).filter(team_keys_filter)
                     )
                     .scalars()
                     .all()
@@ -2204,10 +2200,9 @@ async def hard_delete_expired_teams(db: Session):
                 logger.info(f"Deleted spend caps for team {team.id}")
 
                 total_keys = sum(len(keys) for keys in keys_by_region.values())
-                db.query(DBPrivateAIKey).filter(
-                    (DBPrivateAIKey.team_id == team.id)
-                    | (DBPrivateAIKey.owner_id.in_(team_user_ids))
-                ).delete(synchronize_session=False)
+                db.query(DBPrivateAIKey).filter(team_keys_filter).delete(
+                    synchronize_session=False
+                )
                 logger.info(
                     f"Deleted {total_keys} keys from database for team {team.id}"
                 )
