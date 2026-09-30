@@ -2,7 +2,8 @@ import asyncpg
 import re
 import uuid
 import logging
-from app.db.models import DBRegion
+from sqlalchemy.orm import Session
+from app.db.models import DBPrivateAIKey, DBRegion
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,35 @@ def _validate_identifier(name: str, label: str = "identifier") -> None:
         raise ValueError(
             f"Invalid {label} '{name}': only alphanumeric characters and underscores are allowed"
         )
+
+
+def regions_by_postgres_host(db: Session) -> dict[str, DBRegion]:
+    """Map each Postgres host to the region whose credentials reach it."""
+    # A key's database can live on another region's host, and that region
+    # holds the admin credentials for it. On a shared host, an active
+    # region wins so a dead region's credentials are not used.
+    regions_by_host = {}
+    for region in db.query(DBRegion).filter(DBRegion.postgres_host.is_not(None)).all():
+        current = regions_by_host.get(region.postgres_host)
+        if current is None or (region.is_active and not current.is_active):
+            regions_by_host[region.postgres_host] = region
+    return regions_by_host
+
+
+def postgres_manager_for_key(
+    key: DBPrivateAIKey, key_region: DBRegion, regions_by_host: dict[str, DBRegion]
+) -> tuple["PostgresManager", DBRegion]:
+    """Return a manager for the key's own database host, and the host's owner region."""
+    host = key.database_host or key_region.postgres_host
+    # The region that owns the host holds its credentials, and its is_active
+    # decides if a failure may be skipped. The key's region is the fallback
+    # when no region owns the host.
+    owner = (
+        key_region
+        if host == key_region.postgres_host
+        else regions_by_host.get(host, key_region)
+    )
+    return PostgresManager(region=owner, host=host), owner
 
 
 class PostgresManager:

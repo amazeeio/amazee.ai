@@ -29,7 +29,11 @@ from app.core.trial_cleanup import (
     delete_trial_key,
     select_trial_keys,
 )
-from app.db.postgres import PostgresManager
+from app.db.postgres import (
+    PostgresManager,
+    postgres_manager_for_key,
+    regions_by_postgres_host,
+)
 from app.schemas.models import BudgetType
 from app.services.litellm import (
     INFERENCE_ONLY_ROUTES,
@@ -2013,16 +2017,7 @@ async def hard_delete_expired_teams(db: Session):
 
         logger.info(f"Found {len(teams_to_delete)} teams eligible for hard deletion")
 
-        # A key's database can live on another region's host, and that region
-        # holds the admin credentials for it. On a shared host, an active
-        # region wins so a dead region's credentials are not used.
-        regions_by_host = {}
-        for region in (
-            db.query(DBRegion).filter(DBRegion.postgres_host.is_not(None)).all()
-        ):
-            current = regions_by_host.get(region.postgres_host)
-            if current is None or (region.is_active and not current.is_active):
-                regions_by_host[region.postgres_host] = region
+        regions_by_host = regions_by_postgres_host(db)
 
         for team in teams_to_delete:
             try:
@@ -2146,17 +2141,12 @@ async def hard_delete_expired_teams(db: Session):
                             f"Key {key.id} has database {key.database_name} but no region, so no admin credentials exist to drop it"
                         )
                         continue
-                    host = key.database_host or key_region.postgres_host
-                    # The region that owns the host holds its credentials, and
-                    # its is_active decides if a failure may be skipped. The
-                    # key's region is the fallback when no region owns the host.
-                    owner = (
-                        key_region
-                        if host == key_region.postgres_host
-                        else regions_by_host.get(host, key_region)
+                    manager, owner = postgres_manager_for_key(
+                        key, key_region, regions_by_host
                     )
+                    host = manager.host
                     try:
-                        await PostgresManager(region=owner, host=host).delete_database(
+                        await manager.delete_database(
                             key.database_name, key.database_username
                         )
                         logger.info(

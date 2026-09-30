@@ -7,7 +7,11 @@ import pytest
 from unittest.mock import AsyncMock, Mock, patch
 
 from app.db.models import DBRegion
-from app.db.postgres import PostgresManager
+from app.db.postgres import (
+    PostgresManager,
+    postgres_manager_for_key,
+    regions_by_postgres_host,
+)
 
 
 @pytest.fixture
@@ -110,3 +114,34 @@ async def test_host_override_keeps_region_credentials(region):
     connect.assert_awaited_once_with(
         host="other.test", port=5432, user="admin", password="adminpw"
     )
+
+
+def _region(host, is_active=True):
+    region = Mock(spec=DBRegion)
+    region.postgres_host = host
+    region.is_active = is_active
+    return region
+
+
+def test_postgres_manager_for_key_picks_host_owner():
+    own = _region("own.test")
+    other = _region("other.test")
+    regions_by_host = {"own.test": own, "other.test": other}
+
+    def owner_and_host(database_host):
+        key = Mock(database_host=database_host)
+        manager, owner = postgres_manager_for_key(key, own, regions_by_host)
+        return owner, manager.host
+
+    assert owner_and_host(None) == (own, "own.test")
+    assert owner_and_host("other.test") == (other, "other.test")
+    assert owner_and_host("unknown.test") == (own, "unknown.test")
+
+
+def test_regions_by_postgres_host_prefers_active_on_shared_host():
+    inactive = _region("shared.test", is_active=False)
+    active = _region("shared.test")
+    for order in ([inactive, active], [active, inactive]):
+        db = Mock()
+        db.query.return_value.filter.return_value.all.return_value = order
+        assert regions_by_postgres_host(db) == {"shared.test": active}
