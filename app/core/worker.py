@@ -2150,10 +2150,11 @@ async def hard_delete_expired_teams(db: Session):
                     # The region that owns the host holds its credentials, and
                     # its is_active decides if a failure may be skipped. The
                     # key's region is the fallback when no region owns the host.
-                    if host == key_region.postgres_host:
-                        owner = key_region
-                    else:
-                        owner = regions_by_host.get(host, key_region)
+                    owner = (
+                        key_region
+                        if host == key_region.postgres_host
+                        else regions_by_host.get(host, key_region)
+                    )
                     try:
                         await PostgresManager(region=owner, host=host).delete_database(
                             key.database_name, key.database_username
