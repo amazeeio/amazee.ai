@@ -166,7 +166,7 @@ def test_sync_model_existing_deployment_updates(mock_litellm_class, db, test_reg
     from app.services.model_sync import sync_model_to_region_task
 
     mock_instance = MagicMock()
-    mock_instance.get_model_deployments = AsyncMock(return_value=[{"model_info": {"id": "dep-123"}}])
+    mock_instance.get_model_deployments = AsyncMock(return_value=[{"model_info": {"id": "dep-123", "db_model": True}}])
     mock_instance.add_model = AsyncMock()
     mock_instance.update_model = AsyncMock(return_value={"status": "success"})
     mock_instance.list_access_groups = AsyncMock(return_value=[])
@@ -200,6 +200,68 @@ def test_sync_model_existing_deployment_updates(mock_litellm_class, db, test_reg
     mock_instance.update_model.assert_called_once_with(
         "test/conflict-sync", {}, ["dep-123"], access_groups=[], model_info=None
     )
+
+
+@patch("app.services.model_sync.LiteLLMService")
+def test_sync_model_updates_only_db_deployments(mock_litellm_class, db, test_region):
+    """A same-named config-file deployment rejects PATCH, so only the DB id is updated."""
+    from app.services.model_sync import sync_model_to_region_task
+
+    mock_instance = MagicMock()
+    mock_instance.get_model_deployments = AsyncMock(return_value=[
+        {"model_info": {"id": "cfg-1"}},
+        {"model_info": {"id": "dep-db", "db_model": True}},
+    ])
+    mock_instance.add_model = AsyncMock()
+    mock_instance.update_model = AsyncMock(return_value={"status": "success"})
+    mock_instance.list_access_groups = AsyncMock(return_value=[])
+    mock_litellm_class.return_value = mock_instance
+
+    m = DBModel(model_id="test/mixed-sync", display_name="Mixed Sync", provider="test", type="chat")
+    db.add(m)
+    db.commit()
+    assoc = DBModelRegion(model_id=m.id, region_id=test_region.id, is_active=True, sync_status="pending")
+    db.add(assoc)
+    db.commit()
+
+    import asyncio
+    asyncio.run(sync_model_to_region_task(m.id, test_region.id))
+
+    db.refresh(assoc)
+    assert assoc.sync_status == "synced"
+    mock_instance.add_model.assert_not_called()
+    mock_instance.update_model.assert_called_once_with(
+        "test/mixed-sync", {}, ["dep-db"], access_groups=[], model_info=None
+    )
+
+
+@patch("app.services.model_sync.LiteLLMService")
+def test_sync_model_fails_when_only_config_deployment_exists(mock_litellm_class, db, test_region):
+    """A config-file entry cannot be patched and must not get a DB twin beside it."""
+    from app.services.model_sync import sync_model_to_region_task
+
+    mock_instance = MagicMock()
+    mock_instance.get_model_deployments = AsyncMock(return_value=[{"model_info": {"id": "cfg-1"}}])
+    mock_instance.add_model = AsyncMock()
+    mock_instance.update_model = AsyncMock()
+    mock_instance.list_access_groups = AsyncMock(return_value=[])
+    mock_litellm_class.return_value = mock_instance
+
+    m = DBModel(model_id="test/config-only", display_name="Config Only", provider="test", type="chat")
+    db.add(m)
+    db.commit()
+    assoc = DBModelRegion(model_id=m.id, region_id=test_region.id, is_active=True, sync_status="pending")
+    db.add(assoc)
+    db.commit()
+
+    import asyncio
+    asyncio.run(sync_model_to_region_task(m.id, test_region.id))
+
+    db.refresh(assoc)
+    assert assoc.sync_status == "failed"
+    assert "only in the LiteLLM config file" in assoc.sync_error
+    mock_instance.add_model.assert_not_called()
+    mock_instance.update_model.assert_not_called()
 
 
 @patch("app.services.model_sync.LiteLLMService")
@@ -671,7 +733,7 @@ def test_admin_get_model_redacts_credentials(client, admin_token, db):
 
 @patch("app.services.model_sync.LiteLLMService")
 def test_sync_recreates_deployment_when_catalog_drops_a_param(mock_litellm_class, db, test_region):
-    """/model/update merges, so a key the catalog removed survives it. The sync
+    """PATCH /model/{id}/update merges, so a key the catalog removed survives it. The sync
     must register a fresh deployment first (name stays available) and then
     delete the old ids."""
     from app.services.model_sync import sync_model_to_region_task
@@ -712,6 +774,53 @@ def test_sync_recreates_deployment_when_catalog_drops_a_param(mock_litellm_class
         "test/drop-key", {}, access_groups=[], model_info=None
     )
     mock_instance.delete_model.assert_called_once_with("test/drop-key", ["dep-old"])
+    assert order == ["add_model", "delete_model"]
+
+
+@patch("app.services.model_sync.LiteLLMService")
+def test_sync_recreates_deployment_when_catalog_drops_base_model(mock_litellm_class, db, test_region):
+    """PATCH cannot remove model_info.base_model, so dropping it from the catalog recreates."""
+    from app.services.model_sync import sync_model_to_region_task
+
+    order: list[str] = []
+    mock_instance = MagicMock()
+    mock_instance.get_model_deployments = AsyncMock(
+        return_value=[
+            {
+                "model_name": "test/drop-base",
+                "litellm_params": {"model": "test/drop-base"},
+                "model_info": {"id": "dep-old", "db_model": True, "base_model": "x"},
+            }
+        ]
+    )
+    mock_instance.add_model = AsyncMock(side_effect=lambda *a, **k: order.append("add_model"))
+    mock_instance.delete_model = AsyncMock(side_effect=lambda *a, **k: order.append("delete_model"))
+    mock_instance.update_model = AsyncMock()
+    mock_instance.list_access_groups = AsyncMock(return_value=[])
+    mock_litellm_class.return_value = mock_instance
+
+    m = DBModel(
+        model_id="test/drop-base", display_name="Drop Base", provider="test", type="chat",
+        model_info={"mode": "chat"},
+    )
+    db.add(m)
+    db.commit()
+    assoc = DBModelRegion(
+        model_id=m.id, region_id=test_region.id, is_active=True, sync_status="pending"
+    )
+    db.add(assoc)
+    db.commit()
+
+    import asyncio
+    asyncio.run(sync_model_to_region_task(m.id, test_region.id))
+
+    db.refresh(assoc)
+    assert assoc.sync_status == "synced"
+    mock_instance.update_model.assert_not_called()
+    mock_instance.add_model.assert_called_once_with(
+        "test/drop-base", {}, access_groups=[], model_info={"mode": "chat"}
+    )
+    mock_instance.delete_model.assert_called_once_with("test/drop-base", ["dep-old"])
     assert order == ["add_model", "delete_model"]
 
 
