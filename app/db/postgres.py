@@ -37,11 +37,12 @@ def postgres_manager_for_key(
     """Return a manager for the key's own database host, and the host's owner region."""
     host = key.database_host or key_region.postgres_host
     # The region that owns the host holds its credentials, and its is_active
-    # decides if a failure may be skipped. The key's region is the fallback
-    # when no region owns the host.
+    # decides if a failure may be skipped. An inactive key region gives way to
+    # an active region on the same host, so stale credentials are not used.
+    # The key's region is the fallback when no region owns the host.
     owner = (
         key_region
-        if host == key_region.postgres_host
+        if host == key_region.postgres_host and key_region.is_active
         else regions_by_host.get(host, key_region)
     )
     return PostgresManager(region=owner, host=host), owner
