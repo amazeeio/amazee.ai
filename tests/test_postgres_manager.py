@@ -97,3 +97,16 @@ def test_backfill_includes_regions_with_no_tracked_keys():
     work = dict(get_vector_dbs_grouped_by_region(session, None))
     assert work[tracked] == [("db_abc123", "user_abc123")]
     assert work[orphan_only] == []
+
+
+@pytest.mark.asyncio
+async def test_host_override_keeps_region_credentials(region):
+    connect = AsyncMock(return_value=AsyncMock())
+    with patch("asyncpg.connect", connect):
+        await PostgresManager(region=region, host="other.test").delete_database(
+            "db_x", "user_x"
+        )
+
+    connect.assert_awaited_once_with(
+        host="other.test", port=5432, user="admin", password="adminpw"
+    )

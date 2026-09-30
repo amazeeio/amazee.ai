@@ -18,9 +18,11 @@ def _validate_identifier(name: str, label: str = "identifier") -> None:
 
 
 class PostgresManager:
-    def __init__(self, region: DBRegion = None):
+    def __init__(self, region: DBRegion = None, host: str | None = None):
         if region:
-            self.host = region.postgres_host
+            # A key's database can outlive a region's host change, so callers
+            # may point at the key's own host with the region's credentials.
+            self.host = host or region.postgres_host
             self.admin_user = region.postgres_admin_user
             self.admin_password = region.postgres_admin_password
             self.port = region.postgres_port
