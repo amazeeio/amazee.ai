@@ -1959,6 +1959,15 @@ async def get_key_daily_activity(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
 
+    if not key.litellm_token:
+        return KeyDailyActivityResponse(
+            region_id=region_id,
+            key_id=key_id,
+            start_date=start_date,
+            end_date=end_date,
+            activity=[],
+        )
+
     rows = await service.get_daily_activity(
         litellm_token=key.litellm_token,
         start_date=start_date.isoformat(),
@@ -1967,15 +1976,10 @@ async def get_key_daily_activity(
     model_map = await _model_map(service, include_breakdown or include_key_breakdown)
 
     # The route is already scoped to one key, so the day's per-key split can
-    # only describe that key. Without a token nothing can match, which is an
-    # empty breakdown, not a missing one.
+    # only describe that key.
     key_by_hash = None
     if include_key_breakdown:
-        key_by_hash = (
-            {LiteLLMService.hash_token(key.litellm_token): key}
-            if key.litellm_token
-            else {}
-        )
+        key_by_hash = {LiteLLMService.hash_token(key.litellm_token): key}
 
     activity = _rows_to_daily_activity(
         rows,

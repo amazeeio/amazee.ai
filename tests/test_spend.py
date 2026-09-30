@@ -5684,16 +5684,38 @@ def test_key_daily_activity_key_breakdown(
         assert item["kind"] == "user"
         assert item["litellm_token"] == "sk-daily-single-token"
 
-    # A key with no token cannot match anything LiteLLM reports.
-    key.litellm_token = None
+
+@patch("app.api.spend.LiteLLMService.get_model_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.get_daily_activity", new_callable=AsyncMock)
+def test_key_daily_activity_no_litellm_token(
+    mock_get_daily_activity,
+    mock_model_info,
+    client,
+    team_admin_token,
+    test_team_user,
+    test_region,
+    db,
+):
+    """A vector-db key has no LiteLLM key, so there is no activity to fetch."""
+    key = DBPrivateAIKey(
+        name="daily-vector-db-key",
+        litellm_token=None,
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team_user.team_id,
+    )
+    db.add(key)
     db.commit()
+
     response = client.get(
         f"/spend/{test_region.id}/key/{key.id}/daily-activity",
         params={"include_key_breakdown": "true"},
         headers={"Authorization": f"Bearer {team_admin_token}"},
     )
     assert response.status_code == 200
-    assert response.json()["activity"][0]["key_breakdown"] == []
+    assert response.json()["activity"] == []
+    mock_get_daily_activity.assert_not_awaited()
+    mock_model_info.assert_not_awaited()
 
 
 @patch("app.api.spend.LiteLLMService.get_model_info", new_callable=AsyncMock)
