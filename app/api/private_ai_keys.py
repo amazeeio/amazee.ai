@@ -956,6 +956,10 @@ async def get_private_ai_key(
             status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
         )
 
+    # Vector-db keys have no LiteLLM key, so the DB row is all there is.
+    if not private_ai_key.litellm_token:
+        return PrivateAIKeyDetail.model_validate(private_ai_key.to_dict())
+
     # Create LiteLLM service instance
     litellm_service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
