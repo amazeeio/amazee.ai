@@ -981,10 +981,10 @@ async def test_hard_delete_keeps_rows_when_drop_fails_in_active_region(
 
 
 @pytest.mark.asyncio
-async def test_hard_delete_continues_when_drop_fails_in_inactive_region(
+async def test_hard_delete_keeps_rows_when_drop_fails_in_inactive_region(
     mock_pg, db: Session, test_team, test_region
 ):
-    """A failed drop on an inactive region must not block hard delete."""
+    """A failed drop keeps the rows on an inactive region too."""
     mock_pg.return_value.delete_database.side_effect = Exception("down")
     test_region.is_active = False
     db.commit()
@@ -994,7 +994,8 @@ async def test_hard_delete_continues_when_drop_fails_in_inactive_region(
 
     await hard_delete_expired_teams(db)
 
-    assert _gone(db, team_id, key_id)
+    assert db.query(DBTeam).filter(DBTeam.id == team_id).first() is not None
+    assert db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
 
 
 @pytest.mark.asyncio
@@ -1013,24 +1014,6 @@ async def test_hard_delete_uses_region_that_owns_key_host(
 
     mock_pg.assert_called_once_with(region=other, host="other-host.example")
     mock_pg.return_value.delete_database.assert_awaited_once()
-    assert _gone(db, team_id, key_id)
-
-
-@pytest.mark.asyncio
-async def test_hard_delete_uses_owner_is_active_for_failure_rule(
-    mock_pg, db: Session, test_team, test_region
-):
-    """An inactive host owner lets the delete go on, even for an active key region."""
-    mock_pg.return_value.delete_database.side_effect = Exception("down")
-    _add_region(db, "other-host-region", "other-host.example", is_active=False)
-    key_id = _add_db_key(
-        db, test_team, test_region, database_host="other-host.example"
-    )
-    team_id = test_team.id
-    _expire(db, test_team)
-
-    await hard_delete_expired_teams(db)
-
     assert _gone(db, team_id, key_id)
 
 
@@ -1107,3 +1090,27 @@ async def test_hard_delete_drops_regionless_key_on_owned_host(
 
     mock_pg.assert_called_once_with(region=test_region, host=test_region.postgres_host)
     mock_pg.return_value.delete_database.assert_awaited_once_with("db_abc", "user_abc")
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_keeps_regionless_key_on_unowned_host(
+    mock_pg, db: Session, test_team, test_region
+):
+    """A regionless key on a host no region owns cannot be dropped, so it stays."""
+    key = DBPrivateAIKey(
+        name="regionless-key",
+        team_id=test_team.id,
+        database_name="db_abc",
+        database_username="user_abc",
+        database_host="nowhere.example",
+    )
+    db.add(key)
+    db.commit()
+    key_id, team_id = key.id, test_team.id
+    _expire(db, test_team)
+
+    await hard_delete_expired_teams(db)
+
+    mock_pg.assert_not_called()
+    assert db.query(DBTeam).filter(DBTeam.id == team_id).first() is not None
+    assert db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()

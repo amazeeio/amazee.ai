@@ -1088,7 +1088,7 @@ async def delete_private_ai_key(
 
     # Only delete the database if it exists
     if private_ai_key.database_name:
-        postgres_manager, _ = postgres_manager_for_key(
+        postgres_manager = postgres_manager_for_key(
             private_ai_key, region, regions_by_postgres_host(db)
         )
         await postgres_manager.delete_database(

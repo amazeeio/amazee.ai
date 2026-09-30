@@ -16,7 +16,7 @@ that forgets either one causes damage that is not recoverable:
    so dropping the row first strands both with nothing left to find them by.
    If either remote call fails, ``delete_trial_key`` reports it and leaves
    every row in place to be retried. ``hard_delete_expired_teams`` follows the
-   same rule for the vector database on regions that are still active.
+   same rule for the vector database.
 """
 
 import logging
@@ -402,7 +402,7 @@ async def delete_trial_key(
         result.litellm_deleted = True
 
     if key.database_name:
-        manager, _ = postgres_manager_for_key(key, region, regions_by_postgres_host(db))
+        manager = postgres_manager_for_key(key, region, regions_by_postgres_host(db))
         try:
             await manager.delete_database(key.database_name, key.database_username)
             result.database_deleted = True
