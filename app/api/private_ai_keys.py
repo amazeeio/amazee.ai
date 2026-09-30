@@ -1159,29 +1159,30 @@ async def get_private_ai_key_spend(
         )
         .scalar()
     )
+    max_budget = (
+        round(float(configured_key_cap), 4) if configured_key_cap is not None else None
+    )
+    default_spend = {
+        "spend": 0.0,
+        "created_at": private_ai_key.created_at,
+        "updated_at": private_ai_key.updated_at,
+        "expires": None,
+        "max_budget": max_budget,
+    }
 
     try:
-        if private_ai_key.litellm_token:
-            data = await litellm_service.get_key_info(private_ai_key.litellm_token)
-            info = data.get("info", {})
-        else:
+        if not private_ai_key.litellm_token:
             # Vector-db keys have no LiteLLM key, so there is no spend to fetch.
-            info = {
-                "spend": 0.0,
-                "created_at": private_ai_key.created_at,
-                "updated_at": private_ai_key.updated_at,
-                "expires": None,
-            }
+            return PrivateAIKeySpendBasic.model_validate(default_spend)
+
+        data = await litellm_service.get_key_info(private_ai_key.litellm_token)
+        info = data.get("info", {})
 
         # Only set default for spend field; key max_budget comes from DB spend cap.
         spend_info = {
             "spend": info.get("spend", 0.0),
             **info,
-            "max_budget": (
-                round(float(configured_key_cap), 4)
-                if configured_key_cap is not None
-                else None
-            ),
+            "max_budget": max_budget,
         }
 
         return PrivateAIKeySpendBasic.model_validate(spend_info)
@@ -1191,19 +1192,7 @@ async def get_private_ai_key_spend(
                 "LiteLLM key not found for private AI key %s; returning default spend",
                 private_ai_key.id,
             )
-            return PrivateAIKeySpendBasic.model_validate(
-                {
-                    "spend": 0.0,
-                    "created_at": private_ai_key.created_at,
-                    "updated_at": private_ai_key.updated_at,
-                    "expires": None,
-                    "max_budget": (
-                        round(float(configured_key_cap), 4)
-                        if configured_key_cap is not None
-                        else None
-                    ),
-                }
-            )
+            return PrivateAIKeySpendBasic.model_validate(default_spend)
         logger.error(f"Failed to get Private AI Key spend: {str(e)}", exc_info=True)
         raise
     except Exception as e:
