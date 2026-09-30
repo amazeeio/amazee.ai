@@ -395,15 +395,21 @@ def test_missing_budget_row_counts_as_unused(
 # --- deletion -------------------------------------------------------------
 
 
+@pytest.fixture
+def postgres():
+    """Patch the Postgres manager and yield the instance every key resolves to."""
+    with patch("app.db.postgres.PostgresManager", return_value=AsyncMock()) as pg:
+        yield pg.return_value
+
+
 @pytest.mark.asyncio
 async def test_delete_removes_remote_resources_then_rows(
-    db: Session, trial_team: DBTeam, old_region: DBRegion
+    db: Session, trial_team: DBTeam, old_region: DBRegion, postgres
 ):
     user, key = _make_trial_key(db, trial_team, old_region, email="gone@example.com")
     key_id, user_id = key.id, user.id
 
     litellm = AsyncMock()
-    postgres = AsyncMock()
 
     result = await delete_trial_key(
         db,
@@ -411,7 +417,6 @@ async def test_delete_removes_remote_resources_then_rows(
         old_region,
         delete_user=True,
         litellm_service=litellm,
-        postgres_manager=postgres,
     )
 
     assert result.ok
@@ -455,7 +460,9 @@ async def test_delete_drops_database_on_the_host_that_owns_it(
     key_id = key.id
 
     with patch("app.db.postgres.PostgresManager", return_value=AsyncMock()) as pg:
-        result = await delete_trial_key(db, key, old_region, litellm_service=AsyncMock())
+        result = await delete_trial_key(
+            db, key, old_region, litellm_service=AsyncMock()
+        )
 
     assert result.ok
     pg.assert_called_once_with(region=other, host="other-pg")
@@ -464,7 +471,7 @@ async def test_delete_drops_database_on_the_host_that_owns_it(
 
 @pytest.mark.asyncio
 async def test_dead_litellm_leaves_every_row_in_place(
-    db: Session, trial_team: DBTeam, old_region: DBRegion
+    db: Session, trial_team: DBTeam, old_region: DBRegion, postgres
 ):
     """A dead proxy must not cost us the row.
 
@@ -476,11 +483,8 @@ async def test_dead_litellm_leaves_every_row_in_place(
 
     litellm = AsyncMock()
     litellm.delete_key.side_effect = httpx.ConnectError("connection refused")
-    postgres = AsyncMock()
 
-    result = await delete_trial_key(
-        db, key, old_region, litellm_service=litellm, postgres_manager=postgres
-    )
+    result = await delete_trial_key(db, key, old_region, litellm_service=litellm)
 
     assert not result.ok
     assert "litellm delete failed" in result.error
@@ -500,18 +504,15 @@ async def test_dead_litellm_leaves_every_row_in_place(
 
 @pytest.mark.asyncio
 async def test_dead_vector_db_host_leaves_rows_in_place(
-    db: Session, trial_team: DBTeam, old_region: DBRegion
+    db: Session, trial_team: DBTeam, old_region: DBRegion, postgres
 ):
     _, key = _make_trial_key(db, trial_team, old_region, email="nopg@example.com")
     key_id = key.id
 
     litellm = AsyncMock()
-    postgres = AsyncMock()
     postgres.delete_database.side_effect = OSError("host unreachable")
 
-    result = await delete_trial_key(
-        db, key, old_region, litellm_service=litellm, postgres_manager=postgres
-    )
+    result = await delete_trial_key(db, key, old_region, litellm_service=litellm)
 
     assert not result.ok
     assert "database drop failed" in result.error
@@ -520,7 +521,7 @@ async def test_dead_vector_db_host_leaves_rows_in_place(
 
 @pytest.mark.asyncio
 async def test_user_kept_while_they_still_own_another_key(
-    db: Session, trial_team: DBTeam, old_region: DBRegion
+    db: Session, trial_team: DBTeam, old_region: DBRegion, postgres
 ):
     """A per-key loop must not delete a user whose other keys it has not reached."""
     user, key = _make_trial_key(db, trial_team, old_region, email="two@example.com")
@@ -541,7 +542,6 @@ async def test_user_kept_while_they_still_own_another_key(
         old_region,
         delete_user=True,
         litellm_service=AsyncMock(),
-        postgres_manager=AsyncMock(),
     )
 
     assert result.ok
@@ -552,7 +552,7 @@ async def test_user_kept_while_they_still_own_another_key(
 
 @pytest.mark.asyncio
 async def test_audit_logs_are_detached_not_deleted(
-    db: Session, trial_team: DBTeam, old_region: DBRegion
+    db: Session, trial_team: DBTeam, old_region: DBRegion, postgres
 ):
     """audit_logs.user_id is a nullable FK with no ondelete.
 
@@ -578,7 +578,6 @@ async def test_audit_logs_are_detached_not_deleted(
         old_region,
         delete_user=True,
         litellm_service=AsyncMock(),
-        postgres_manager=AsyncMock(),
     )
 
     assert result.ok and result.user_deleted
@@ -589,7 +588,7 @@ async def test_audit_logs_are_detached_not_deleted(
 
 @pytest.mark.asyncio
 async def test_used_key_is_refused_without_allow_used(
-    db: Session, trial_team: DBTeam, old_region: DBRegion
+    db: Session, trial_team: DBTeam, old_region: DBRegion, postgres
 ):
     """Last line of defence: a selection built without unused_only still cannot
     destroy a key someone spent money on unless that is asked for explicitly."""
@@ -597,11 +596,9 @@ async def test_used_key_is_refused_without_allow_used(
         db, trial_team, old_region, email="paid@example.com", spend=1.25
     )
     key_id = key.id
-    litellm, postgres = AsyncMock(), AsyncMock()
+    litellm = AsyncMock()
 
-    result = await delete_trial_key(
-        db, key, old_region, litellm_service=litellm, postgres_manager=postgres
-    )
+    result = await delete_trial_key(db, key, old_region, litellm_service=litellm)
 
     assert not result.ok
     assert "recorded spend" in result.error
@@ -612,7 +609,7 @@ async def test_used_key_is_refused_without_allow_used(
 
 @pytest.mark.asyncio
 async def test_used_key_is_deleted_when_explicitly_allowed(
-    db: Session, trial_team: DBTeam, old_region: DBRegion
+    db: Session, trial_team: DBTeam, old_region: DBRegion, postgres
 ):
     """Draining a region that is being switched off must still be possible."""
     _, key = _make_trial_key(
@@ -626,7 +623,6 @@ async def test_used_key_is_deleted_when_explicitly_allowed(
         old_region,
         allow_used=True,
         litellm_service=AsyncMock(),
-        postgres_manager=AsyncMock(),
     )
 
     assert result.ok
@@ -635,16 +631,13 @@ async def test_used_key_is_deleted_when_explicitly_allowed(
 
 @pytest.mark.asyncio
 async def test_key_without_vector_db_skips_the_drop(
-    db: Session, trial_team: DBTeam, old_region: DBRegion
+    db: Session, trial_team: DBTeam, old_region: DBRegion, postgres
 ):
     _, key = _make_trial_key(
         db, trial_team, old_region, email="nodb@example.com", with_database=False
     )
-    postgres = AsyncMock()
 
-    result = await delete_trial_key(
-        db, key, old_region, litellm_service=AsyncMock(), postgres_manager=postgres
-    )
+    result = await delete_trial_key(db, key, old_region, litellm_service=AsyncMock())
 
     assert result.ok
     postgres.delete_database.assert_not_awaited()
