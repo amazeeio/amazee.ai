@@ -2371,6 +2371,42 @@ def test_get_private_ai_key_preserves_db_team_id_when_litellm_team_id_is_string(
     db.commit()
 
 
+@patch("app.api.private_ai_keys.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_get_private_ai_key_no_litellm_token(
+    mock_get_key_info, client, admin_token, test_region, db, test_team
+):
+    """A vector-db key has no LiteLLM token, so details come from the DB only."""
+    test_key = DBPrivateAIKey(
+        database_name="test-db-get-no-token",
+        name="Vector DB Key for Get",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token=None,
+        team_id=test_team.id,
+        region_id=test_region.id,
+    )
+    db.add(test_key)
+    db.commit()
+    db.refresh(test_key)
+
+    response = client.get(
+        f"/private-ai-keys/{test_key.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == test_key.id
+    assert data["database_name"] == "test-db-get-no-token"
+    assert data["litellm_token"] is None
+    assert data["team_id"] == test_team.id
+    mock_get_key_info.assert_not_awaited()
+
+    db.delete(test_key)
+    db.commit()
+
+
 @patch("httpx.AsyncClient")
 def test_get_private_ai_key_not_found(
     mock_client_class, client, admin_token, mock_httpx_get_client
