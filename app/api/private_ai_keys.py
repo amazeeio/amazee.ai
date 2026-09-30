@@ -1157,8 +1157,17 @@ async def get_private_ai_key_spend(
     )
 
     try:
-        data = await litellm_service.get_key_info(private_ai_key.litellm_token)
-        info = data.get("info", {})
+        if private_ai_key.litellm_token:
+            data = await litellm_service.get_key_info(private_ai_key.litellm_token)
+            info = data.get("info", {})
+        else:
+            # Vector-db keys have no LiteLLM key, so there is no spend to fetch.
+            info = {
+                "spend": 0.0,
+                "created_at": private_ai_key.created_at,
+                "updated_at": private_ai_key.updated_at,
+                "expires": None,
+            }
 
         # Only set default for spend field; key max_budget comes from DB spend cap.
         spend_info = {
