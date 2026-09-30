@@ -1084,3 +1084,26 @@ async def test_hard_delete_skips_drop_for_key_without_database(
 
     mock_pg.return_value.delete_database.assert_not_awaited()
     assert db.query(DBTeam).filter(DBTeam.id == team_id).first() is None
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_drops_regionless_key_on_owned_host(
+    mock_pg, db: Session, test_team, test_region
+):
+    """A key with no region is dropped with the region that owns its host."""
+    db.add(
+        DBPrivateAIKey(
+            name="regionless-key",
+            team_id=test_team.id,
+            database_name="db_abc",
+            database_username="user_abc",
+            database_host=test_region.postgres_host,
+        )
+    )
+    db.commit()
+    _expire(db, test_team)
+
+    await hard_delete_expired_teams(db)
+
+    mock_pg.assert_called_once_with(region=test_region, host=test_region.postgres_host)
+    mock_pg.return_value.delete_database.assert_awaited_once_with("db_abc", "user_abc")
