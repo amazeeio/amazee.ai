@@ -8,6 +8,7 @@ from app.db.models import (
     DBPrivateAIKey,
     DBPeriodicBudgetLedgerEntry,
     DBPoolPurchase,
+    DBRegion,
     DBTeam,
     DBUser,
     DBSpendCap,
@@ -189,7 +190,7 @@ def test_delete_private_ai_key(
     test_key = DBPrivateAIKey(
         database_name="test_db_delete",
         name="Test Key to Delete",
-        database_host="test-host",
+        database_host=test_region.postgres_host,
         database_username="test_user",
         database_password="test-pass",
         litellm_token="test-token-delete",
@@ -261,7 +262,7 @@ def test_delete_private_ai_key_removes_dependent_spend_caps(
     test_key = DBPrivateAIKey(
         database_name="test_db_delete_caps",
         name="Test Key with Spend Cap",
-        database_host="test-host",
+        database_host=test_region.postgres_host,
         database_username="test_user",
         database_password="test-pass",
         litellm_token="test-token-delete-caps",
@@ -2620,7 +2621,7 @@ def test_delete_private_ai_key_with_only_vector_db(
     test_key = DBPrivateAIKey(
         database_name="test_db_vector_only",
         name="Test Vector DB Only",
-        database_host="test-host",
+        database_host=test_region.postgres_host,
         database_username="test_user",
         database_password="test-pass",
         litellm_token=None,  # No LLM token
@@ -2752,6 +2753,59 @@ def test_delete_private_ai_key_cleans_up_database_user(
     mock_delete_database.assert_called_once_with(
         test_key.database_name, test_key.database_username
     )
+
+
+@patch("app.db.postgres.PostgresManager", return_value=AsyncMock())
+@patch("httpx.AsyncClient")
+def test_delete_private_ai_key_drops_database_on_owner_host(
+    mock_client_class,
+    mock_pg,
+    client,
+    admin_token,
+    test_region,
+    db,
+    mock_httpx_post_client,
+):
+    """A key whose database lives on another region's host is dropped there."""
+    mock_client_class.return_value = mock_httpx_post_client
+    mock_httpx_post_client.post.return_value.status_code = 200
+    mock_httpx_post_client.post.return_value.raise_for_status.return_value = None
+
+    other = DBRegion(
+        name="other-host-region",
+        label="Other Host Region",
+        postgres_host="other-host.example",
+        postgres_port=5432,
+        postgres_admin_user="other-admin",
+        postgres_admin_password="other-pw",
+        litellm_api_url="https://other-litellm.com",
+        litellm_api_key="other-litellm-key",
+        is_active=True,
+    )
+    db.add(other)
+    test_key = DBPrivateAIKey(
+        database_name="test_db_owner_host",
+        name="Test Owner Host",
+        database_host="other-host.example",
+        database_username="test_user_owner_host",
+        litellm_token="test-token-owner-host",
+        region_id=test_region.id,
+    )
+    db.add(test_key)
+    db.commit()
+    key_id = test_key.id
+
+    response = client.delete(
+        f"/private-ai-keys/{key_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    mock_pg.assert_called_once_with(region=other, host="other-host.example")
+    mock_pg.return_value.delete_database.assert_awaited_once_with(
+        "test_db_owner_host", "test_user_owner_host"
+    )
+    assert db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first() is None
 
 
 @patch("httpx.AsyncClient")
