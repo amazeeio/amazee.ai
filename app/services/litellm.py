@@ -365,6 +365,12 @@ class LiteLLMService:
 
     async def get_key_info(self, litellm_token: str) -> dict:
         """Get information about a LiteLLM API key"""
+        # LiteLLM treats a missing key param as "the caller's key", so an empty
+        # token would return the master key's own record.
+        if not litellm_token:
+            raise ValueError(
+                "get_key_info needs a LiteLLM token; without one LiteLLM returns the master key's record"
+            )
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
