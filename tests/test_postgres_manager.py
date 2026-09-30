@@ -137,6 +137,11 @@ def test_postgres_manager_for_key_picks_host_owner():
     assert owner_and_host("other.test") == (other, "other.test")
     assert owner_and_host("unknown.test") == (own, "unknown.test")
 
+    inactive_own = _region("own.test", is_active=False)
+    key = Mock(database_host=None)
+    _, owner = postgres_manager_for_key(key, inactive_own, regions_by_host)
+    assert owner is own
+
 
 def test_regions_by_postgres_host_prefers_active_on_shared_host():
     inactive = _region("shared.test", is_active=False)
