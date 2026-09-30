@@ -1751,8 +1751,17 @@ async def get_key_spend_alias(
     )
 
     try:
-        data = await service.get_key_info(key.litellm_token)
-        info = data.get("info", {})
+        if key.litellm_token:
+            data = await service.get_key_info(key.litellm_token)
+            info = data.get("info", {})
+        else:
+            # Vector-db keys have no LiteLLM key, so there is no spend to fetch.
+            info = {
+                "spend": 0.0,
+                "created_at": key.created_at,
+                "updated_at": key.updated_at or key.created_at,
+                "expires": None,
+            }
         configured_key_cap_row = (
             db.query(DBSpendCap.max_budget)
             .filter(
