@@ -956,9 +956,12 @@ async def get_private_ai_key(
             status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
         )
 
+    # to_dict() leaves out updated_at, which the detail response carries.
+    db_details = {**private_ai_key.to_dict(), "updated_at": private_ai_key.updated_at}
+
     # Vector-db keys have no LiteLLM key, so the DB row is all there is.
     if not private_ai_key.litellm_token:
-        return PrivateAIKeyDetail.model_validate(private_ai_key.to_dict())
+        return PrivateAIKeyDetail.model_validate(db_details)
 
     # Create LiteLLM service instance
     litellm_service = LiteLLMService(
@@ -989,7 +992,7 @@ async def get_private_ai_key(
                 "LiteLLM key not found for private AI key %s; returning DB-only details",
                 private_ai_key.id,
             )
-            return PrivateAIKeyDetail.model_validate(private_ai_key.to_dict())
+            return PrivateAIKeyDetail.model_validate(db_details)
         logger.error(f"Failed to get Private AI Key details: {str(e)}", exc_info=True)
         raise
     except Exception as e:
