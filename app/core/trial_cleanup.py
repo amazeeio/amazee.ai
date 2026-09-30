@@ -40,11 +40,7 @@ from app.db.models import (
     DBTeam,
     DBUser,
 )
-from app.db.postgres import (
-    PostgresManager,
-    postgres_manager_for_key,
-    regions_by_postgres_host,
-)
+from app.db.postgres import postgres_manager_for_key, regions_by_postgres_host
 from app.schemas.limits import OwnerType, ResourceType
 from app.services.litellm import LiteLLMService
 
@@ -361,7 +357,6 @@ async def delete_trial_key(
     delete_user: bool = False,
     allow_used: bool = False,
     litellm_service: Optional[LiteLLMService] = None,
-    postgres_manager: Optional[PostgresManager] = None,
 ) -> TrialKeyDeletion:
     """Delete one trial key and everything it owns, remote resources first.
 
@@ -374,9 +369,9 @@ async def delete_trial_key(
     drop statements are ``IF EXISTS`` — so retrying a partially applied delete
     is safe.
 
-    Services are injectable. The caller builds the LiteLLM service once per
-    region. The Postgres manager is resolved per key, because the key's
-    database may live on another region's host.
+    The LiteLLM service is injectable so the caller can build one per region.
+    The Postgres manager is resolved per key, because the key's database may
+    live on another region's host.
 
     ``allow_used`` must be set explicitly to delete a key whose owner recorded
     spend. This is the last line of defence rather than the first: the selection
@@ -407,10 +402,7 @@ async def delete_trial_key(
         result.litellm_deleted = True
 
     if key.database_name:
-        manager = (
-            postgres_manager
-            or postgres_manager_for_key(key, region, regions_by_postgres_host(db))[0]
-        )
+        manager, _ = postgres_manager_for_key(key, region, regions_by_postgres_host(db))
         try:
             await manager.delete_database(key.database_name, key.database_username)
             result.database_deleted = True
