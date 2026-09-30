@@ -260,15 +260,16 @@ When `hard_delete_expired_teams()` runs (daily at 03:00 via cron), it deletes ea
 
 1. `limited_resources` (team + user rows)
 2. LiteLLM keys (remote call, best-effort)
-3. `spend_caps` (team-, user-, and key-scoped)
-4. `ai_tokens` (private AI keys) from DB
-5. `api_tokens`, `user_admin_regions` (user FK tables — no `ON DELETE CASCADE`)
-6. `audit_logs.user_id` set to `NULL` (rows preserved for audit history)
-7. `user_spend_cache` (email-keyed stale cache)
-8. `users`
-9. `team_regions`
-10. Audit log entry written (`action=team.hard_delete`)
-11. `teams` (cascades `team_metrics` automatically)
+3. Vector databases and roles, dropped on each key's own database host with the credentials of the region that owns that host. A failure on an active region keeps the team for the next run. A failure on an inactive region is logged and the delete goes on.
+4. `spend_caps` (team-, user-, and key-scoped)
+5. `ai_tokens` (private AI keys) from DB
+6. `api_tokens`, `user_admin_regions` (user FK tables — no `ON DELETE CASCADE`)
+7. `audit_logs.user_id` set to `NULL` (rows preserved for audit history)
+8. `user_spend_cache` (email-keyed stale cache)
+9. `users`
+10. `team_regions`
+11. Audit log entry written (`action=team.hard_delete`)
+12. `teams` (cascades `team_metrics` automatically)
 
 ### Restore
 
