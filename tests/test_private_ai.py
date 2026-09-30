@@ -1132,6 +1132,46 @@ def test_view_spend_uses_db_key_spend_cap_max_budget(
     db.commit()
 
 
+@patch("app.api.private_ai_keys.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_view_spend_no_litellm_token(
+    mock_get_key_info,
+    client,
+    team_read_only_token,
+    test_region,
+    db,
+    test_team_read_only,
+):
+    """A vector-db key has no LiteLLM token, so spend is zero and LiteLLM is not called."""
+    test_key = DBPrivateAIKey(
+        database_name="test-db-no-token",
+        name="Vector DB Key",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token=None,
+        owner_id=test_team_read_only.id,
+        team_id=test_team_read_only.team_id,
+        region_id=test_region.id,
+    )
+    db.add(test_key)
+    db.commit()
+    db.refresh(test_key)
+
+    response = client.get(
+        f"/private-ai-keys/{test_key.id}/spend",
+        headers={"Authorization": f"Bearer {team_read_only_token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["spend"] == 0.0
+    assert data["expires"] is None
+    mock_get_key_info.assert_not_awaited()
+
+    db.delete(test_key)
+    db.commit()
+
+
 def _make_spend_scope_key(db, region, team_id, suffix):
     key = DBPrivateAIKey(
         database_name=f"spend-scope-{suffix}",
