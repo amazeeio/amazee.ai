@@ -956,6 +956,13 @@ async def get_private_ai_key(
             status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
         )
 
+    # to_dict() leaves out updated_at, which the detail response carries.
+    db_details = {**private_ai_key.to_dict(), "updated_at": private_ai_key.updated_at}
+
+    # Vector-db keys have no LiteLLM key, so the DB row is all there is.
+    if not private_ai_key.litellm_token:
+        return PrivateAIKeyDetail.model_validate(db_details)
+
     # Create LiteLLM service instance
     litellm_service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
@@ -985,7 +992,7 @@ async def get_private_ai_key(
                 "LiteLLM key not found for private AI key %s; returning DB-only details",
                 private_ai_key.id,
             )
-            return PrivateAIKeyDetail.model_validate(private_ai_key.to_dict())
+            return PrivateAIKeyDetail.model_validate(db_details)
         logger.error(f"Failed to get Private AI Key details: {str(e)}", exc_info=True)
         raise
     except Exception as e:
@@ -1155,8 +1162,22 @@ async def get_private_ai_key_spend(
         )
         .scalar()
     )
+    max_budget = (
+        round(float(configured_key_cap), 4) if configured_key_cap is not None else None
+    )
+    default_spend = {
+        "spend": 0.0,
+        "created_at": private_ai_key.created_at,
+        "updated_at": private_ai_key.updated_at,
+        "expires": None,
+        "max_budget": max_budget,
+    }
 
     try:
+        if not private_ai_key.litellm_token:
+            # Vector-db keys have no LiteLLM key, so there is no spend to fetch.
+            return PrivateAIKeySpendBasic.model_validate(default_spend)
+
         data = await litellm_service.get_key_info(private_ai_key.litellm_token)
         info = data.get("info", {})
 
@@ -1164,11 +1185,7 @@ async def get_private_ai_key_spend(
         spend_info = {
             "spend": info.get("spend", 0.0),
             **info,
-            "max_budget": (
-                round(float(configured_key_cap), 4)
-                if configured_key_cap is not None
-                else None
-            ),
+            "max_budget": max_budget,
         }
 
         return PrivateAIKeySpendBasic.model_validate(spend_info)
@@ -1178,19 +1195,7 @@ async def get_private_ai_key_spend(
                 "LiteLLM key not found for private AI key %s; returning default spend",
                 private_ai_key.id,
             )
-            return PrivateAIKeySpendBasic.model_validate(
-                {
-                    "spend": 0.0,
-                    "created_at": private_ai_key.created_at,
-                    "updated_at": private_ai_key.updated_at,
-                    "expires": None,
-                    "max_budget": (
-                        round(float(configured_key_cap), 4)
-                        if configured_key_cap is not None
-                        else None
-                    ),
-                }
-            )
+            return PrivateAIKeySpendBasic.model_validate(default_spend)
         logger.error(f"Failed to get Private AI Key spend: {str(e)}", exc_info=True)
         raise
     except Exception as e:
