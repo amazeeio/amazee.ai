@@ -309,9 +309,9 @@ coverage[toml]==7.16.1 \
     --hash=sha256:fd8ac10cd2458b3c6343aac082fb9bd0e3fa806cb2c4975f2280153474b88412 \
     --hash=sha256:fdb2f528b50953e29d22033b3256c396a700193c6e45b2490222ef9c333cbbf9
     # via pytest-cov
-faker==40.37.0 \
-    --hash=sha256:a92dff7f310e61fb544c61720e15edb2e7448bc33d15a321a99e9ab7b94abf54 \
-    --hash=sha256:ddbafa55c94d5b69c08ced3a7f202614204a02e07ba6548c729b8d18acc0b490
+faker==40.39.0 \
+    --hash=sha256:52799ad96fcf92aab2fc96a9e03869bbf1a634300f7cd91c38dbfd51f639f6fa \
+    --hash=sha256:c4c7ec2cddfaf602c5a8a2c960614946aa8c161250bd9d49a8846cd24d1ef028
     # via -r requirements-test.in
 idna==3.19 \
     --hash=sha256:5e0811a4383b21dc5838069f801c4fb62113b7447663d2530d2bd6e77b49bf15 \
@@ -353,9 +353,9 @@ pytest-cov==7.1.0 \
     --hash=sha256:30674f2b5f6351aa09702a9c8c364f6a01c27aae0c1366ae8016160d1efc56b2 \
     --hash=sha256:a0461110b7865f9a271aa1b51e516c9a95de9d696734a2f71e3e78f46e1d4678
     # via -r requirements-test.in
-pytest-env==1.7.0 \
-    --hash=sha256:0c1dc1101fb8d3ab3611e8f8d657ba06c3c0c167fc85c90457e5b27f2508f43e \
-    --hash=sha256:9ee0f1fe859d23fcdb533fe2909a404b3b133d02674a56df275bbe4df4eb104b
+pytest-env==1.7.1 \
+    --hash=sha256:22341b945305b65ef4e53d7c678982cfd64b5c5800afdf7d37caad2362ea002c \
+    --hash=sha256:f2c5aed2621dbfc73c2866a710e2e456409495c5ac10905612c9509b3ee631a2
     # via -r requirements-test.in
 python-dotenv==1.2.3 \
     --hash=sha256:904552145e8bfed22162c09dab1c2b9b54fefa7b23ba780f4f26ca0316b0f0d9 \
