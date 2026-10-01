@@ -545,7 +545,7 @@ class PrivateAIKeySpendBasic(BaseModel):
 
 class PrivateAIKeySpend(BaseModel):
     spend: float
-    expires: datetime
+    expires: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
     max_budget: Optional[float] = Field(
