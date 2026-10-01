@@ -17,6 +17,8 @@ from datetime import UTC, datetime
 # Add the parent directory to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from sqlalchemy.exc import InvalidRequestError
+
 from app.core.config import catalog_manages
 from app.db.database import SessionLocal
 from app.db.models import DBModel, DBModelRegion, DBRegion
@@ -62,7 +64,15 @@ async def main() -> int:
         for assoc, model_id, region_id, region_name in rows:
             started = datetime.now(UTC)
             await sync_model_to_region_task(model_id, region_id)
-            db.refresh(assoc)
+            try:
+                db.refresh(assoc)
+            except InvalidRequestError as e:
+                # Refresh raises this plain error when the row was deleted after the
+                # initial query. Count it and keep going rather than end the backfill.
+                db.rollback()
+                counts["missing"] += 1
+                failed.append((model_id, region_name, f"could not reload row: {e}"))
+                continue
             status, error, synced_at = assoc.sync_status, assoc.sync_error, assoc.synced_at
             # End the read so the connection is not idle in a transaction for the whole run.
             db.rollback()
