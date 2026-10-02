@@ -46,3 +46,7 @@ BEDROCK_GEO_PREFIXES = {
 # A list that keeps fewer than this share of the models we already have is
 # treated as a bad fetch, so one broken download cannot mark everything removed.
 MIN_KEPT_RATIO = 0.5
+
+# LiteLLM's list as a source of EOL dates. A plugin with a higher `eol_date`
+# priority beats it.
+LITELLM_EOL_PRIORITY = 50
