@@ -2,11 +2,11 @@
 
 A plugin module defines:
 
-    SOURCE = "unique_name"      # stored as `source` on every row it writes
+    SOURCE = "unique_name"      # stored as `source` on every row it writes; litellm, proxy and manual are reserved
     ORDER = 10                  # run order: lower first, ties by SOURCE
     PRICE_ROLE = "override"     # "override": beats LiteLLM's price; "fill": only unpriced models
     FILL_MODES = {"chat"}       # optional, fill only: price only models in these modes, or with none
-    PRIORITY = {"eol_date": 90} # optional, the priority per field: higher wins; only eol_date is used now
+    PRIORITY = {"eol_date": 90} # optional, a priority per field: higher wins; only eol_date is used now
     def parse() -> dict: ...    # no input: fetches its own source
 
 and returns:
@@ -21,7 +21,9 @@ and returns:
 
 All plugins run as one daily step, after LiteLLM's model list. Give first-party "override" plugins a lower ORDER than "fill"
 ones: a fill plugin then sees the override prices of the same run and steps
-aside.
+aside. The EOL step runs after the plugins and picks `registry_models.eol_date`
+from the lifecycle rows. A plugin's lifecycle eol_date counts only with
+`PRIORITY["eol_date"]`, and only while the plugin is enabled.
 
 Every key but provider and model_id is optional. Prices use LiteLLM's
 per-unit field names (`input_cost_per_token`, ...); the plugin converts units

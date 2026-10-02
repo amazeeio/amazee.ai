@@ -1,4 +1,7 @@
-"""Daily update of `registry_models` from LiteLLM's model list on `main`."""
+"""Daily update of `registry_models` from LiteLLM's model list on `main`.
+
+It also writes a `litellm` lifecycle row with the list's EOL date for each listed model.
+"""
 
 import logging
 from datetime import UTC, date, datetime
