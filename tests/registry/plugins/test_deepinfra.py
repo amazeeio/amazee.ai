@@ -43,32 +43,6 @@ def test_loader_finds_the_deepinfra_plugin():
     assert "deepinfra_api" in override_sources()
 
 
-def test_plugins_load_in_order(monkeypatch):
-    import types
-
-    from app.registry.plugins import loader
-
-    def fake(name, **attrs):
-        mod = types.ModuleType(name)
-        mod.PRICE_ROLE, mod.parse = "fill", lambda: {}
-        mod.__dict__.update(attrs)
-        return mod
-
-    mods = {
-        "late": fake("late", SOURCE="late", ORDER=50),
-        "b_early": fake("b_early", SOURCE="b_early", ORDER=10),
-        "a_early": fake("a_early", SOURCE="a_early", ORDER=10),
-        "no_order": fake("no_order", SOURCE="no_order"),
-    }
-    monkeypatch.setattr(loader.pkgutil, "iter_modules", lambda path: [types.SimpleNamespace(name=n) for n in mods])
-    monkeypatch.setattr(loader.importlib, "import_module", lambda name: mods[name.rsplit(".", 1)[1]])
-
-    plugins = loader.load_plugins()
-
-    assert list(plugins) == ["no_order", "a_early", "b_early", "late"]
-    assert isinstance(plugins["no_order"], ValueError)
-
-
 def _fake_loader(monkeypatch, mods):
     import types
 
@@ -86,6 +60,20 @@ def _fake(name, **attrs):
     mod.PRICE_ROLE, mod.parse, mod.ORDER = "fill", lambda: {}, 10
     mod.__dict__.update(attrs)
     return mod
+
+
+def test_plugins_load_in_order(monkeypatch):
+    mods = {
+        "late": _fake("late", SOURCE="late", ORDER=50),
+        "b_early": _fake("b_early", SOURCE="b_early", ORDER=10),
+        "a_early": _fake("a_early", SOURCE="a_early", ORDER=10),
+        "no_order": _fake("no_order", SOURCE="no_order", ORDER=None),
+    }
+
+    plugins = _fake_loader(monkeypatch, mods)
+
+    assert list(plugins) == ["no_order", "a_early", "b_early", "late"]
+    assert isinstance(plugins["no_order"], ValueError)
 
 
 def test_loader_checks_priority(monkeypatch):
