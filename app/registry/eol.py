@@ -26,7 +26,7 @@ def priorities() -> dict[str, int]:
     for source, module in load_plugins().items():
         if isinstance(module, Exception):
             continue
-        plugin_priority = getattr(module, "PRIORITY", {})
+        plugin_priority = getattr(module, "PRIORITY", None) or {}  # the loader allows None
         if "eol_date" in plugin_priority:
             priority[source] = plugin_priority["eol_date"]
     return priority
