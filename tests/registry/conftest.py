@@ -1,7 +1,8 @@
 import pytest
 from sqlalchemy import text
 
-import app.registry.models as registry_models  # noqa: F401  registers the tables before create_all
+# Import the tables here, so _REGISTRY_TABLES does not depend on app.main importing the registry.
+import app.registry.models  # noqa: F401
 from app.db.models import Base, DBRegion
 
 _REGISTRY_TABLES = ", ".join(
