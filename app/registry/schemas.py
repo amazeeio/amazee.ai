@@ -27,8 +27,6 @@ class RegistryModelPriceResponse(BaseModel):
 
 
 class RegistryModelResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
     provider: str
     model_id: str
     mode: str | None
