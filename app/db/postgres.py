@@ -2,7 +2,8 @@ import asyncpg
 import re
 import uuid
 import logging
-from app.db.models import DBRegion
+from sqlalchemy.orm import Session
+from app.db.models import DBPrivateAIKey, DBRegion
 
 logger = logging.getLogger(__name__)
 
@@ -17,10 +18,42 @@ def _validate_identifier(name: str, label: str = "identifier") -> None:
         )
 
 
+def regions_by_postgres_host(db: Session) -> dict[str, DBRegion]:
+    """Map each Postgres host to the region whose credentials reach it."""
+    # A key's database can live on another region's host, and that region
+    # holds the admin credentials for it. On a shared host, an active
+    # region wins so a dead region's credentials are not used.
+    regions_by_host = {}
+    for region in db.query(DBRegion).filter(DBRegion.postgres_host.is_not(None)).all():
+        current = regions_by_host.get(region.postgres_host)
+        if current is None or (region.is_active and not current.is_active):
+            regions_by_host[region.postgres_host] = region
+    return regions_by_host
+
+
+def postgres_manager_for_key(
+    key: DBPrivateAIKey, key_region: DBRegion, regions_by_host: dict[str, DBRegion]
+) -> "PostgresManager":
+    """Return a manager for the key's own database host."""
+    host = key.database_host or key_region.postgres_host
+    # The region that owns the host holds its credentials. An inactive key
+    # region gives way to an active region on the same host, so stale
+    # credentials are not used. The key's region is the fallback when no
+    # region owns the host.
+    owner = (
+        key_region
+        if host == key_region.postgres_host and key_region.is_active
+        else regions_by_host.get(host, key_region)
+    )
+    return PostgresManager(region=owner, host=host)
+
+
 class PostgresManager:
-    def __init__(self, region: DBRegion = None):
+    def __init__(self, region: DBRegion = None, host: str | None = None):
         if region:
-            self.host = region.postgres_host
+            # A key's database can outlive a region's host change, so callers
+            # may point at the key's own host with the region's credentials.
+            self.host = host or region.postgres_host
             self.admin_user = region.postgres_admin_user
             self.admin_password = region.postgres_admin_password
             self.port = region.postgres_port
