@@ -11,8 +11,8 @@ _REGISTRY_TABLES = ", ".join(
 
 @pytest.fixture
 def registry_db(db):
-    # The shared db fixture lists its tables before this package is imported,
-    # so it does not clear the registry tables.
+    # The shared db fixture clears these tables only because app.main imports
+    # the registry. Clear them here too, so these tests do not depend on that.
     db.execute(text(f"TRUNCATE {_REGISTRY_TABLES} RESTART IDENTITY CASCADE"))
     db.commit()
     return db
