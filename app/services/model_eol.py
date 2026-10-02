@@ -120,6 +120,8 @@ def bedrock_catalog_id(item: dict[str, Any]) -> str | None:
         return None
     if candidate.startswith("bedrock/"):
         candidate = candidate.split("/", 1)[1]
+        # LiteLLM's converse route adds a segment that is not in the Bedrock modelId.
+        candidate = candidate.removeprefix("converse/")
     elif "/" in candidate:
         return None
     for prefix in _BEDROCK_REGION_PREFIXES:
