@@ -88,6 +88,17 @@ def test_tie_goes_to_the_lowest_source_name(registry_db, monkeypatch):
     assert model.eol_date == X
 
 
+def test_plugin_with_priority_none_does_not_count(registry_db, monkeypatch):
+    monkeypatch.setattr("app.registry.eol.load_plugins", lambda: {"none_src": SimpleNamespace(PRIORITY=None)})
+    model = _model(registry_db, "bedrock", "m")
+    _life(registry_db, "none_src", X)
+    _life(registry_db, "litellm", Y)
+
+    apply_eol(registry_db)
+
+    assert model.eol_date == Y
+
+
 def test_placeholder_date_is_dropped(registry_db):
     model = _model(registry_db, "bedrock", "m")
     alone = _model(registry_db, "bedrock", "alone")
