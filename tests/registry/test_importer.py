@@ -120,6 +120,21 @@ def test_zero_prices_from_model_info_are_stored_as_unknown(registry_db, proxy_re
     assert models["amazon.priced"].prices == {"input_cost_per_token": 0, "output_cost_per_token": 2e-06}
 
 
+def test_import_leaves_eol_date_to_the_eol_step(registry_db, proxy_region):
+    deployments = [
+        {
+            "model_name": "old",
+            "litellm_params": {"model": "bedrock/amazon.old"},
+            "model_info": {"id": "o-1", "deprecation_date": "2027-01-31"},
+        }
+    ]
+
+    import_deployments(registry_db, proxy_region, deployments, None, {})
+    registry_db.commit()
+
+    assert registry_db.query(DBRegistryModel).one().eol_date is None
+
+
 def test_cloud_regions_per_provider(registry_db, proxy_region):
     deployments = [
         {"model_name": "a", "litellm_params": {"model": "bedrock/x", "aws_region_name": "eu-central-1"}, "model_info": {"id": "1"}},
