@@ -2,8 +2,11 @@ from datetime import date
 from types import SimpleNamespace
 
 from app.registry import config
+from app.registry.discovery import apply_model_list
 from app.registry.eol import apply_eol, run_eol
 from app.registry.models import DBRegistryModel, DBRegistryModelLifecycle, DBRegistryProvider, DBRegistryRun
+from app.registry.plugins.runner import apply_plugin, run_plugins, validate
+from app.registry.support import run_support_check
 
 TODAY = date(2026, 9, 27)
 X = date(2026, 12, 1)
@@ -136,3 +139,32 @@ def test_second_run_changes_nothing(registry_db):
     assert model.eol_date == X and model.updated_at == updated_at
     runs = registry_db.query(DBRegistryRun).filter_by(step="eol").all()
     assert len(runs) == 2 and all(run.status == "ok" for run in runs)
+
+
+def test_list_plugin_and_eol_twice_change_nothing_the_second_time(registry_db):
+    model = _model(registry_db, "bedrock", "m")
+    registry_db.commit()
+    plugin_out = {"schema": 1, "source": "bedrock_community", "models": [
+        {"provider": "bedrock", "model_id": "m", "lifecycle": {"eol_date": X.isoformat()}},
+    ]}
+
+    results = []
+    for _ in range(2):
+        # Commit after each step, as the daily job does through record_run.
+        apply_model_list(registry_db, {("bedrock", "m"): {"eol_date": Y}}, TODAY)
+        registry_db.commit()
+        apply_plugin(registry_db, "bedrock_community", "fill", validate(plugin_out, "bedrock_community"), TODAY)
+        registry_db.commit()
+        results.append(apply_eol(registry_db))
+        registry_db.commit()
+
+    assert results[0]["changed"] == 1 and results[1]["changed"] == 0
+    assert results[1]["won"] == {"bedrock_community": 1}
+    assert model.eol_date == X
+
+
+def test_daily_job_runs_eol_after_the_plugins_and_before_the_support_check():
+    from scripts import trigger_registry_daily_job
+
+    steps = [step for _, step in trigger_registry_daily_job.STEPS]
+    assert steps.index(run_plugins) < steps.index(run_eol) < steps.index(run_support_check)
