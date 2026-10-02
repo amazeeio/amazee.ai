@@ -69,6 +69,52 @@ def test_plugins_load_in_order(monkeypatch):
     assert isinstance(plugins["no_order"], ValueError)
 
 
+def _fake_loader(monkeypatch, mods):
+    import types
+
+    from app.registry.plugins import loader
+
+    monkeypatch.setattr(loader.pkgutil, "iter_modules", lambda path: [types.SimpleNamespace(name=n) for n in mods])
+    monkeypatch.setattr(loader.importlib, "import_module", lambda name: mods[name.rsplit(".", 1)[1]])
+    return loader.load_plugins()
+
+
+def _fake(name, **attrs):
+    import types
+
+    mod = types.ModuleType(name)
+    mod.PRICE_ROLE, mod.parse, mod.ORDER = "fill", lambda: {}, 10
+    mod.__dict__.update(attrs)
+    return mod
+
+
+def test_loader_checks_priority(monkeypatch):
+    mods = {
+        "none": _fake("none", SOURCE="none"),
+        "good": _fake("good", SOURCE="good", PRIORITY={"eol_date": 90}),
+        "is_bool": _fake("is_bool", SOURCE="is_bool", PRIORITY={"eol_date": True}),
+        "is_str": _fake("is_str", SOURCE="is_str", PRIORITY={"eol_date": "90"}),
+        "is_list": _fake("is_list", SOURCE="is_list", PRIORITY=[("eol_date", 90)]),
+        "int_key": _fake("int_key", SOURCE="int_key", PRIORITY={1: 90}),
+    }
+
+    plugins = _fake_loader(monkeypatch, mods)
+
+    assert plugins["none"] is mods["none"] and plugins["good"] is mods["good"]
+    for name in ("is_bool", "is_str", "is_list", "int_key"):
+        assert isinstance(plugins[name], ValueError) and "PRIORITY" in str(plugins[name])
+
+
+def test_loader_rejects_reserved_sources(monkeypatch):
+    mods = {name: _fake(name, SOURCE=name) for name in ("litellm", "proxy", "manual", "ok_src")}
+
+    plugins = _fake_loader(monkeypatch, mods)
+
+    assert plugins["ok_src"] is mods["ok_src"]
+    for name in ("litellm", "proxy", "manual"):
+        assert isinstance(plugins[name], ValueError) and "reserved" in str(plugins[name])
+
+
 def test_disabled_plugin_is_skipped(monkeypatch):
     from app.registry import config
     from app.registry.plugins.loader import load_plugins

@@ -11,6 +11,8 @@ from app.registry.plugins import parsers
 logger = logging.getLogger(__name__)
 
 PRICE_ROLES = ("override", "fill")
+# Other writers store rows under these names, so a plugin with one of them would mix its rows with theirs.
+RESERVED_SOURCES = frozenset({"litellm", "proxy", "manual"})
 
 
 def load_plugins(include_disabled: bool = False) -> dict[str, ModuleType | Exception]:
@@ -25,6 +27,8 @@ def load_plugins(include_disabled: bool = False) -> dict[str, ModuleType | Excep
             source = getattr(module, "SOURCE", None)
             if not isinstance(source, str) or not source:
                 raise ValueError("SOURCE is missing")
+            if source in RESERVED_SOURCES:
+                raise ValueError(f"SOURCE {source!r} is reserved")
             if getattr(module, "PRICE_ROLE", None) not in PRICE_ROLES:
                 raise ValueError(f"PRICE_ROLE must be one of {PRICE_ROLES}")
             if not callable(getattr(module, "parse", None)):
@@ -32,6 +36,13 @@ def load_plugins(include_disabled: bool = False) -> dict[str, ModuleType | Excep
             order = getattr(module, "ORDER", None)
             if isinstance(order, bool) or not isinstance(order, int):
                 raise ValueError("ORDER must be a whole number")
+            priority = getattr(module, "PRIORITY", None)
+            if priority is not None and not (
+                isinstance(priority, dict)
+                and all(isinstance(k, str) for k in priority)
+                and all(isinstance(v, int) and not isinstance(v, bool) for v in priority.values())
+            ):
+                raise ValueError("PRIORITY must map field names to whole numbers")
             if source in plugins:
                 raise ValueError(f"SOURCE {source!r} is used twice")
         except Exception as e:  # a broken plugin must not stop the others

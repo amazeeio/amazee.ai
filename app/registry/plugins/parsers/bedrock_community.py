@@ -12,6 +12,7 @@ from app.registry.values import as_date
 SOURCE = "bedrock_community"
 ORDER = 20
 PRICE_ROLE = "fill"  # it sends no prices
+PRIORITY = {"eol_date": 90}  # it mirrors AWS's own list, so its dates beat LiteLLM's
 
 
 def _day(value) -> str | None:
