@@ -422,6 +422,24 @@ def test_get_key_info_success(mock_client_class, test_region, mock_httpx_get_cli
 
 
 @patch("httpx.AsyncClient")
+def test_get_key_info_rejects_empty_token(
+    mock_client_class, test_region, mock_httpx_get_client
+):
+    """An empty token must not reach LiteLLM, which would return the master key's record"""
+    mock_client_class.return_value = mock_httpx_get_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    for token in (None, ""):
+        with pytest.raises(ValueError):
+            asyncio.run(service.get_key_info(token))
+
+    mock_httpx_get_client.get.assert_not_called()
+
+
+@patch("httpx.AsyncClient")
 def test_get_key_info_failure(
     mock_client_class, test_region, mock_httpx_failure_client
 ):
@@ -1952,3 +1970,64 @@ def test_iter_spend_logs_unreachable_litellm_is_502(mock_client_class, test_regi
     with pytest.raises(HTTPException) as exc:
         asyncio.run(collect())
     assert exc.value.status_code == 502
+
+
+@patch("httpx.AsyncClient")
+def test_update_model_patches_each_deployment(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    """update_model PATCHes /model/{id}/update once per deployment id"""
+    mock_client_class.return_value = mock_httpx_post_client
+    mock_httpx_post_client.patch.return_value = mock_httpx_post_client.post.return_value
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.update_model(
+            "m",
+            {"rpm": 10},
+            ["dep-a", "dep-b"],
+            access_groups=["grp"],
+            model_info={"base_model": "gpt-4o-mini"},
+        )
+    )
+
+    assert mock_httpx_post_client.patch.call_count == 2
+    mock_httpx_post_client.post.assert_not_called()
+    for call, dep in zip(mock_httpx_post_client.patch.call_args_list, ["dep-a", "dep-b"]):
+        assert call.args[0] == f"{test_region.litellm_api_url}/model/{dep}/update"
+        assert (
+            call.kwargs["headers"]["Authorization"]
+            == f"Bearer {test_region.litellm_api_key}"
+        )
+        assert call.kwargs["json"] == {
+            "model_name": "m",
+            "litellm_params": {"rpm": 10, "model": "m"},
+            "model_info": {
+                "base_model": "gpt-4o-mini",
+                "id": dep,
+                "access_groups": ["grp"],
+            },
+        }
+
+
+@patch("httpx.AsyncClient")
+def test_update_model_omits_access_groups_when_none(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    """access_groups=None leaves the tags out of the body; caller params stay untouched"""
+    mock_client_class.return_value = mock_httpx_post_client
+    mock_httpx_post_client.patch.return_value = mock_httpx_post_client.post.return_value
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+    params = {"rpm": 10}
+
+    asyncio.run(
+        service.update_model("m", params, ["dep-a"], access_groups=None, model_info=None)
+    )
+
+    body = mock_httpx_post_client.patch.call_args.kwargs["json"]
+    assert body["model_info"] == {"id": "dep-a"}
+    assert params == {"rpm": 10}

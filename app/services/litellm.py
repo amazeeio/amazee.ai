@@ -365,6 +365,12 @@ class LiteLLMService:
 
     async def get_key_info(self, litellm_token: str) -> dict:
         """Get information about a LiteLLM API key"""
+        # LiteLLM treats a missing key param as "the caller's key", so an empty
+        # token would return the master key's own record.
+        if not litellm_token:
+            raise ValueError(
+                "get_key_info needs a LiteLLM token; without one LiteLLM returns the master key's record"
+            )
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
@@ -1785,7 +1791,7 @@ class LiteLLMService:
     async def get_model_deployment_ids(self, model_id: str) -> list[str]:
         """
         Resolve the LiteLLM deployment id(s) for a public model_name.
-        /model/update and /model/delete key on model_info.id, not model_name,
+        PATCH /model/{id}/update and /model/delete key on model_info.id, not model_name,
         and /model/new allows duplicate model_names — so callers must resolve
         ids first to upsert/delete correctly.
         """
@@ -1795,18 +1801,16 @@ class LiteLLMService:
         self,
         model_id: str,
         litellm_params: dict,
-        deployment_ids: Optional[list[str]] = None,
+        deployment_ids: list[str],
         access_groups: Optional[list[str]] = None,
         model_info: Optional[dict] = None,
     ) -> dict:
         """
         Update an existing model in LiteLLM.
-        Sends POST /model/update per deployment id (LiteLLM identifies the
+        Sends PATCH /model/{id}/update per deployment id (LiteLLM keys the
         deployment by model_info.id; model_name alone is not accepted).
         access_groups=[] clears the tags; None leaves them untouched.
         """
-        if deployment_ids is None:
-            deployment_ids = await self.get_model_deployment_ids(model_id)
         if not deployment_ids:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1825,8 +1829,10 @@ class LiteLLMService:
                     info: dict = {**(model_info or {}), "id": dep_id}
                     if access_groups is not None:
                         info["access_groups"] = access_groups
-                    response = await client.post(
-                        f"{self.api_url}/model/update",
+                    # POST /model/update ignores model_info on the proxy version we run, so use PATCH.
+                    # PATCH merges model_info and skips None, so a dropped key needs the deployment recreated.
+                    response = await client.patch(
+                        f"{self.api_url}/model/{dep_id}/update",
                         headers={"Authorization": f"Bearer {self.master_key}"},
                         json={
                             "model_name": model_id,

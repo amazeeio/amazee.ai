@@ -287,11 +287,10 @@ class PublicModelPricing(BaseModel):
 
 
 class PublicModelCapabilities(BaseModel):
-    # null = LiteLLM has no data for the model (not the same as "unsupported")
-    supports_vision: Optional[bool] = None
-    supports_function_calling: Optional[bool] = None
-    supports_reasoning: Optional[bool] = None
-    supports_prompt_caching: Optional[bool] = None
+    supports_vision: bool = False
+    supports_function_calling: bool = False
+    supports_reasoning: bool = False
+    supports_prompt_caching: bool = False
 
 
 class PublicModelManufacturer(BaseModel):
@@ -546,7 +545,7 @@ class PrivateAIKeySpendBasic(BaseModel):
 
 class PrivateAIKeySpend(BaseModel):
     spend: float
-    expires: datetime
+    expires: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
     max_budget: Optional[float] = Field(
