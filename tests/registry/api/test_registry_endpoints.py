@@ -7,6 +7,11 @@ from app.main import _OPENAPI_TIERS, _scope_schema, app
 from app.registry.models import DBRegistryModel, DBRegistryModelPrice, DBRegistryProvider, DBRegistryRun
 
 RUN_FIELDS = {"id", "step", "started_at", "finished_at", "status", "stats", "error"}
+MODEL_FIELDS = {
+    "provider", "model_id", "mode", "max_input_tokens", "max_output_tokens",
+    "input_cost_per_token", "output_cost_per_token", "prices", "eol_date",
+    "status", "source", "first_seen", "last_seen", "price_scopes",
+}
 TODAY = date(2026, 1, 1)
 
 
@@ -87,7 +92,8 @@ def test_runs_step_filter(client, admin_token, runs):
 
 
 def test_runs_limit_is_enforced(client, admin_token, runs):
-    assert len(client.get("/registry/runs?limit=1", headers=_auth(admin_token)).json()) == 1
+    newest = client.get("/registry/runs?limit=1", headers=_auth(admin_token)).json()
+    assert [r["id"] for r in newest] == [3]
     assert client.get("/registry/runs?limit=501", headers=_auth(admin_token)).status_code == 422
     assert client.get("/registry/runs?limit=0", headers=_auth(admin_token)).status_code == 422
 
@@ -103,9 +109,10 @@ def test_models_return_fields_and_price_scopes(client, admin_token, models):
     claude, gpt, old = response.json()
     assert gpt["input_cost_per_token"] == 2.5e-06
     assert gpt["output_cost_per_token"] == 1e-05
-    for model in (claude, gpt, old):
-        for field in ("input_cost_per_token", "output_cost_per_token"):
-            assert model[field] is None or isinstance(model[field], float)
+    assert set(gpt) == MODEL_FIELDS
+    assert gpt["status"] == "active"
+    assert old["status"] == "removed"
+    assert gpt["prices"] == {"input_cost_per_token": 2.5e-06}
     assert gpt["mode"] == "chat"
     assert gpt["first_seen"] == gpt["last_seen"] == "2026-01-01"
     assert gpt["price_scopes"] == [
@@ -122,8 +129,9 @@ def test_models_filters(client, admin_token, models):
     assert ids("provider=openai") == [("openai", "gpt-4o"), ("openai", "gpt-old")]
     assert ids("status=removed") == [("openai", "gpt-old")]
     assert ids("q=GPT") == [("openai", "gpt-4o"), ("openai", "gpt-old")]
-    # An unescaped % would match every model.
+    # An unescaped % or _ would match every model.
     assert ids("q=%25") == []
+    assert ids("q=_") == []
 
 
 def test_models_limit_and_offset(client, admin_token, models):
@@ -131,6 +139,7 @@ def test_models_limit_and_offset(client, admin_token, models):
 
     assert _model_ids(response) == [("openai", "gpt-4o")]
     assert client.get("/registry/models?limit=1001", headers=_auth(admin_token)).status_code == 422
+    assert client.get("/registry/models?offset=-1", headers=_auth(admin_token)).status_code == 422
 
 
 @pytest.mark.parametrize("path", ["/registry/runs", "/registry/models"])
