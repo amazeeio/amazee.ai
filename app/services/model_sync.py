@@ -82,7 +82,7 @@ def _sent_params(desired: dict) -> dict:
 
 
 def stale_param_keys(deployments: list[dict], desired: dict) -> set[str]:
-    """Keys live on the proxy that the catalog no longer sends. /model/update
+    """Keys live on the proxy that the catalog no longer sends. PATCH /model/{id}/update
     merges, so these survive every update until the deployment is recreated."""
     sent = set(_sent_params(desired)) | {"model"}
     # LiteLLM stores its own boolean flags (GenericLiteLLMParams defaults such
@@ -413,7 +413,7 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
                 logger.error(f"Sync failed for model_id={model_id}, region_id={region_id}: {assoc.sync_error}")
                 return
         elif assoc.is_active and model.is_active_globally:
-            # LiteLLM keys /model/update and /model/delete on the deployment id
+            # LiteLLM keys PATCH /model/{id}/update and /model/delete on the deployment id
             # (model_info.id), and /model/new allows duplicate model_names — so
             # resolve existing deployment ids first and upsert accordingly,
             # instead of add-then-catch-conflict (which would silently create
@@ -423,6 +423,7 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
             # Only DB-registered deployments are ours to compare and replace; a
             # same-named config-file entry would otherwise look stale forever.
             db_deployments = [d for d in deployments if d["model_info"].get("db_model")]
+            db_deployment_ids = [d["model_info"]["id"] for d in db_deployments]
             # Base params + per-region override, or the alias target's params.
             params, resolve_error = effective_litellm_params(db, model, region_id)
             pushed_params = params
@@ -438,8 +439,13 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
             access_groups = model_access_group_slugs(db, model.id, region_id)
             model_info = {**(model.model_info or {}), **(assoc.model_info_override or {})} or None
             stale_keys = stale_param_keys(db_deployments, params)
+            # PATCH merges model_info too, so a base_model the catalog dropped would keep pricing the model.
+            if not (model_info or {}).get("base_model") and any(
+                (d.get("model_info") or {}).get("base_model") for d in db_deployments
+            ):
+                stale_keys.add("model_info.base_model")
             if stale_keys:
-                # /model/update merges into the stored params, so a key the
+                # PATCH /model/{id}/update merges into the stored params, so a key the
                 # catalog dropped can only go away by recreating the
                 # deployment. Register the replacement before deleting the
                 # old ids so the model name is never unavailable.
@@ -451,13 +457,22 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
                     model.model_id, params, access_groups=access_groups,
                     model_info=model_info,
                 )
-                await litellm_service.delete_model(
-                    model.model_id, [d["model_info"]["id"] for d in db_deployments]
-                )
+                await litellm_service.delete_model(model.model_id, db_deployment_ids)
             elif deployment_ids:
+                if not db_deployment_ids:
+                    # Only config-file entries share the name. Adding a DB deployment
+                    # beside them would split traffic, so refuse with a clear reason.
+                    assoc.sync_status = "failed"
+                    assoc.sync_error = (
+                        f"Model '{model.model_id}' exists only in the LiteLLM config file "
+                        "in this region; the catalog cannot manage it."
+                    )
+                    db.commit()
+                    logger.error(f"Sync failed for model_id={model_id}, region_id={region_id}: {assoc.sync_error}")
+                    return
                 logger.info(f"Updating model '{model.model_id}' in region '{region.name}' (deployments: {deployment_ids})")
                 await litellm_service.update_model(
-                    model.model_id, params, deployment_ids, access_groups=access_groups,
+                    model.model_id, params, db_deployment_ids, access_groups=access_groups,
                     model_info=model_info,
                 )
             else:
