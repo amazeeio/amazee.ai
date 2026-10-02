@@ -43,6 +43,8 @@ def _get_or_create(db: Session, model, defaults: dict | None = None, **keys):
 
 def _proxy_model_fields(info: dict) -> dict:
     fields = entry_fields(info)
+    # The EOL step is the only writer of eol_date; a date here would be cleared on its next run.
+    del fields["eol_date"]
     # /model/info fills prices with 0 for a model LiteLLM does not know.
     # Stored as 0 it would look free, so it is stored as unknown.
     if not any(fields["prices"].values()):
