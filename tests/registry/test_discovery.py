@@ -6,7 +6,7 @@ import pytest
 
 from app.registry import config
 from app.registry.discovery import apply_model_list, parse_model_list, run_discovery
-from app.registry.models import DBRegistryModel, DBRegistryProvider, DBRegistryRun
+from app.registry.models import DBRegistryModel, DBRegistryModelLifecycle, DBRegistryProvider, DBRegistryRun
 
 LIST = {
     "sample_spec": {"litellm_provider": "bedrock"},
@@ -162,6 +162,38 @@ def test_updated_at_moves_only_on_a_real_change(registry_db):
     apply_model_list(registry_db, {("bedrock", "m"): {"mode": "chat"}}, date(2026, 9, 28))
     registry_db.commit()
     assert row.updated_at > before
+
+
+def test_list_writes_its_date_as_a_litellm_lifecycle_row(registry_db):
+    bedrock = _add_provider(registry_db)
+    today, earlier = date(2026, 9, 27), date(2026, 9, 1)
+    m = _model(registry_db, bedrock, "m")
+    m.eol_date = date(2030, 1, 1)
+    _model(registry_db, bedrock, "gone")
+    registry_db.add_all([
+        # A stale row of a listed model: the list's values replace all of it.
+        DBRegistryModelLifecycle(provider="bedrock", model_id="m", source="litellm", status="ACTIVE",
+                                 legacy_at=earlier, eol_date=earlier, last_seen=earlier),
+        DBRegistryModelLifecycle(provider="bedrock", model_id="gone", source="litellm",
+                                 eol_date=earlier, last_seen=earlier),
+    ])
+    registry_db.flush()
+
+    stats = apply_model_list(
+        registry_db, {("bedrock", "m"): {"eol_date": date(2027, 1, 31)}, ("bedrock", "n"): {}}, today
+    )
+    registry_db.flush()
+
+    lives = {life.model_id: life for life in registry_db.query(DBRegistryModelLifecycle).filter_by(source="litellm")}
+    assert lives["m"].eol_date == date(2027, 1, 31) and lives["n"].eol_date is None
+    for name in ("m", "n"):
+        life = lives[name]
+        assert (life.status, life.launched_at, life.legacy_at, life.extended_access_until) == (None,) * 4
+        assert life.last_seen == today
+    assert m.eol_date == date(2030, 1, 1) and stats["updated"] == 0
+    n = registry_db.query(DBRegistryModel).filter_by(model_id="n").one()
+    assert n.eol_date is None
+    assert lives["gone"].last_seen == earlier and lives["gone"].eol_date == earlier
 
 
 def test_prices_keep_every_litellm_price_field():

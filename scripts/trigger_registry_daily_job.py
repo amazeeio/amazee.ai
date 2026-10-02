@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Daily registry job: proxy versions, the model list, then what each proxy can price and knows."""
+"""Daily registry job: proxy versions, the model list, source plugins, EOL dates, then what each proxy can price and knows."""
 
 import logging
 import os
@@ -12,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from app.core.locking import release_lock, try_acquire_lock
 from app.db.database import engine
 from app.registry.discovery import run_discovery
+from app.registry.eol import run_eol
 from app.registry.plugins.runner import run_plugins
 from app.registry.support import run_support_check
 from app.registry.versions import run_version_check
@@ -28,6 +29,8 @@ STEPS = (
     ("model list", run_discovery),
     # After the model list: fill plugins only price what the list left.
     ("source plugins", run_plugins),
+    # After every source: it chooses among the dates they stored.
+    ("EOL dates", run_eol),
     ("support check", run_support_check),
 )
 

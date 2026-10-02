@@ -8,7 +8,13 @@ from sqlalchemy.orm import Session
 
 from app.registry import config
 from app.registry.litellm import fetch_json, our_entries, split_model
-from app.registry.models import DBRegistryModel, DBRegistryModelPrice, DBRegistryProvider, models_by_ident
+from app.registry.models import (
+    DBRegistryModel,
+    DBRegistryModelLifecycle,
+    DBRegistryModelPrice,
+    DBRegistryProvider,
+    models_by_ident,
+)
 from app.registry.plugins.loader import override_sources
 from app.registry.prices import apply_prices, parse_prices, price_fields
 from app.registry.runs import record_run
@@ -83,7 +89,11 @@ _PLUGIN_FILLED_SPECS = ("mode", "max_input_tokens", "max_output_tokens")
 
 
 def apply_model_list(db: Session, listed: dict[tuple[str, str], dict], today: date) -> dict:
-    """Insert new models, refresh listed ones, mark the ones that left as removed."""
+    """Insert new models, refresh listed ones, mark the ones that left as removed.
+
+    Each listed model also gets a `litellm` lifecycle row with the list's date;
+    the EOL step decides `registry_models.eol_date`.
+    """
     providers = {p.name: p.id for p in db.query(DBRegistryProvider).all()}
     by_ident = models_by_ident(db)
     # Only active rows can be newly removed, so only they count here.
@@ -103,8 +113,22 @@ def apply_model_list(db: Session, listed: dict[tuple[str, str], dict], today: da
     locked = {p.model_id for p in bases if p.source in overrides}
     # Priced by a proxy or a plugin: a list entry with no price keeps that.
     priced_elsewhere = {p.model_id for p in bases if p.source != "litellm"}
+    lifecycles = {
+        (life.provider, life.model_id): life
+        for life in db.query(DBRegistryModelLifecycle).filter_by(source="litellm")
+    }
     stats = {"listed": len(listed), "inserted": 0, "updated": 0, "removed": 0}
     for (provider, model_id), fields in listed.items():
+        eol_date = fields.get("eol_date")
+        # A new dict: the caller's dict can be shared by more than one model.
+        fields = {k: v for k, v in fields.items() if k != "eol_date"}
+        life = lifecycles.get((provider, model_id))
+        if life is None:
+            life = DBRegistryModelLifecycle(provider=provider, model_id=model_id, source="litellm")
+            db.add(life)
+        life.eol_date = eol_date
+        life.status = life.launched_at = life.legacy_at = life.extended_access_until = None
+        life.last_seen = today
         row = by_ident.get((provider, model_id))
         if row is not None and (row.id in locked or (not fields.get("prices") and row.id in priced_elsewhere)):
             fields = {k: v for k, v in fields.items() if k not in _HEADLINE_PRICE_FIELDS}
