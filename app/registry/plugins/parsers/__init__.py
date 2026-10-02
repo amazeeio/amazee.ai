@@ -6,6 +6,7 @@ A plugin module defines:
     ORDER = 10                  # run order: lower first, ties by SOURCE
     PRICE_ROLE = "override"     # "override": beats LiteLLM's price; "fill": only unpriced models
     FILL_MODES = {"chat"}       # optional, fill only: price only models in these modes, or with none
+    PRIORITY = {"eol_date": 90} # optional, the priority per field: higher wins; only eol_date is used now
     def parse() -> dict: ...    # no input: fetches its own source
 
 and returns:
