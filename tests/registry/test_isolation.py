@@ -17,6 +17,7 @@ OLD_CATALOG = {
 }
 # The only files outside the package allowed to import it.
 REGISTRY_USERS = {
+    "app/main.py",
     "app/migrations/env.py",
     "scripts/initialise_resources.py",
     "scripts/trigger_registry_daily_job.py",
