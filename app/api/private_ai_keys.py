@@ -23,7 +23,11 @@ from app.schemas.models import (
     TokenDurationUpdate,
     PrivateAIKeyDetail,
 )
-from app.db.postgres import PostgresManager
+from app.db.postgres import (
+    PostgresManager,
+    postgres_manager_for_key,
+    regions_by_postgres_host,
+)
 from app.db.models import (
     DBBudgetAlertState,
     DBPrivateAIKey,
@@ -1091,7 +1095,9 @@ async def delete_private_ai_key(
 
     # Only delete the database if it exists
     if private_ai_key.database_name:
-        postgres_manager = PostgresManager(region=region)
+        postgres_manager = postgres_manager_for_key(
+            private_ai_key, region, regions_by_postgres_host(db)
+        )
         await postgres_manager.delete_database(
             private_ai_key.database_name, private_ai_key.database_username
         )
