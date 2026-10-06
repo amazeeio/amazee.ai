@@ -8,6 +8,7 @@ from app.db.models import (
     DBPrivateAIKey,
     DBPeriodicBudgetLedgerEntry,
     DBPoolPurchase,
+    DBRegion,
     DBTeam,
     DBUser,
     DBSpendCap,
@@ -189,7 +190,7 @@ def test_delete_private_ai_key(
     test_key = DBPrivateAIKey(
         database_name="test_db_delete",
         name="Test Key to Delete",
-        database_host="test-host",
+        database_host=test_region.postgres_host,
         database_username="test_user",
         database_password="test-pass",
         litellm_token="test-token-delete",
@@ -261,7 +262,7 @@ def test_delete_private_ai_key_removes_dependent_spend_caps(
     test_key = DBPrivateAIKey(
         database_name="test_db_delete_caps",
         name="Test Key with Spend Cap",
-        database_host="test-host",
+        database_host=test_region.postgres_host,
         database_username="test_user",
         database_password="test-pass",
         litellm_token="test-token-delete-caps",
@@ -1128,6 +1129,48 @@ def test_view_spend_uses_db_key_spend_cap_max_budget(
     assert data["max_budget"] == 42.0
 
     db.query(DBSpendCap).filter(DBSpendCap.key_id == test_key.id).delete()
+    db.delete(test_key)
+    db.commit()
+
+
+@patch("app.api.private_ai_keys.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_view_spend_no_litellm_token(
+    mock_get_key_info,
+    client,
+    team_read_only_token,
+    test_region,
+    db,
+    test_team_read_only,
+):
+    """A vector-db key has no LiteLLM token, so spend is zero and LiteLLM is not called."""
+    test_key = DBPrivateAIKey(
+        database_name="test-db-no-token",
+        name="Vector DB Key",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token=None,
+        owner_id=test_team_read_only.id,
+        team_id=test_team_read_only.team_id,
+        region_id=test_region.id,
+    )
+    db.add(test_key)
+    # A retired region can have its LiteLLM credentials cleared.
+    test_region.litellm_api_key = ""
+    db.commit()
+    db.refresh(test_key)
+
+    response = client.get(
+        f"/private-ai-keys/{test_key.id}/spend",
+        headers={"Authorization": f"Bearer {team_read_only_token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["spend"] == 0.0
+    assert data["expires"] is None
+    mock_get_key_info.assert_not_awaited()
+
     db.delete(test_key)
     db.commit()
 
@@ -2331,6 +2374,47 @@ def test_get_private_ai_key_preserves_db_team_id_when_litellm_team_id_is_string(
     db.commit()
 
 
+@patch("app.api.private_ai_keys.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_get_private_ai_key_no_litellm_token(
+    mock_get_key_info, client, admin_token, test_region, db, test_team
+):
+    """A vector-db key has no LiteLLM token, so details come from the DB only."""
+    test_key = DBPrivateAIKey(
+        database_name="test-db-get-no-token",
+        name="Vector DB Key for Get",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token=None,
+        team_id=test_team.id,
+        region_id=test_region.id,
+        updated_at=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
+    )
+    db.add(test_key)
+    db.commit()
+    db.refresh(test_key)
+
+    response = client.get(
+        f"/private-ai-keys/{test_key.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == test_key.id
+    assert data["database_name"] == "test-db-get-no-token"
+    assert data["litellm_token"] is None
+    assert data["team_id"] == test_team.id
+    assert data["updated_at"] is not None
+    assert datetime.fromisoformat(data["updated_at"]).replace(
+        tzinfo=UTC
+    ) == datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+    mock_get_key_info.assert_not_awaited()
+
+    db.delete(test_key)
+    db.commit()
+
+
 @patch("httpx.AsyncClient")
 def test_get_private_ai_key_not_found(
     mock_client_class, client, admin_token, mock_httpx_get_client
@@ -2620,7 +2704,7 @@ def test_delete_private_ai_key_with_only_vector_db(
     test_key = DBPrivateAIKey(
         database_name="test_db_vector_only",
         name="Test Vector DB Only",
-        database_host="test-host",
+        database_host=test_region.postgres_host,
         database_username="test_user",
         database_password="test-pass",
         litellm_token=None,  # No LLM token
@@ -2752,6 +2836,59 @@ def test_delete_private_ai_key_cleans_up_database_user(
     mock_delete_database.assert_called_once_with(
         test_key.database_name, test_key.database_username
     )
+
+
+@patch("app.db.postgres.PostgresManager", return_value=AsyncMock())
+@patch("httpx.AsyncClient")
+def test_delete_private_ai_key_drops_database_on_owner_host(
+    mock_client_class,
+    mock_pg,
+    client,
+    admin_token,
+    test_region,
+    db,
+    mock_httpx_post_client,
+):
+    """A key whose database lives on another region's host is dropped there."""
+    mock_client_class.return_value = mock_httpx_post_client
+    mock_httpx_post_client.post.return_value.status_code = 200
+    mock_httpx_post_client.post.return_value.raise_for_status.return_value = None
+
+    other = DBRegion(
+        name="other-host-region",
+        label="Other Host Region",
+        postgres_host="other-host.example",
+        postgres_port=5432,
+        postgres_admin_user="other-admin",
+        postgres_admin_password="other-pw",
+        litellm_api_url="https://other-litellm.com",
+        litellm_api_key="other-litellm-key",
+        is_active=True,
+    )
+    db.add(other)
+    test_key = DBPrivateAIKey(
+        database_name="test_db_owner_host",
+        name="Test Owner Host",
+        database_host="other-host.example",
+        database_username="test_user_owner_host",
+        litellm_token="test-token-owner-host",
+        region_id=test_region.id,
+    )
+    db.add(test_key)
+    db.commit()
+    key_id = test_key.id
+
+    response = client.delete(
+        f"/private-ai-keys/{key_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    mock_pg.assert_called_once_with(region=other, host="other-host.example")
+    mock_pg.return_value.delete_database.assert_awaited_once_with(
+        "test_db_owner_host", "test_user_owner_host"
+    )
+    assert db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first() is None
 
 
 @patch("httpx.AsyncClient")

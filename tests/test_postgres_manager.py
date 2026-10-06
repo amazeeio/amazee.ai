@@ -7,7 +7,11 @@ import pytest
 from unittest.mock import AsyncMock, Mock, patch
 
 from app.db.models import DBRegion
-from app.db.postgres import PostgresManager
+from app.db.postgres import (
+    PostgresManager,
+    postgres_manager_for_key,
+    regions_by_postgres_host,
+)
 
 
 @pytest.fixture
@@ -97,3 +101,67 @@ def test_backfill_includes_regions_with_no_tracked_keys():
     work = dict(get_vector_dbs_grouped_by_region(session, None))
     assert work[tracked] == [("db_abc123", "user_abc123")]
     assert work[orphan_only] == []
+
+
+@pytest.mark.asyncio
+async def test_host_override_keeps_region_credentials(region):
+    connect = AsyncMock(return_value=AsyncMock())
+    with patch("asyncpg.connect", connect):
+        await PostgresManager(region=region, host="other.test").delete_database(
+            "db_x", "user_x"
+        )
+
+    connect.assert_awaited_once_with(
+        host="other.test", port=5432, user="admin", password="adminpw"
+    )
+
+
+def _region(host, is_active=True, port=5432):
+    region = Mock(spec=DBRegion)
+    region.postgres_host = host
+    region.is_active = is_active
+    region.postgres_port = port
+    return region
+
+
+def test_postgres_manager_for_key_picks_host_owner():
+    own = _region("own.test")
+    other = _region("other.test")
+    regions_by_host = {"own.test": own, "other.test": other}
+
+    def user_and_host(database_host, key_region=own):
+        key = Mock(database_host=database_host)
+        manager = postgres_manager_for_key(key, key_region, regions_by_host)
+        return manager.admin_user, manager.host
+
+    assert user_and_host(None) == (own.postgres_admin_user, "own.test")
+    assert user_and_host("other.test") == (other.postgres_admin_user, "other.test")
+    assert user_and_host("unknown.test") == (own.postgres_admin_user, "unknown.test")
+    # An inactive key region gives way to the active region on its host.
+    inactive_own = _region("own.test", is_active=False)
+    assert user_and_host(None, inactive_own) == (own.postgres_admin_user, "own.test")
+    # An active region on the same host and port still takes over.
+    same_host_owner = _region("shared.test")
+    inactive_same_port = _region("shared.test", is_active=False)
+    manager = postgres_manager_for_key(
+        Mock(database_host=None),
+        inactive_same_port,
+        {"shared.test": same_host_owner},
+    )
+    assert manager.admin_user == same_host_owner.postgres_admin_user
+    # An active region on the same host but another port is another server.
+    inactive_other_port = _region("own.test", is_active=False, port=5433)
+    manager = postgres_manager_for_key(
+        Mock(database_host=None), inactive_other_port, regions_by_host
+    )
+    assert manager.admin_user == inactive_other_port.postgres_admin_user
+    assert manager.port == 5433
+
+
+def test_regions_by_postgres_host_prefers_active_on_shared_host():
+    inactive = _region("shared.test", is_active=False)
+    active = _region("shared.test")
+    for order in ([inactive, active], [active, inactive]):
+        db = Mock()
+        db.query.return_value.filter.return_value.all.return_value = order
+        assert regions_by_postgres_host(db) == {"shared.test": active}

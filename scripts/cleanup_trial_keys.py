@@ -54,7 +54,7 @@ from app.core.trial_cleanup import (
 )
 from app.db.database import SessionLocal
 from app.db.models import DBRegion
-from app.db.postgres import PostgresManager
+from app.db.postgres import regions_by_postgres_host
 from app.services.litellm import LiteLLMService
 
 logging.basicConfig(
@@ -166,13 +166,12 @@ async def run(args) -> int:
                     print("Cancelled.")
                     return 0
 
-        # One service per region, not per key — each key is an HTTP call plus a
-        # DROP DATABASE, and reconnecting for every one of thousands is wasteful.
+        # One LiteLLM service per region, not per key: reconnecting for every
+        # one of thousands of keys is wasteful.
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
-        postgres_manager = PostgresManager(region=region)
-
+        regions_by_host = regions_by_postgres_host(db)
         summary = TrialCleanupSummary()
         for index, key in enumerate(keys, start=1):
             result = await delete_trial_key(
@@ -182,7 +181,7 @@ async def run(args) -> int:
                 delete_user=args.delete_users,
                 allow_used=args.allow_used_keys,
                 litellm_service=litellm_service,
-                postgres_manager=postgres_manager,
+                regions_by_host=regions_by_host,
             )
             summary.add(result)
             if not result.ok:
