@@ -1153,10 +1153,6 @@ async def get_private_ai_key_spend(
             status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
         )
 
-    # Create LiteLLM service instance
-    litellm_service = LiteLLMService(
-        api_url=region.litellm_api_url, api_key=region.litellm_api_key
-    )
     configured_key_cap = (
         db.query(DBSpendCap.max_budget)
         .filter(
@@ -1184,6 +1180,9 @@ async def get_private_ai_key_spend(
             # Vector-db keys have no LiteLLM key, so there is no spend to fetch.
             return PrivateAIKeySpendBasic.model_validate(default_spend)
 
+        litellm_service = LiteLLMService(
+            api_url=region.litellm_api_url, api_key=region.litellm_api_key
+        )
         data = await litellm_service.get_key_info(private_ai_key.litellm_token)
         info = data.get("info", {})
 
