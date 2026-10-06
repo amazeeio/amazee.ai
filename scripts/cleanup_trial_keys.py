@@ -54,6 +54,7 @@ from app.core.trial_cleanup import (
 )
 from app.db.database import SessionLocal
 from app.db.models import DBRegion
+from app.db.postgres import regions_by_postgres_host
 from app.services.litellm import LiteLLMService
 
 logging.basicConfig(
@@ -170,6 +171,7 @@ async def run(args) -> int:
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
+        regions_by_host = regions_by_postgres_host(db)
         summary = TrialCleanupSummary()
         for index, key in enumerate(keys, start=1):
             result = await delete_trial_key(
@@ -179,6 +181,7 @@ async def run(args) -> int:
                 delete_user=args.delete_users,
                 allow_used=args.allow_used_keys,
                 litellm_service=litellm_service,
+                regions_by_host=regions_by_host,
             )
             summary.add(result)
             if not result.ok:
