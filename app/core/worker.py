@@ -29,7 +29,7 @@ from app.core.trial_cleanup import (
     delete_trial_key,
     select_trial_keys,
 )
-from app.db.postgres import PostgresManager
+from app.db.postgres import postgres_manager_for_key, regions_by_postgres_host
 from app.schemas.models import BudgetType
 from app.services.litellm import (
     INFERENCE_ONLY_ROUTES,
@@ -2013,6 +2013,8 @@ async def hard_delete_expired_teams(db: Session):
 
         logger.info(f"Found {len(teams_to_delete)} teams eligible for hard deletion")
 
+        regions_by_host = regions_by_postgres_host(db)
+
         for team in teams_to_delete:
             try:
                 logger.info(
@@ -2024,6 +2026,10 @@ async def hard_delete_expired_teams(db: Session):
                     db.execute(select(DBUser.id).filter(DBUser.team_id == team.id))
                     .scalars()
                     .all()
+                )
+                team_keys_filter = or_(
+                    DBPrivateAIKey.team_id == team.id,
+                    DBPrivateAIKey.owner_id.in_(team_user_ids),
                 )
 
                 # Also capture emails now (needed for user_spend_cache cleanup)
@@ -2113,16 +2119,49 @@ async def hard_delete_expired_teams(db: Session):
                         )
                         raise
 
+                # Drop vector databases before their rows go: the row is the
+                # only record of where each database lives. Token-less
+                # vector-db keys are not in keys_by_region, so query directly.
+                db_keys = (
+                    db.query(DBPrivateAIKey)
+                    .filter(
+                        team_keys_filter,
+                        DBPrivateAIKey.database_name.is_not(None),
+                    )
+                    .all()
+                )
+                for key in db_keys:
+                    # A key without a region can still be dropped with the
+                    # credentials of the region that owns its host.
+                    key_region = key.region or regions_by_host.get(key.database_host)
+                    # Dropping the row without the database would leave a
+                    # database nothing can find again, so any failure keeps
+                    # the team for the next run, on inactive regions too.
+                    if key_region is None:
+                        message = f"Key {key.id} has database {key.database_name} but no region owns its host, so no admin credentials exist to drop it; will retry"
+                        logger.error(message)
+                        raise RuntimeError(message)
+                    manager = postgres_manager_for_key(
+                        key, key_region, regions_by_host
+                    )
+                    try:
+                        await manager.delete_database(
+                            key.database_name, key.database_username
+                        )
+                        logger.info(
+                            f"Dropped vector database for key {key.id} on {manager.host}"
+                        )
+                    except Exception as db_error:
+                        logger.error(
+                            f"Failed to drop vector database for key {key.id} on {manager.host}: {str(db_error)}; will retry"
+                        )
+                        raise
+
                 # Delete keys from database
                 # Collect key IDs first so we can clean up spend_caps that reference them
                 team_key_ids = (
                     db.execute(
-                        select(DBPrivateAIKey.id).filter(
-                            or_(
-                                DBPrivateAIKey.team_id == team.id,
-                                DBPrivateAIKey.owner_id.in_(team_user_ids),
-                            )
-                        )
+                        select(DBPrivateAIKey.id).filter(team_keys_filter)
                     )
                     .scalars()
                     .all()
@@ -2142,10 +2181,9 @@ async def hard_delete_expired_teams(db: Session):
                 logger.info(f"Deleted spend caps for team {team.id}")
 
                 total_keys = sum(len(keys) for keys in keys_by_region.values())
-                db.query(DBPrivateAIKey).filter(
-                    (DBPrivateAIKey.team_id == team.id)
-                    | (DBPrivateAIKey.owner_id.in_(team_user_ids))
-                ).delete(synchronize_session=False)
+                db.query(DBPrivateAIKey).filter(team_keys_filter).delete(
+                    synchronize_session=False
+                )
                 logger.info(
                     f"Deleted {total_keys} keys from database for team {team.id}"
                 )
@@ -2448,6 +2486,7 @@ async def reap_trial_keys(db: Session):
     totals = TrialCleanupSummary()
 
     regions = db.query(DBRegion).all()
+    regions_by_host = regions_by_postgres_host(db)
     for region in regions:
         try:
             keys = select_trial_keys(
@@ -2477,8 +2516,6 @@ async def reap_trial_keys(db: Session):
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
-        postgres_manager = PostgresManager(region=region)
-
         region_failures = 0
         for key in keys:
             result = await delete_trial_key(
@@ -2491,7 +2528,7 @@ async def reap_trial_keys(db: Session):
                 # cases apart; it still guards the manual CLI's unfiltered path.
                 allow_used=True,
                 litellm_service=litellm_service,
-                postgres_manager=postgres_manager,
+                regions_by_host=regions_by_host,
             )
             totals.add(result)
             if not result.ok:

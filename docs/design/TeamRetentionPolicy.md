@@ -258,6 +258,7 @@ When a team is soft-deleted (after 90 days of inactivity):
 1. Find teams where `deleted_at <= (now - 60 days)`
 2. For each team:
    - Delete from LiteLLM first (call `delete_key()` for each key)
+   - Drop each key's vector database and role on the key's own host, with the host owner region's credentials (any failure keeps the team for the next run)
    - Delete `DBTeamMetrics`
    - Delete `DBLimitedResource` (team and user resources)
    - Delete `DBPrivateAIKey` (team and user keys)

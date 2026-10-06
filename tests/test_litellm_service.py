@@ -422,6 +422,24 @@ def test_get_key_info_success(mock_client_class, test_region, mock_httpx_get_cli
 
 
 @patch("httpx.AsyncClient")
+def test_get_key_info_rejects_empty_token(
+    mock_client_class, test_region, mock_httpx_get_client
+):
+    """An empty token must not reach LiteLLM, which would return the master key's record"""
+    mock_client_class.return_value = mock_httpx_get_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    for token in (None, ""):
+        with pytest.raises(ValueError):
+            asyncio.run(service.get_key_info(token))
+
+    mock_httpx_get_client.get.assert_not_called()
+
+
+@patch("httpx.AsyncClient")
 def test_get_key_info_failure(
     mock_client_class, test_region, mock_httpx_failure_client
 ):
