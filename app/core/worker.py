@@ -42,6 +42,7 @@ from app.core.team_service import (
     get_team_keys_by_region,
     get_team_info_or_recreate,
     get_team_region_litellm_keys,
+    hard_delete_cutoff,
     is_anonymous_trial_team,
     soft_delete_team,
 )
@@ -1999,10 +2000,7 @@ async def hard_delete_expired_teams(db: Session):
     """
     logger.info("Starting hard delete job for expired teams")
     try:
-        retention_days = max(
-            30, int(os.getenv("TEAM_HARD_DELETE_RETENTION_DAYS", "90"))
-        )
-        cutoff_date = datetime.now(UTC) - timedelta(days=retention_days)
+        cutoff_date = hard_delete_cutoff()
 
         # Query all teams that have been soft-deleted beyond the retention period
         teams_to_delete = (

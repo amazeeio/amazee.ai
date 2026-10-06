@@ -3,8 +3,9 @@ Team service for centralized team operations including soft-delete and restore.
 """
 
 import logging
+import os
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Dict, List, Optional
 
 from app.core.config import settings
@@ -25,6 +26,15 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
+
+
+def hard_delete_cutoff() -> datetime:
+    """Teams soft-deleted at or before this time are due for hard delete.
+
+    The hard-delete job and the restore guard must agree on this value.
+    """
+    retention_days = max(30, int(os.getenv("TEAM_HARD_DELETE_RETENTION_DAYS", "90")))
+    return datetime.now(UTC) - timedelta(days=retention_days)
 
 
 def is_anonymous_trial_team(team: Optional[DBTeam]) -> bool:
