@@ -37,6 +37,14 @@ def hard_delete_cutoff() -> datetime:
     return datetime.now(UTC) - timedelta(days=retention_days)
 
 
+def is_past_hard_delete_cutoff(deleted_at: datetime) -> bool:
+    # Past the cutoff, the job deletes LiteLLM keys and vector databases before the
+    # rows. A failed drop keeps the team, so a restore would revive a broken team.
+    if deleted_at.tzinfo is None:
+        deleted_at = deleted_at.replace(tzinfo=UTC)
+    return deleted_at <= hard_delete_cutoff()
+
+
 def is_anonymous_trial_team(team: Optional[DBTeam]) -> bool:
     """True for the single team that pools all anonymous trial users.
 
@@ -398,6 +406,10 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> dict:
     """
     if not team.deleted_at:
         raise ValueError(f"Team {team.id} is not soft-deleted and cannot be restored")
+    if is_past_hard_delete_cutoff(team.deleted_at):
+        raise ValueError(
+            f"Team {team.id} is past the hard-delete retention period and cannot be restored"
+        )
 
     logger.info(f"Restoring soft-deleted team {team.id} ({team.name})")
 
