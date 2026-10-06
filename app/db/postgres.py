@@ -40,11 +40,13 @@ def postgres_manager_for_key(
     # region gives way to an active region on the same host, so stale
     # credentials are not used. The key's region is the fallback when no
     # region owns the host.
-    owner = (
-        key_region
-        if host == key_region.postgres_host and key_region.is_active
-        else regions_by_host.get(host, key_region)
-    )
+    owner = regions_by_host.get(host, key_region)
+    # The same host on another port is another server. A drop there finds
+    # nothing and lets the row go while the real database stays.
+    if host == key_region.postgres_host and (
+        key_region.is_active or owner.postgres_port != key_region.postgres_port
+    ):
+        owner = key_region
     return PostgresManager(region=owner, host=host)
 
 

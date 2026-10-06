@@ -116,10 +116,11 @@ async def test_host_override_keeps_region_credentials(region):
     )
 
 
-def _region(host, is_active=True):
+def _region(host, is_active=True, port=5432):
     region = Mock(spec=DBRegion)
     region.postgres_host = host
     region.is_active = is_active
+    region.postgres_port = port
     return region
 
 
@@ -139,6 +140,22 @@ def test_postgres_manager_for_key_picks_host_owner():
     # An inactive key region gives way to the active region on its host.
     inactive_own = _region("own.test", is_active=False)
     assert user_and_host(None, inactive_own) == (own.postgres_admin_user, "own.test")
+    # An active region on the same host and port still takes over.
+    same_host_owner = _region("shared.test")
+    inactive_same_port = _region("shared.test", is_active=False)
+    manager = postgres_manager_for_key(
+        Mock(database_host=None),
+        inactive_same_port,
+        {"shared.test": same_host_owner},
+    )
+    assert manager.admin_user == same_host_owner.postgres_admin_user
+    # An active region on the same host but another port is another server.
+    inactive_other_port = _region("own.test", is_active=False, port=5433)
+    manager = postgres_manager_for_key(
+        Mock(database_host=None), inactive_other_port, regions_by_host
+    )
+    assert manager.admin_user == inactive_other_port.postgres_admin_user
+    assert manager.port == 5433
 
 
 def test_regions_by_postgres_host_prefers_active_on_shared_host():
