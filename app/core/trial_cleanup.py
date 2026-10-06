@@ -357,6 +357,7 @@ async def delete_trial_key(
     delete_user: bool = False,
     allow_used: bool = False,
     litellm_service: Optional[LiteLLMService] = None,
+    regions_by_host: Optional[dict[str, DBRegion]] = None,
 ) -> TrialKeyDeletion:
     """Delete one trial key and everything it owns, remote resources first.
 
@@ -403,9 +404,9 @@ async def delete_trial_key(
 
     if key.database_name:
         try:
-            manager = postgres_manager_for_key(
-                key, region, regions_by_postgres_host(db)
-            )
+            if regions_by_host is None:
+                regions_by_host = regions_by_postgres_host(db)
+            manager = postgres_manager_for_key(key, region, regions_by_host)
             await manager.delete_database(key.database_name, key.database_username)
             result.database_deleted = True
         except Exception as e:

@@ -1155,6 +1155,8 @@ def test_view_spend_no_litellm_token(
         region_id=test_region.id,
     )
     db.add(test_key)
+    # A retired region can have its LiteLLM credentials cleared.
+    test_region.litellm_api_key = ""
     db.commit()
     db.refresh(test_key)
 
