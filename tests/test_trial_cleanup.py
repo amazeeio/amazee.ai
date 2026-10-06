@@ -540,6 +540,23 @@ async def test_failed_manager_lookup_is_one_failed_key(
 
 
 @pytest.mark.asyncio
+async def test_given_host_map_skips_region_lookup(
+    db: Session, trial_team: DBTeam, old_region: DBRegion, postgres
+):
+    _, key = _make_trial_key(db, trial_team, old_region, email="hostmap@example.com")
+
+    with patch(
+        "app.core.trial_cleanup.regions_by_postgres_host",
+        side_effect=AssertionError("regions queried per key"),
+    ):
+        result = await delete_trial_key(
+            db, key, old_region, litellm_service=AsyncMock(), regions_by_host={}
+        )
+
+    assert result.ok
+
+
+@pytest.mark.asyncio
 async def test_user_kept_while_they_still_own_another_key(
     db: Session, trial_team: DBTeam, old_region: DBRegion, postgres
 ):

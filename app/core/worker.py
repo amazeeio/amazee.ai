@@ -2486,6 +2486,7 @@ async def reap_trial_keys(db: Session):
     totals = TrialCleanupSummary()
 
     regions = db.query(DBRegion).all()
+    regions_by_host = regions_by_postgres_host(db)
     for region in regions:
         try:
             keys = select_trial_keys(
@@ -2527,6 +2528,7 @@ async def reap_trial_keys(db: Session):
                 # cases apart; it still guards the manual CLI's unfiltered path.
                 allow_used=True,
                 litellm_service=litellm_service,
+                regions_by_host=regions_by_host,
             )
             totals.add(result)
             if not result.ok:
