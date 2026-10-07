@@ -143,8 +143,11 @@ def test_build_eol_index_prefers_lifecycle_and_parses_card_dates():
         (f"bedrock/converse/{HAIKU}", HAIKU),
         (f"bedrock/converse/us.{HAIKU}", HAIKU),
         (f"bedrock/converse/eu.{HAIKU}", HAIKU),
+        ("bedrock_mantle/google.gemma-4-31b", "google.gemma-4-31b"),
+        (f"bedrock_mantle/us.{HAIKU}", HAIKU),
         ("vertex_ai/gemini-2.5-pro", None),
         ("azure/gpt-4.1", None),
+        ("openai/gpt-4.1", None),
         ("", None),
     ],
 )
