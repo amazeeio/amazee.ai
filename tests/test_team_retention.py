@@ -1,3 +1,5 @@
+import pathlib
+
 import pytest
 from datetime import datetime, UTC, timedelta
 from unittest.mock import Mock, patch, AsyncMock
@@ -13,6 +15,7 @@ from app.db.models import (
     DBSpendCap,
 )
 from app.schemas.models import BudgetType
+from app.services import ses
 from app.core.worker import (
     _calculate_last_team_activity,
     _send_retention_warning,
@@ -193,6 +196,15 @@ def test_send_retention_warning_uses_configured_retention_days(
 
     call_args = mock_ses_service.send_email.call_args
     assert call_args.kwargs["template_data"]["retention_days"] == 120
+
+
+def test_retention_warning_template_uses_retention_days():
+    """The template must show the configured period, not a fixed number of days."""
+    # Same folder that SESService reads and syncs to SES.
+    templates_dir = pathlib.Path(ses.__file__).parent.parent / "templates"
+    template = (templates_dir / "team-retention-warning.md").read_text()
+    assert template.count("{{retention_days}}") == 3
+    assert "60 days" not in template
 
 
 def test_send_retention_warning_failure(db: Session, test_team):
