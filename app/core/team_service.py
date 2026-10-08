@@ -28,13 +28,17 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 
+def hard_delete_retention_days() -> int:
+    """Days from soft delete to hard delete; the hard-delete job, the restore guard, and the retention email all use this value."""
+    return max(30, int(os.getenv("TEAM_HARD_DELETE_RETENTION_DAYS", "90")))
+
+
 def hard_delete_cutoff() -> datetime:
     """Teams soft-deleted at or before this time are due for hard delete.
 
     The hard-delete job and the restore guard must agree on this value.
     """
-    retention_days = max(30, int(os.getenv("TEAM_HARD_DELETE_RETENTION_DAYS", "90")))
-    return datetime.now(UTC) - timedelta(days=retention_days)
+    return datetime.now(UTC) - timedelta(days=hard_delete_retention_days())
 
 
 def is_past_hard_delete_cutoff(deleted_at: datetime) -> bool:
