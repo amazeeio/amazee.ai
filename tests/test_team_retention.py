@@ -20,6 +20,7 @@ from app.core.worker import (
     hard_delete_expired_teams,
 )
 from app.core.team_service import (
+    hard_delete_cutoff,
     soft_delete_team,
     restore_soft_deleted_team,
     get_team_keys_by_region,
@@ -733,6 +734,53 @@ def test_restore_team_requires_admin(client, team_admin_token, test_team, db):
     assert response.status_code == 403
 
 
+def test_restore_team_past_hard_delete_cutoff(client, admin_token, test_team, db):
+    """
+    Given: A team soft-deleted just past the hard-delete cutoff
+    When: Restoring the team via the restore endpoint
+    Then: Should return 400 and keep the team soft-deleted
+    """
+    soft_delete_team_for_test(
+        db, test_team, deleted_at=hard_delete_cutoff() - timedelta(minutes=5)
+    )
+
+    team_id = test_team.id
+    response = client.post(
+        f"/teams/{team_id}/restore", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    assert response.status_code == 400
+    assert (
+        response.json()["detail"]
+        == "Team is past the hard-delete retention period and cannot be restored"
+    )
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    assert team.deleted_at is not None
+
+
+def test_restore_team_just_inside_hard_delete_cutoff(
+    client, admin_token, test_team, db
+):
+    """
+    Given: A team soft-deleted just inside the hard-delete cutoff
+    When: Restoring the team via the restore endpoint
+    Then: Should restore the team
+    """
+    soft_delete_team_for_test(
+        db, test_team, deleted_at=hard_delete_cutoff() + timedelta(minutes=5)
+    )
+
+    team_id = test_team.id
+    response = client.post(
+        f"/teams/{team_id}/restore", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "Team restored successfully"
+    restored_team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    assert restored_team.deleted_at is None
+
+
 def test_list_keys_excludes_soft_deleted_teams(
     client, admin_token, test_team, test_region, db
 ):
@@ -968,6 +1016,66 @@ async def test_restore_soft_deleted_team_raises_on_not_deleted(db: Session, test
     # Attempt to restore should raise ValueError
     with pytest.raises(ValueError, match="not soft-deleted"):
         await restore_soft_deleted_team(db, test_team)
+
+
+@patch("app.core.team_service.LiteLLMService")
+@pytest.mark.asyncio
+async def test_restore_soft_deleted_team_raises_past_hard_delete_cutoff(
+    mock_litellm_class, db: Session, test_team
+):
+    """
+    Given: A team soft-deleted just past the hard-delete cutoff
+    When: Calling restore_soft_deleted_team()
+    Then: Should raise ValueError and not touch the team or LiteLLM
+    """
+    test_team.deleted_at = hard_delete_cutoff() - timedelta(minutes=5)
+    db.commit()
+
+    with pytest.raises(ValueError, match="past the hard-delete retention period"):
+        await restore_soft_deleted_team(db, test_team)
+
+    db.refresh(test_team)
+    assert test_team.deleted_at is not None
+    mock_litellm_class.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_restore_soft_deleted_team_raises_at_exact_hard_delete_cutoff(
+    db: Session, test_team
+):
+    """
+    Given: A team soft-deleted exactly at the hard-delete cutoff
+    When: Calling restore_soft_deleted_team()
+    Then: Should raise ValueError, because the job treats that team as due
+    """
+    cutoff = datetime(2026, 1, 1, tzinfo=UTC)
+    test_team.deleted_at = cutoff
+    db.commit()
+
+    with patch("app.core.team_service.hard_delete_cutoff", return_value=cutoff):
+        with pytest.raises(ValueError, match="past the hard-delete retention period"):
+            await restore_soft_deleted_team(db, test_team)
+
+
+@patch("app.core.team_service.LiteLLMService")
+@pytest.mark.asyncio
+async def test_restore_soft_deleted_team_just_inside_hard_delete_cutoff(
+    mock_litellm_class, db: Session, test_team
+):
+    """
+    Given: A team soft-deleted just inside the hard-delete cutoff
+    When: Calling restore_soft_deleted_team()
+    Then: Should restore the team
+    """
+    test_team.deleted_at = hard_delete_cutoff() + timedelta(minutes=5)
+    db.commit()
+    mock_litellm_class.return_value = AsyncMock()
+
+    result = await restore_soft_deleted_team(db, test_team)
+
+    assert result["litellm_warnings"] == []
+    db.refresh(test_team)
+    assert test_team.deleted_at is None
 
 
 @patch("app.core.team_service.LiteLLMService")
