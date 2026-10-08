@@ -280,6 +280,8 @@ A soft-deleted team can be restored by a system admin via `POST /teams/{id}/rest
 
 If LiteLLM re-provisioning fails for any region, the team is still marked restored in the DB and the response includes a `"warning"` field listing the affected regions. Check the `audit_logs` table (`action=team.restore`) for the full `litellm_failed_regions` detail.
 
+The restore returns 400 for a team whose `deleted_at` is at or past the hard-delete cutoff (`TEAM_HARD_DELETE_RETENTION_DAYS`, default 90, minimum 30). The hard-delete job can already have removed the LiteLLM keys and vector databases of that team.
+
 ### Manual trigger
 
 ```bash

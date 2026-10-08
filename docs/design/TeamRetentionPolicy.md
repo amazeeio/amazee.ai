@@ -155,7 +155,7 @@ No new environment variables needed - uses existing:
 - Related resources (keys, users, limits) remain in DB but team is inaccessible
 - **Keys are expired in LiteLLM** when team is soft-deleted (set duration to 0s)
 - **Keys and users from soft-deleted teams are hidden** from list APIs
-- **Hard delete after 60 days** - Permanently removes team and all related resources
+- **Hard delete after the retention period** (`TEAM_HARD_DELETE_RETENTION_DAYS`, default 90 days, minimum 30) - Permanently removes team and all related resources
 - **System admins can restore** soft-deleted teams (resets `deleted_at` and un-expires keys)
 
 ### Activity Calculation
@@ -211,7 +211,7 @@ Track last activity via existing timestamps:
 This extension adds the following capabilities:
 1. **Soft-delete cascade behavior** - Users are deactivated, keys are expired in LiteLLM, and both keys and users are hidden from list APIs
 2. **Restore functionality** - System admins can restore soft-deleted teams (reactivates users and un-expires keys)
-3. **Hard deletion** - Teams soft-deleted for 60+ days are permanently removed
+3. **Hard deletion** - Teams soft-deleted for longer than `TEAM_HARD_DELETE_RETENTION_DAYS` (default 90 days, minimum 30) are permanently removed
 
 ### Soft-Delete Cascade Behavior
 
@@ -245,8 +245,9 @@ When a team is soft-deleted (after 90 days of inactivity):
 - Un-expires all team keys in LiteLLM (sets back to default duration)
 - Team and all related resources become active again
 - All existing data (keys, users, limits) is preserved
+- A team at or past the hard-delete cutoff is refused with 400 and the detail "Team is past the hard-delete retention period and cannot be restored"
 
-### Hard Delete After 60 Days
+### Hard Delete After the Retention Period
 
 **Job:** `hard_delete_expired_teams()` in `app/core/worker.py`
 
@@ -255,7 +256,7 @@ When a team is soft-deleted (after 90 days of inactivity):
 - Production: Daily at 3 AM UTC
 
 **Process:**
-1. Find teams where `deleted_at <= (now - 60 days)`
+1. Find teams where `deleted_at <= hard_delete_cutoff()`, which is now minus `TEAM_HARD_DELETE_RETENTION_DAYS` days (`app/core/team_service.py`)
 2. For each team:
    - Delete from LiteLLM first (call `delete_key()` for each key)
    - Drop each key's vector database and role on the key's own host, with the host owner region's credentials (any failure keeps the team for the next run)
