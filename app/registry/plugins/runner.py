@@ -189,6 +189,12 @@ def apply_plugin(
                 )
             else:
                 row.call_types, row.last_seen = call_types, today
+    # A model the source dropped loses its prices too, so the next source can
+    # price it. An old override row would otherwise lock the price forever.
+    for model_id, rows in prices.items():
+        ident = by_id[model_id]
+        if ident not in listed and any(p.source == source for p in rows):
+            _apply_prices(db, models[ident], rows, source, role, {}, today, stats, fill_modes)
     # Availability means "offered now": every region this run did not list
     # goes, including all regions of a model the source dropped.
     for row in availability.values():

@@ -270,3 +270,35 @@ def test_geo_only_price_never_becomes_the_headline(registry_db):
 
     assert registry_db.get(DBRegistryModelPrice, (model.id, "geo", "us")) is not None
     assert model.prices == {}
+
+
+def test_a_dropped_model_loses_its_prices_and_the_list_takes_over(registry_db):
+    kept = [_model(registry_db, "deepinfra", f"k{i}") for i in range(3)]
+    dropped = _model(registry_db, "deepinfra", "dropped")
+    registry_db.commit()
+
+    def run(model_ids, day):
+        records = validate(_out([{"provider": "deepinfra", "model_id": m,
+                                  "prices": {"base": {"input_cost_per_token": 2e-06}}} for m in model_ids]), "test_src")
+        apply_plugin(registry_db, "test_src", "override", records, day)
+        registry_db.commit()
+
+    run([m.model_id for m in [*kept, dropped]], TODAY)
+    assert dropped.prices == {"input_cost_per_token": 2e-06}
+    run([m.model_id for m in kept], date(2026, 9, 28))
+
+    assert registry_db.get(DBRegistryModelPrice, (dropped.id, "base", "")) is None
+    assert dropped.prices == {}
+    assert registry_db.get(DBRegistryModelPrice, (kept[0].id, "base", "")).source == "test_src"
+
+    with (
+        patch("app.registry.prices.override_sources", return_value={"test_src"}),
+        patch("app.registry.discovery.override_sources", return_value={"test_src"}),
+    ):
+        listed = {("deepinfra", m.model_id): {"prices": {"input_cost_per_token": 1e-06}, "input_cost_per_token": 1e-06}
+                  for m in [*kept, dropped]}
+        apply_model_list(registry_db, listed, date(2026, 9, 29))
+        apply_prices(registry_db, set(listed), {ident: {("base", ""): {"input_cost_per_token": 1e-06}} for ident in listed}, date(2026, 9, 29))
+        registry_db.commit()
+    assert registry_db.get(DBRegistryModelPrice, (dropped.id, "base", "")).source == "litellm"
+    assert dropped.prices == {"input_cost_per_token": 1e-06}
