@@ -23,7 +23,11 @@ from app.schemas.models import (
     TokenDurationUpdate,
     PrivateAIKeyDetail,
 )
-from app.db.postgres import PostgresManager
+from app.db.postgres import (
+    PostgresManager,
+    postgres_manager_for_key,
+    regions_by_postgres_host,
+)
 from app.db.models import (
     DBBudgetAlertState,
     DBPrivateAIKey,
@@ -1091,7 +1095,9 @@ async def delete_private_ai_key(
 
     # Only delete the database if it exists
     if private_ai_key.database_name:
-        postgres_manager = PostgresManager(region=region)
+        postgres_manager = postgres_manager_for_key(
+            private_ai_key, region, regions_by_postgres_host(db)
+        )
         await postgres_manager.delete_database(
             private_ai_key.database_name, private_ai_key.database_username
         )
@@ -1147,10 +1153,6 @@ async def get_private_ai_key_spend(
             status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
         )
 
-    # Create LiteLLM service instance
-    litellm_service = LiteLLMService(
-        api_url=region.litellm_api_url, api_key=region.litellm_api_key
-    )
     configured_key_cap = (
         db.query(DBSpendCap.max_budget)
         .filter(
@@ -1178,6 +1180,9 @@ async def get_private_ai_key_spend(
             # Vector-db keys have no LiteLLM key, so there is no spend to fetch.
             return PrivateAIKeySpendBasic.model_validate(default_spend)
 
+        litellm_service = LiteLLMService(
+            api_url=region.litellm_api_url, api_key=region.litellm_api_key
+        )
         data = await litellm_service.get_key_info(private_ai_key.litellm_token)
         info = data.get("info", {})
 
