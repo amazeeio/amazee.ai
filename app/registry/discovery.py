@@ -32,15 +32,17 @@ STEP = "litellm-list"
 def _as_int(value):
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
 def _as_decimal(value):
     try:
-        return Decimal(str(value)) if value is not None else None
+        number = Decimal(str(value)) if value is not None else None
     except ArithmeticError:
         return None
+    # A Numeric column cannot store Infinity or NaN.
+    return number if number is None or number.is_finite() else None
 
 
 
