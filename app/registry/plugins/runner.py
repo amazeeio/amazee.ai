@@ -105,25 +105,29 @@ def validate(output, source: str) -> list[dict]:
     return records
 
 
+def _delete_price(db, model, key, row):
+    if key == ("base", "") and model.prices == row.prices:
+        # The headline came from this row: unknown until the list's next run
+        # prices the model again, not a stale plugin price.
+        set_headline(model, {})
+    db.delete(row)
+
+
 def _apply_prices(db, model, own, source, role, prices, today, stats, fill_modes=None):
     mine = {(p.scope_kind, p.scope): p for p in own if p.source == source}
     others = [p for p in own if p.source != source]
     wrong_mode = fill_modes is not None and model.mode is not None and model.mode not in fill_modes
     if role == "fill" and (others or (not own and model.prices) or wrong_mode):
         # Another source prices the model, so a fill source steps aside.
-        for p in mine.values():
-            db.delete(p)
+        for key, row in mine.items():
+            _delete_price(db, model, key, row)
         return
     stats["price_changes"] += upsert_scopes(
         db, model.id, {(p.scope_kind, p.scope): p for p in own}, prices, source, today
     )
     for key, row in mine.items():
         if key not in prices:
-            if key == ("base", "") and model.prices == row.prices:
-                # The headline came from this row: unknown until the list's
-                # next run prices the model again, not a stale plugin price.
-                set_headline(model, {})
-            db.delete(row)
+            _delete_price(db, model, key, row)
     # The headline is the base price only; a geo price never stands in for it.
     if ("base", "") in prices:
         set_headline(model, prices[("base", "")])
