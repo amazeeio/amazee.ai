@@ -46,13 +46,17 @@ updates:
     commit-message:
       prefix: chore
       include: scope
-    directory: /
+    directory: /frontend
     schedule:
       interval: monthly
     groups:
-      pip:
+      npm:
         patterns:
           - "*"
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      - dependency-name: "tailwindcss"
+        update-types:
+          - "version-update:semver-major"

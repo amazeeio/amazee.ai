@@ -32,6 +32,15 @@ allow-ghsas:
 # python-jose; we sign JWTs with HS256 (app/core/config.py), so the ECDSA code
 # path is never used. Drop this entry if python-jose is replaced with PyJWT.
 - 'GHSA-wj6h-64fc-37mp'
+# braces stack exhaustion on deeply nested patterns. No patched release exists.
+# braces is only pulled in by build tools (Tailwind 3 and ESLint globbing) on
+# file patterns we write, never on user input. Drop this entry when a patched
+# braces release exists.
+- 'GHSA-vfj7-8cjw-p6xm'
+# postcss-selector-parser quadratic parsing. The patched 7.x does not fit
+# Tailwind 3, which needs ^6. It runs only at build time on CSS we write.
+# Drop this entry after the move to Tailwind 4.
+- 'GHSA-rj75-hqrm-r3gf'
 allow-dependencies-licenses:
 # typing-extensions is PSF-2.0 (see its LICENSE), but the scanned license
 # expression also picks up a GPL-1.0-or-later mention from a vendored file.
