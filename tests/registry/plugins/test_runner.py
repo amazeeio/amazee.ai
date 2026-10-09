@@ -51,6 +51,8 @@ def test_validate_normalizes_scopes_dates_and_regions():
         _out([{"model_id": "m"}]),
         _out([{"provider": "p", "model_id": "m", "prices": {"base": {"input_cost_per_token": -1}}}]),
         _out([{"provider": "p", "model_id": "m", "prices": {"base": {"input_cost_per_token": True}}}]),
+        _out([{"provider": "p", "model_id": "m", "prices": {"base": {"input_cost_per_token": float("inf")}}}]),
+        _out([{"provider": "p", "model_id": "m", "prices": {"base": {"input_cost_per_token": float("nan")}}}]),
         _out([{"provider": "p", "model_id": "m", "prices": {"base": {"speed": 1}}}]),
         _out([{"provider": "p", "model_id": "m", "prices": {"zone:eu": {"input_cost_per_token": 1}}}]),
         _out([{"provider": "p", "model_id": "m", "max_input_tokens": -5}]),

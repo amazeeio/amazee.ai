@@ -1,11 +1,13 @@
 """Checks for numbers and dates that come from outside sources."""
 
+import math
 from datetime import date
 
 
 def is_amount(value) -> bool:
-    """A price or count: a number, not a bool, not negative."""
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+    """A price or count: a finite number, not a bool, not negative."""
+    # A JSON body can hold Infinity, which no price column can store.
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value < math.inf
 
 
 def per_unit(value, divisor: int = 1) -> float | None:
