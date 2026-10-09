@@ -292,3 +292,23 @@ def test_deployed_unpriced_checks_the_scope_each_deployment_bills(registry_db, p
         stats = run_support_check(registry_db)
 
     assert stats["regions"]["local-us1"]["deployed_unpriced"] == ["priced", "retired"]
+
+
+def test_deployed_unpriced_uses_the_price_of_the_proxys_cloud_region(registry_db, proxy_region):
+    ids = _seed(registry_db, proxy_region)
+    registry_db.add_all([
+        DBRegistryProxy(region_id=proxy_region.id, cloud_regions={"bedrock": "us-east-1"}),
+        DBRegistryModelRegion(model_id=ids["anthropic.new-v1:0"], region_id=proxy_region.id, model_name="new",
+                              litellm_model="bedrock/anthropic.new-v1:0", enabled=True),
+    ])
+    registry_db.commit()
+    proxy_list = {
+        **PROXY_LIST,
+        "bedrock/us-east-1/anthropic.new-v1:0": {"litellm_provider": "bedrock", "input_cost_per_token": 1e-06},
+        # Another cloud region's price does not cover a us-east-1 proxy.
+        "bedrock/eu-west-1/anthropic.retired-v1:0": {"litellm_provider": "bedrock", "input_cost_per_token": 1e-06},
+    }
+    with patch("app.registry.support.fetch_json", return_value=proxy_list):
+        stats = run_support_check(registry_db)
+
+    assert stats["regions"]["local-us1"]["deployed_unpriced"] == ["priced", "retired"]

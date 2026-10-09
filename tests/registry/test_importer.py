@@ -173,3 +173,18 @@ def test_import_stores_the_proxy_price_as_base_scope(registry_db, proxy_region):
     price = registry_db.query(DBRegistryModelPrice).one()
     assert (price.scope_kind, price.scope, price.source) == ("base", "", "proxy")
     assert price.prices == {"input_cost_per_token": 1e-06, "output_cost_per_token": 2e-06}
+
+
+def test_import_reads_a_provider_alias_prefix(registry_db, proxy_region):
+    deployment = {
+        "model_name": "claude-x-converse",
+        "litellm_params": {"model": "bedrock_converse/us.anthropic.claude-x-v1:0"},
+        "model_info": {"id": "dep-5"},
+    }
+    stats = import_deployments(registry_db, proxy_region, [deployment], None, {})
+    registry_db.commit()
+
+    assert stats["imported"] == 1 and stats["skipped"] == []
+    model = registry_db.query(DBRegistryModel).one()
+    assert model.model_id == "anthropic.claude-x-v1:0"
+    assert registry_db.get(DBRegistryProvider, model.provider_id).name == "bedrock"
