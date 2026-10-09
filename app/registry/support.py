@@ -23,6 +23,7 @@ from app.registry.models import (
     DBRegistryProxy,
     models_by_ident,
 )
+from app.registry.prices import parse_prices, price_order
 from app.registry.runs import record_run
 from app.registry.versions import active_regions
 
@@ -88,6 +89,7 @@ def apply_support(
     region: DBRegion,
     models: dict[tuple[str, str], int],
     proxy_models: set[tuple[str, str]],
+    proxy_prices: dict[tuple[str, str], dict[tuple[str, str], dict]],
     release_models: set[tuple[str, str]] | None,
     availability: Availability,
     cloud_regions: dict[str, str],
@@ -119,19 +121,36 @@ def apply_support(
 
     idents = {model_id: ident for ident, model_id in models.items()}
     deployed = db.query(
-        DBRegistryModelRegion.model_name, DBRegistryModelRegion.model_id, DBRegistryModelRegion.litellm_model
+        DBRegistryModelRegion.model_name,
+        DBRegistryModelRegion.model_id,
+        DBRegistryModelRegion.litellm_model,
+        DBRegistryModelRegion.prices,
     ).filter_by(region_id=region.id, enabled=True).all()
+
+    def deployment_priced(mid, litellm_model, own_prices) -> bool:
+        # The deployment's own price wins; else the proxy's list must have the
+        # exact scope it bills, so a `us.x` price does not cover `bedrock/x`.
+        if own_prices:
+            return True
+        ident = idents.get(mid)
+        if ident is None:
+            return False
+        scopes = proxy_prices.get(ident, {})
+        return any(key in scopes for key in price_order(ident[0], litellm_model, cloud_regions.get(ident[0])))
+
     stats = {
         "priced": len(priced_ids),
         "unpriced": len(models) - len(priced_ids),
         # Deployed but not priced by the proxy: their spend is $0.
-        "deployed_unpriced": sorted(name for name, mid, _ in deployed if mid not in priced_ids),
+        "deployed_unpriced": sorted(
+            name for name, mid, litellm_model, own in deployed if not deployment_priced(mid, litellm_model, own)
+        ),
         # Deployed where the cloud region does not offer the model: calls fail.
-        "deployed_region_unavailable": sorted(name for name, mid, _ in deployed if mid in unavailable_ids),
+        "deployed_region_unavailable": sorted(name for name, mid, *_ in deployed if mid in unavailable_ids),
     }
     # In-region ids that fail with "on-demand throughput isn't supported".
     problems = {"needs_profile": [], "provisioned_only": []}
-    for name, mid, litellm_model in deployed:
+    for name, mid, litellm_model, _ in deployed:
         if mid in idents:
             problem = availability.in_region_problem(
                 *idents[mid], cloud_regions.get(idents[mid][0]), litellm_model
@@ -144,7 +163,7 @@ def apply_support(
         stats["supported"] = len(supported_ids)
         # Deployed models the proxy's release did not ship with: untested on it.
         stats["deployed_unsupported"] = sorted(
-            name for name, mid, _ in deployed if mid not in supported_ids
+            name for name, mid, *_ in deployed if mid not in supported_ids
         )
     return stats
 
@@ -173,11 +192,9 @@ def _check_support(db: Session) -> dict:
             # Keep the region's last result rather than guess.
             stats["unreachable"][region.name] = str(e)
             continue
-        proxy_models = (
-            set(parse_model_list(priced_entries(price_list), providers)[0])
-            if isinstance(price_list, dict)
-            else set()
-        )
+        priced_list = priced_entries(price_list) if isinstance(price_list, dict) else {}
+        proxy_models = set(parse_model_list(priced_list, providers)[0])
+        proxy_prices = parse_prices(priced_list, providers)
         if not proxy_models:
             # A broken or empty list must not mark every model unpriced.
             stats["unreachable"][region.name] = "price list has no priced models of our providers"
@@ -190,7 +207,8 @@ def _check_support(db: Session) -> dict:
         stats["regions"][region.name] = {
             "version": version,
             **apply_support(
-                db, region, models, proxy_models, release_models.get(version), availability, cloud_regions, now
+                db, region, models, proxy_models, proxy_prices, release_models.get(version), availability,
+                cloud_regions, now,
             ),
         }
     return stats

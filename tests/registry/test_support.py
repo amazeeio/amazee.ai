@@ -67,7 +67,8 @@ def test_support_check_compares_proxy_list(registry_db, proxy_region):
         "version": None,
         "priced": 1,
         "unpriced": 2,
-        "deployed_unpriced": ["retired"],
+        # The proxy prices "priced" only as us.x, which a bedrock/x deployment does not use.
+        "deployed_unpriced": ["priced", "retired"],
         "deployed_region_unavailable": [],
         "deployed_needs_profile": [],
         "deployed_provisioned_only": [],
@@ -273,3 +274,21 @@ def test_broken_proxy_price_list_is_skipped(registry_db, proxy_region, body):
     assert "local-us1" in stats["unreachable"]
     row = registry_db.get(DBRegistryModelSupport, (ids["anthropic.priced-v1:0"], proxy_region.id))
     assert row.priced is True
+
+
+def test_deployed_unpriced_checks_the_scope_each_deployment_bills(registry_db, proxy_region):
+    ids = _seed(registry_db, proxy_region)
+    registry_db.add_all([
+        # A geo deployment matches the proxy's us. price.
+        DBRegistryModelRegion(model_id=ids["anthropic.priced-v1:0"], region_id=proxy_region.id, model_name="priced-geo",
+                              litellm_model="bedrock/us.anthropic.priced-v1:0", enabled=True),
+        # A deployment with its own price in litellm_params needs no list price.
+        DBRegistryModelRegion(model_id=ids["anthropic.new-v1:0"], region_id=proxy_region.id, model_name="own-price",
+                              litellm_model="bedrock/anthropic.new-v1:0", enabled=True,
+                              prices={"input_cost_per_token": 1e-06}),
+    ])
+    registry_db.commit()
+    with patch("app.registry.support.fetch_json", return_value=PROXY_LIST):
+        stats = run_support_check(registry_db)
+
+    assert stats["regions"]["local-us1"]["deployed_unpriced"] == ["priced", "retired"]

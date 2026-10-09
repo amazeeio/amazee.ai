@@ -114,10 +114,15 @@ def pick_price(
     string as deployed, so a geo id never gets a region price.
     """
     scopes = {(p.scope_kind, p.scope): p for p in db.query(DBRegistryModelPrice).filter_by(model_id=model_id)}
+    return next((scopes[key] for key in price_order(provider, deployed_model, cloud_region) if key in scopes), None)
+
+
+def price_order(provider: str, deployed_model: str | None, cloud_region: str | None) -> list[tuple[str, str]]:
+    """The scopes LiteLLM tries for a deployment, first match wins."""
     parsed = parse_key(deployed_model, provider) if deployed_model else None
     if parsed and parsed[1] == "geo":
         order = [("geo", parsed[2])]
     else:
         order = [("cloud_region", cloud_region)] if cloud_region else []
     order.append(("base", ""))
-    return next((scopes[key] for key in order if key in scopes), None)
+    return order
