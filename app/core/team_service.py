@@ -3,8 +3,9 @@ Team service for centralized team operations including soft-delete and restore.
 """
 
 import logging
+import os
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Dict, List, Optional
 
 from app.core.config import settings
@@ -25,6 +26,27 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
+
+
+def hard_delete_retention_days() -> int:
+    """Days from soft delete to hard delete; the hard-delete job, the restore guard, and the retention email all use this value."""
+    return max(30, int(os.getenv("TEAM_HARD_DELETE_RETENTION_DAYS", "90")))
+
+
+def hard_delete_cutoff() -> datetime:
+    """Teams soft-deleted at or before this time are due for hard delete.
+
+    The hard-delete job and the restore guard must agree on this value.
+    """
+    return datetime.now(UTC) - timedelta(days=hard_delete_retention_days())
+
+
+def is_past_hard_delete_cutoff(deleted_at: datetime) -> bool:
+    # Past the cutoff, the job deletes LiteLLM keys and vector databases before the
+    # rows. A failed drop keeps the team, so a restore would revive a broken team.
+    if deleted_at.tzinfo is None:
+        deleted_at = deleted_at.replace(tzinfo=UTC)
+    return deleted_at <= hard_delete_cutoff()
 
 
 def is_anonymous_trial_team(team: Optional[DBTeam]) -> bool:
@@ -388,6 +410,10 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> dict:
     """
     if not team.deleted_at:
         raise ValueError(f"Team {team.id} is not soft-deleted and cannot be restored")
+    if is_past_hard_delete_cutoff(team.deleted_at):
+        raise ValueError(
+            f"Team {team.id} is past the hard-delete retention period and cannot be restored"
+        )
 
     logger.info(f"Restoring soft-deleted team {team.id} ({team.name})")
 
