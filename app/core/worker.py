@@ -43,6 +43,7 @@ from app.core.team_service import (
     get_team_info_or_recreate,
     get_team_region_litellm_keys,
     hard_delete_cutoff,
+    hard_delete_retention_days,
     is_anonymous_trial_team,
     soft_delete_team,
 )
@@ -1707,7 +1708,11 @@ def _send_retention_warning(
         soft_delete_date = (datetime.now(UTC) + timedelta(days=14)).strftime(
             "%b %d, %Y"
         )
-        template_data = {"name": team.name, "soft_delete_date": soft_delete_date}
+        template_data = {
+            "name": team.name,
+            "soft_delete_date": soft_delete_date,
+            "retention_days": hard_delete_retention_days(),
+        }
 
         success = ses_service.send_email(
             to_addresses=[team.admin_email],
