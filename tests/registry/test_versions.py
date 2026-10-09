@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from unittest.mock import patch
 
 import httpx
+import pytest
 
 from app.db.models import DBRegion
 from app.registry.models import DBRegistryLitellmVersion, DBRegistryProxy
@@ -83,3 +84,15 @@ def test_one_bad_region_does_not_stop_the_others(registry_db, proxy_region):
         stats = run_version_check(registry_db)
 
     assert stats["versions"] == {"local-us1": "1.105.0"} and stats["unknown"] == ["bad"]
+
+
+@pytest.mark.parametrize("body", [{}, [], {"sample_spec": {"litellm_provider": "bedrock"}}])
+def test_release_that_is_not_a_model_list_is_not_cached(registry_db, body):
+    with patch("app.registry.versions.fetch_json", return_value=body):
+        stats = fetch_release_lists(registry_db, {"1.103.0"}, datetime.now(UTC))
+    assert stats["failed"] == {"1.103.0": "not a model list"}
+    assert registry_db.get(DBRegistryLitellmVersion, "1.103.0").payload is None
+
+    with patch("app.registry.versions.fetch_json", return_value=RELEASE):
+        stats = fetch_release_lists(registry_db, {"1.103.0"}, datetime.now(UTC))
+    assert stats["fetched"] == ["1.103.0"]

@@ -53,6 +53,13 @@ def fetch_release_lists(db: Session, versions: set[str], now: datetime) -> dict:
             row.error = str(e)
             failed[version] = row.error
             continue
+        if not isinstance(payload, dict) or not any(
+            isinstance(entry, dict) for key, entry in payload.items() if key != "sample_spec"
+        ):
+            # A cached list is never fetched again, so a bad one must stay retryable.
+            row.error = "not a model list"
+            failed[version] = row.error
+            continue
         row.payload, row.error = payload, None
         fetched.append(version)
     db.flush()
