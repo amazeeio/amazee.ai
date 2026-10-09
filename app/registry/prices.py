@@ -5,6 +5,7 @@ deployment. LiteLLM uses a deployment's own price first, so the proxy then
 charges this price whatever its own list says.
 """
 
+import math
 from datetime import UTC, date, datetime
 
 from sqlalchemy.orm import Session
@@ -17,7 +18,12 @@ SOURCE = "litellm"
 
 
 def price_fields(entry: dict) -> dict:
-    return {k: v for k, v in sorted(entry.items()) if "cost" in k and v is not None}
+    # Some cost fields are objects, so only drop what no JSON column can store.
+    return {
+        k: v
+        for k, v in sorted(entry.items())
+        if "cost" in k and v is not None and not (isinstance(v, float) and not math.isfinite(v))
+    }
 
 
 def parse_prices(data: dict, providers: set[str]) -> dict[tuple[str, str], dict[tuple[str, str], dict]]:

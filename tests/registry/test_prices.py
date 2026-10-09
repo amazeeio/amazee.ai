@@ -1,7 +1,7 @@
 from datetime import date
 
 from app.registry.models import DBRegistryModel, DBRegistryModelPrice, DBRegistryProvider
-from app.registry.prices import apply_prices, parse_prices, pick_price
+from app.registry.prices import apply_prices, parse_prices, pick_price, price_fields
 
 LIST = {
     "anthropic.claude-x-v1:0": {"litellm_provider": "bedrock", "input_cost_per_token": 3e-06},
@@ -125,3 +125,10 @@ def test_proxy_price_is_kept_until_the_list_prices_the_model(registry_db):
     registry_db.commit()
     row = registry_db.get(DBRegistryModelPrice, (model.id, "base", ""))
     assert row.source == "litellm" and row.prices == {"input_cost_per_token": 2e-06}
+
+
+def test_price_fields_drop_non_finite_numbers_and_keep_objects():
+    entry = {"input_cost_per_token": float("inf"), "output_cost_per_token": 1e-06,
+             "search_context_cost_per_query": {"search_context_size_low": 0.01}, "cache_cost": None}
+    assert price_fields(entry) == {"output_cost_per_token": 1e-06,
+                                   "search_context_cost_per_query": {"search_context_size_low": 0.01}}
