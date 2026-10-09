@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from app.registry import config
-from app.registry.discovery import apply_model_list, parse_model_list, run_discovery
+from app.registry.discovery import apply_model_list, entry_fields, parse_model_list, run_discovery
 from app.registry.models import DBRegistryModel, DBRegistryModelLifecycle, DBRegistryProvider, DBRegistryRun
 
 LIST = {
@@ -214,3 +214,11 @@ def test_prices_keep_every_litellm_price_field():
         "output_cost_per_second": 0.4,
         "output_cost_per_second_4k": 0.6,
     }
+
+
+def test_entry_fields_drop_non_finite_numbers():
+    fields = entry_fields({"max_input_tokens": float("inf"), "max_tokens": float("nan"),
+                           "input_cost_per_token": float("inf"), "output_cost_per_token": float("nan")})
+    assert fields["max_input_tokens"] is None and fields["max_output_tokens"] is None
+    assert fields["input_cost_per_token"] is None and fields["output_cost_per_token"] is None
+    assert fields["prices"] == {}
