@@ -253,7 +253,7 @@ Teams go through a three-stage lifecycle managed by background workers.
 |---|---|---|
 | **Active** | Team created | Normal operation |
 | **Soft-deleted** | >76 days inactive (no API activity) + 14-day grace after warning email; or manual `POST /teams/{id}/soft-delete` | `deleted_at` set; all LiteLLM keys expired (`duration=0d`); users deactivated. POOL teams are exempt from automatic soft-delete. |
-| **Hard-deleted** | `deleted_at` is ≥ 90 days ago | All data permanently removed (GDPR requirement) |
+| **Hard-deleted** | `deleted_at` is ≥ `TEAM_HARD_DELETE_RETENTION_DAYS` days ago (default 90, minimum 30) | All data permanently removed (GDPR requirement) |
 
 ### Hard-delete cascade order
 
@@ -280,6 +280,8 @@ A soft-deleted team can be restored by a system admin via `POST /teams/{id}/rest
 - Un-expires all keys in LiteLLM
 
 If LiteLLM re-provisioning fails for any region, the team is still marked restored in the DB and the response includes a `"warning"` field listing the affected regions. Check the `audit_logs` table (`action=team.restore`) for the full `litellm_failed_regions` detail.
+
+The restore returns 400 for a team whose `deleted_at` is at or past the hard-delete cutoff (`TEAM_HARD_DELETE_RETENTION_DAYS`, default 90, minimum 30). The hard-delete job can already have removed the LiteLLM keys and vector databases of that team.
 
 ### Manual trigger
 

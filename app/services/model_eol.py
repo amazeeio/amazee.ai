@@ -118,7 +118,8 @@ def bedrock_catalog_id(item: dict[str, Any]) -> str | None:
     candidate = params.get("model") if isinstance(params, dict) else None
     if not isinstance(candidate, str) or not candidate:
         return None
-    if candidate.startswith("bedrock/"):
+    # LiteLLM's Bedrock Mantle provider puts the same Bedrock modelId after its own prefix.
+    if candidate.startswith(("bedrock/", "bedrock_mantle/")):
         candidate = candidate.split("/", 1)[1]
         # LiteLLM's converse route adds a segment that is not in the Bedrock modelId.
         candidate = candidate.removeprefix("converse/")

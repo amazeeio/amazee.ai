@@ -606,9 +606,9 @@ jmespath==1.1.0 \
     # via
     #   boto3
     #   botocore
-mako==1.4.1 \
-    --hash=sha256:a359d9a94a541213958742b2698d0a7757bb83551767bc468a74b9905aba9617 \
-    --hash=sha256:d7904710b662996425a21627710c4777c45053146942cf8a7aebf757c92b8c27
+mako==1.4.2 \
+    --hash=sha256:7227a060ee3af55a493af61d73d6beef13044b81dba9586736c13945f09464ce \
+    --hash=sha256:e70a2a4308952b33a21208bfd6725da79fae5a8c224578f8cfdeb60e5ace03df
     # via alembic
 markdown==3.10.3 \
     --hash=sha256:3589362618f743188b4d955b874402bc814f4f83f544dc207719f4baa7d9c45f \

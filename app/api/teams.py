@@ -18,6 +18,7 @@ from app.core.security import (
 )
 from app.core.team_service import (
     get_team_keys_by_region,
+    is_past_hard_delete_cutoff,
     restore_soft_deleted_team,
     soft_delete_team,
 )
@@ -631,6 +632,11 @@ async def restore_team(team_id: int, db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Team is not deleted and cannot be restored",
+        )
+    if is_past_hard_delete_cutoff(db_team.deleted_at):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Team is past the hard-delete retention period and cannot be restored",
         )
 
     # Use centralized restore function
