@@ -44,6 +44,9 @@ def test_deployment_provider():
         ("azure/eu/gpt-4o", "azure", ("gpt-4o", "geo", "eu")),
         ("azure/gpt-4o", "azure", ("gpt-4o", "base", "")),
         ("deepinfra/meta-llama/Llama-3", "deepinfra", ("meta-llama/Llama-3", "base", "")),
+        ("bedrock_converse/us.anthropic.claude-x-v1:0", "bedrock", ("anthropic.claude-x-v1:0", "geo", "us")),
+        ("azure_text/eu/gpt-35-turbo-instruct", "azure", ("gpt-35-turbo-instruct", "geo", "eu")),
+        ("text-completion-openai/gpt-3.5-turbo-instruct", "openai", ("gpt-3.5-turbo-instruct", "base", "")),
     ],
 )
 def test_parse_key(key, provider, expected):

@@ -29,7 +29,9 @@ def parse_key(key: str, provider: str) -> tuple[str, str, str] | None:
     `cloud_region` (Bedrock `bedrock/us-east-1/x`). Returns None for Bedrock
     entries priced per commitment or image size, which we do not track.
     """
-    rest = key.removeprefix(f"{provider}/")
+    # A deployment can name the provider by an alias (`bedrock_converse/x`).
+    head, sep, tail = key.partition("/")
+    rest = tail if sep and normalize_provider(head) == provider else key
     if provider == "azure":
         zone, sep, tail = rest.partition("/")
         if sep and zone in AZURE_DATA_ZONES:
