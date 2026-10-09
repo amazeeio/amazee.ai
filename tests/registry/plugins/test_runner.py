@@ -322,3 +322,41 @@ def test_fill_that_steps_aside_clears_the_headline_it_set(registry_db):
 
     assert registry_db.get(DBRegistryModelPrice, (model.id, "base", "")) is None
     assert model.prices == {} and model.input_cost_per_token is None
+
+
+def test_fill_source_that_drops_a_model_then_runs_again_changes_nothing(registry_db):
+    kept = [_model(registry_db, "deepinfra", f"k{i}", source="proxy") for i in range(3)]
+    dropped = _model(registry_db, "deepinfra", "dropped", source="proxy")
+    registry_db.commit()
+
+    def run(model_ids, day):
+        records = validate(_out([{"provider": "deepinfra", "model_id": m,
+                                  "prices": {"base": {"input_cost_per_token": 2e-06}}} for m in model_ids]), "test_src")
+        stats = apply_plugin(registry_db, "test_src", "fill", records, day)
+        registry_db.commit()
+        return stats
+
+    run([m.model_id for m in [*kept, dropped]], TODAY)
+    assert dropped.prices == {"input_cost_per_token": 2e-06}
+    run([m.model_id for m in kept], date(2026, 9, 28))
+    assert registry_db.get(DBRegistryModelPrice, (dropped.id, "base", "")) is None
+    assert dropped.prices == {}
+
+    again = run([m.model_id for m in kept], date(2026, 9, 29))
+    assert again["price_changes"] == 0
+    assert registry_db.query(DBRegistryModelPrice).filter_by(source="test_src").count() == 3
+
+
+def test_fill_for_a_mode_it_does_not_cover_clears_the_headline_it_set(registry_db):
+    model = _model(registry_db, "deepinfra", "m", mode="embedding", source="proxy")
+    registry_db.commit()
+    records = validate(_out([{"provider": "deepinfra", "model_id": "m", "prices": {"base": {"input_cost_per_token": 2e-06}}}]), "test_src")
+    apply_plugin(registry_db, "test_src", "fill", records, TODAY)
+    registry_db.commit()
+    assert model.prices == {"input_cost_per_token": 2e-06}
+
+    apply_plugin(registry_db, "test_src", "fill", records, date(2026, 9, 28), fill_modes={"chat"})
+    registry_db.commit()
+
+    assert registry_db.get(DBRegistryModelPrice, (model.id, "base", "")) is None
+    assert model.prices == {}
