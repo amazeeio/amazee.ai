@@ -1,3 +1,5 @@
+import pathlib
+
 import pytest
 from datetime import datetime, UTC, timedelta
 from unittest.mock import Mock, patch, AsyncMock
@@ -13,6 +15,7 @@ from app.db.models import (
     DBSpendCap,
 )
 from app.schemas.models import BudgetType
+from app.services import ses
 from app.core.worker import (
     _calculate_last_team_activity,
     _send_retention_warning,
@@ -152,12 +155,14 @@ def test_calculate_last_team_activity_no_activity(db: Session, test_team):
     assert last_activity is None
 
 
-def test_send_retention_warning_success(db: Session, test_team):
+def test_send_retention_warning_success(db: Session, test_team, monkeypatch):
     """
     Given: A team that needs a retention warning and SES service is available
     When: Sending a retention warning email
     Then: Should send email successfully and update the team's warning timestamp
     """
+    monkeypatch.delenv("TEAM_HARD_DELETE_RETENTION_DAYS", raising=False)
+
     # Create a mock SES service
     mock_ses_service = Mock()
     mock_ses_service.send_email.return_value = True
@@ -167,10 +172,39 @@ def test_send_retention_warning_success(db: Session, test_team):
 
     # Verify email was sent
     mock_ses_service.send_email.assert_called_once()
+    call_args = mock_ses_service.send_email.call_args
+    assert call_args.kwargs["template_data"]["retention_days"] == 90
 
     # Verify team was updated with warning timestamp
     db.refresh(test_team)
     assert test_team.retention_warning_sent_at is not None
+
+
+def test_send_retention_warning_uses_configured_retention_days(
+    db: Session, test_team, monkeypatch
+):
+    """
+    Given: TEAM_HARD_DELETE_RETENTION_DAYS is set to 120
+    When: Sending a retention warning email
+    Then: The email states the configured hard-delete period
+    """
+    monkeypatch.setenv("TEAM_HARD_DELETE_RETENTION_DAYS", "120")
+    mock_ses_service = Mock()
+    mock_ses_service.send_email.return_value = True
+
+    _send_retention_warning(db, test_team, mock_ses_service)
+
+    call_args = mock_ses_service.send_email.call_args
+    assert call_args.kwargs["template_data"]["retention_days"] == 120
+
+
+def test_retention_warning_template_uses_retention_days():
+    """The template must show the configured period, not a fixed number of days."""
+    # Same folder that SESService reads and syncs to SES.
+    templates_dir = pathlib.Path(ses.__file__).parent.parent / "templates"
+    template = (templates_dir / "team-retention-warning.md").read_text()
+    assert template.count("{{retention_days}}") == 3
+    assert "60 days" not in template
 
 
 def test_send_retention_warning_failure(db: Session, test_team):
