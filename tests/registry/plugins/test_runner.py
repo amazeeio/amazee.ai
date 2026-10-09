@@ -302,3 +302,21 @@ def test_a_dropped_model_loses_its_prices_and_the_list_takes_over(registry_db):
         registry_db.commit()
     assert registry_db.get(DBRegistryModelPrice, (dropped.id, "base", "")).source == "litellm"
     assert dropped.prices == {"input_cost_per_token": 1e-06}
+
+
+def test_fill_that_steps_aside_clears_the_headline_it_set(registry_db):
+    model = _model(registry_db, "bedrock", "m", source="proxy")
+    registry_db.commit()
+    records = validate(_out([{"provider": "bedrock", "model_id": "m", "prices": {"base": {"input_cost_per_token": 2e-06}}}]), "test_src")
+    apply_plugin(registry_db, "test_src", "fill", records, TODAY)
+    registry_db.commit()
+    assert model.prices == {"input_cost_per_token": 2e-06}
+
+    # The list now prices only a geo scope, so the fill source steps aside.
+    _price(registry_db, model, "litellm", 3e-06, kind="geo", scope="us")
+    registry_db.commit()
+    apply_plugin(registry_db, "test_src", "fill", records, date(2026, 9, 28))
+    registry_db.commit()
+
+    assert registry_db.get(DBRegistryModelPrice, (model.id, "base", "")) is None
+    assert model.prices == {} and model.input_cost_per_token is None
