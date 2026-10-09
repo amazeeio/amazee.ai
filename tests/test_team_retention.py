@@ -1,3 +1,5 @@
+import pathlib
+
 import pytest
 from datetime import datetime, UTC, timedelta
 from unittest.mock import Mock, patch, AsyncMock
@@ -13,6 +15,7 @@ from app.db.models import (
     DBSpendCap,
 )
 from app.schemas.models import BudgetType
+from app.services import ses
 from app.core.worker import (
     _calculate_last_team_activity,
     _send_retention_warning,
@@ -20,6 +23,7 @@ from app.core.worker import (
     hard_delete_expired_teams,
 )
 from app.core.team_service import (
+    hard_delete_cutoff,
     soft_delete_team,
     restore_soft_deleted_team,
     get_team_keys_by_region,
@@ -151,12 +155,14 @@ def test_calculate_last_team_activity_no_activity(db: Session, test_team):
     assert last_activity is None
 
 
-def test_send_retention_warning_success(db: Session, test_team):
+def test_send_retention_warning_success(db: Session, test_team, monkeypatch):
     """
     Given: A team that needs a retention warning and SES service is available
     When: Sending a retention warning email
     Then: Should send email successfully and update the team's warning timestamp
     """
+    monkeypatch.delenv("TEAM_HARD_DELETE_RETENTION_DAYS", raising=False)
+
     # Create a mock SES service
     mock_ses_service = Mock()
     mock_ses_service.send_email.return_value = True
@@ -166,10 +172,39 @@ def test_send_retention_warning_success(db: Session, test_team):
 
     # Verify email was sent
     mock_ses_service.send_email.assert_called_once()
+    call_args = mock_ses_service.send_email.call_args
+    assert call_args.kwargs["template_data"]["retention_days"] == 90
 
     # Verify team was updated with warning timestamp
     db.refresh(test_team)
     assert test_team.retention_warning_sent_at is not None
+
+
+def test_send_retention_warning_uses_configured_retention_days(
+    db: Session, test_team, monkeypatch
+):
+    """
+    Given: TEAM_HARD_DELETE_RETENTION_DAYS is set to 120
+    When: Sending a retention warning email
+    Then: The email states the configured hard-delete period
+    """
+    monkeypatch.setenv("TEAM_HARD_DELETE_RETENTION_DAYS", "120")
+    mock_ses_service = Mock()
+    mock_ses_service.send_email.return_value = True
+
+    _send_retention_warning(db, test_team, mock_ses_service)
+
+    call_args = mock_ses_service.send_email.call_args
+    assert call_args.kwargs["template_data"]["retention_days"] == 120
+
+
+def test_retention_warning_template_uses_retention_days():
+    """The template must show the configured period, not a fixed number of days."""
+    # Same folder that SESService reads and syncs to SES.
+    templates_dir = pathlib.Path(ses.__file__).parent.parent / "templates"
+    template = (templates_dir / "team-retention-warning.md").read_text()
+    assert template.count("{{retention_days}}") == 3
+    assert "60 days" not in template
 
 
 def test_send_retention_warning_failure(db: Session, test_team):
@@ -733,6 +768,53 @@ def test_restore_team_requires_admin(client, team_admin_token, test_team, db):
     assert response.status_code == 403
 
 
+def test_restore_team_past_hard_delete_cutoff(client, admin_token, test_team, db):
+    """
+    Given: A team soft-deleted just past the hard-delete cutoff
+    When: Restoring the team via the restore endpoint
+    Then: Should return 400 and keep the team soft-deleted
+    """
+    soft_delete_team_for_test(
+        db, test_team, deleted_at=hard_delete_cutoff() - timedelta(minutes=5)
+    )
+
+    team_id = test_team.id
+    response = client.post(
+        f"/teams/{team_id}/restore", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    assert response.status_code == 400
+    assert (
+        response.json()["detail"]
+        == "Team is past the hard-delete retention period and cannot be restored"
+    )
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    assert team.deleted_at is not None
+
+
+def test_restore_team_just_inside_hard_delete_cutoff(
+    client, admin_token, test_team, db
+):
+    """
+    Given: A team soft-deleted just inside the hard-delete cutoff
+    When: Restoring the team via the restore endpoint
+    Then: Should restore the team
+    """
+    soft_delete_team_for_test(
+        db, test_team, deleted_at=hard_delete_cutoff() + timedelta(minutes=5)
+    )
+
+    team_id = test_team.id
+    response = client.post(
+        f"/teams/{team_id}/restore", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "Team restored successfully"
+    restored_team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    assert restored_team.deleted_at is None
+
+
 def test_list_keys_excludes_soft_deleted_teams(
     client, admin_token, test_team, test_region, db
 ):
@@ -968,6 +1050,66 @@ async def test_restore_soft_deleted_team_raises_on_not_deleted(db: Session, test
     # Attempt to restore should raise ValueError
     with pytest.raises(ValueError, match="not soft-deleted"):
         await restore_soft_deleted_team(db, test_team)
+
+
+@patch("app.core.team_service.LiteLLMService")
+@pytest.mark.asyncio
+async def test_restore_soft_deleted_team_raises_past_hard_delete_cutoff(
+    mock_litellm_class, db: Session, test_team
+):
+    """
+    Given: A team soft-deleted just past the hard-delete cutoff
+    When: Calling restore_soft_deleted_team()
+    Then: Should raise ValueError and not touch the team or LiteLLM
+    """
+    test_team.deleted_at = hard_delete_cutoff() - timedelta(minutes=5)
+    db.commit()
+
+    with pytest.raises(ValueError, match="past the hard-delete retention period"):
+        await restore_soft_deleted_team(db, test_team)
+
+    db.refresh(test_team)
+    assert test_team.deleted_at is not None
+    mock_litellm_class.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_restore_soft_deleted_team_raises_at_exact_hard_delete_cutoff(
+    db: Session, test_team
+):
+    """
+    Given: A team soft-deleted exactly at the hard-delete cutoff
+    When: Calling restore_soft_deleted_team()
+    Then: Should raise ValueError, because the job treats that team as due
+    """
+    cutoff = datetime(2026, 1, 1, tzinfo=UTC)
+    test_team.deleted_at = cutoff
+    db.commit()
+
+    with patch("app.core.team_service.hard_delete_cutoff", return_value=cutoff):
+        with pytest.raises(ValueError, match="past the hard-delete retention period"):
+            await restore_soft_deleted_team(db, test_team)
+
+
+@patch("app.core.team_service.LiteLLMService")
+@pytest.mark.asyncio
+async def test_restore_soft_deleted_team_just_inside_hard_delete_cutoff(
+    mock_litellm_class, db: Session, test_team
+):
+    """
+    Given: A team soft-deleted just inside the hard-delete cutoff
+    When: Calling restore_soft_deleted_team()
+    Then: Should restore the team
+    """
+    test_team.deleted_at = hard_delete_cutoff() + timedelta(minutes=5)
+    db.commit()
+    mock_litellm_class.return_value = AsyncMock()
+
+    result = await restore_soft_deleted_team(db, test_team)
+
+    assert result["litellm_warnings"] == []
+    db.refresh(test_team)
+    assert test_team.deleted_at is None
 
 
 @patch("app.core.team_service.LiteLLMService")

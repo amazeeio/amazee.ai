@@ -2,6 +2,7 @@
 
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/11464/badge)](https://www.bestpractices.dev/projects/11464)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/amazeeio/amazee.ai/badge)](https://securityscorecards.dev/viewer/?uri=github.com/amazeeio/amazee.ai)
+[![Greptile: The War on Bugs](https://www.greptile.com/badge.svg)](https://www.greptile.com/?utm_source=oss_badge&utm_medium=readme&utm_campaign=greptile_for_open_source)
 
 This repository contains the backend and frontend services for the amazee.ai application. The project is built using a modern tech stack including Python FastAPI for the backend, Next.js with TypeScript for the frontend, and PostgreSQL for the database.
 
@@ -252,7 +253,7 @@ Teams go through a three-stage lifecycle managed by background workers.
 |---|---|---|
 | **Active** | Team created | Normal operation |
 | **Soft-deleted** | >76 days inactive (no API activity) + 14-day grace after warning email; or manual `POST /teams/{id}/soft-delete` | `deleted_at` set; all LiteLLM keys expired (`duration=0d`); users deactivated. POOL teams are exempt from automatic soft-delete. |
-| **Hard-deleted** | `deleted_at` is ≥ 90 days ago | All data permanently removed (GDPR requirement) |
+| **Hard-deleted** | `deleted_at` is ≥ `TEAM_HARD_DELETE_RETENTION_DAYS` days ago (default 90, minimum 30) | All data permanently removed (GDPR requirement) |
 
 ### Hard-delete cascade order
 
@@ -260,15 +261,16 @@ When `hard_delete_expired_teams()` runs (daily at 03:00 via cron), it deletes ea
 
 1. `limited_resources` (team + user rows)
 2. LiteLLM keys (remote call, best-effort)
-3. `spend_caps` (team-, user-, and key-scoped)
-4. `ai_tokens` (private AI keys) from DB
-5. `api_tokens`, `user_admin_regions` (user FK tables — no `ON DELETE CASCADE`)
-6. `audit_logs.user_id` set to `NULL` (rows preserved for audit history)
-7. `user_spend_cache` (email-keyed stale cache)
-8. `users`
-9. `team_regions`
-10. Audit log entry written (`action=team.hard_delete`)
-11. `teams` (cascades `team_metrics` automatically)
+3. Vector databases and roles, dropped on each key's own database host with the credentials of the region that owns that host. Any failure, on an active or an inactive region, keeps the team for the next run.
+4. `spend_caps` (team-, user-, and key-scoped)
+5. `ai_tokens` (private AI keys) from DB
+6. `api_tokens`, `user_admin_regions` (user FK tables — no `ON DELETE CASCADE`)
+7. `audit_logs.user_id` set to `NULL` (rows preserved for audit history)
+8. `user_spend_cache` (email-keyed stale cache)
+9. `users`
+10. `team_regions`
+11. Audit log entry written (`action=team.hard_delete`)
+12. `teams` (cascades `team_metrics` automatically)
 
 ### Restore
 
@@ -278,6 +280,8 @@ A soft-deleted team can be restored by a system admin via `POST /teams/{id}/rest
 - Un-expires all keys in LiteLLM
 
 If LiteLLM re-provisioning fails for any region, the team is still marked restored in the DB and the response includes a `"warning"` field listing the affected regions. Check the `audit_logs` table (`action=team.restore`) for the full `litellm_failed_regions` detail.
+
+The restore returns 400 for a team whose `deleted_at` is at or past the hard-delete cutoff (`TEAM_HARD_DELETE_RETENTION_DAYS`, default 90, minimum 30). The hard-delete job can already have removed the LiteLLM keys and vector databases of that team.
 
 ### Manual trigger
 
