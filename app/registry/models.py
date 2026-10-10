@@ -54,6 +54,12 @@ class DBRegistryModel(Base):
     # retires the model; `removed` once the model left LiteLLM's list, and
     # `removed` beats `deprecated`. The row stays.
     status = Column(String, nullable=False, default="active")
+    # The same model at two providers has the same family. The daily step
+    # fills it only when it is empty, so a manual value stays.
+    family = Column(String, nullable=True, index=True)
+    # The model maker from the id prefix, or from another model of the same
+    # family. Empty when no source names it.
+    manufacturer = Column(String, nullable=True)
     # `litellm` or `proxy`. Only rows from the list can be marked removed when
     # they leave it; a model only a proxy knows never was on the list.
     source = Column(String, nullable=False)

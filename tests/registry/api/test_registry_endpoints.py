@@ -10,7 +10,7 @@ RUN_FIELDS = {"id", "step", "started_at", "finished_at", "status", "stats", "err
 MODEL_FIELDS = {
     "provider", "model_id", "mode", "max_input_tokens", "max_output_tokens",
     "input_cost_per_token", "output_cost_per_token", "prices", "eol_date",
-    "status", "source", "first_seen", "last_seen", "price_scopes",
+    "status", "family", "manufacturer", "source", "first_seen", "last_seen", "price_scopes",
 }
 TODAY = date(2026, 1, 1)
 
@@ -48,7 +48,10 @@ def models(registry_db):
     registry_db.add_all([
         gpt,
         DBRegistryModel(provider_id=openai.id, model_id="gpt-old", status="removed", **common),
-        DBRegistryModel(provider_id=bedrock.id, model_id="anthropic.claude-x-v1:0", **common),
+        DBRegistryModel(
+            provider_id=bedrock.id, model_id="anthropic.claude-x-v1:0",
+            family="claudex", manufacturer="anthropic", **common,
+        ),
     ])
     registry_db.flush()
     # The geo row goes in first, so the response order comes from the query.
@@ -120,6 +123,8 @@ def test_models_return_fields_and_price_scopes(client, admin_token, models):
         {"scope_kind": "geo", "scope": "eu", "prices": {"input_cost_per_token": 2.75e-06}, "source": "litellm"},
     ]
     assert claude["price_scopes"] == []
+    assert claude["family"] == "claudex" and claude["manufacturer"] == "anthropic"
+    assert gpt["family"] is None and gpt["manufacturer"] is None
 
 
 def test_models_filters(client, admin_token, models):
