@@ -97,13 +97,15 @@ def apply_model_list(db: Session, listed: dict[tuple[str, str], dict], today: da
     """Insert new models, refresh listed ones, mark the ones that left as removed.
 
     Each listed model also gets a `litellm` lifecycle row with the list's date;
-    the EOL step decides `registry_models.eol_date`.
+    the EOL step decides `registry_models.eol_date`. A removed model that is
+    listed again becomes `active`; the status step decides between `active`
+    and `deprecated`.
     """
     providers = {p.name: p.id for p in db.query(DBRegistryProvider).all()}
     by_ident = models_by_ident(db)
-    # Only active rows can be newly removed, so only they count here.
+    # Every row that is not removed yet can be newly removed, so a deprecated row counts too.
     at_risk = {
-        ident for ident, row in by_ident.items() if row.source == "litellm" and row.status == "active"
+        ident for ident, row in by_ident.items() if row.source == "litellm" and row.status != "removed"
     }
     kept = len(at_risk & listed.keys())
     if at_risk and kept < len(at_risk) * config.MIN_KEPT_RATIO:
@@ -157,8 +159,11 @@ def apply_model_list(db: Session, listed: dict[tuple[str, str], dict], today: da
             # A spec the list lacks may come from a plugin; don't blank it.
             if getattr(row, k) != v and not (v is None and k in _PLUGIN_FILLED_SPECS)
         }
-        if row.status != "active" or row.source != "litellm":
-            changed.update(status="active", source="litellm")
+        # A deprecated status stays: the status step owns it.
+        if row.status == "removed":
+            changed["status"] = "active"
+        if row.source != "litellm":
+            changed["source"] = "litellm"
         for k, v in changed.items():
             setattr(row, k, v)
         if changed:

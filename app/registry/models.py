@@ -16,8 +16,6 @@ from sqlalchemy.sql import func
 
 from app.db.models import Base
 
-# `removed`: the model left LiteLLM's list. The row stays.
-
 
 
 
@@ -52,7 +50,9 @@ class DBRegistryModel(Base):
     # Names of the `supports_*` flags that are true, without the prefix.
     supports = Column(JSON, nullable=False, default=list)
     eol_date = Column(Date, nullable=True)
-    # `active`, or `removed` once the model left LiteLLM's list. The row stays.
+    # `active`; `deprecated` when the strongest lifecycle source says the provider
+    # retires the model; `removed` once the model left LiteLLM's list, and
+    # `removed` beats `deprecated`. The row stays.
     status = Column(String, nullable=False, default="active")
     # `litellm` or `proxy`. Only rows from the list can be marked removed when
     # they leave it; a model only a proxy knows never was on the list.

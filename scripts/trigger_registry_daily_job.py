@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Daily registry job: proxy versions, the model list, source plugins, EOL dates, then what each proxy can price and knows."""
+"""Daily registry job: proxy versions, the model list, source plugins, EOL dates, model status, then what each proxy can price and knows."""
 
 import logging
 import os
@@ -14,6 +14,7 @@ from app.db.database import engine
 from app.registry.discovery import run_discovery
 from app.registry.eol import run_eol
 from app.registry.plugins.runner import run_plugins
+from app.registry.status import run_status
 from app.registry.support import run_support_check
 from app.registry.versions import run_version_check
 
@@ -31,6 +32,8 @@ STEPS = (
     ("source plugins", run_plugins),
     # After every source: it chooses among the dates they stored.
     ("EOL dates", run_eol),
+    # After every source: it chooses among the status texts they stored.
+    ("model status", run_status),
     ("support check", run_support_check),
 )
 
