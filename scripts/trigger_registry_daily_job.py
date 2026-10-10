@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Daily registry job: proxy versions, the model list, source plugins, EOL dates, model status, then what each proxy can price and knows."""
+"""Daily registry job: proxy versions, the model list, model families, source plugins, EOL dates, model status, then what each proxy can price and knows."""
 
 import logging
 import os
@@ -13,6 +13,7 @@ from app.core.locking import release_lock, try_acquire_lock
 from app.db.database import engine
 from app.registry.discovery import run_discovery
 from app.registry.eol import run_eol
+from app.registry.family import run_family
 from app.registry.plugins.runner import run_plugins
 from app.registry.status import run_status
 from app.registry.support import run_support_check
@@ -28,6 +29,8 @@ LOCK_NAME = "registry_daily"
 STEPS = (
     ("version check", run_version_check),
     ("model list", run_discovery),
+    # Right after the model list, so new models get a family on the day they appear.
+    ("model families", run_family),
     # After the model list: fill plugins only price what the list left.
     ("source plugins", run_plugins),
     # After every source: it chooses among the dates they stored.

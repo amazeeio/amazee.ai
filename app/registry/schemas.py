@@ -38,6 +38,8 @@ class RegistryModelResponse(BaseModel):
     prices: dict
     eol_date: date | None
     status: str
+    family: str | None
+    manufacturer: str | None
     source: str
     first_seen: date
     last_seen: date

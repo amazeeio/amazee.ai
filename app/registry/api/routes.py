@@ -73,6 +73,8 @@ def list_models(
             prices=model.prices,
             eol_date=model.eol_date,
             status=model.status,
+            family=model.family,
+            manufacturer=model.manufacturer,
             source=model.source,
             first_seen=model.first_seen,
             last_seen=model.last_seen,
