@@ -20,36 +20,47 @@ STEP = "eol"
 PLACEHOLDER_CUTOFF = date(2090, 1, 1)
 
 
-def priorities() -> dict[str, int]:
-    """The `eol_date` priority of LiteLLM's list and of each enabled plugin that sets one."""
-    priority = {"litellm": config.LITELLM_EOL_PRIORITY}
+def priorities(field: str) -> dict[str, int]:
+    """The priority of `field` for LiteLLM's list (eol_date only) and for each
+    enabled plugin that sets one."""
+    # LiteLLM's lifecycle rows carry only a date, so it has no other priority.
+    priority = {"litellm": config.LITELLM_EOL_PRIORITY} if field == "eol_date" else {}
     for source, module in load_plugins().items():
         if isinstance(module, Exception):
             continue
         plugin_priority = getattr(module, "PRIORITY", None) or {}  # the loader allows None
-        if "eol_date" in plugin_priority:
-            priority[source] = plugin_priority["eol_date"]
+        if field in plugin_priority:
+            priority[source] = plugin_priority[field]
     return priority
+
+
+def strongest(rows, priority: dict[str, int]) -> dict:
+    """(provider, model_id) -> the row of the source with the highest priority;
+    on a tie, the lowest source name wins."""
+    best = {}
+    for row in sorted(rows, key=lambda r: (-priority[r.source], r.source)):
+        best.setdefault((row.provider, row.model_id), row)
+    return best
 
 
 def apply_eol(db: Session) -> dict:
     """Give each model the date of its source with the highest priority, or
     None when no source has a real date. On a tie, the lowest source name wins."""
-    priority = priorities()
+    priority = priorities("eol_date")
     models = models_by_ident(db)
-    rows = db.query(DBRegistryModelLifecycle).filter(
-        DBRegistryModelLifecycle.source.in_(priority),
-        DBRegistryModelLifecycle.eol_date.isnot(None),
-        DBRegistryModelLifecycle.eol_date < PLACEHOLDER_CUTOFF,
+    best = strongest(
+        db.query(DBRegistryModelLifecycle).filter(
+            DBRegistryModelLifecycle.source.in_(priority),
+            DBRegistryModelLifecycle.eol_date.isnot(None),
+            DBRegistryModelLifecycle.eol_date < PLACEHOLDER_CUTOFF,
+        ),
+        priority,
     )
-    grouped = defaultdict(list)
-    for row in rows:
-        grouped[(row.provider, row.model_id)].append(row)
 
     changed = 0
     won: dict[str, int] = defaultdict(int)
     for ident, model in models.items():
-        winner = min(grouped.get(ident, ()), key=lambda r: (-priority[r.source], r.source), default=None)
+        winner = best.get(ident)
         new = winner.eol_date if winner else None
         if winner:
             won[winner.source] += 1
