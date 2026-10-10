@@ -7,6 +7,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -223,6 +224,21 @@ class DBRegistryModelLifecycle(Base):
     extended_access_until = Column(Date, nullable=True)
     eol_date = Column(Date, nullable=True)
     last_seen = Column(Date, nullable=False)
+
+
+class DBRegistryModelHistory(Base):
+    """One model's tracked state, with a new row only when the state changes."""
+
+    __tablename__ = "registry_model_history"
+    # The history step reads the newest row of each model through this index.
+    __table_args__ = (Index("ix_registry_model_history_model_id_recorded_at", "model_id", "recorded_at"),)
+
+    id = Column(Integer, primary_key=True)
+    model_id = Column(Integer, ForeignKey("registry_models.id", ondelete="CASCADE"), nullable=False)
+    recorded_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # Status, EOL date, headline prices and support flags per region. Region ids are
+    # text and prices are floats, as JSON gives them back, so only real changes differ.
+    state = Column(JSON, nullable=False)
 
 
 def models_by_ident(db) -> dict[tuple[str, str], DBRegistryModel]:
