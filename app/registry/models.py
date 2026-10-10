@@ -241,6 +241,21 @@ class DBRegistryModelHistory(Base):
     state = Column(JSON, nullable=False)
 
 
+class DBRegistryEvent(Base):
+    """One change to a model that the daily history step found."""
+
+    __tablename__ = "registry_events"
+
+    id = Column(Integer, primary_key=True)
+    # model.discovered, model.eol_announced, model.eol_changed, model.deprecated or model.support_changed.
+    type = Column(String, nullable=False, index=True)
+    model_id = Column(Integer, ForeignKey("registry_models.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Set only for a support change, which is about one proxy.
+    region_id = Column(Integer, ForeignKey("regions.id", ondelete="CASCADE"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    data = Column(JSON, nullable=False)
+
+
 def models_by_ident(db) -> dict[tuple[str, str], DBRegistryModel]:
     """Every registry model by (provider name, model_id)."""
     return {
