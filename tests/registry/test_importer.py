@@ -153,6 +153,29 @@ def test_cloud_regions_per_provider(registry_db, proxy_region):
     }
 
 
+def test_cloud_regions_ignore_environment_references(registry_db, proxy_region):
+    deployments = [
+        {
+            "model_name": "a",
+            "litellm_params": {
+                "model": "bedrock/x",
+                "aws_region_name": "os.environ/AWS_REGION_NAME",
+                "litellm_credential_name": "AWS",
+            },
+            "model_info": {"id": "1"},
+        },
+        {"model_name": "b", "litellm_params": {"model": "vertex_ai/gemini", "vertex_location": "os.environ/VERTEX_LOCATION"}, "model_info": {"id": "2"}},
+        {"model_name": "c", "litellm_params": {"model": "bedrock_mantle/y", "litellm_credential_name": "ENV"}, "model_info": {"id": "3"}},
+    ]
+
+    import_deployments(
+        registry_db, proxy_region, deployments, None, {"AWS": "eu-central-1", "ENV": "os.environ/AWS_REGION"}
+    )
+    registry_db.commit()
+
+    assert registry_db.get(DBRegistryProxy, proxy_region.id).cloud_regions == {"bedrock": "eu-central-1"}
+
+
 def test_import_stores_the_proxy_price_as_base_scope(registry_db, proxy_region):
     deployments = [
         {

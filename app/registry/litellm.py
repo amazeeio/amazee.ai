@@ -74,6 +74,11 @@ def our_entries(data: dict, providers: set[str]):
             yield key, provider, entry
 
 
+def is_env_ref(value) -> bool:
+    """True for an `os.environ/NAME` value, which LiteLLM reads from the proxy's environment."""
+    return isinstance(value, str) and value.startswith("os.environ/")
+
+
 def deployment_provider(litellm_params: dict) -> str | None:
     """The provider a deployment calls, as LiteLLM resolves it."""
     model = litellm_params.get("model") or ""
