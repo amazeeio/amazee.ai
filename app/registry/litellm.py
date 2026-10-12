@@ -15,8 +15,9 @@ AZURE_DATA_ZONES = {"us", "eu", "global"}
 # does not depend on that masking.
 _SECRET_PARTS = {
     "password", "secret", "key", "token", "auth", "authorization", "cookie", "credential",
-    "credentials", "access", "private", "certificate", "fingerprint", "tenancy",
+    "credentials", "access", "private", "certificate", "fingerprint", "tenancy", "apikey",
 }
+_CAMEL_CASE_BOUNDARY = re.compile(r"([a-z0-9])([A-Z])")
 
 
 def normalize_provider(name: str | None) -> str | None:
@@ -86,7 +87,8 @@ def is_env_ref(value) -> bool:
 
 
 def _is_secret_key(name) -> bool:
-    parts = set(re.split(r"[_-]", str(name).lower()))
+    # Split `apiKey` like `api_key`, so a header name cannot hide a secret.
+    parts = set(re.split(r"[_-]", _CAMEL_CASE_BOUNDARY.sub(r"\1_\2", str(name)).lower()))
     return bool(parts & _SECRET_PARTS) and "cost" not in parts
 
 

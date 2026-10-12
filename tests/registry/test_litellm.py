@@ -104,3 +104,9 @@ def test_without_secrets():
         "extra_headers": {"X-Tenant": "amazee"},
     }
     assert data == before
+
+
+def test_without_secrets_reads_camel_case_and_joined_names():
+    assert without_secrets({"extra_headers": {"apiKey": "sk-live-1", "x-apikey": "sk-live-2"}}) == {
+        "extra_headers": {}
+    }
