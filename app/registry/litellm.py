@@ -94,7 +94,7 @@ def _is_secret_key(name) -> bool:
 
 
 def _without_url_secrets(value: str) -> str:
-    """The URL without its user and password and without secret query parameters."""
+    """The URL without its user and password, secret query parameters and fragment."""
     try:
         url = urlsplit(value)
     except ValueError:
@@ -105,7 +105,8 @@ def _without_url_secrets(value: str) -> str:
     query = "&".join(
         part for part in url.query.split("&") if not _is_secret_key(unquote_plus(part.partition("=")[0]))
     )
-    return urlunsplit(url._replace(netloc=url.netloc.rpartition("@")[2], query=query))
+    # A fragment never reaches the server, so it holds no config, but it can hold a token.
+    return urlunsplit(url._replace(netloc=url.netloc.rpartition("@")[2], query=query, fragment=""))
 
 
 def without_secrets(value):

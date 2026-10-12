@@ -117,6 +117,7 @@ def test_without_secrets_cleans_urls():
         "api_base": "https://host/v1?api-version=2024"
     }
     assert without_secrets({"api_base": "https://host/v1"}) == {"api_base": "https://host/v1"}
+    assert without_secrets({"api_base": "https://host/v1#access_token=sk-live-1"}) == {"api_base": "https://host/v1"}
 
 
 def test_without_secrets_reads_camel_case_and_joined_names():
