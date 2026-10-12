@@ -121,6 +121,12 @@ def test_without_secrets_cleans_urls():
 
 
 def test_without_secrets_reads_camel_case_and_joined_names():
-    assert without_secrets({"extra_headers": {"apiKey": "sk-live-1", "x-apikey": "sk-live-2"}}) == {
-        "extra_headers": {}
+    data = {
+        "extra_headers": {
+            "apiKey": "sk-live-1",
+            "x-apikey": "sk-live-2",
+            "accessToken": "sk-live-3",
+            "clientSecret": "sk-live-4",
+        }
     }
+    assert without_secrets(data) == {"extra_headers": {}}
