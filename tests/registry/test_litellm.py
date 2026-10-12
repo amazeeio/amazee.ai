@@ -120,6 +120,21 @@ def test_without_secrets_cleans_urls():
     assert without_secrets({"api_base": "https://host/v1#access_token=sk-live-1"}) == {"api_base": "https://host/v1"}
 
 
+def test_without_secrets_drops_signature_and_code_query_parameters():
+    urls = without_secrets([
+        "https://acct.blob.core.windows.net/c?sv=1&sig=S",
+        "https://h/api?code=abc&x=1",
+        "https://b.s3.amazonaws.com/o?X-Amz-Date=1&X-Amz-Signature=S",
+    ])
+    assert urls == [
+        "https://acct.blob.core.windows.net/c?sv=1",
+        "https://h/api?x=1",
+        "https://b.s3.amazonaws.com/o?X-Amz-Date=1",
+    ]
+    # Outside a URL query, `code` is a normal config key.
+    assert without_secrets({"code": "x"}) == {"code": "x"}
+
+
 def test_without_secrets_reads_camel_case_and_joined_names():
     data = {
         "extra_headers": {
