@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import DBRegion
 from app.registry.discovery import entry_fields
-from app.registry.litellm import ProxyClient, deployment_provider, is_env_ref, split_model
+from app.registry.litellm import ProxyClient, deployment_provider, is_env_ref, split_model, without_secrets
 from app.registry.models import (
     DBRegistryAccessGroup,
     DBRegistryModel,
@@ -141,6 +141,8 @@ def import_deployments(
             input_cost_per_token=fields["input_cost_per_token"],
             output_cost_per_token=fields["output_cost_per_token"],
             prices=fields["prices"],
+            litellm_params=without_secrets(params),
+            model_info=without_secrets(info),
             enabled=True,
         )
         db.add(model_region)

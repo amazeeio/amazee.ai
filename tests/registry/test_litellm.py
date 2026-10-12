@@ -1,6 +1,14 @@
+import copy
+
 import pytest
 
-from app.registry.litellm import deployment_provider, normalize_provider, parse_key, split_model
+from app.registry.litellm import (
+    deployment_provider,
+    normalize_provider,
+    parse_key,
+    split_model,
+    without_secrets,
+)
 
 
 @pytest.mark.parametrize(
@@ -61,3 +69,38 @@ def test_parse_key(key, provider, expected):
 def test_split_model_skips_region_prices_and_azure_zones_name_the_model():
     assert split_model("bedrock/us-east-1/anthropic.claude-x-v1:0", "bedrock") is None
     assert split_model("azure/eu/gpt-4o", "azure") == ("gpt-4o", True)
+
+
+def test_without_secrets():
+    data = {
+        "model": "bedrock/us.anthropic.claude-x-v1:0",
+        "api_key": "sk-live-1234",
+        "aws_access_key_id": "os.environ/AWS_ACCESS_KEY_ID",
+        "aws_secret_access_key": "abcd****wxyz",
+        "vertex_credentials": {"type": "service_account", "private_key": "x"},
+        "litellm_credential_name": "AWS Bedrock",
+        "api_base": "https://example.com",
+        "aws_region_name": "eu-central-1",
+        "vertex_project": "proj",
+        "input_cost_per_token": 1e-06,
+        "max_tokens": 4096,
+        "additional_drop_params": ["temperature", "top_p"],
+        "chat_template_kwargs": {"enable_thinking": False},
+        "extra_headers": {"Authorization": "Bearer abc", "X-Tenant": "amazee"},
+    }
+    before = copy.deepcopy(data)
+
+    assert without_secrets(data) == {
+        "model": "bedrock/us.anthropic.claude-x-v1:0",
+        "aws_access_key_id": "os.environ/AWS_ACCESS_KEY_ID",
+        "litellm_credential_name": "AWS Bedrock",
+        "api_base": "https://example.com",
+        "aws_region_name": "eu-central-1",
+        "vertex_project": "proj",
+        "input_cost_per_token": 1e-06,
+        "max_tokens": 4096,
+        "additional_drop_params": ["temperature", "top_p"],
+        "chat_template_kwargs": {"enable_thinking": False},
+        "extra_headers": {"X-Tenant": "amazee"},
+    }
+    assert data == before

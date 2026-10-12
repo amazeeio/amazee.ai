@@ -107,6 +107,10 @@ class DBRegistryModelRegion(Base):
     output_cost_per_token = Column(Numeric, nullable=True)
     # Every price field set in the deployment's litellm_params.
     prices = Column(JSON, nullable=False, default=dict)
+    # Secret values removed; os.environ/ references and credential names kept.
+    litellm_params = Column(JSON, nullable=False, default=dict)
+    # As /model/info returns it, with LiteLLM's list data merged in that cannot be told apart.
+    model_info = Column(JSON, nullable=False, default=dict)
     enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
