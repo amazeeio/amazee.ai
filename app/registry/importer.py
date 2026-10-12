@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import DBRegion
 from app.registry.discovery import entry_fields
-from app.registry.litellm import ProxyClient, deployment_provider, split_model
+from app.registry.litellm import ProxyClient, deployment_provider, is_env_ref, split_model
 from app.registry.models import (
     DBRegistryAccessGroup,
     DBRegistryModel,
@@ -53,6 +53,11 @@ def _proxy_model_fields(info: dict) -> dict:
     return fields
 
 
+def _literal(value):
+    # An os.environ/ value names a variable on the proxy host, not a region.
+    return None if is_env_ref(value) else value
+
+
 def _proxy_cloud_regions(deployments: list[dict], credential_regions: dict[str, str]) -> dict:
     """The cloud region each provider on the proxy calls, first one seen wins."""
     regions: dict[str, str] = {}
@@ -62,11 +67,11 @@ def _proxy_cloud_regions(deployments: list[dict], credential_regions: dict[str, 
         if not provider or provider in regions:
             continue
         if provider.startswith("bedrock"):
-            region = params.get("aws_region_name") or credential_regions.get(
-                params.get("litellm_credential_name")
+            region = _literal(params.get("aws_region_name")) or _literal(
+                credential_regions.get(params.get("litellm_credential_name"))
             )
         elif provider == "vertex_ai":
-            region = params.get("vertex_location")
+            region = _literal(params.get("vertex_location"))
         else:
             region = None
         if region:
