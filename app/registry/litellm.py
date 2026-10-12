@@ -18,6 +18,9 @@ _SECRET_PARTS = {
     "password", "secret", "key", "token", "auth", "authorization", "cookie", "credential",
     "credentials", "access", "private", "certificate", "fingerprint", "tenancy", "apikey",
 }
+# Signed URLs and function keys carry their secret in these query names. In a
+# config key, `code` is normal, so this set is for query names only.
+_QUERY_SECRET_PARTS = {"sig", "signature", "code"}
 _CAMEL_CASE_BOUNDARY = re.compile(r"([a-z0-9])([A-Z])")
 
 
@@ -87,10 +90,18 @@ def is_env_ref(value) -> bool:
     return isinstance(value, str) and value.startswith("os.environ/")
 
 
-def _is_secret_key(name) -> bool:
+def _name_parts(name) -> set[str]:
     # Split `apiKey` like `api_key`, so a header name cannot hide a secret.
-    parts = set(re.split(r"[_-]", _CAMEL_CASE_BOUNDARY.sub(r"\1_\2", str(name)).lower()))
+    return set(re.split(r"[_-]", _CAMEL_CASE_BOUNDARY.sub(r"\1_\2", str(name)).lower()))
+
+
+def _is_secret_key(name) -> bool:
+    parts = _name_parts(name)
     return bool(parts & _SECRET_PARTS) and "cost" not in parts
+
+
+def _is_secret_query_name(name: str) -> bool:
+    return _is_secret_key(name) or bool(_name_parts(name) & _QUERY_SECRET_PARTS)
 
 
 def _without_url_secrets(value: str) -> str:
@@ -103,7 +114,7 @@ def _without_url_secrets(value: str) -> str:
         return value
     # Split by hand so the parameters that stay keep their exact encoding.
     query = "&".join(
-        part for part in url.query.split("&") if not _is_secret_key(unquote_plus(part.partition("=")[0]))
+        part for part in url.query.split("&") if not _is_secret_query_name(unquote_plus(part.partition("=")[0]))
     )
     # A fragment never reaches the server, so it holds no config, but it can hold a token.
     return urlunsplit(url._replace(netloc=url.netloc.rpartition("@")[2], query=query, fragment=""))
