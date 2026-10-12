@@ -87,6 +87,7 @@ def test_without_secrets():
         "additional_drop_params": ["temperature", "top_p"],
         "chat_template_kwargs": {"enable_thinking": False},
         "extra_headers": {"Authorization": "Bearer abc", "X-Tenant": "amazee"},
+        "fallbacks": [{"api_key": "sk-live-1", "model": "x"}],
     }
     before = copy.deepcopy(data)
 
@@ -102,6 +103,7 @@ def test_without_secrets():
         "additional_drop_params": ["temperature", "top_p"],
         "chat_template_kwargs": {"enable_thinking": False},
         "extra_headers": {"X-Tenant": "amazee"},
+        "fallbacks": [{"model": "x"}],
     }
     assert data == before
 
