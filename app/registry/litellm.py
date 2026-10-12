@@ -122,7 +122,7 @@ def without_secrets(value):
         return value
     clean = {}
     for key, item in value.items():
-        if key == "litellm_credential_name":
+        if key == "litellm_credential_name" and isinstance(item, str):
             clean[key] = item
         elif _is_secret_key(key):
             if is_env_ref(item):
