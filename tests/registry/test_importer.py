@@ -228,3 +228,24 @@ def test_import_takes_the_provider_from_model_info_without_prefix(registry_db, p
     assert registry_db.get(DBRegistryProvider, model.provider_id).name == "bedrock"
     assert registry_db.query(DBRegistryModelRegion).one().litellm_model == "amazon.titan-embed-text-v2:0"
     assert registry_db.get(DBRegistryProxy, proxy_region.id).cloud_regions == {"bedrock": "us-east-1"}
+
+
+def test_import_keeps_deployment_config_without_secrets(registry_db, proxy_region):
+    params = {
+        "model": "bedrock/us.anthropic.claude-x-v1:0",
+        "aws_region_name": "eu-central-1",
+        "litellm_credential_name": "AWS Bedrock",
+        "api_key": "sk-live-1234",
+        "aws_secret_access_key": "os.environ/AWS_SECRET_ACCESS_KEY",
+        "additional_drop_params": ["temperature"],
+    }
+    info = {"id": "c-1", "mode": "chat", "max_input_tokens": 200000, "supports_vision": True, "api_key": "sk-live-5678"}
+
+    import_deployments(
+        registry_db, proxy_region, [{"model_name": "claude-x", "litellm_params": params, "model_info": info}], None, {}
+    )
+    registry_db.commit()
+
+    row = registry_db.query(DBRegistryModelRegion).one()
+    assert row.litellm_params == {k: v for k, v in params.items() if k != "api_key"}
+    assert row.model_info == {k: v for k, v in info.items() if k != "api_key"}

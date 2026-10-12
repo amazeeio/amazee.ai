@@ -11,6 +11,12 @@ _BEDROCK_ROUTES = ("converse/", "invoke/")
 _AWS_REGION_PATH = re.compile(r"^([a-z]{2}(?:-gov)?-[a-z]+-\d+)/([^/]+)$")
 # Azure data zones: `azure/eu/gpt-4o` is gpt-4o priced for the EU zone.
 AZURE_DATA_ZONES = {"us", "eu", "global"}
+# The key name parts LiteLLM masks on. The same rule here means the registry
+# does not depend on that masking.
+_SECRET_PARTS = {
+    "password", "secret", "key", "token", "auth", "authorization", "cookie", "credential",
+    "credentials", "access", "private", "certificate", "fingerprint", "tenancy",
+}
 
 
 def normalize_provider(name: str | None) -> str | None:
@@ -77,6 +83,37 @@ def our_entries(data: dict, providers: set[str]):
 def is_env_ref(value) -> bool:
     """True for an `os.environ/NAME` value, which LiteLLM reads from the proxy's environment."""
     return isinstance(value, str) and value.startswith("os.environ/")
+
+
+def _is_secret_key(name) -> bool:
+    parts = set(re.split(r"[_-]", str(name).lower()))
+    return bool(parts & _SECRET_PARTS) and "cost" not in parts
+
+
+def _without_secrets_in(value):
+    if isinstance(value, dict):
+        return without_secrets(value)
+    if isinstance(value, list):
+        return [_without_secrets_in(item) for item in value]
+    return value
+
+
+def without_secrets(data: dict) -> dict:
+    """A copy of `data` with every secret value removed.
+
+    A secret-like key stays only with an `os.environ/` reference. A credential
+    name is not a secret.
+    """
+    clean = {}
+    for key, value in data.items():
+        if key == "litellm_credential_name":
+            clean[key] = value
+        elif _is_secret_key(key):
+            if is_env_ref(value):
+                clean[key] = value
+        else:
+            clean[key] = _without_secrets_in(value)
+    return clean
 
 
 def deployment_provider(litellm_params: dict, model_info: dict | None = None) -> str | None:
