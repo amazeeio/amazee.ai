@@ -106,6 +106,10 @@ def test_without_secrets():
     assert data == before
 
 
+def test_without_secrets_keeps_only_a_credential_name_string():
+    assert without_secrets({"litellm_credential_name": {"api_key": "sk-live-1"}}) == {}
+
+
 def test_without_secrets_cleans_urls():
     assert without_secrets({"api_base": "https://user:pass@host/v1?key=sk-live-1&api-version=2024"}) == {
         "api_base": "https://host/v1?api-version=2024"
