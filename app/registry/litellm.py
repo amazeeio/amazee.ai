@@ -1,6 +1,7 @@
 """Read-only access to LiteLLM: a proxy's admin API and the public model list."""
 
 import re
+from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 import httpx
 
@@ -92,29 +93,42 @@ def _is_secret_key(name) -> bool:
     return bool(parts & _SECRET_PARTS) and "cost" not in parts
 
 
-def _without_secrets_in(value):
-    if isinstance(value, dict):
-        return without_secrets(value)
-    if isinstance(value, list):
-        return [_without_secrets_in(item) for item in value]
-    return value
+def _without_url_secrets(value: str) -> str:
+    """The URL without its user and password and without secret query parameters."""
+    try:
+        url = urlsplit(value)
+    except ValueError:
+        return value
+    if not (url.scheme and url.netloc):
+        return value
+    # Split by hand so the parameters that stay keep their exact encoding.
+    query = "&".join(
+        part for part in url.query.split("&") if not _is_secret_key(unquote_plus(part.partition("=")[0]))
+    )
+    return urlunsplit(url._replace(netloc=url.netloc.rpartition("@")[2], query=query))
 
 
-def without_secrets(data: dict) -> dict:
-    """A copy of `data` with every secret value removed.
+def without_secrets(value):
+    """A copy of `value` with every secret value removed.
 
     A secret-like key stays only with an `os.environ/` reference. A credential
     name is not a secret.
     """
+    if isinstance(value, list):
+        return [without_secrets(item) for item in value]
+    if isinstance(value, str):
+        return _without_url_secrets(value)
+    if not isinstance(value, dict):
+        return value
     clean = {}
-    for key, value in data.items():
+    for key, item in value.items():
         if key == "litellm_credential_name":
-            clean[key] = value
+            clean[key] = item
         elif _is_secret_key(key):
-            if is_env_ref(value):
-                clean[key] = value
+            if is_env_ref(item):
+                clean[key] = item
         else:
-            clean[key] = _without_secrets_in(value)
+            clean[key] = without_secrets(item)
     return clean
 
 
