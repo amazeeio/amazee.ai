@@ -32,6 +32,10 @@ def test_deployment_provider():
     assert deployment_provider({"model": "bedrock/us.amazon.nova-micro-v1:0"}) == "bedrock"
     assert deployment_provider({"model": "nova", "custom_llm_provider": "bedrock"}) == "bedrock"
     assert deployment_provider({"model": "amazon.titan-embed-text-v2:0"}) is None
+    assert (
+        deployment_provider({"model": "amazon.titan-embed-text-v2:0"}, {"litellm_provider": "bedrock"})
+        == "bedrock"
+    )
 
 
 @pytest.mark.parametrize(

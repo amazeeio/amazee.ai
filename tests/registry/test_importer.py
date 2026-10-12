@@ -211,3 +211,20 @@ def test_import_reads_a_provider_alias_prefix(registry_db, proxy_region):
     model = registry_db.query(DBRegistryModel).one()
     assert model.model_id == "anthropic.claude-x-v1:0"
     assert registry_db.get(DBRegistryProvider, model.provider_id).name == "bedrock"
+
+
+def test_import_takes_the_provider_from_model_info_without_prefix(registry_db, proxy_region):
+    deployment = {
+        "model_name": "titan-embed",
+        "litellm_params": {"model": "amazon.titan-embed-text-v2:0", "aws_region_name": "us-east-1"},
+        "model_info": {"id": "t-1", "litellm_provider": "bedrock", "mode": "embedding"},
+    }
+    stats = import_deployments(registry_db, proxy_region, [deployment], None, {})
+    registry_db.commit()
+
+    assert stats["imported"] == 1 and stats["skipped"] == []
+    model = registry_db.query(DBRegistryModel).one()
+    assert model.model_id == "amazon.titan-embed-text-v2:0"
+    assert registry_db.get(DBRegistryProvider, model.provider_id).name == "bedrock"
+    assert registry_db.query(DBRegistryModelRegion).one().litellm_model == "amazon.titan-embed-text-v2:0"
+    assert registry_db.get(DBRegistryProxy, proxy_region.id).cloud_regions == {"bedrock": "us-east-1"}
