@@ -40,7 +40,7 @@ PROVIDER_ALIASES = {
 }
 
 BEDROCK_GEO_PREFIXES = {
-    "us", "eu", "apac", "global", "jp", "au", "ca", "sa", "kr", "il", "mx", "us-gov",
+    "us", "eu", "apac", "global", "jp", "au", "in", "ca", "sa", "kr", "il", "mx", "us-gov",
 }
 
 # A list that keeps fewer than this share of the models we already have is
