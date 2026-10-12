@@ -47,6 +47,7 @@ def test_deployment_provider():
         ("bedrock_converse/us.anthropic.claude-x-v1:0", "bedrock", ("anthropic.claude-x-v1:0", "geo", "us")),
         ("azure_text/eu/gpt-35-turbo-instruct", "azure", ("gpt-35-turbo-instruct", "geo", "eu")),
         ("text-completion-openai/gpt-3.5-turbo-instruct", "openai", ("gpt-3.5-turbo-instruct", "base", "")),
+        ("in.moonshotai.kimi-k3", "bedrock", ("moonshotai.kimi-k3", "geo", "in")),
     ],
 )
 def test_parse_key(key, provider, expected):
