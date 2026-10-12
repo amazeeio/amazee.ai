@@ -102,7 +102,7 @@ def import_deployments(
         source_model = info.get("base_model") or litellm_model
         split = split_model(source_model, provider_name) if provider_name else None
         if split is None:
-            # LiteLLM could not name a provider for this model either.
+            # No provider, not even from LiteLLM, or a model string we do not track (one region, commitment).
             stats["skipped"].append(dep.get("model_name"))
             continue
         provider = _get_or_create(db, DBRegistryProvider, name=provider_name)
