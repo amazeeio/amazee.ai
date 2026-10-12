@@ -106,6 +106,13 @@ def test_without_secrets():
     assert data == before
 
 
+def test_without_secrets_cleans_urls():
+    assert without_secrets({"api_base": "https://user:pass@host/v1?key=sk-live-1&api-version=2024"}) == {
+        "api_base": "https://host/v1?api-version=2024"
+    }
+    assert without_secrets({"api_base": "https://host/v1"}) == {"api_base": "https://host/v1"}
+
+
 def test_without_secrets_reads_camel_case_and_joined_names():
     assert without_secrets({"extra_headers": {"apiKey": "sk-live-1", "x-apikey": "sk-live-2"}}) == {
         "extra_headers": {}
