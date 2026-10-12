@@ -79,15 +79,19 @@ def is_env_ref(value) -> bool:
     return isinstance(value, str) and value.startswith("os.environ/")
 
 
-def deployment_provider(litellm_params: dict) -> str | None:
-    """The provider a deployment calls, as LiteLLM resolves it."""
+def deployment_provider(litellm_params: dict, model_info: dict | None = None) -> str | None:
+    """The provider a deployment calls, as LiteLLM resolves it.
+
+    With no explicit provider and no prefix, use the provider that LiteLLM
+    found for the model in `/model/info`.
+    """
     model = litellm_params.get("model") or ""
     explicit = litellm_params.get("custom_llm_provider")
     if explicit:
         return normalize_provider(explicit)
     if "/" in model:
         return normalize_provider(model.split("/", 1)[0])
-    return None
+    return normalize_provider((model_info or {}).get("litellm_provider"))
 
 
 def fetch_json(url: str):

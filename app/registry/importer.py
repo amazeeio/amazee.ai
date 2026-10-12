@@ -63,7 +63,7 @@ def _proxy_cloud_regions(deployments: list[dict], credential_regions: dict[str, 
     regions: dict[str, str] = {}
     for dep in deployments:
         params = dep.get("litellm_params") or {}
-        provider = deployment_provider(params)
+        provider = deployment_provider(params, dep.get("model_info"))
         if not provider or provider in regions:
             continue
         if provider.startswith("bedrock"):
@@ -97,12 +97,12 @@ def import_deployments(
         params = dep.get("litellm_params") or {}
         info = dep.get("model_info") or {}
         litellm_model = params.get("model") or ""
-        provider_name = deployment_provider(params)
+        provider_name = deployment_provider(params, info)
         # Azure's model string names our deployment; base_model names the model.
         source_model = info.get("base_model") or litellm_model
         split = split_model(source_model, provider_name) if provider_name else None
         if split is None:
-            # With no provider prefix LiteLLM guesses the provider; we do not.
+            # LiteLLM could not name a provider for this model either.
             stats["skipped"].append(dep.get("model_name"))
             continue
         provider = _get_or_create(db, DBRegistryProvider, name=provider_name)
