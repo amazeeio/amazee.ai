@@ -25,7 +25,8 @@ class DBRegistryProvider(Base):
     __tablename__ = "registry_providers"
 
     id = Column(Integer, primary_key=True)
-    # The LiteLLM provider id, the prefix in `litellm_params.model`.
+    # The upstream service that answers the call. This is usually the prefix in
+    # `litellm_params.model`, but Bedrock Mantle on the OpenAI route has the prefix `openai`.
     name = Column(String, nullable=False, unique=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

@@ -10,6 +10,7 @@ from app.registry.config import BEDROCK_GEO_PREFIXES, HTTP_TIMEOUT_SECONDS, PROV
 # Bedrock route prefixes that pick an API, not a different model.
 _BEDROCK_ROUTES = ("converse/", "invoke/")
 _AWS_REGION_PATH = re.compile(r"^([a-z]{2}(?:-gov)?-[a-z]+-\d+)/([^/]+)$")
+_MANTLE_HOST = re.compile(r"^bedrock-mantle\.([a-z]{2}(?:-gov)?-[a-z]+-\d+)\.api\.aws$")
 # Azure data zones: `azure/eu/gpt-4o` is gpt-4o priced for the EU zone.
 AZURE_DATA_ZONES = {"us", "eu", "global"}
 # The key name parts LiteLLM masks on. The same rule here means the registry
@@ -144,19 +145,39 @@ def without_secrets(value):
     return clean
 
 
-def deployment_provider(litellm_params: dict, model_info: dict | None = None) -> str | None:
-    """The provider a deployment calls, as LiteLLM resolves it.
+def mantle_region(api_base) -> str | None:
+    """The AWS region of a Bedrock Mantle `api_base` URL, or None for any other value."""
+    if not isinstance(api_base, str):
+        return None
+    try:
+        host = urlsplit(api_base).hostname
+    except ValueError:
+        return None
+    match = _MANTLE_HOST.match(host or "")
+    return match[1] if match else None
 
+
+def registry_provider_and_model(litellm_params: dict, model_info: dict | None = None) -> tuple[str | None, str]:
+    """(registry provider, model string to split) for a deployment.
+
+    The registry provider is the upstream service that answers the call. On the
+    OpenAI-compatible route to Bedrock Mantle, LiteLLM says `openai` instead.
     With no explicit provider and no prefix, use the provider that LiteLLM
     found for the model in `/model/info`.
     """
     model = litellm_params.get("model") or ""
     explicit = litellm_params.get("custom_llm_provider")
     if explicit:
-        return normalize_provider(explicit)
-    if "/" in model:
-        return normalize_provider(model.split("/", 1)[0])
-    return normalize_provider((model_info or {}).get("litellm_provider"))
+        provider = normalize_provider(explicit)
+    elif "/" in model:
+        provider = normalize_provider(model.split("/", 1)[0])
+    else:
+        provider = normalize_provider((model_info or {}).get("litellm_provider"))
+    # Azure's model string names our deployment; base_model names the model.
+    source_model = (model_info or {}).get("base_model") or model
+    if provider == "openai" and mantle_region(litellm_params.get("api_base")) is not None:
+        return "bedrock_mantle", source_model.removeprefix("openai/")
+    return provider, source_model
 
 
 def fetch_json(url: str):

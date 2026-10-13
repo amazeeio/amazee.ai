@@ -11,7 +11,14 @@ from sqlalchemy.orm import Session
 
 from app.db.models import DBRegion
 from app.registry.discovery import entry_fields
-from app.registry.litellm import ProxyClient, deployment_provider, is_env_ref, split_model, without_secrets
+from app.registry.litellm import (
+    ProxyClient,
+    is_env_ref,
+    mantle_region,
+    registry_provider_and_model,
+    split_model,
+    without_secrets,
+)
 from app.registry.models import (
     DBRegistryAccessGroup,
     DBRegistryModel,
@@ -63,13 +70,13 @@ def _proxy_cloud_regions(deployments: list[dict], credential_regions: dict[str, 
     regions: dict[str, str] = {}
     for dep in deployments:
         params = dep.get("litellm_params") or {}
-        provider = deployment_provider(params, dep.get("model_info"))
+        provider = registry_provider_and_model(params, dep.get("model_info"))[0]
         if not provider or provider in regions:
             continue
         if provider.startswith("bedrock"):
             region = _literal(params.get("aws_region_name")) or _literal(
                 credential_regions.get(params.get("litellm_credential_name"))
-            )
+            ) or mantle_region(params.get("api_base"))
         elif provider == "vertex_ai":
             region = _literal(params.get("vertex_location"))
         else:
@@ -97,9 +104,7 @@ def import_deployments(
         params = dep.get("litellm_params") or {}
         info = dep.get("model_info") or {}
         litellm_model = params.get("model") or ""
-        provider_name = deployment_provider(params, info)
-        # Azure's model string names our deployment; base_model names the model.
-        source_model = info.get("base_model") or litellm_model
+        provider_name, source_model = registry_provider_and_model(params, info)
         split = split_model(source_model, provider_name) if provider_name else None
         if split is None:
             # No provider, not even from LiteLLM, or a model string we do not track (one region, commitment).
