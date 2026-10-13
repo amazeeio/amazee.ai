@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -249,3 +250,89 @@ def test_import_keeps_deployment_config_without_secrets(registry_db, proxy_regio
     row = registry_db.query(DBRegistryModelRegion).one()
     assert row.litellm_params == {k: v for k, v in params.items() if k != "api_key"}
     assert row.model_info == {k: v for k, v in info.items() if k != "api_key"}
+
+
+MANTLE_API_BASE = "https://bedrock-mantle.us-east-1.api.aws/openai/v1"
+
+
+def test_import_stores_bedrock_mantle_deployments_under_bedrock_mantle(registry_db, proxy_region):
+    mantle = DBRegistryProvider(name="bedrock_mantle")
+    registry_db.add(mantle)
+    registry_db.flush()
+    seeded = DBRegistryModel(
+        provider_id=mantle.id, model_id="openai.gpt-5.4", supports=[], status="active",
+        source="litellm", first_seen=date(2026, 9, 1), last_seen=date(2026, 9, 1),
+    )
+    registry_db.add(seeded)
+    registry_db.flush()
+    gpt_params = {
+        "model": "openai/openai.gpt-5.4",
+        "api_base": MANTLE_API_BASE,
+        "api_key": "os.environ/AWS_BEDROCK_KEY",
+        "input_cost_per_token": 1e-06,
+    }
+    deployments = [
+        {"model_name": "gpt-5.4", "litellm_params": gpt_params, "model_info": {"id": "m-1"}},
+        {
+            "model_name": "kimi",
+            "litellm_params": {
+                "model": "openai/moonshotai.kimi-k2.5",
+                "api_base": "https://bedrock-mantle.us-east-2.api.aws/v1",
+            },
+            "model_info": {"id": "m-2"},
+        },
+        {"model_name": "gpt-4o", "litellm_params": {"model": "openai/gpt-4o"}, "model_info": {"id": "o-1"}},
+        {
+            "model_name": "gpt-4.1",
+            "litellm_params": {"model": "openai/gpt-4.1", "api_base": "https://api.openai.com/v1"},
+            "model_info": {"id": "o-2"},
+        },
+        {
+            "model_name": "gpt-5",
+            "litellm_params": {"model": "openai/gpt-5", "api_base": "os.environ/OPENAI_API_BASE"},
+            "model_info": {"id": "o-3"},
+        },
+    ]
+
+    stats = import_deployments(registry_db, proxy_region, deployments, None, {})
+    registry_db.commit()
+
+    assert stats["skipped"] == []
+    providers = {p.name: p.id for p in registry_db.query(DBRegistryProvider)}
+    gpt = registry_db.query(DBRegistryModel).filter_by(
+        provider_id=providers["bedrock_mantle"], model_id="openai.gpt-5.4"
+    ).one()
+    assert gpt.id == seeded.id
+    assert registry_db.query(DBRegistryModel).filter_by(
+        provider_id=providers["bedrock_mantle"], model_id="moonshotai.kimi-k2.5"
+    ).count() == 1
+    openai_ids = {m.model_id for m in registry_db.query(DBRegistryModel).filter_by(provider_id=providers["openai"])}
+    assert openai_ids == {"gpt-4o", "gpt-4.1", "gpt-5"}
+
+    deployment = registry_db.query(DBRegistryModelRegion).filter_by(litellm_deployment_id="m-1").one()
+    assert deployment.model_id == seeded.id
+    assert deployment.litellm_model == "openai/openai.gpt-5.4"
+    assert deployment.litellm_params == gpt_params
+    assert deployment.prices == {"input_cost_per_token": 1e-06}
+    assert registry_db.get(DBRegistryProxy, proxy_region.id).cloud_regions == {"bedrock_mantle": "us-east-1"}
+
+
+@pytest.mark.parametrize(
+    "params, credential_regions, expected",
+    [
+        ({"aws_region_name": "eu-central-1"}, {}, "eu-central-1"),
+        ({"litellm_credential_name": "AWS"}, {"AWS": "eu-west-1"}, "eu-west-1"),
+        ({}, {}, "us-east-1"),
+        ({"aws_region_name": "os.environ/AWS_REGION"}, {}, "us-east-1"),
+    ],
+)
+def test_mantle_cloud_region_comes_last(registry_db, proxy_region, params, credential_regions, expected):
+    deployment = {
+        "model_name": "gpt-5.4",
+        "litellm_params": {"model": "openai/openai.gpt-5.4", "api_base": MANTLE_API_BASE, **params},
+        "model_info": {"id": "m-1"},
+    }
+    import_deployments(registry_db, proxy_region, [deployment], None, credential_regions)
+    registry_db.commit()
+
+    assert registry_db.get(DBRegistryProxy, proxy_region.id).cloud_regions == {"bedrock_mantle": expected}

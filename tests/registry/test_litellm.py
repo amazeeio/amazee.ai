@@ -3,9 +3,10 @@ import copy
 import pytest
 
 from app.registry.litellm import (
-    deployment_provider,
+    mantle_region,
     normalize_provider,
     parse_key,
+    registry_provider_and_model,
     split_model,
     without_secrets,
 )
@@ -23,6 +24,8 @@ from app.registry.litellm import (
         ("deepinfra/meta-llama/Meta-Llama-3.1-8B-Instruct", "deepinfra", ("meta-llama/Meta-Llama-3.1-8B-Instruct", False)),
         ("vertex_ai/claude-haiku-4-5", "vertex_ai", ("claude-haiku-4-5", False)),
         ("gpt-4o", "openai", ("gpt-4o", False)),
+        ("openai.gpt-5.4", "bedrock_mantle", ("openai.gpt-5.4", False)),
+        ("moonshotai.kimi-k2.5", "bedrock_mantle", ("moonshotai.kimi-k2.5", False)),
     ],
 )
 def test_split_model(key, provider, expected):
@@ -36,14 +39,46 @@ def test_normalize_provider():
     assert normalize_provider(None) is None
 
 
-def test_deployment_provider():
-    assert deployment_provider({"model": "bedrock/us.amazon.nova-micro-v1:0"}) == "bedrock"
-    assert deployment_provider({"model": "nova", "custom_llm_provider": "bedrock"}) == "bedrock"
-    assert deployment_provider({"model": "amazon.titan-embed-text-v2:0"}) is None
-    assert (
-        deployment_provider({"model": "amazon.titan-embed-text-v2:0"}, {"litellm_provider": "bedrock"})
-        == "bedrock"
+MANTLE_US_EAST_1 = "https://bedrock-mantle.us-east-1.api.aws/openai/v1"
+MANTLE_US_EAST_2 = "https://bedrock-mantle.us-east-2.api.aws/v1"
+
+
+def test_registry_provider_and_model():
+    assert registry_provider_and_model({"model": "bedrock/us.amazon.nova-micro-v1:0"}) == (
+        "bedrock", "bedrock/us.amazon.nova-micro-v1:0"
     )
+    assert registry_provider_and_model({"model": "nova", "custom_llm_provider": "bedrock"}) == ("bedrock", "nova")
+    assert registry_provider_and_model({"model": "amazon.titan-embed-text-v2:0"}) == (
+        None, "amazon.titan-embed-text-v2:0"
+    )
+    assert registry_provider_and_model(
+        {"model": "amazon.titan-embed-text-v2:0"}, {"litellm_provider": "bedrock"}
+    ) == ("bedrock", "amazon.titan-embed-text-v2:0")
+    assert registry_provider_and_model({"model": "openai/openai.gpt-5.4", "api_base": MANTLE_US_EAST_1}) == (
+        "bedrock_mantle", "openai.gpt-5.4"
+    )
+    assert registry_provider_and_model({"model": "openai/moonshotai.kimi-k2.5", "api_base": MANTLE_US_EAST_2}) == (
+        "bedrock_mantle", "moonshotai.kimi-k2.5"
+    )
+    assert registry_provider_and_model({"model": "openai/gpt-4o"}) == ("openai", "openai/gpt-4o")
+    assert registry_provider_and_model({"model": "openai/gpt-4o", "api_base": "https://api.openai.com/v1"}) == (
+        "openai", "openai/gpt-4o"
+    )
+    assert registry_provider_and_model(
+        {"model": "openai/openai.gpt-5.4", "api_base": "os.environ/MANTLE_API_BASE"}
+    ) == ("openai", "openai/openai.gpt-5.4")
+    assert registry_provider_and_model({"model": "azure/our-deployment"}, {"base_model": "azure/gpt-4o"}) == (
+        "azure", "azure/gpt-4o"
+    )
+
+
+def test_mantle_region():
+    assert mantle_region(MANTLE_US_EAST_1) == "us-east-1"
+    assert mantle_region(MANTLE_US_EAST_2) == "us-east-2"
+    assert mantle_region("https://api.openai.com/v1") is None
+    assert mantle_region("https://bedrock-runtime.us-east-1.amazonaws.com") is None
+    assert mantle_region("os.environ/X") is None
+    assert mantle_region(None) is None
 
 
 @pytest.mark.parametrize(
