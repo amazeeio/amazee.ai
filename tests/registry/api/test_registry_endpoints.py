@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -6,7 +6,7 @@ from app.main import _OPENAPI_TIERS, _scope_schema, app
 from app.registry.models import DBRegistryEvent, DBRegistryRun
 from tests.registry.api.conftest import CHECKED_AT, model
 
-RUN_FIELDS = {"id", "step", "started_at", "finished_at", "status", "stats", "error"}
+RUN_FIELDS = {"id", "step", "started_at", "finished_at", "status", "stats", "error", "stale"}
 MODEL_FIELDS = {
     "provider", "model_id", "mode", "max_input_tokens", "max_output_tokens",
     "input_cost_per_token", "output_cost_per_token", "prices", "eol_date",
@@ -43,6 +43,8 @@ def test_runs_are_newest_first_with_all_fields(client, admin_token, runs):
     assert all(set(r) == RUN_FIELDS for r in body)
     assert body[1]["error"] == "proxy timed out"
     assert body[2]["stats"] == {"models": 3}
+    # litellm_list has only a failed run; the plugin step ran ok just now.
+    assert [r["stale"] for r in body] == [False, True, False]
 
 
 def test_runs_step_filter(client, admin_token, runs):
@@ -214,3 +216,40 @@ def test_events_limit_and_offset(client, admin_token, events):
     assert response.headers["X-Total-Count"] == "4"
     assert client.get("/registry/events?limit=1001", headers=_auth(admin_token)).status_code == 422
     assert client.get("/registry/events?offset=-1", headers=_auth(admin_token)).status_code == 422
+
+
+def test_runs_stale_flag(client, admin_token, registry_db):
+    now = datetime.now(UTC)
+    registry_db.add_all([
+        # Only an old ok run, then a failure: every row of the step is stale.
+        DBRegistryRun(step="history", status="ok", started_at=now - timedelta(days=3)),
+        DBRegistryRun(step="history", status="failed", started_at=now - timedelta(hours=1)),
+        # A recent ok run keeps the step fresh, whatever ran after it.
+        DBRegistryRun(step="support", status="ok", started_at=now - timedelta(hours=47)),
+        DBRegistryRun(step="support", status="failed", started_at=now - timedelta(hours=2)),
+        DBRegistryRun(step="support", status="running", started_at=now),
+        # A step that never ran ok is stale.
+        DBRegistryRun(step="litellm_list", status="failed", error="proxy timed out"),
+    ])
+    registry_db.commit()
+
+    response = client.get("/registry/runs", headers=_auth(admin_token))
+
+    assert response.status_code == 200, response.text
+    assert [(r["step"], r["status"], r["stale"]) for r in response.json()] == [
+        ("litellm_list", "failed", True),
+        ("support", "running", False),
+        ("support", "failed", False),
+        ("support", "ok", False),
+        ("history", "failed", True),
+        ("history", "ok", True),
+    ]
+
+
+def test_runs_total_count_header(client, admin_token, runs):
+    response = client.get("/registry/runs?limit=1", headers=_auth(admin_token))
+    assert len(response.json()) == 1
+    assert response.headers["X-Total-Count"] == "3"
+
+    filtered = client.get("/registry/runs?step=plugin:deepinfra_api&limit=1", headers=_auth(admin_token))
+    assert filtered.headers["X-Total-Count"] == "2"

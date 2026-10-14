@@ -15,6 +15,8 @@ class RegistryRunResponse(BaseModel):
     status: str
     stats: dict | None
     error: str | None
+    # The ORM row has no such attribute, so the default lets model_validate read it.
+    stale: bool = False
 
 
 class RegistryModelPriceResponse(BaseModel):

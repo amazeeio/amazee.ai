@@ -1,7 +1,7 @@
 """Registry endpoints, all system admin only: run stats can hold region names and proxy errors."""
 
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import and_, func, or_, select
@@ -40,6 +40,9 @@ from app.registry.schemas import (
     RegistryProxyResponse,
     RegistryRunResponse,
 )
+
+# The job runs daily, so two days with no `ok` run means a run was missed.
+STALE_AFTER = timedelta(hours=48)
 
 router = APIRouter(
     prefix="/registry", tags=["registry"], dependencies=[Depends(get_role_min_system_admin)]
@@ -206,6 +209,7 @@ def _proxy_responses(db: Session, region_id: int | None = None) -> list[Registry
 
 @router.get("/runs", response_model=list[RegistryRunResponse])
 def list_runs(
+    response: Response,
     limit: int = Query(50, ge=1, le=500),
     step: str | None = Query(None),
     db: Session = Depends(get_db),
@@ -213,8 +217,18 @@ def list_runs(
     query = db.query(DBRegistryRun)
     if step:
         query = query.filter(DBRegistryRun.step == step)
+    response.headers["X-Total-Count"] = str(query.count())
+    fresh = {
+        name
+        for (name,) in db.query(DBRegistryRun.step)
+        .filter(DBRegistryRun.status == "ok", DBRegistryRun.started_at >= datetime.now(UTC) - STALE_AFTER)
+        .distinct()
+    }
     # A run row is inserted when its step starts, so the id order is the start order.
-    return query.order_by(DBRegistryRun.id.desc()).limit(limit).all()
+    return [
+        RegistryRunResponse.model_validate(run).model_copy(update={"stale": run.step not in fresh})
+        for run in query.order_by(DBRegistryRun.id.desc()).limit(limit)
+    ]
 
 
 @router.get("/models", response_model=list[RegistryModelResponse])
