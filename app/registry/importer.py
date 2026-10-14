@@ -102,9 +102,12 @@ def import_deployments(
     today = today or date.today()
 
     stats = {"deployments": len(deployments), "imported": 0, "skipped": [], "aliases": []}
+    real_ids = {
+        (dep.get("model_info") or {}).get("id") for dep in deployments if dep.get("model_name") not in aliases
+    } - {None}
     for dep in deployments:
-        if dep.get("model_name") in aliases:
-            # The same deployment again under its alias name, not a deployment of its own.
+        if dep.get("model_name") in aliases and (dep.get("model_info") or {}).get("id") in real_ids:
+            # Skip only a row that repeats a deployment already listed under its real name.
             stats["aliases"].append(dep.get("model_name"))
             continue
         params = dep.get("litellm_params") or {}

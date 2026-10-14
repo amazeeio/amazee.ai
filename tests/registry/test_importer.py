@@ -245,6 +245,19 @@ def test_import_skips_router_alias_copies_of_a_deployment(registry_db, proxy_reg
     assert registry_db.query(DBRegistryModelRegion).one().model_name == "claude-x"
 
 
+def test_import_keeps_a_real_deployment_whose_name_is_an_alias(registry_db, proxy_region):
+    params = {"model": "bedrock/us.anthropic.claude-x-v1:0"}
+    deployments = [
+        {"model_name": "claude-x", "litellm_params": params, "model_info": {"id": "dep-1"}},
+        {"model_name": "old-name", "litellm_params": params, "model_info": {"id": "dep-9"}},
+    ]
+    stats = import_deployments(registry_db, proxy_region, deployments, None, {}, aliases={"old-name"})
+    registry_db.commit()
+
+    assert stats["aliases"] == []
+    assert {r.model_name for r in registry_db.query(DBRegistryModelRegion)} == {"claude-x", "old-name"}
+
+
 def test_import_keeps_deployment_config_without_secrets(registry_db, proxy_region):
     params = {
         "model": "bedrock/us.anthropic.claude-x-v1:0",
