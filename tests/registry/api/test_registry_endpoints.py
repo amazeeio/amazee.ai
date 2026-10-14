@@ -113,6 +113,7 @@ def test_models_limit_and_offset(client, admin_token, models):
         "/registry/models/new",
         "/registry/models/eol",
         "/registry/models/openai/gpt-4o",
+        "/registry/providers",
     ],
 )
 def test_registry_endpoints_need_a_system_admin(client, test_token, path):
@@ -128,6 +129,7 @@ def test_registry_endpoints_are_admin_only_in_openapi():
         "/registry/models/new",
         "/registry/models/eol",
         "/registry/models/{key}",
+        "/registry/providers",
     ]
 
     for path in paths:

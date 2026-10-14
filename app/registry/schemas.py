@@ -106,3 +106,11 @@ class RegistryModelDetailResponse(RegistryModelResponse):
     availability: list[RegistryAvailabilityResponse]
     deployments: list[RegistryModelDeploymentResponse]
     history: list[RegistryHistoryResponse]
+
+
+class RegistryProviderResponse(BaseModel):
+    provider: str
+    # The proxies with a deployment of one of the provider's models.
+    proxies: list[str]
+    models: int
+    deployed_models: int

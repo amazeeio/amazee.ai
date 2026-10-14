@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.security import get_role_min_system_admin
@@ -30,6 +30,7 @@ from app.registry.schemas import (
     RegistryModelDetailResponse,
     RegistryModelProxyResponse,
     RegistryModelResponse,
+    RegistryProviderResponse,
     RegistryRunResponse,
 )
 
@@ -322,3 +323,32 @@ def get_model(key: str, db: Session = Depends(get_db)):
         ],
         history=history,
     )
+
+
+@router.get("/providers", response_model=list[RegistryProviderResponse])
+def list_providers(response: Response, db: Session = Depends(get_db)):
+    providers = db.query(DBRegistryProvider).order_by(DBRegistryProvider.name).all()
+    model_counts = dict(
+        db.query(DBRegistryModel.provider_id, func.count(DBRegistryModel.id)).group_by(DBRegistryModel.provider_id)
+    )
+    proxies: dict[int, set[str]] = defaultdict(set)
+    deployed: dict[int, set[int]] = defaultdict(set)
+    for provider_id, proxy, model_id in (
+        db.query(DBRegistryModel.provider_id, DBRegion.name, DBRegistryModel.id)
+        .join(DBRegistryModelRegion, DBRegistryModelRegion.model_id == DBRegistryModel.id)
+        .join(DBRegion, DBRegion.id == DBRegistryModelRegion.region_id)
+        .distinct()
+    ):
+        proxies[provider_id].add(proxy)
+        deployed[provider_id].add(model_id)
+
+    response.headers["X-Total-Count"] = str(len(providers))
+    return [
+        RegistryProviderResponse(
+            provider=provider.name,
+            proxies=sorted(proxies[provider.id]),
+            models=model_counts.get(provider.id, 0),
+            deployed_models=len(deployed[provider.id]),
+        )
+        for provider in providers
+    ]
