@@ -376,7 +376,7 @@ def get_model(key: str, db: Session = Depends(get_db)):
             RegistryModelDeploymentResponse(
                 **_deployment_fields(deployment, proxy, groups),
                 price=pick_price(
-                    db, model.id, provider, deployment.litellm_model,
+                    base.price_scopes, provider, deployment.litellm_model,
                     (cloud_regions.get(deployment.region_id) or {}).get(provider),
                 ),
             )

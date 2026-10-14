@@ -87,8 +87,10 @@ def test_pick_price_follows_litellm_order(registry_db):
     apply_prices(registry_db, {("bedrock", "anthropic.claude-x-v1:0")}, parse_prices(LIST, {"bedrock"}), date(2026, 9, 27))
     registry_db.commit()
 
+    rows = registry_db.query(DBRegistryModelPrice).filter_by(model_id=model.id).all()
+
     def pick(deployed, region):
-        row = pick_price(registry_db, model.id, "bedrock", deployed, region)
+        row = pick_price(rows, "bedrock", deployed, region)
         return row and (row.scope_kind, row.scope)
 
     # A geo id is billed at its geo price, even in a region with its own price.
@@ -98,7 +100,7 @@ def test_pick_price_follows_litellm_order(registry_db):
     assert pick("bedrock/anthropic.claude-x-v1:0", "us-east-1") == ("base", "")
     # A geo with no price of its own falls back to base.
     assert pick("bedrock/eu.anthropic.claude-x-v1:0", None) == ("base", "")
-    assert pick_price(registry_db, _model(registry_db, model_id="unpriced").id, "bedrock", None, None) is None
+    assert pick_price([], "bedrock", None, None) is None
 
 
 def test_proxy_price_is_kept_until_the_list_prices_the_model(registry_db):
