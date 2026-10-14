@@ -114,3 +114,30 @@ class RegistryProviderResponse(BaseModel):
     proxies: list[str]
     models: int
     deployed_models: int
+
+
+class RegistryProxyResponse(BaseModel):
+    proxy: str
+    region_id: int
+    litellm_version: str | None
+    cloud_regions: dict
+    imported_at: datetime | None
+    # The providers with a deployment on this proxy.
+    providers: list[str]
+    # Who may change what runs on the proxy: `catalog` or `none`.
+    owner: str
+    models_supported: int
+    models_enabled: int
+
+
+class RegistryProxyModelResponse(BaseModel):
+    key: str
+    status: str
+    eol_date: date | None
+    support: RegistryModelProxyResponse | None
+    deployments: list[RegistryDeploymentResponse]
+
+
+class RegistryProxyDetailResponse(RegistryProxyResponse):
+    checked_at: datetime | None
+    models: list[RegistryProxyModelResponse]

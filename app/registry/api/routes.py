@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.core.config import catalog_manages
 from app.core.security import get_role_min_system_admin
 from app.db.database import get_db
 from app.db.models import DBRegion
@@ -26,11 +27,15 @@ from app.registry.models import (
 )
 from app.registry.prices import pick_price
 from app.registry.schemas import (
+    RegistryDeploymentResponse,
     RegistryModelDeploymentResponse,
     RegistryModelDetailResponse,
     RegistryModelProxyResponse,
     RegistryModelResponse,
     RegistryProviderResponse,
+    RegistryProxyDetailResponse,
+    RegistryProxyModelResponse,
+    RegistryProxyResponse,
     RegistryRunResponse,
 )
 
@@ -152,6 +157,49 @@ def _deployment_fields(deployment: DBRegistryModelRegion, proxy: str, groups: di
         "prices": deployment.prices,
         "access_groups": groups.get(deployment.id, []),
     }
+
+
+def _proxy_responses(db: Session, region_id: int | None = None) -> list[RegistryProxyResponse]:
+    """Each region with a registry_proxies row, with its providers and model counts."""
+    rows = db.query(DBRegistryProxy, DBRegion).join(DBRegion, DBRegion.id == DBRegistryProxy.region_id)
+    providers = (
+        db.query(DBRegistryModelRegion.region_id, DBRegistryProvider.name)
+        .join(DBRegistryModel, DBRegistryModel.id == DBRegistryModelRegion.model_id)
+        .join(DBRegistryProvider)
+        .distinct()
+    )
+    supported = db.query(DBRegistryModelSupport.region_id, func.count()).filter(
+        DBRegistryModelSupport.supported.is_(True)
+    )
+    enabled = db.query(
+        DBRegistryModelRegion.region_id, func.count(DBRegistryModelRegion.model_id.distinct())
+    ).filter(DBRegistryModelRegion.enabled.is_(True))
+    if region_id is not None:
+        rows = rows.filter(DBRegistryProxy.region_id == region_id)
+        providers = providers.filter(DBRegistryModelRegion.region_id == region_id)
+        supported = supported.filter(DBRegistryModelSupport.region_id == region_id)
+        enabled = enabled.filter(DBRegistryModelRegion.region_id == region_id)
+
+    provider_names: dict[int, list[str]] = defaultdict(list)
+    for region, name in providers.order_by(DBRegistryProvider.name):
+        provider_names[region].append(name)
+    supported_counts = dict(supported.group_by(DBRegistryModelSupport.region_id))
+    enabled_counts = dict(enabled.group_by(DBRegistryModelRegion.region_id))
+
+    return [
+        RegistryProxyResponse(
+            proxy=region.name,
+            region_id=region.id,
+            litellm_version=proxy.litellm_version,
+            cloud_regions=proxy.cloud_regions,
+            imported_at=proxy.imported_at,
+            providers=provider_names[region.id],
+            owner="catalog" if catalog_manages(region.name) else "none",
+            models_supported=supported_counts.get(region.id, 0),
+            models_enabled=enabled_counts.get(region.id, 0),
+        )
+        for proxy, region in rows.order_by(DBRegion.name)
+    ]
 
 
 @router.get("/runs", response_model=list[RegistryRunResponse])
@@ -352,3 +400,59 @@ def list_providers(response: Response, db: Session = Depends(get_db)):
         )
         for provider in providers
     ]
+
+
+@router.get("/proxies", response_model=list[RegistryProxyResponse])
+def list_proxies(response: Response, db: Session = Depends(get_db)):
+    proxies = _proxy_responses(db)
+    response.headers["X-Total-Count"] = str(len(proxies))
+    return proxies
+
+
+@router.get("/proxies/{proxy}", response_model=RegistryProxyDetailResponse)
+def get_proxy(proxy: str, db: Session = Depends(get_db)):
+    region = db.query(DBRegion).filter(DBRegion.name == proxy).one_or_none()
+    found = _proxy_responses(db, region.id) if region else []
+    if not found:
+        raise HTTPException(status_code=404, detail="Proxy not found")
+
+    checked_at = (
+        db.query(func.max(DBRegistryModelSupport.checked_at))
+        .filter(DBRegistryModelSupport.region_id == region.id)
+        .scalar()
+    )
+    # The models with a support row or a deployment on this proxy.
+    support = _proxy_results(db, region_id=region.id)
+    rows = (
+        _model_query(db)
+        .filter(DBRegistryModel.id.in_(support.keys()))
+        .order_by(DBRegistryProvider.name, DBRegistryModel.model_id)
+        .all()
+    )
+    deployments = (
+        db.query(DBRegistryModelRegion)
+        .filter(DBRegistryModelRegion.region_id == region.id)
+        .order_by(DBRegistryModelRegion.model_name)
+        .all()
+    )
+    groups = _access_groups(db, [deployment.id for deployment in deployments])
+    by_model: dict[int, list[RegistryDeploymentResponse]] = defaultdict(list)
+    for deployment in deployments:
+        by_model[deployment.model_id].append(
+            RegistryDeploymentResponse(**_deployment_fields(deployment, region.name, groups))
+        )
+
+    return RegistryProxyDetailResponse(
+        **found[0].model_dump(),
+        checked_at=checked_at,
+        models=[
+            RegistryProxyModelResponse(
+                key=f"{provider}/{model.model_id}",
+                status=model.status,
+                eol_date=model.eol_date,
+                support=support[model.id][0],
+                deployments=by_model[model.id],
+            )
+            for model, provider in rows
+        ],
+    )
