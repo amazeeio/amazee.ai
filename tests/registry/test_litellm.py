@@ -1,8 +1,10 @@
 import copy
 
+import httpx
 import pytest
 
 from app.registry.litellm import (
+    ProxyClient,
     mantle_region,
     normalize_provider,
     parse_key,
@@ -180,3 +182,44 @@ def test_without_secrets_reads_camel_case_and_joined_names():
         }
     }
     assert without_secrets(data) == {"extra_headers": {}}
+
+
+def _proxy(handler) -> ProxyClient:
+    client = ProxyClient("http://proxy", "sk-test")
+    client._client.close()
+    client._client = httpx.Client(base_url="http://proxy", transport=httpx.MockTransport(handler))
+    return client
+
+
+def test_model_aliases_returns_the_alias_names():
+    paths = []
+
+    def handler(request):
+        paths.append(request.url.path)
+        return httpx.Response(200, json={"fields": [
+            {"field_name": "routing_strategy", "field_value": "simple-shuffle"},
+            {"field_name": "model_group_alias", "field_value": {
+                "chat": "claude-x", "old": {"model": "claude-y", "hidden": True},
+            }},
+        ]})
+
+    with _proxy(handler) as client:
+        assert client.model_aliases() == {"chat", "old"}
+    assert paths == ["/router/settings"]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        [{"field_name": "routing_strategy", "field_value": "simple-shuffle"}],
+        [{"field_name": "model_group_alias", "field_value": "chat"}],
+    ],
+)
+def test_model_aliases_without_an_alias_map_is_empty(fields):
+    with _proxy(lambda request: httpx.Response(200, json={"fields": fields})) as client:
+        assert client.model_aliases() == set()
+
+
+def test_model_aliases_raises_on_an_error_answer():
+    with _proxy(lambda request: httpx.Response(500)) as client, pytest.raises(httpx.HTTPStatusError):
+        client.model_aliases()
