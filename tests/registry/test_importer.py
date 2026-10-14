@@ -258,6 +258,19 @@ def test_import_keeps_a_real_deployment_whose_name_is_an_alias(registry_db, prox
     assert {r.model_name for r in registry_db.query(DBRegistryModelRegion)} == {"claude-x", "old-name"}
 
 
+def test_import_skips_a_self_alias_copy_with_the_same_name(registry_db, proxy_region):
+    params = {"model": "bedrock/us.anthropic.claude-x-v1:0"}
+    deployments = [
+        {"model_name": "claude-x", "litellm_params": params, "model_info": {"id": "dep-1"}},
+        {"model_name": "claude-x", "litellm_params": params, "model_info": {"id": "dep-1"}},
+    ]
+    stats = import_deployments(registry_db, proxy_region, deployments, None, {}, aliases={"claude-x"})
+    registry_db.commit()
+
+    assert stats["aliases"] == ["claude-x"]
+    assert registry_db.query(DBRegistryModelRegion).one().model_name == "claude-x"
+
+
 def test_import_keeps_deployment_config_without_secrets(registry_db, proxy_region):
     params = {
         "model": "bedrock/us.anthropic.claude-x-v1:0",
