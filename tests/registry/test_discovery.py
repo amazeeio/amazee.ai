@@ -105,6 +105,30 @@ def test_apply_takes_over_proxy_model_and_revives_removed(registry_db):
     assert old.status == "active" and old.first_seen == date(2026, 1, 1)
 
 
+def test_apply_keeps_deprecated_status(registry_db):
+    bedrock = _add_provider(registry_db)
+    from_list = _model(registry_db, bedrock, "a", status="deprecated")
+    from_proxy = _model(registry_db, bedrock, "b", source="proxy", status="deprecated")
+    registry_db.commit()
+    before = from_list.updated_at
+
+    stats = apply_model_list(registry_db, {("bedrock", "a"): {}, ("bedrock", "b"): {}}, date(2026, 9, 26))
+    registry_db.commit()
+
+    assert from_list.status == "deprecated" and from_list.updated_at == before
+    assert from_proxy.status == "deprecated" and from_proxy.source == "litellm"
+    assert stats["updated"] == 1
+
+
+def test_guard_counts_deprecated_models(registry_db):
+    bedrock = _add_provider(registry_db)
+    for i in range(4):
+        _model(registry_db, bedrock, f"m{i}", status="deprecated")
+
+    with pytest.raises(RuntimeError, match="refusing"):
+        apply_model_list(registry_db, {("bedrock", "m0"): {}}, date(2026, 9, 26))
+
+
 def test_apply_refuses_list_that_drops_most_models(registry_db):
     bedrock = _add_provider(registry_db)
     for i in range(4):

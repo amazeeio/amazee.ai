@@ -7,6 +7,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -15,8 +16,6 @@ from sqlalchemy import (
 from sqlalchemy.sql import func
 
 from app.db.models import Base
-
-# `removed`: the model left LiteLLM's list. The row stays.
 
 
 
@@ -52,8 +51,16 @@ class DBRegistryModel(Base):
     # Names of the `supports_*` flags that are true, without the prefix.
     supports = Column(JSON, nullable=False, default=list)
     eol_date = Column(Date, nullable=True)
-    # `active`, or `removed` once the model left LiteLLM's list. The row stays.
+    # `active`; `deprecated` when the strongest lifecycle source says the provider
+    # retires the model; `removed` once the model left LiteLLM's list, and
+    # `removed` beats `deprecated`. The row stays.
     status = Column(String, nullable=False, default="active")
+    # The same model at two providers has the same family. The daily step
+    # fills it only when it is empty, so a manual value stays.
+    family = Column(String, nullable=True, index=True)
+    # The model maker from the id prefix, or from another model of the same
+    # family. Empty when no source names it.
+    manufacturer = Column(String, nullable=True)
     # `litellm` or `proxy`. Only rows from the list can be marked removed when
     # they leave it; a model only a proxy knows never was on the list.
     source = Column(String, nullable=False)
@@ -217,6 +224,36 @@ class DBRegistryModelLifecycle(Base):
     extended_access_until = Column(Date, nullable=True)
     eol_date = Column(Date, nullable=True)
     last_seen = Column(Date, nullable=False)
+
+
+class DBRegistryModelHistory(Base):
+    """One model's tracked state, with a new row only when the state changes."""
+
+    __tablename__ = "registry_model_history"
+    # The history step reads the newest row of each model through this index.
+    __table_args__ = (Index("ix_registry_model_history_model_id_recorded_at", "model_id", "recorded_at"),)
+
+    id = Column(Integer, primary_key=True)
+    model_id = Column(Integer, ForeignKey("registry_models.id", ondelete="CASCADE"), nullable=False)
+    recorded_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # Status, EOL date, headline prices and support flags per region. Region ids are
+    # text and prices are floats, as JSON gives them back, so only real changes differ.
+    state = Column(JSON, nullable=False)
+
+
+class DBRegistryEvent(Base):
+    """One change to a model that the daily history step found."""
+
+    __tablename__ = "registry_events"
+
+    id = Column(Integer, primary_key=True)
+    # model.discovered, model.eol_announced, model.eol_changed, model.deprecated or model.support_changed.
+    type = Column(String, nullable=False, index=True)
+    model_id = Column(Integer, ForeignKey("registry_models.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Set only for a support change, which is about one proxy.
+    region_id = Column(Integer, ForeignKey("regions.id", ondelete="CASCADE"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    data = Column(JSON, nullable=False)
 
 
 def models_by_ident(db) -> dict[tuple[str, str], DBRegistryModel]:

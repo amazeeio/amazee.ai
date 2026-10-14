@@ -6,7 +6,7 @@ A plugin module defines:
     ORDER = 10                  # run order: lower first, ties by SOURCE
     PRICE_ROLE = "override"     # "override": beats LiteLLM's price; "fill": only unpriced models
     FILL_MODES = {"chat"}       # optional, fill only: price only models in these modes, or with none
-    PRIORITY = {"eol_date": 90} # optional, a priority per field: higher wins; only eol_date is used now
+    PRIORITY = {"eol_date": 90, "status": 90}  # optional, a priority per field: higher wins; eol_date and status are used
     def parse() -> dict: ...    # no input: fetches its own source
 
 and returns:
@@ -23,7 +23,11 @@ All plugins run as one daily step, after LiteLLM's model list. Give first-party 
 ones: a fill plugin then sees the override prices of the same run and steps
 aside. The EOL step runs after the plugins and picks `registry_models.eol_date`
 from the lifecycle rows. A plugin's lifecycle eol_date counts only with
-`PRIORITY["eol_date"]`, and only while the plugin is enabled.
+`PRIORITY["eol_date"]`, and only while the plugin is enabled. The status
+step runs after the EOL step and sets `registry_models.status` from the
+lifecycle status: `LEGACY` gives `deprecated` and `ACTIVE` gives `active`,
+in any case; other text is ignored. A plugin's lifecycle status counts only
+with `PRIORITY["status"]`, and only while the plugin is enabled.
 
 Every key but provider and model_id is optional. Prices use LiteLLM's
 per-unit field names (`input_cost_per_token`, ...); the plugin converts units
