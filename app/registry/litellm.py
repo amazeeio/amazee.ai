@@ -211,8 +211,7 @@ class ProxyClient:
     def model_aliases(self) -> set[str]:
         """Alias names, with no fallback on error: `/model/info` lists each alias again, with the target's id."""
         fields = self._get("/router/settings").get("fields") or []
-        entry = next((f for f in fields if f.get("field_name") == "model_group_alias"), None)
-        value = entry.get("field_value") if entry else None
+        value = next((f.get("field_value") for f in fields if f.get("field_name") == "model_group_alias"), None)
         return set(value) if isinstance(value, dict) else set()
 
     def version(self) -> str | None:
