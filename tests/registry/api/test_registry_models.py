@@ -1,5 +1,10 @@
+from datetime import date, timedelta
+
+import pytest
+
 from app.registry.models import DBRegistryModelPrice, DBRegistryModelRegion, DBRegistryModelSupport
 from tests.registry.api.conftest import CHECKED_AT, TODAY, auth, model
+from tests.registry.api.test_registry_endpoints import MODEL_FIELDS
 
 
 def _proxy(name, priced=None, supported=None, region_available=None, checked_at=None, enabled=None):
@@ -117,3 +122,77 @@ def test_models_header_counts_the_filtered_total(client, admin_token, deployed):
 
     assert len(response.json()) == 1
     assert response.headers["X-Total-Count"] == "2"
+
+
+def _set(db, key, **fields):
+    row = model(db, *key.split("/", 1))
+    for name, value in fields.items():
+        setattr(row, name, value)
+    db.commit()
+
+
+def test_new_models_window_and_order(client, admin_token, deployed, registry_db):
+    today = date.today()
+    _set(registry_db, GPT, first_seen=today)
+    _set(registry_db, OLD, first_seen=today)
+    _set(registry_db, CLAUDE, first_seen=today - timedelta(days=30))
+
+    response = client.get("/registry/models/new", headers=auth(admin_token))
+    assert response.status_code == 200, response.text
+    assert response.headers["X-Total-Count"] == "3"
+    body = response.json()
+    # Newest first, then provider name and model id.
+    assert [f"{m['provider']}/{m['model_id']}" for m in body] == [GPT, OLD, CLAUDE]
+    assert set(body[0]) == MODEL_FIELDS
+    assert [p["proxy"] for p in body[0]["proxies"]] == ["local-eu1", "local-us1"]
+
+    assert client.get("/registry/models/new?days=29", headers=auth(admin_token)).headers["X-Total-Count"] == "2"
+    assert _keys_at(client, admin_token, "/registry/models/new?limit=1&offset=2") == [CLAUDE]
+
+
+def test_new_models_skip_older_models(client, admin_token, models, registry_db):
+    for key in (GPT, OLD, CLAUDE):
+        _set(registry_db, key, first_seen=date.today() - timedelta(days=31))
+
+    assert _keys_at(client, admin_token, "/registry/models/new") == []
+
+
+def test_eol_models_window_and_order(client, admin_token, deployed, registry_db):
+    today = date.today()
+    _set(registry_db, GPT, eol_date=today - timedelta(days=7))
+    _set(registry_db, CLAUDE, eol_date=today + timedelta(days=90))
+    _set(registry_db, OLD, status="deprecated", eol_date=None)
+
+    response = client.get("/registry/models/eol", headers=auth(admin_token))
+    assert response.status_code == 200, response.text
+    assert response.headers["X-Total-Count"] == "3"
+    body = response.json()
+    # By EOL date, and a deprecated model with no date comes last.
+    assert [f"{m['provider']}/{m['model_id']}" for m in body] == [GPT, CLAUDE, OLD]
+    assert set(body[0]) == MODEL_FIELDS
+    assert [p["proxy"] for p in body[1]["proxies"]] == ["local-us1"]
+
+    assert _keys_at(client, admin_token, "/registry/models/eol?days=89") == [GPT, OLD]
+
+
+def test_eol_models_skip_models_outside_the_window(client, admin_token, models, registry_db):
+    today = date.today()
+    _set(registry_db, GPT, eol_date=today - timedelta(days=8))
+    _set(registry_db, CLAUDE, eol_date=today + timedelta(days=91), status="deprecated")
+    # A removed model with no date is not in the list.
+    _set(registry_db, OLD, status="removed", eol_date=None)
+
+    assert _keys_at(client, admin_token, "/registry/models/eol") == []
+    assert _keys_at(client, admin_token, "/registry/models/eol?days=91") == [CLAUDE]
+
+
+@pytest.mark.parametrize("path", ["/registry/models/new", "/registry/models/eol"])
+@pytest.mark.parametrize("days", [0, 366])
+def test_new_and_eol_days_range(client, admin_token, path, days):
+    assert client.get(f"{path}?days={days}", headers=auth(admin_token)).status_code == 422
+
+
+def _keys_at(client, token, path):
+    response = client.get(path, headers=auth(token))
+    assert response.status_code == 200, response.text
+    return [f"{m['provider']}/{m['model_id']}" for m in response.json()]

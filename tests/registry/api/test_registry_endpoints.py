@@ -105,7 +105,9 @@ def test_models_limit_and_offset(client, admin_token, models):
     assert client.get("/registry/models?offset=-1", headers=_auth(admin_token)).status_code == 422
 
 
-@pytest.mark.parametrize("path", ["/registry/runs", "/registry/models"])
+@pytest.mark.parametrize(
+    "path", ["/registry/runs", "/registry/models", "/registry/models/new", "/registry/models/eol"]
+)
 def test_registry_endpoints_need_a_system_admin(client, test_token, path):
     assert client.get(path).status_code == 401
     assert client.get(path, headers=_auth(test_token)).status_code == 403
@@ -113,7 +115,7 @@ def test_registry_endpoints_need_a_system_admin(client, test_token, path):
 
 def test_registry_endpoints_are_admin_only_in_openapi():
     full = app.openapi()
-    paths = ["/registry/runs", "/registry/models"]
+    paths = ["/registry/runs", "/registry/models", "/registry/models/new", "/registry/models/eol"]
 
     for path in paths:
         assert _OPENAPI_TIERS[full["paths"][path]["get"]["operationId"]] == "admin"

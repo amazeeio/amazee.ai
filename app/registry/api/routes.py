@@ -1,9 +1,10 @@
 """Registry endpoints, all system admin only: run stats can hold region names and proxy errors."""
 
 from collections import defaultdict
+from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, Query, Response
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.security import get_role_min_system_admin
@@ -172,4 +173,44 @@ def list_models(
         )
         query = query.filter(has_price if priced else ~has_price)
     query = query.order_by(DBRegistryProvider.name, DBRegistryModel.model_id)
+    return _model_responses(db, _paginate(query, response, offset, limit))
+
+
+@router.get("/models/new", response_model=list[RegistryModelResponse])
+def new_models(
+    response: Response,
+    days: int = Query(30, ge=1, le=365),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    # The daily job sets first_seen from date.today(), so the window uses the same clock.
+    query = (
+        _model_query(db)
+        .filter(DBRegistryModel.first_seen >= date.today() - timedelta(days=days))
+        .order_by(DBRegistryModel.first_seen.desc(), DBRegistryProvider.name, DBRegistryModel.model_id)
+    )
+    return _model_responses(db, _paginate(query, response, offset, limit))
+
+
+@router.get("/models/eol", response_model=list[RegistryModelResponse])
+def eol_models(
+    response: Response,
+    days: int = Query(90, ge=1, le=365),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    today = date.today()
+    query = (
+        _model_query(db)
+        .filter(
+            or_(
+                DBRegistryModel.eol_date.between(today - timedelta(days=7), today + timedelta(days=days)),
+                # A retirement with no date yet still needs a replacement.
+                and_(DBRegistryModel.status == "deprecated", DBRegistryModel.eol_date.is_(None)),
+            )
+        )
+        .order_by(DBRegistryModel.eol_date.asc().nulls_last(), DBRegistryProvider.name, DBRegistryModel.model_id)
+    )
     return _model_responses(db, _paginate(query, response, offset, limit))
