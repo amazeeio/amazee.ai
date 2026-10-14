@@ -1,7 +1,10 @@
+from datetime import timedelta
+
 import pytest
 
 from app.main import _OPENAPI_TIERS, _scope_schema, app
-from app.registry.models import DBRegistryRun
+from app.registry.models import DBRegistryEvent, DBRegistryRun
+from tests.registry.api.conftest import CHECKED_AT, model
 
 RUN_FIELDS = {"id", "step", "started_at", "finished_at", "status", "stats", "error"}
 MODEL_FIELDS = {
@@ -116,6 +119,7 @@ def test_models_limit_and_offset(client, admin_token, models):
         "/registry/providers",
         "/registry/proxies",
         "/registry/proxies/local-us1",
+        "/registry/events",
     ],
 )
 def test_registry_endpoints_need_a_system_admin(client, test_token, path):
@@ -134,9 +138,79 @@ def test_registry_endpoints_are_admin_only_in_openapi():
         "/registry/providers",
         "/registry/proxies",
         "/registry/proxies/{proxy}",
+        "/registry/events",
     ]
 
     for path in paths:
         assert _OPENAPI_TIERS[full["paths"][path]["get"]["operationId"]] == "admin"
     assert not set(paths) & set(_scope_schema(full, 1)["paths"])
     assert set(paths) <= set(_scope_schema(full, 2)["paths"])
+
+
+EVENT_FIELDS = {"key", "proxy", "type", "created_at", "data"}
+
+
+@pytest.fixture
+def events(registry_db, deployed):
+    gpt = model(registry_db, "openai", "gpt-4o")
+    claude = model(registry_db, "bedrock", "anthropic.claude-x-v1:0")
+    old = model(registry_db, "openai", "gpt-old")
+    later = CHECKED_AT + timedelta(hours=1)
+    registry_db.add_all([
+        DBRegistryEvent(type="model.discovered", model_id=gpt.id, created_at=CHECKED_AT, data={}),
+        DBRegistryEvent(
+            type="model.support_changed", model_id=gpt.id, region_id=deployed["us"].id, created_at=later,
+            data={"supported": [None, True]},
+        ),
+        # Same time as the one before it, so the id decides the order.
+        DBRegistryEvent(
+            type="model.eol_announced", model_id=claude.id, created_at=later, data={"eol_date": "2027-01-01"},
+        ),
+        DBRegistryEvent(
+            type="model.discovered", model_id=old.id, created_at=CHECKED_AT - timedelta(days=1), data={},
+        ),
+    ])
+    registry_db.commit()
+
+
+def _events(client, token, **params):
+    response = client.get("/registry/events", params=params, headers=_auth(token))
+    assert response.status_code == 200, response.text
+    return response
+
+
+def test_events_newest_first_with_all_fields(client, admin_token, events):
+    response = _events(client, admin_token)
+
+    assert response.headers["X-Total-Count"] == "4"
+    body = response.json()
+    assert all(set(e) == EVENT_FIELDS for e in body)
+    assert [(e["key"], e["type"], e["proxy"]) for e in body] == [
+        ("bedrock/anthropic.claude-x-v1:0", "model.eol_announced", None),
+        ("openai/gpt-4o", "model.support_changed", "local-us1"),
+        ("openai/gpt-4o", "model.discovered", None),
+        ("openai/gpt-old", "model.discovered", None),
+    ]
+    assert body[0]["data"] == {"eol_date": "2027-01-01"}
+    assert body[0]["created_at"] == "2026-01-02T04:04:05Z"
+
+
+def test_events_filters(client, admin_token, events):
+    def keys(**params):
+        return [e["key"] for e in _events(client, admin_token, **params).json()]
+
+    assert keys(type="model.discovered") == ["openai/gpt-4o", "openai/gpt-old"]
+    assert keys(since=CHECKED_AT.isoformat()) == [
+        "bedrock/anthropic.claude-x-v1:0", "openai/gpt-4o", "openai/gpt-4o",
+    ]
+    assert keys(type="model.discovered", since=CHECKED_AT.isoformat()) == ["openai/gpt-4o"]
+    assert keys(type="model.nope") == []
+
+
+def test_events_limit_and_offset(client, admin_token, events):
+    response = _events(client, admin_token, limit=2, offset=1)
+
+    assert [e["type"] for e in response.json()] == ["model.support_changed", "model.discovered"]
+    assert response.headers["X-Total-Count"] == "4"
+    assert client.get("/registry/events?limit=1001", headers=_auth(admin_token)).status_code == 422
+    assert client.get("/registry/events?offset=-1", headers=_auth(admin_token)).status_code == 422

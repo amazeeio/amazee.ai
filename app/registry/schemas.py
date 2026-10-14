@@ -141,3 +141,11 @@ class RegistryProxyModelResponse(BaseModel):
 class RegistryProxyDetailResponse(RegistryProxyResponse):
     checked_at: datetime | None
     models: list[RegistryProxyModelResponse]
+
+
+class RegistryEventResponse(BaseModel):
+    key: str
+    proxy: str | None
+    type: str
+    created_at: datetime
+    data: dict

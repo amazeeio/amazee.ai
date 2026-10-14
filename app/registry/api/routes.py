@@ -1,7 +1,7 @@
 """Registry endpoints, all system admin only: run stats can hold region names and proxy errors."""
 
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import and_, func, or_, select
@@ -14,6 +14,7 @@ from app.db.models import DBRegion
 from app.registry.models import (
     DBRegistryAccessGroup,
     DBRegistryCloudAvailability,
+    DBRegistryEvent,
     DBRegistryModel,
     DBRegistryModelHistory,
     DBRegistryModelLifecycle,
@@ -28,6 +29,7 @@ from app.registry.models import (
 from app.registry.prices import pick_price
 from app.registry.schemas import (
     RegistryDeploymentResponse,
+    RegistryEventResponse,
     RegistryModelDeploymentResponse,
     RegistryModelDetailResponse,
     RegistryModelProxyResponse,
@@ -456,3 +458,33 @@ def get_proxy(proxy: str, db: Session = Depends(get_db)):
             for model, provider in rows
         ],
     )
+
+
+@router.get("/events", response_model=list[RegistryEventResponse])
+def list_events(
+    response: Response,
+    event_type: str | None = Query(None, alias="type"),
+    since: datetime | None = Query(None),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    # Most events are about a model, not a proxy, so the region join is an outer join.
+    query = (
+        db.query(DBRegistryEvent, DBRegistryProvider.name, DBRegistryModel.model_id, DBRegion.name)
+        .join(DBRegistryModel, DBRegistryModel.id == DBRegistryEvent.model_id)
+        .join(DBRegistryProvider, DBRegistryProvider.id == DBRegistryModel.provider_id)
+        .outerjoin(DBRegion, DBRegion.id == DBRegistryEvent.region_id)
+    )
+    if event_type:
+        query = query.filter(DBRegistryEvent.type == event_type)
+    if since:
+        query = query.filter(DBRegistryEvent.created_at >= since)
+    # The events of one run share now(), so the id keeps their order.
+    query = query.order_by(DBRegistryEvent.created_at.desc(), DBRegistryEvent.id.desc())
+    return [
+        RegistryEventResponse(
+            key=f"{provider}/{model_id}", proxy=proxy, type=event.type, created_at=event.created_at, data=event.data
+        )
+        for event, provider, model_id, proxy in _paginate(query, response, offset, limit)
+    ]
