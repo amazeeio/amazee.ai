@@ -30,11 +30,12 @@ class RegistryModelPriceResponse(BaseModel):
 
 class RegistryModelProxyResponse(BaseModel):
     proxy: str
-    priced: bool | None
-    supported: bool | None
-    region_available: bool | None
-    checked_at: datetime | None
-    enabled: bool | None
+    # Null when the proxy has no support row (priced to checked_at) or no deployment (enabled).
+    priced: bool | None = None
+    supported: bool | None = None
+    region_available: bool | None = None
+    checked_at: datetime | None = None
+    enabled: bool | None = None
 
 
 class RegistryModelResponse(BaseModel):

@@ -76,25 +76,23 @@ def _proxy_results(
         support = support.filter(DBRegistryModelSupport.region_id == region_id)
         deployments = deployments.filter(DBRegistryModelRegion.region_id == region_id)
 
-    merged: dict[tuple[int, int], dict] = {}
+    merged: dict[tuple[int, int], RegistryModelProxyResponse] = {}
     for row, proxy in support:
-        merged[(row.model_id, row.region_id)] = {
-            "proxy": proxy,
-            "priced": row.priced,
-            "supported": row.supported,
-            "region_available": row.region_available,
-            "checked_at": row.checked_at,
-            "enabled": None,
-        }
-    empty = dict.fromkeys(("priced", "supported", "region_available", "checked_at", "enabled"))
+        merged[(row.model_id, row.region_id)] = RegistryModelProxyResponse(
+            proxy=proxy,
+            priced=row.priced,
+            supported=row.supported,
+            region_available=row.region_available,
+            checked_at=row.checked_at,
+        )
     for model_id, region, enabled, proxy in deployments:
-        entry = merged.setdefault((model_id, region), {**empty, "proxy": proxy})
+        entry = merged.setdefault((model_id, region), RegistryModelProxyResponse(proxy=proxy))
         # One enabled deployment is enough for the model to be enabled on the proxy.
-        entry["enabled"] = bool(entry["enabled"]) or enabled
+        entry.enabled = bool(entry.enabled) or enabled
 
     results: dict[int, list[RegistryModelProxyResponse]] = defaultdict(list)
-    for (model_id, _), entry in sorted(merged.items(), key=lambda item: item[1]["proxy"]):
-        results[model_id].append(RegistryModelProxyResponse(**entry))
+    for (model_id, _), entry in sorted(merged.items(), key=lambda item: item[1].proxy):
+        results[model_id].append(entry)
     return results
 
 
