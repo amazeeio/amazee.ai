@@ -54,3 +54,55 @@ class RegistryModelResponse(BaseModel):
     last_seen: date
     price_scopes: list[RegistryModelPriceResponse]
     proxies: list[RegistryModelProxyResponse]
+
+
+class RegistryLifecycleResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    source: str
+    status: str | None
+    launched_at: date | None
+    legacy_at: date | None
+    extended_access_until: date | None
+    eol_date: date | None
+    last_seen: date
+
+
+class RegistryAvailabilityResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    cloud_region: str
+    source: str
+    call_types: list
+    last_seen: date
+
+
+class RegistryHistoryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    recorded_at: datetime
+    state: dict
+
+
+class RegistryDeploymentResponse(BaseModel):
+    proxy: str
+    model_name: str
+    litellm_model: str
+    enabled: bool
+    input_cost_per_token: float | None
+    output_cost_per_token: float | None
+    prices: dict
+    access_groups: list[str]
+
+
+class RegistryModelDeploymentResponse(RegistryDeploymentResponse):
+    # The price the registry writes into this deployment.
+    price: RegistryModelPriceResponse | None
+
+
+class RegistryModelDetailResponse(RegistryModelResponse):
+    supports: list[str]
+    lifecycle: list[RegistryLifecycleResponse]
+    availability: list[RegistryAvailabilityResponse]
+    deployments: list[RegistryModelDeploymentResponse]
+    history: list[RegistryHistoryResponse]

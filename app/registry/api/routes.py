@@ -3,7 +3,7 @@
 from collections import defaultdict
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
@@ -11,14 +11,27 @@ from app.core.security import get_role_min_system_admin
 from app.db.database import get_db
 from app.db.models import DBRegion
 from app.registry.models import (
+    DBRegistryAccessGroup,
+    DBRegistryCloudAvailability,
     DBRegistryModel,
+    DBRegistryModelHistory,
+    DBRegistryModelLifecycle,
     DBRegistryModelPrice,
     DBRegistryModelRegion,
+    DBRegistryModelRegionGroup,
     DBRegistryModelSupport,
     DBRegistryProvider,
+    DBRegistryProxy,
     DBRegistryRun,
 )
-from app.registry.schemas import RegistryModelProxyResponse, RegistryModelResponse, RegistryRunResponse
+from app.registry.prices import pick_price
+from app.registry.schemas import (
+    RegistryModelDeploymentResponse,
+    RegistryModelDetailResponse,
+    RegistryModelProxyResponse,
+    RegistryModelResponse,
+    RegistryRunResponse,
+)
 
 router = APIRouter(
     prefix="/registry", tags=["registry"], dependencies=[Depends(get_role_min_system_admin)]
@@ -110,6 +123,34 @@ def _model_responses(db: Session, rows: list) -> list[RegistryModelResponse]:
         )
         for model, provider_name in rows
     ]
+
+
+def _access_groups(db: Session, deployment_ids: list[int]) -> dict[int, list[str]]:
+    """The sorted access group slugs of each deployment."""
+    groups: dict[int, list[str]] = defaultdict(list)
+    if deployment_ids:
+        rows = (
+            db.query(DBRegistryModelRegionGroup.model_region_id, DBRegistryAccessGroup.slug)
+            .join(DBRegistryAccessGroup, DBRegistryAccessGroup.id == DBRegistryModelRegionGroup.access_group_id)
+            .filter(DBRegistryModelRegionGroup.model_region_id.in_(deployment_ids))
+            .order_by(DBRegistryAccessGroup.slug)
+        )
+        for deployment_id, slug in rows:
+            groups[deployment_id].append(slug)
+    return groups
+
+
+def _deployment_fields(deployment: DBRegistryModelRegion, proxy: str, groups: dict[int, list[str]]) -> dict:
+    return {
+        "proxy": proxy,
+        "model_name": deployment.model_name,
+        "litellm_model": deployment.litellm_model,
+        "enabled": deployment.enabled,
+        "input_cost_per_token": deployment.input_cost_per_token,
+        "output_cost_per_token": deployment.output_cost_per_token,
+        "prices": deployment.prices,
+        "access_groups": groups.get(deployment.id, []),
+    }
 
 
 @router.get("/runs", response_model=list[RegistryRunResponse])
@@ -214,3 +255,70 @@ def eol_models(
         .order_by(DBRegistryModel.eol_date.asc().nulls_last(), DBRegistryProvider.name, DBRegistryModel.model_id)
     )
     return _model_responses(db, _paginate(query, response, offset, limit))
+
+
+# Declared after /models/new and /models/eol: a path parameter would catch those two names.
+@router.get("/models/{key:path}", response_model=RegistryModelDetailResponse)
+def get_model(key: str, db: Session = Depends(get_db)):
+    # Only the first slash splits: model ids can hold slashes (deepinfra/BAAI/bge-m3).
+    provider, _, model_id = key.partition("/")
+    row = (
+        _model_query(db)
+        .filter(DBRegistryProvider.name == provider, DBRegistryModel.model_id == model_id)
+        .one_or_none()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    model = row[0]
+    base = _model_responses(db, [row])[0]
+
+    lifecycle = (
+        db.query(DBRegistryModelLifecycle)
+        .filter_by(provider=provider, model_id=model_id)
+        .order_by(DBRegistryModelLifecycle.source)
+        .all()
+    )
+    availability = (
+        db.query(DBRegistryCloudAvailability)
+        .filter_by(provider=provider, model_id=model_id)
+        .order_by(DBRegistryCloudAvailability.cloud_region, DBRegistryCloudAvailability.source)
+        .all()
+    )
+    deployments = (
+        db.query(DBRegistryModelRegion, DBRegion.name)
+        .join(DBRegion, DBRegion.id == DBRegistryModelRegion.region_id)
+        .filter(DBRegistryModelRegion.model_id == model.id)
+        .order_by(DBRegion.name, DBRegistryModelRegion.model_name)
+        .all()
+    )
+    cloud_regions = dict(
+        db.query(DBRegistryProxy.region_id, DBRegistryProxy.cloud_regions).filter(
+            DBRegistryProxy.region_id.in_({deployment.region_id for deployment, _ in deployments})
+        )
+    )
+    groups = _access_groups(db, [deployment.id for deployment, _ in deployments])
+    history = (
+        db.query(DBRegistryModelHistory)
+        .filter(DBRegistryModelHistory.model_id == model.id)
+        .order_by(DBRegistryModelHistory.recorded_at.desc(), DBRegistryModelHistory.id.desc())
+        .all()
+    )
+
+    return RegistryModelDetailResponse(
+        **base.model_dump(),
+        supports=model.supports,
+        lifecycle=lifecycle,
+        availability=availability,
+        # pick_price gets the deployed model string, so a geo id gets its geo price.
+        deployments=[
+            RegistryModelDeploymentResponse(
+                **_deployment_fields(deployment, proxy, groups),
+                price=pick_price(
+                    db, model.id, provider, deployment.litellm_model,
+                    (cloud_regions.get(deployment.region_id) or {}).get(provider),
+                ),
+            )
+            for deployment, proxy in deployments
+        ],
+        history=history,
+    )

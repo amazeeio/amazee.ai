@@ -2,7 +2,19 @@ from datetime import date, timedelta
 
 import pytest
 
-from app.registry.models import DBRegistryModelPrice, DBRegistryModelRegion, DBRegistryModelSupport
+from app.registry.models import (
+    DBRegistryAccessGroup,
+    DBRegistryCloudAvailability,
+    DBRegistryModel,
+    DBRegistryModelHistory,
+    DBRegistryModelLifecycle,
+    DBRegistryModelPrice,
+    DBRegistryModelRegion,
+    DBRegistryModelRegionGroup,
+    DBRegistryModelSupport,
+    DBRegistryProvider,
+    DBRegistryProxy,
+)
 from tests.registry.api.conftest import CHECKED_AT, TODAY, auth, model
 from tests.registry.api.test_registry_endpoints import MODEL_FIELDS
 
@@ -196,3 +208,140 @@ def _keys_at(client, token, path):
     response = client.get(path, headers=auth(token))
     assert response.status_code == 200, response.text
     return [f"{m['provider']}/{m['model_id']}" for m in response.json()]
+
+
+DETAIL_FIELDS = MODEL_FIELDS | {"supports", "lifecycle", "availability", "deployments", "history"}
+
+
+def test_model_detail(client, admin_token, deployed, registry_db):
+    claude = model(registry_db, "bedrock", "anthropic.claude-x-v1:0")
+    claude.supports = ["vision"]
+    deployment = registry_db.query(DBRegistryModelRegion).filter_by(model_id=claude.id).one()
+    late, early = DBRegistryAccessGroup(slug="team-b"), DBRegistryAccessGroup(slug="team-a")
+    registry_db.add_all([late, early])
+    registry_db.flush()
+    registry_db.add_all([
+        DBRegistryModelRegionGroup(model_region_id=deployment.id, access_group_id=late.id),
+        DBRegistryModelRegionGroup(model_region_id=deployment.id, access_group_id=early.id),
+        DBRegistryModelPrice(
+            model_id=claude.id, scope_kind="base", scope="", prices={"input_cost_per_token": 3e-06},
+            source="litellm", last_seen=TODAY,
+        ),
+        DBRegistryModelPrice(
+            model_id=claude.id, scope_kind="cloud_region", scope="us-east-1",
+            prices={"input_cost_per_token": 3.1e-06}, source="litellm", last_seen=TODAY,
+        ),
+        DBRegistryModelPrice(
+            model_id=claude.id, scope_kind="geo", scope="us", prices={"input_cost_per_token": 3.3e-06},
+            source="litellm", last_seen=TODAY,
+        ),
+        DBRegistryModelLifecycle(
+            provider="bedrock", model_id=claude.model_id, source="litellm", eol_date=TODAY, last_seen=TODAY,
+        ),
+        DBRegistryModelLifecycle(
+            provider="bedrock", model_id=claude.model_id, source="bedrock_api", status="LEGACY",
+            legacy_at=TODAY, last_seen=TODAY,
+        ),
+        DBRegistryCloudAvailability(
+            provider="bedrock", model_id=claude.model_id, cloud_region="us-east-1", source="bedrock_api",
+            call_types=["INFERENCE_PROFILE"], last_seen=TODAY,
+        ),
+        DBRegistryCloudAvailability(
+            provider="bedrock", model_id=claude.model_id, cloud_region="eu-west-1", source="bedrock_api",
+            call_types=["ON_DEMAND"], last_seen=TODAY,
+        ),
+        DBRegistryModelHistory(model_id=claude.id, recorded_at=CHECKED_AT, state={"status": "active"}),
+        DBRegistryModelHistory(
+            model_id=claude.id, recorded_at=CHECKED_AT + timedelta(days=1), state={"status": "deprecated"},
+        ),
+    ])
+    registry_db.commit()
+
+    response = client.get("/registry/models/bedrock/anthropic.claude-x-v1:0", headers=auth(admin_token))
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body) == DETAIL_FIELDS
+    assert body["model_id"] == "anthropic.claude-x-v1:0"
+    assert body["proxies"] == [_proxy("local-us1", priced=True, checked_at=CHECKED_AT, enabled=True)]
+    assert body["supports"] == ["vision"]
+    assert [(r["source"], r["status"]) for r in body["lifecycle"]] == [("bedrock_api", "LEGACY"), ("litellm", None)]
+    assert [(r["cloud_region"], r["call_types"]) for r in body["availability"]] == [
+        ("eu-west-1", ["ON_DEMAND"]),
+        ("us-east-1", ["INFERENCE_PROFILE"]),
+    ]
+    assert body["deployments"] == [{
+        "proxy": "local-us1",
+        "model_name": "claude-x",
+        "litellm_model": "bedrock/us.anthropic.claude-x-v1:0",
+        "enabled": True,
+        "input_cost_per_token": None,
+        "output_cost_per_token": None,
+        "prices": {},
+        "access_groups": ["team-a", "team-b"],
+        # The deployed string has the `us.` geo prefix, so the geo price beats the cloud region price.
+        "price": {
+            "scope_kind": "geo", "scope": "us", "prices": {"input_cost_per_token": 3.3e-06}, "source": "litellm",
+        },
+    }]
+    assert [h["state"] for h in body["history"]] == [{"status": "deprecated"}, {"status": "active"}]
+
+
+def test_model_detail_deployment_gets_the_proxy_cloud_region_price(client, admin_token, deployed, registry_db):
+    gpt = model(registry_db, "openai", "gpt-4o")
+    registry_db.get(DBRegistryProxy, deployed["us"].id).cloud_regions = {"openai": "eastus"}
+    registry_db.add(DBRegistryModelPrice(
+        model_id=gpt.id, scope_kind="cloud_region", scope="eastus", prices={"input_cost_per_token": 2.6e-06},
+        source="litellm", last_seen=TODAY,
+    ))
+    registry_db.commit()
+
+    response = client.get("/registry/models/openai/gpt-4o", headers=auth(admin_token))
+
+    assert response.status_code == 200, response.text
+    prices = {d["proxy"]: (d["enabled"], d["price"]["scope_kind"], d["price"]["scope"]) for d in response.json()["deployments"]}
+    # The EU proxy has no cloud region for openai, so it gets the base price.
+    assert prices == {"local-eu1": (False, "base", ""), "local-us1": (True, "cloud_region", "eastus")}
+
+
+def test_model_detail_splits_the_key_on_the_first_slash(client, admin_token, registry_db):
+    deepinfra = DBRegistryProvider(name="deepinfra")
+    registry_db.add(deepinfra)
+    registry_db.flush()
+    registry_db.add(DBRegistryModel(
+        provider_id=deepinfra.id, model_id="BAAI/bge-m3", source="litellm", first_seen=TODAY, last_seen=TODAY,
+    ))
+    registry_db.commit()
+
+    response = client.get("/registry/models/deepinfra/BAAI/bge-m3", headers=auth(admin_token))
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert (body["provider"], body["model_id"]) == ("deepinfra", "BAAI/bge-m3")
+    assert body["deployments"] == body["history"] == body["lifecycle"] == []
+
+
+@pytest.mark.parametrize("key", ["openai/nope", "gpt-4o", "nope/gpt-4o"])
+def test_model_detail_unknown_key_is_404(client, admin_token, models, key):
+    response = client.get(f"/registry/models/{key}", headers=auth(admin_token))
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Model not found"
+
+
+def test_model_routes_new_and_eol_are_not_model_keys(client, admin_token, models, registry_db):
+    provider = DBRegistryProvider(name="new")
+    registry_db.add(provider)
+    registry_db.flush()
+    registry_db.add(DBRegistryModel(
+        provider_id=provider.id, model_id="x", source="litellm", first_seen=TODAY, last_seen=TODAY,
+    ))
+    registry_db.commit()
+
+    for path in ("/registry/models/new", "/registry/models/eol"):
+        response = client.get(path, headers=auth(admin_token))
+        assert response.status_code == 200, response.text
+        assert isinstance(response.json(), list)
+    detail = client.get("/registry/models/new/x", headers=auth(admin_token))
+    assert detail.status_code == 200, detail.text
+    assert (detail.json()["provider"], detail.json()["model_id"]) == ("new", "x")
