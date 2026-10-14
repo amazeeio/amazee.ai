@@ -105,9 +105,11 @@ def import_deployments(
     real_ids = {
         (dep.get("model_info") or {}).get("id") for dep in deployments if dep.get("model_name") not in aliases
     } - {None}
+    stored_ids = set()
     for dep in deployments:
-        if dep.get("model_name") in aliases and (dep.get("model_info") or {}).get("id") in real_ids:
-            # Skip only a row that repeats a deployment already listed under its real name.
+        dep_id = (dep.get("model_info") or {}).get("id")
+        if dep.get("model_name") in aliases and (dep_id in real_ids or dep_id in stored_ids):
+            # Skip only a row that repeats a deployment listed under a real name or already stored.
             stats["aliases"].append(dep.get("model_name"))
             continue
         params = dep.get("litellm_params") or {}
@@ -165,6 +167,8 @@ def import_deployments(
             group = _get_or_create(db, DBRegistryAccessGroup, slug=slug, defaults={"label": slug})
             db.add(DBRegistryModelRegionGroup(model_region_id=model_region.id, access_group_id=group.id))
         stats["imported"] += 1
+        if dep_id is not None:
+            stored_ids.add(dep_id)
 
     if proxy is None:
         proxy = DBRegistryProxy(region_id=region.id)
