@@ -76,10 +76,14 @@ def test_models_total_count_header(client, admin_token, deployed):
     assert response.headers["X-Total-Count"] == "3"
 
 
-def _keys(client, token, query):
-    response = client.get(f"/registry/models?{query}", headers=auth(token))
+def _keys_at(client, token, path):
+    response = client.get(path, headers=auth(token))
     assert response.status_code == 200, response.text
     return [f"{m['provider']}/{m['model_id']}" for m in response.json()]
+
+
+def _keys(client, token, query):
+    return _keys_at(client, token, f"/registry/models?{query}")
 
 
 CLAUDE, GPT, OLD = "bedrock/anthropic.claude-x-v1:0", "openai/gpt-4o", "openai/gpt-old"
@@ -201,12 +205,6 @@ def test_eol_models_skip_models_outside_the_window(client, admin_token, models, 
 @pytest.mark.parametrize("days", [0, 366])
 def test_new_and_eol_days_range(client, admin_token, path, days):
     assert client.get(f"{path}?days={days}", headers=auth(admin_token)).status_code == 422
-
-
-def _keys_at(client, token, path):
-    response = client.get(path, headers=auth(token))
-    assert response.status_code == 200, response.text
-    return [f"{m['provider']}/{m['model_id']}" for m in response.json()]
 
 
 DETAIL_FIELDS = MODEL_FIELDS | {"supports", "lifecycle", "availability", "deployments", "history"}
