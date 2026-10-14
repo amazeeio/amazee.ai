@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.main import _OPENAPI_TIERS, _scope_schema, app
+from app.registry.api.routes import router
 from app.registry.models import DBRegistryEvent, DBRegistryRun
 from tests.registry.api.conftest import CHECKED_AT, MODEL_FIELDS, RUN_FIELDS, auth, model
 
@@ -119,17 +120,10 @@ def test_registry_endpoints_need_a_system_admin(client, test_token, path):
 
 def test_registry_endpoints_are_admin_only_in_openapi():
     full = app.openapi()
-    paths = [
-        "/registry/runs",
-        "/registry/models",
-        "/registry/models/new",
-        "/registry/models/eol",
-        "/registry/models/{key}",
-        "/registry/providers",
-        "/registry/proxies",
-        "/registry/proxies/{proxy}",
-        "/registry/events",
-    ]
+    # Every registry route, so a new one cannot be left out of this check.
+    paths = [route.path_format for route in router.routes]
+    # path_format drops the converter, as the OpenAPI document does.
+    assert "/registry/models/{key}" in paths
 
     for path in paths:
         assert _OPENAPI_TIERS[full["paths"][path]["get"]["operationId"]] == "admin"
