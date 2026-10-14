@@ -13,6 +13,13 @@ from app.registry.models import (
     DBRegistryProxy,
 )
 
+RUN_FIELDS = {"id", "step", "started_at", "finished_at", "status", "stats", "error", "stale"}
+MODEL_FIELDS = {
+    "provider", "model_id", "mode", "max_input_tokens", "max_output_tokens",
+    "input_cost_per_token", "output_cost_per_token", "prices", "eol_date",
+    "status", "family", "manufacturer", "source", "first_seen", "last_seen", "price_scopes",
+    "proxies",
+}
 TODAY = date(2026, 1, 1)
 CHECKED_AT = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
 

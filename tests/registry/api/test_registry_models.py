@@ -15,8 +15,7 @@ from app.registry.models import (
     DBRegistryProvider,
     DBRegistryProxy,
 )
-from tests.registry.api.conftest import CHECKED_AT, TODAY, auth, model
-from tests.registry.api.test_registry_endpoints import MODEL_FIELDS
+from tests.registry.api.conftest import CHECKED_AT, MODEL_FIELDS, TODAY, auth, model
 
 
 def _proxy(name, priced=None, supported=None, region_available=None, checked_at=None, enabled=None):

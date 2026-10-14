@@ -4,15 +4,7 @@ import pytest
 
 from app.main import _OPENAPI_TIERS, _scope_schema, app
 from app.registry.models import DBRegistryEvent, DBRegistryRun
-from tests.registry.api.conftest import CHECKED_AT, auth, model
-
-RUN_FIELDS = {"id", "step", "started_at", "finished_at", "status", "stats", "error", "stale"}
-MODEL_FIELDS = {
-    "provider", "model_id", "mode", "max_input_tokens", "max_output_tokens",
-    "input_cost_per_token", "output_cost_per_token", "prices", "eol_date",
-    "status", "family", "manufacturer", "source", "first_seen", "last_seen", "price_scopes",
-    "proxies",
-}
+from tests.registry.api.conftest import CHECKED_AT, MODEL_FIELDS, RUN_FIELDS, auth, model
 
 
 @pytest.fixture
