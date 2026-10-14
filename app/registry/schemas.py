@@ -137,7 +137,7 @@ class RegistryProxyModelResponse(BaseModel):
     key: str
     status: str
     eol_date: date | None
-    support: RegistryModelProxyResponse | None
+    support: RegistryModelProxyResponse
     deployments: list[RegistryDeploymentResponse]
 
 
