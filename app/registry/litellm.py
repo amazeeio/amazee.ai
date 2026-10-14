@@ -208,6 +208,12 @@ class ProxyClient:
     def model_info(self) -> list[dict]:
         return self._get("/model/info").get("data") or []
 
+    def model_aliases(self) -> set[str]:
+        """Alias names, with no fallback on error: `/model/info` lists each alias again, with the target's id."""
+        fields = self._get("/router/settings").get("fields") or []
+        value = next((f.get("field_value") for f in fields if f.get("field_name") == "model_group_alias"), None)
+        return set(value) if isinstance(value, dict) else set()
+
     def version(self) -> str | None:
         try:
             return self._get("/openapi.json").get("info", {}).get("version")

@@ -5,6 +5,7 @@ import is refused: it would overwrite registry decisions with proxy state.
 """
 
 import logging
+from collections.abc import Set as AbstractSet
 from datetime import UTC, date, datetime
 
 from sqlalchemy.orm import Session
@@ -92,6 +93,7 @@ def import_deployments(
     deployments: list[dict],
     version: str | None,
     credential_regions: dict[str, str],
+    aliases: AbstractSet[str] = frozenset(),
     today: date | None = None,
 ) -> dict:
     proxy = db.get(DBRegistryProxy, region.id)
@@ -99,8 +101,17 @@ def import_deployments(
         raise AlreadyImported(f"region {region.name} was imported at {proxy.imported_at}")
     today = today or date.today()
 
-    stats = {"deployments": len(deployments), "imported": 0, "skipped": []}
+    stats = {"deployments": len(deployments), "imported": 0, "skipped": [], "aliases": []}
+    real_ids = {
+        (dep.get("model_info") or {}).get("id") for dep in deployments if dep.get("model_name") not in aliases
+    } - {None}
+    stored_ids = set()
     for dep in deployments:
+        dep_id = (dep.get("model_info") or {}).get("id")
+        if dep.get("model_name") in aliases and (dep_id in real_ids or dep_id in stored_ids):
+            # Skip only a row that repeats a deployment listed under a real name or already stored.
+            stats["aliases"].append(dep.get("model_name"))
+            continue
         params = dep.get("litellm_params") or {}
         info = dep.get("model_info") or {}
         litellm_model = params.get("model") or ""
@@ -156,6 +167,8 @@ def import_deployments(
             group = _get_or_create(db, DBRegistryAccessGroup, slug=slug, defaults={"label": slug})
             db.add(DBRegistryModelRegionGroup(model_region_id=model_region.id, access_group_id=group.id))
         stats["imported"] += 1
+        if dep_id is not None:
+            stored_ids.add(dep_id)
 
     if proxy is None:
         proxy = DBRegistryProxy(region_id=region.id)
@@ -176,4 +189,5 @@ def _import(db: Session, region: DBRegion) -> dict:
         deployments = client.model_info()
         version = client.version()
         credential_regions = client.credential_regions()
-    return import_deployments(db, region, deployments, version, credential_regions)
+        aliases = client.model_aliases()
+    return import_deployments(db, region, deployments, version, credential_regions, aliases=aliases)
