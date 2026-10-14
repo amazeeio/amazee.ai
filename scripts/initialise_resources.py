@@ -17,6 +17,7 @@ from app.core.limit_service import setup_default_limits
 from app.core.security import get_password_hash
 from app.db.database import engine
 from app.db.models import Base, DBUser
+import app.registry.models  # noqa: F401  so a fresh create_all also builds the registry tables
 from app.services.ses import SESService
 
 

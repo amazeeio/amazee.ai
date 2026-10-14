@@ -26,6 +26,7 @@ from app.middleware.audit import AuditLogMiddleware
 from app.middleware.auth import AuthMiddleware
 from app.middleware.caching import CacheControlMiddleware
 from app.middleware.prometheus import PrometheusMiddleware
+from app.registry.api.routes import router as registry_router
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -226,6 +227,7 @@ app.include_router(spend.router, prefix="/spend", tags=["spend"])
 app.include_router(admin_model_apply.router)
 app.include_router(admin_models.router)
 app.include_router(access_groups.router)
+app.include_router(registry_router)
 
 
 @app.get("/", include_in_schema=False)
