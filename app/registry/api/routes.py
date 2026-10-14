@@ -3,6 +3,7 @@
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, Query, Response
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.core.security import get_role_min_system_admin
@@ -129,11 +130,17 @@ def list_models(
     provider: str | None = Query(None),
     status: str | None = Query(None),
     q: str | None = Query(None),
+    family: str | None = Query(None),
+    proxy: str | None = Query(None),
+    enabled: bool | None = Query(None),
+    supported: bool | None = Query(None),
+    priced: bool | None = Query(None),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
     query = _model_query(db)
+    region_ids = select(DBRegion.id).where(DBRegion.name == proxy)
     if provider:
         query = query.filter(DBRegistryProvider.name == provider)
     if status:
@@ -141,5 +148,28 @@ def list_models(
     if q:
         escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         query = query.filter(DBRegistryModel.model_id.ilike(f"%{escaped}%", escape="\\"))
+    if family:
+        query = query.filter(DBRegistryModel.family == family)
+    if proxy:
+        deployed = select(DBRegistryModelRegion.model_id).where(DBRegistryModelRegion.region_id.in_(region_ids))
+        query = query.filter(DBRegistryModel.id.in_(deployed))
+    if enabled is not None:
+        on = select(DBRegistryModelRegion.model_id).where(DBRegistryModelRegion.enabled.is_(True))
+        if proxy:
+            on = on.where(DBRegistryModelRegion.region_id.in_(region_ids))
+        query = query.filter(DBRegistryModel.id.in_(on) if enabled else DBRegistryModel.id.not_in(on))
+    if supported is not None:
+        # False means a proxy said no; an unknown (null) result matches neither value.
+        matches = select(DBRegistryModelSupport.model_id).where(DBRegistryModelSupport.supported.is_(supported))
+        if proxy:
+            matches = matches.where(DBRegistryModelSupport.region_id.in_(region_ids))
+        query = query.filter(DBRegistryModel.id.in_(matches))
+    if priced is not None:
+        has_price = or_(
+            DBRegistryModel.input_cost_per_token.is_not(None),
+            DBRegistryModel.output_cost_per_token.is_not(None),
+            DBRegistryModel.id.in_(select(DBRegistryModelPrice.model_id)),
+        )
+        query = query.filter(has_price if priced else ~has_price)
     query = query.order_by(DBRegistryProvider.name, DBRegistryModel.model_id)
     return _model_responses(db, _paginate(query, response, offset, limit))
