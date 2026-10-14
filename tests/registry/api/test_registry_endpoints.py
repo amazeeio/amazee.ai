@@ -4,7 +4,7 @@ import pytest
 
 from app.main import _OPENAPI_TIERS, _scope_schema, app
 from app.registry.models import DBRegistryEvent, DBRegistryRun
-from tests.registry.api.conftest import CHECKED_AT, model
+from tests.registry.api.conftest import CHECKED_AT, auth, model
 
 RUN_FIELDS = {"id", "step", "started_at", "finished_at", "status", "stats", "error", "stale"}
 MODEL_FIELDS = {
@@ -13,10 +13,6 @@ MODEL_FIELDS = {
     "status", "family", "manufacturer", "source", "first_seen", "last_seen", "price_scopes",
     "proxies",
 }
-
-
-def _auth(token):
-    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.fixture
@@ -35,7 +31,7 @@ def _model_ids(response):
 
 
 def test_runs_are_newest_first_with_all_fields(client, admin_token, runs):
-    response = client.get("/registry/runs", headers=_auth(admin_token))
+    response = client.get("/registry/runs", headers=auth(admin_token))
 
     assert response.status_code == 200, response.text
     body = response.json()
@@ -48,7 +44,7 @@ def test_runs_are_newest_first_with_all_fields(client, admin_token, runs):
 
 
 def test_runs_step_filter(client, admin_token, runs):
-    response = client.get("/registry/runs?step=plugin:deepinfra_api", headers=_auth(admin_token))
+    response = client.get("/registry/runs?step=plugin:deepinfra_api", headers=auth(admin_token))
 
     assert response.status_code == 200, response.text
     assert [(r["id"], r["step"]) for r in response.json()] == [
@@ -58,14 +54,14 @@ def test_runs_step_filter(client, admin_token, runs):
 
 
 def test_runs_limit_is_enforced(client, admin_token, runs):
-    newest = client.get("/registry/runs?limit=1", headers=_auth(admin_token)).json()
+    newest = client.get("/registry/runs?limit=1", headers=auth(admin_token)).json()
     assert [r["id"] for r in newest] == [3]
-    assert client.get("/registry/runs?limit=501", headers=_auth(admin_token)).status_code == 422
-    assert client.get("/registry/runs?limit=0", headers=_auth(admin_token)).status_code == 422
+    assert client.get("/registry/runs?limit=501", headers=auth(admin_token)).status_code == 422
+    assert client.get("/registry/runs?limit=0", headers=auth(admin_token)).status_code == 422
 
 
 def test_models_return_fields_and_price_scopes(client, admin_token, models):
-    response = client.get("/registry/models", headers=_auth(admin_token))
+    response = client.get("/registry/models", headers=auth(admin_token))
 
     assert _model_ids(response) == [
         ("bedrock", "anthropic.claude-x-v1:0"),
@@ -92,7 +88,7 @@ def test_models_return_fields_and_price_scopes(client, admin_token, models):
 
 def test_models_filters(client, admin_token, models):
     def ids(query):
-        return _model_ids(client.get(f"/registry/models?{query}", headers=_auth(admin_token)))
+        return _model_ids(client.get(f"/registry/models?{query}", headers=auth(admin_token)))
 
     assert ids("provider=openai") == [("openai", "gpt-4o"), ("openai", "gpt-old")]
     assert ids("status=removed") == [("openai", "gpt-old")]
@@ -103,11 +99,11 @@ def test_models_filters(client, admin_token, models):
 
 
 def test_models_limit_and_offset(client, admin_token, models):
-    response = client.get("/registry/models?limit=1&offset=1", headers=_auth(admin_token))
+    response = client.get("/registry/models?limit=1&offset=1", headers=auth(admin_token))
 
     assert _model_ids(response) == [("openai", "gpt-4o")]
-    assert client.get("/registry/models?limit=1001", headers=_auth(admin_token)).status_code == 422
-    assert client.get("/registry/models?offset=-1", headers=_auth(admin_token)).status_code == 422
+    assert client.get("/registry/models?limit=1001", headers=auth(admin_token)).status_code == 422
+    assert client.get("/registry/models?offset=-1", headers=auth(admin_token)).status_code == 422
 
 
 @pytest.mark.parametrize(
@@ -126,7 +122,7 @@ def test_models_limit_and_offset(client, admin_token, models):
 )
 def test_registry_endpoints_need_a_system_admin(client, test_token, path):
     assert client.get(path).status_code == 401
-    assert client.get(path, headers=_auth(test_token)).status_code == 403
+    assert client.get(path, headers=auth(test_token)).status_code == 403
 
 
 def test_registry_endpoints_are_admin_only_in_openapi():
@@ -176,7 +172,7 @@ def events(registry_db, deployed):
 
 
 def _events(client, token, **params):
-    response = client.get("/registry/events", params=params, headers=_auth(token))
+    response = client.get("/registry/events", params=params, headers=auth(token))
     assert response.status_code == 200, response.text
     return response
 
@@ -214,8 +210,8 @@ def test_events_limit_and_offset(client, admin_token, events):
 
     assert [e["type"] for e in response.json()] == ["model.support_changed", "model.discovered"]
     assert response.headers["X-Total-Count"] == "4"
-    assert client.get("/registry/events?limit=1001", headers=_auth(admin_token)).status_code == 422
-    assert client.get("/registry/events?offset=-1", headers=_auth(admin_token)).status_code == 422
+    assert client.get("/registry/events?limit=1001", headers=auth(admin_token)).status_code == 422
+    assert client.get("/registry/events?offset=-1", headers=auth(admin_token)).status_code == 422
 
 
 def test_runs_stale_flag(client, admin_token, registry_db):
@@ -233,7 +229,7 @@ def test_runs_stale_flag(client, admin_token, registry_db):
     ])
     registry_db.commit()
 
-    response = client.get("/registry/runs", headers=_auth(admin_token))
+    response = client.get("/registry/runs", headers=auth(admin_token))
 
     assert response.status_code == 200, response.text
     assert [(r["step"], r["status"], r["stale"]) for r in response.json()] == [
@@ -247,9 +243,9 @@ def test_runs_stale_flag(client, admin_token, registry_db):
 
 
 def test_runs_total_count_header(client, admin_token, runs):
-    response = client.get("/registry/runs?limit=1", headers=_auth(admin_token))
+    response = client.get("/registry/runs?limit=1", headers=auth(admin_token))
     assert len(response.json()) == 1
     assert response.headers["X-Total-Count"] == "3"
 
-    filtered = client.get("/registry/runs?step=plugin:deepinfra_api&limit=1", headers=_auth(admin_token))
+    filtered = client.get("/registry/runs?step=plugin:deepinfra_api&limit=1", headers=auth(admin_token))
     assert filtered.headers["X-Total-Count"] == "2"
