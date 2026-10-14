@@ -49,7 +49,7 @@ def test_import_creates_registry_rows(registry_db, proxy_region):
     )
     registry_db.commit()
 
-    assert stats == {"deployments": 4, "imported": 3, "skipped": ["no-prefix"]}
+    assert stats == {"deployments": 4, "imported": 3, "skipped": ["no-prefix"], "aliases": []}
     assert {p.name for p in registry_db.query(DBRegistryProvider)} == {"bedrock", "deepinfra"}
     models = {m.model_id: m for m in registry_db.query(DBRegistryModel)}
     assert set(models) == {"anthropic.claude-x-v1:0", "meta-llama/Llama-3"}
@@ -229,6 +229,20 @@ def test_import_takes_the_provider_from_model_info_without_prefix(registry_db, p
     assert registry_db.get(DBRegistryProvider, model.provider_id).name == "bedrock"
     assert registry_db.query(DBRegistryModelRegion).one().litellm_model == "amazon.titan-embed-text-v2:0"
     assert registry_db.get(DBRegistryProxy, proxy_region.id).cloud_regions == {"bedrock": "us-east-1"}
+
+
+def test_import_skips_router_alias_copies_of_a_deployment(registry_db, proxy_region):
+    params = {"model": "bedrock/us.anthropic.claude-x-v1:0"}
+    deployments = [
+        {"model_name": "claude-x", "litellm_params": params, "model_info": {"id": "dep-1"}},
+        # LiteLLM lists a model_group_alias as a copy of its target, with the same id.
+        {"model_name": "chat", "litellm_params": params, "model_info": {"id": "dep-1"}},
+    ]
+    stats = import_deployments(registry_db, proxy_region, deployments, None, {}, aliases={"chat"})
+    registry_db.commit()
+
+    assert stats == {"deployments": 2, "imported": 1, "skipped": [], "aliases": ["chat"]}
+    assert registry_db.query(DBRegistryModelRegion).one().model_name == "claude-x"
 
 
 def test_import_keeps_deployment_config_without_secrets(registry_db, proxy_region):

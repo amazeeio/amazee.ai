@@ -5,6 +5,7 @@ import is refused: it would overwrite registry decisions with proxy state.
 """
 
 import logging
+from collections.abc import Set as AbstractSet
 from datetime import UTC, date, datetime
 
 from sqlalchemy.orm import Session
@@ -92,6 +93,7 @@ def import_deployments(
     deployments: list[dict],
     version: str | None,
     credential_regions: dict[str, str],
+    aliases: AbstractSet[str] = frozenset(),
     today: date | None = None,
 ) -> dict:
     proxy = db.get(DBRegistryProxy, region.id)
@@ -99,8 +101,12 @@ def import_deployments(
         raise AlreadyImported(f"region {region.name} was imported at {proxy.imported_at}")
     today = today or date.today()
 
-    stats = {"deployments": len(deployments), "imported": 0, "skipped": []}
+    stats = {"deployments": len(deployments), "imported": 0, "skipped": [], "aliases": []}
     for dep in deployments:
+        if dep.get("model_name") in aliases:
+            # The same deployment again under its alias name, not a deployment of its own.
+            stats["aliases"].append(dep.get("model_name"))
+            continue
         params = dep.get("litellm_params") or {}
         info = dep.get("model_info") or {}
         litellm_model = params.get("model") or ""
@@ -176,4 +182,5 @@ def _import(db: Session, region: DBRegion) -> dict:
         deployments = client.model_info()
         version = client.version()
         credential_regions = client.credential_regions()
-    return import_deployments(db, region, deployments, version, credential_regions)
+        aliases = client.model_aliases()
+    return import_deployments(db, region, deployments, version, credential_regions, aliases=aliases)
