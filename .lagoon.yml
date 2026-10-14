@@ -126,6 +126,12 @@ environments:
         schedule: "40 6 * * *"
         command: python scripts/trigger_eol_scan_job.py
         service: backend
+      # The upstream sources change slowly, and the next daily run repairs a step that failed.
+      # DEV only, because the registry goes to prod only after every phase is done.
+      - name: registry-daily-job
+        schedule: "20 5 * * *"
+        command: python scripts/trigger_registry_daily_job.py
+        service: backend
 
 tasks:
   post-rollout:
