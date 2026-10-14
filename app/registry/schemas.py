@@ -26,6 +26,15 @@ class RegistryModelPriceResponse(BaseModel):
     source: str
 
 
+class RegistryModelProxyResponse(BaseModel):
+    proxy: str
+    priced: bool | None
+    supported: bool | None
+    region_available: bool | None
+    checked_at: datetime | None
+    enabled: bool | None
+
+
 class RegistryModelResponse(BaseModel):
     provider: str
     model_id: str
@@ -44,3 +53,4 @@ class RegistryModelResponse(BaseModel):
     first_seen: date
     last_seen: date
     price_scopes: list[RegistryModelPriceResponse]
+    proxies: list[RegistryModelProxyResponse]

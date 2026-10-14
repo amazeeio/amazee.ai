@@ -1,18 +1,15 @@
-from datetime import date
-from decimal import Decimal
-
 import pytest
 
 from app.main import _OPENAPI_TIERS, _scope_schema, app
-from app.registry.models import DBRegistryModel, DBRegistryModelPrice, DBRegistryProvider, DBRegistryRun
+from app.registry.models import DBRegistryRun
 
 RUN_FIELDS = {"id", "step", "started_at", "finished_at", "status", "stats", "error"}
 MODEL_FIELDS = {
     "provider", "model_id", "mode", "max_input_tokens", "max_output_tokens",
     "input_cost_per_token", "output_cost_per_token", "prices", "eol_date",
     "status", "family", "manufacturer", "source", "first_seen", "last_seen", "price_scopes",
+    "proxies",
 }
-TODAY = date(2026, 1, 1)
 
 
 def _auth(token):
@@ -25,45 +22,6 @@ def runs(registry_db):
         DBRegistryRun(step="plugin:deepinfra_api", status="ok", stats={"models": 3}),
         DBRegistryRun(step="litellm_list", status="failed", error="proxy timed out"),
         DBRegistryRun(step="plugin:deepinfra_api", status="running"),
-    ])
-    registry_db.commit()
-
-
-@pytest.fixture
-def models(registry_db):
-    openai = DBRegistryProvider(name="openai")
-    bedrock = DBRegistryProvider(name="bedrock")
-    registry_db.add_all([openai, bedrock])
-    registry_db.flush()
-    common = {"source": "litellm", "first_seen": TODAY, "last_seen": TODAY}
-    gpt = DBRegistryModel(
-        provider_id=openai.id,
-        model_id="gpt-4o",
-        mode="chat",
-        input_cost_per_token=Decimal("0.0000025"),
-        output_cost_per_token=Decimal("0.00001"),
-        prices={"input_cost_per_token": 2.5e-06},
-        **common,
-    )
-    registry_db.add_all([
-        gpt,
-        DBRegistryModel(provider_id=openai.id, model_id="gpt-old", status="removed", **common),
-        DBRegistryModel(
-            provider_id=bedrock.id, model_id="anthropic.claude-x-v1:0",
-            family="claudex", manufacturer="anthropic", **common,
-        ),
-    ])
-    registry_db.flush()
-    # The geo row goes in first, so the response order comes from the query.
-    registry_db.add_all([
-        DBRegistryModelPrice(
-            model_id=gpt.id, scope_kind="geo", scope="eu", prices={"input_cost_per_token": 2.75e-06},
-            source="litellm", last_seen=TODAY,
-        ),
-        DBRegistryModelPrice(
-            model_id=gpt.id, scope_kind="base", scope="", prices={"input_cost_per_token": 2.5e-06},
-            source="litellm", last_seen=TODAY,
-        ),
     ])
     registry_db.commit()
 
