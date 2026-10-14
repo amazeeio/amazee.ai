@@ -217,7 +217,6 @@ def list_runs(
     query = db.query(DBRegistryRun)
     if step:
         query = query.filter(DBRegistryRun.step == step)
-    response.headers["X-Total-Count"] = str(query.count())
     fresh = {
         name
         for (name,) in db.query(DBRegistryRun.step)
@@ -227,7 +226,7 @@ def list_runs(
     # A run row is inserted when its step starts, so the id order is the start order.
     return [
         RegistryRunResponse.model_validate(run).model_copy(update={"stale": run.step not in fresh})
-        for run in query.order_by(DBRegistryRun.id.desc()).limit(limit)
+        for run in _paginate(query.order_by(DBRegistryRun.id.desc()), response, 0, limit)
     ]
 
 
