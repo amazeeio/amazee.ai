@@ -169,7 +169,8 @@ def read_live(url: str, key: str) -> planner.LiveProxy | str:
         return "timeout"
     except httpx.HTTPStatusError as exc:
         return f"HTTP {exc.response.status_code}"
-    except httpx.HTTPError as exc:
+    # InvalidURL is not an HTTPError: a malformed litellm_api_url raises it before any request.
+    except (httpx.HTTPError, httpx.InvalidURL) as exc:
         return type(exc).__name__
     except (ValueError, AttributeError, TypeError):
         return "bad JSON"
