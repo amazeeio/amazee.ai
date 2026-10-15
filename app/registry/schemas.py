@@ -1,8 +1,29 @@
-"""Response models for the registry API."""
+"""Request and response models for the registry API."""
 
+import math
+import re
 from datetime import date, datetime
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
+
+from app.registry.values import is_amount
+
+_SCOPE_KEY = re.compile(r"base|(geo|region):[a-z0-9-]+")
+# The same test as price_fields() uses for LiteLLM's names.
+_PRICE_FIELD = re.compile(r"[a-z0-9_]+")
+
+
+def _wrap_non_finite(value):
+    """Infinity and NaN in a parsed JSON value as a one-item list of their text.
+    No field accepts a list, so the value still fails, and the 422 can echo it."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return [str(value)]
+    if isinstance(value, dict):
+        return {k: _wrap_non_finite(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_wrap_non_finite(v) for v in value]
+    return value
 
 
 class RegistryRunResponse(BaseModel):
@@ -59,6 +80,52 @@ class RegistryModelResponse(BaseModel):
     last_seen: date
     price_scopes: list[RegistryModelPriceResponse]
     proxies: list[RegistryModelProxyResponse]
+
+
+class RegistryModelUpdate(BaseModel):
+    """Only the fields in the body change. `null` clears `family` and
+    `override_eol`; a `null` price removes the scope's manual price."""
+
+    # An unknown field would otherwise be dropped, and the call would change nothing.
+    model_config = ConfigDict(extra="forbid")
+
+    family: str | None = Field(None, min_length=1)
+    override_eol: date | None = None
+    blocked: StrictBool | None = None
+    # Scope key (`base`, `geo:us`, `region:us-east-1`) -> LiteLLM price fields, or null.
+    prices: dict[str, dict[str, Any] | None] | None = Field(None, min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _readable_input(cls, data):
+        # A 422 echoes the input, and JSON cannot hold Infinity or NaN, so the error would fail with a 500.
+        return _wrap_non_finite(data)
+
+    @field_validator("prices")
+    @classmethod
+    def _check_prices(cls, prices):
+        for key, fields in (prices or {}).items():
+            if not _SCOPE_KEY.fullmatch(key):
+                raise ValueError(f"unknown price scope {key!r}")
+            if fields is None:
+                continue
+            if not fields:
+                raise ValueError(f"{key}: a price needs at least one field")
+            for name, value in fields.items():
+                if not _PRICE_FIELD.fullmatch(name) or "cost" not in name:
+                    raise ValueError(f"{key}: {name!r} is not a price field")
+                if not is_amount(value):
+                    raise ValueError(f"{key}: {name} must be a finite number of 0 or more")
+        return prices
+
+    @model_validator(mode="after")
+    def _check_body(self):
+        if not self.model_fields_set:
+            raise ValueError("the body changes nothing")
+        for name in ("blocked", "prices"):
+            if name in self.model_fields_set and getattr(self, name) is None:
+                raise ValueError(f"{name} cannot be null")
+        return self
 
 
 class RegistryLifecycleResponse(BaseModel):
