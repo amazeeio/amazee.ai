@@ -1,5 +1,7 @@
 from datetime import timedelta
 
+import pytest
+
 from app.core.config import settings
 from app.db.models import DBRegion
 from app.registry.models import (
@@ -10,7 +12,7 @@ from app.registry.models import (
     DBRegistryProvider,
     DBRegistryProxy,
 )
-from tests.registry.api.conftest import CHECKED_AT, TODAY, auth, model
+from tests.registry.api.conftest import CHECKED_AT, TODAY, auth, model, ok
 
 
 def test_providers_with_proxies_and_model_counts(client, admin_token, deployed, registry_db):
@@ -124,3 +126,54 @@ def test_proxy_detail_unknown_is_404(client, admin_token, deployed, registry_db)
         response = client.get(f"/registry/proxies/{name}", headers=auth(admin_token))
         assert response.status_code == 404
         assert response.json()["detail"] == "Proxy not found"
+
+
+def _patch(client, token, proxy, body, query=""):
+    return client.patch(f"/registry/proxies/{proxy}{query}", json=body, headers=auth(token))
+
+
+def test_proxy_patch_sets_changes_and_removes_cloud_regions(client, admin_token, deployed, registry_db):
+    body = ok(_patch(client, admin_token, "local-us1", {"cloud_regions": {"azure": "eastus"}}))
+    assert body["cloud_regions"] == {"bedrock": "us-east-1", "azure": "eastus"}
+    assert body == next(p for p in ok(client.get("/registry/proxies", headers=auth(admin_token))) if p["proxy"] == "local-us1")
+
+    body = ok(_patch(client, admin_token, "local-us1", {"cloud_regions": {"bedrock": "eu-west-1", "azure": None}}))
+    assert body["cloud_regions"] == {"bedrock": "eu-west-1"}
+
+    # A null for a provider that is not set changes nothing.
+    body = ok(_patch(client, admin_token, "local-eu1", {"cloud_regions": {"vertex_ai": None}}))
+    assert body["cloud_regions"] == {}
+    registry_db.expire_all()
+    assert registry_db.get(DBRegistryProxy, deployed["us"].id).cloud_regions == {"bedrock": "eu-west-1"}
+
+
+def test_proxy_patch_unknown_is_404(client, admin_token, deployed, bare_region):
+    for name in ("nope", bare_region.name):
+        response = _patch(client, admin_token, name, {"cloud_regions": {"bedrock": "us-east-1"}})
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Proxy not found"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"cloud_regions": {}},
+        {"cloud_regions": None},
+        {"cloud_regions": {"Bedrock": "us-east-1"}},
+        {"cloud_regions": {"bedrock": "US-EAST-1"}},
+        {"cloud_regions": {"x" * 65: "us-east-1"}},
+        {"cloud_regions": {"bedrock": "x" * 65}},
+        {"cloud_regions": {"bedrock": "us-east-1"}, "other": 1},
+    ],
+)
+def test_proxy_patch_refuses_a_bad_body(client, admin_token, deployed, body):
+    assert _patch(client, admin_token, "local-us1", body).status_code == 422
+
+
+def test_proxy_patch_dry_run_saves_nothing(client, admin_token, deployed, registry_db):
+    body = ok(_patch(client, admin_token, "local-us1", {"cloud_regions": {"bedrock": None}}, "?dry_run=true"))
+
+    assert body["cloud_regions"] == {}
+    registry_db.expire_all()
+    assert registry_db.get(DBRegistryProxy, deployed["us"].id).cloud_regions == {"bedrock": "us-east-1"}

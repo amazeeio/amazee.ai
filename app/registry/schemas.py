@@ -200,6 +200,16 @@ class RegistryProxyResponse(BaseModel):
     models_enabled: int
 
 
+# A provider or a cloud region name in `registry_proxies.cloud_regions`.
+CloudName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9_-]{1,64}$")]
+
+
+class RegistryProxyUpdate(_Strict):
+    """Only the given providers change; a null region removes the provider."""
+
+    cloud_regions: dict[CloudName, CloudName | None] = Field(min_length=1)
+
+
 class RegistryProxyModelResponse(BaseModel):
     key: str
     status: str

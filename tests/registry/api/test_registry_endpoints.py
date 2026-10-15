@@ -112,6 +112,7 @@ def test_models_limit_and_offset(client, admin_token, models):
         ("GET", "/registry/providers"),
         ("GET", "/registry/proxies"),
         ("GET", "/registry/proxies/local-us1"),
+        ("PATCH", "/registry/proxies/local-us1"),
         ("GET", "/registry/events"),
         ("GET", "/registry/access-groups"),
         ("POST", "/registry/access-groups"),

@@ -41,6 +41,7 @@ from app.registry.schemas import (
     RegistryProxyDetailResponse,
     RegistryProxyModelResponse,
     RegistryProxyResponse,
+    RegistryProxyUpdate,
     RegistryRunResponse,
 )
 
@@ -560,6 +561,29 @@ def get_proxy(proxy: str, db: Session = Depends(get_db)):
             for model, provider in rows
         ],
     )
+
+
+@router.patch("/proxies/{proxy}", response_model=RegistryProxyResponse)
+def update_proxy(
+    proxy: str,
+    body: RegistryProxyUpdate,
+    dry_run: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    region = _find_proxy(db, proxy)
+    row = _lock_proxies(db, [region.id])[region.id]
+    cloud_regions = dict(row.cloud_regions or {})
+    for provider, cloud_region in body.cloud_regions.items():
+        if cloud_region is None:
+            cloud_regions.pop(provider, None)
+        else:
+            cloud_regions[provider] = cloud_region
+    # A new dict: the JSON column does not see a change in place.
+    row.cloud_regions = cloud_regions
+    db.flush()
+    result = _proxy_responses(db, region.id)[0]
+    _save(db, dry_run)
+    return result
 
 
 @router.get("/events", response_model=list[RegistryEventResponse])
