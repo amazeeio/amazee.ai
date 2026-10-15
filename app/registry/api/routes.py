@@ -361,10 +361,16 @@ def eol_models(
     return _model_responses(db, _paginate(query, response, offset, limit))
 
 
-def _find_model(db: Session, key: str) -> tuple[DBRegistryModel, str]:
-    """The model of a `provider/model_id` key, with its provider name."""
+def _split_key(key: str) -> tuple[str, str]:
+    """(provider name, model_id) of a `provider/model_id` key."""
     # Only the first slash splits: model ids can hold slashes (deepinfra/BAAI/bge-m3).
     provider, _, model_id = key.partition("/")
+    return provider, model_id
+
+
+def _find_model(db: Session, key: str) -> tuple[DBRegistryModel, str]:
+    """The model of a `provider/model_id` key, with its provider name."""
+    provider, model_id = _split_key(key)
     row = (
         _model_query(db)
         .filter(DBRegistryProvider.name == provider, DBRegistryModel.model_id == model_id)
