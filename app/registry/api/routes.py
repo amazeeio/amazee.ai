@@ -64,6 +64,8 @@ def _paginate(query, response: Response, offset: int, limit: int) -> list:
 
 def _save(db: Session, dry_run: bool) -> None:
     """A dry run makes the same changes, then rolls them back."""
+    # The flush runs the database checks, so a dry run fails where the write would.
+    db.flush()
     if dry_run:
         db.rollback()
     else:
