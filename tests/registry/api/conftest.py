@@ -16,6 +16,8 @@ from app.registry.models import (
     DBRegistryProxy,
 )
 
+US_URL = "http://litellm:4000"
+EU_URL = "http://litellm-eu:4000"
 RUN_FIELDS = {"id", "step", "started_at", "finished_at", "status", "stats", "error", "stale"}
 MODEL_FIELDS = {
     "provider", "model_id", "mode", "max_input_tokens", "max_output_tokens",
@@ -112,6 +114,15 @@ def live_proxies(monkeypatch):
     return proxies
 
 
+def live_row(dep_id, name, model, credential=None, groups=(), **params):
+    """One row of a proxy's `/model/info`. Extra keyword arguments go into `litellm_params`."""
+    litellm_params = {"model": model, **params}
+    if credential:
+        litellm_params["litellm_credential_name"] = credential
+    info = {"id": dep_id, "access_groups": list(groups)}
+    return {"model_name": name, "litellm_params": litellm_params, "model_info": info}
+
+
 def auth(token):
     return {"Authorization": f"Bearer {token}"}
 
@@ -143,7 +154,7 @@ def model(db, provider, model_id):
 def deployed(registry_db, models, proxy_region):
     """Two proxies with deployments and support rows; `gpt-old` has none."""
     eu = DBRegion(
-        name="local-eu1", litellm_api_url="http://litellm-eu:4000", litellm_api_key="sk-test", is_active=True
+        name="local-eu1", litellm_api_url=EU_URL, litellm_api_key="sk-test", is_active=True
     )
     registry_db.add(eu)
     registry_db.flush()

@@ -7,16 +7,15 @@ from app.registry.api.dry_run import ProxyPlan, deployment_plans, plan_steps, re
 from app.registry.litellm import ProxyClient
 from app.registry.models import DBRegistryCloudAvailability, DBRegistryModelRegion
 from app.registry.planner import DEPLOYMENT_FIELDS, Deployment, LiveProxy
+from tests.registry.api.conftest import EU_URL, US_URL, live_row
 
-US_URL = "http://litellm:4000"
-EU_URL = "http://litellm-eu:4000"
 _REQUEST = httpx.Request("GET", f"{US_URL}/model/info")
 
 
 @pytest.mark.parametrize(
     "error, reason",
     [
-        (httpx.ConnectError("connect to http://litellm:4000 with sk-test failed"), "ConnectError"),
+        (httpx.ConnectError(f"connect to {US_URL} with sk-test failed"), "ConnectError"),
         (httpx.ReadTimeout("sk-test"), "timeout"),
         (httpx.HTTPStatusError("sk-test", request=_REQUEST, response=httpx.Response(500, request=_REQUEST)), "HTTP 500"),
         (ValueError("sk-test"), "bad JSON"),
@@ -44,17 +43,14 @@ def test_read_live_refuses_a_model_list_that_is_not_a_list(live_proxies):
 
 
 def test_read_live_drops_rows_that_are_not_dicts(live_proxies):
-    row = {
-        "model_name": "gpt-4o", "litellm_params": {"model": "openai/gpt-4o"},
-        "model_info": {"id": "us-gpt", "access_groups": ["beta"]},
-    }
+    row = live_row("us-gpt", "gpt-4o", "openai/gpt-4o", groups=["beta"])
     live_proxies.by_url[US_URL] = {"model_info": [row, "x"], "aliases": {"chat": "gpt-4o"}, "credentials": ["c1"]}
 
     assert read_live(US_URL, "sk-test") == LiveProxy([row], {"chat": "gpt-4o"}, frozenset({"c1"}))
 
 
 def test_read_live_reads_a_bad_params_or_info_value_as_empty(live_proxies):
-    gpt = {"model_name": "gpt-4o", "litellm_params": {"model": "openai/gpt-4o"}, "model_info": {"id": "us-gpt"}}
+    gpt = live_row("us-gpt", "gpt-4o", "openai/gpt-4o")
     copy_ = {**gpt, "model_name": "chat"}
     bad = {"model_name": "odd", "litellm_params": "openai/odd", "model_info": ["us-gpt"]}
     live_proxies.by_url[US_URL] = {"model_info": [gpt, bad, copy_], "aliases": {"chat": "gpt-4o"}}
@@ -85,7 +81,7 @@ def test_read_live_reads_a_bad_params_or_info_value_as_empty(live_proxies):
     ],
 )
 def test_read_live_refuses_a_value_of_the_wrong_type(live_proxies, bad):
-    good = {"model_name": "gpt-4o", "litellm_params": {"model": "openai/gpt-4o"}, "model_info": {"id": "us-gpt"}}
+    good = live_row("us-gpt", "gpt-4o", "openai/gpt-4o")
     live_proxies.by_url[US_URL] = {"model_info": [good, {"model_name": "odd", **bad}]}
 
     assert read_live(US_URL, "sk-test") == "bad data"

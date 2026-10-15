@@ -11,7 +11,7 @@ from app.registry.models import (
     DBRegistryModelPrice,
     DBRegistryProvider,
 )
-from tests.registry.api.conftest import TODAY, auth, model, ok
+from tests.registry.api.conftest import TODAY, US_URL, auth, live_row, model, ok
 
 GPT = "/registry/models/openai/gpt-4o"
 CLAUDE = "/registry/models/bedrock/anthropic.claude-x-v1:0"
@@ -129,17 +129,9 @@ def test_dry_run_returns_the_change_and_saves_nothing(client, admin_token, regis
     assert _state(registry_db) == before
 
 
-US_URL = "http://litellm:4000"
-
-
-def _live_gpt(**prices):
-    return {"model_info": [{
-        "model_name": "gpt-4o", "litellm_params": {"model": "openai/gpt-4o", **prices}, "model_info": {"id": "us-gpt"},
-    }]}
-
-
 def test_price_dry_run_plans_the_price_of_each_live_deployment(client, admin_token, deployed, live_proxies):
-    live_proxies.by_url[US_URL] = _live_gpt(input_cost_per_token=5e-06)
+    row = live_row("us-gpt", "gpt-4o", "openai/gpt-4o", input_cost_per_token=5e-06)
+    live_proxies.by_url[US_URL] = {"model_info": [row]}
 
     body = ok(_patch(client, admin_token, f"{GPT}?dry_run=true", {"prices": {"base": PRICE}}))
 

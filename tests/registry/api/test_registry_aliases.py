@@ -3,7 +3,7 @@ import json
 import pytest
 
 from app.registry.models import DBRegistryAlias
-from tests.registry.api.conftest import auth, ok
+from tests.registry.api.conftest import EU_URL, US_URL, auth, ok
 
 ALIASES = "/registry/aliases"
 
@@ -137,7 +137,7 @@ def test_dry_run_answers_like_the_write_and_saves_nothing(client, admin_token, r
 
 
 def test_put_dry_run_plans_the_full_alias_map(client, admin_token, aliases, live_proxies):
-    live_proxies.by_url["http://litellm:4000"] = {"aliases": {"zeta": "gpt-4o", "old": "gpt-4o"}}
+    live_proxies.by_url[US_URL] = {"aliases": {"zeta": "gpt-4o", "old": "gpt-4o"}}
 
     body = ok(_put(client, admin_token, "local-us1/new", {"target": "gpt-4o"}, "?dry_run=true"))
 
@@ -154,7 +154,7 @@ def test_put_dry_run_plans_the_full_alias_map(client, admin_token, aliases, live
 
 
 def test_delete_dry_run_of_the_last_alias_warns(client, admin_token, aliases, live_proxies):
-    live_proxies.by_url["http://litellm-eu:4000"] = {"aliases": {"embed": "gpt-4o", "other": "gpt-4o"}}
+    live_proxies.by_url[EU_URL] = {"aliases": {"embed": "gpt-4o", "other": "gpt-4o"}}
 
     body = ok(_delete(client, admin_token, "local-eu1/embed", "?dry_run=true"))
 
