@@ -174,7 +174,6 @@ def delete_access_group(slug: str, dry_run: bool = Query(False), db: Session = D
     if db.query(DBRegistryModelRegionGroup).filter(DBRegistryModelRegionGroup.access_group_id == group.id).first():
         raise HTTPException(status_code=409, detail="Deployments still carry this access group")
     db.delete(group)
-    db.flush()
     _save(db, dry_run)
     return Response(status_code=204)
 
@@ -232,7 +231,6 @@ def set_alias(
     else:
         row.target = body.target
         row.hidden = body.hidden
-    db.flush()
     result = RegistryAliasResponse(proxy=region.name, alias=alias, target=body.target, hidden=body.hidden)
     _save(db, dry_run)
     return result
@@ -245,6 +243,5 @@ def delete_alias(proxy: str, alias: str, dry_run: bool = Query(False), db: Sessi
     if row is None:
         raise HTTPException(status_code=404, detail="Alias not found")
     db.delete(row)
-    db.flush()
     _save(db, dry_run)
     return Response(status_code=204)
