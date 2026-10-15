@@ -125,14 +125,6 @@ def _deployments(db: Session, model: DBRegistryModel, region_id: int) -> list[DB
     )
 
 
-def _proxy_deployments(
-    db: Session, model: DBRegistryModel, provider: str, region: DBRegion
-) -> list[RegistryModelDeploymentResponse]:
-    """The model's deployments on the proxy, in the shape of the model detail."""
-    prices = db.query(DBRegistryModelPrice).filter_by(model_id=model.id).all()
-    return _deployment_responses(db, prices, provider, [(d, region.name) for d in _deployments(db, model, region.id)])
-
-
 def _set_credential(deployment: DBRegistryModelRegion, name: str | None) -> None:
     # A new dict, because the JSON column does not see a change in place.
     params = {k: v for k, v in (deployment.litellm_params or {}).items() if k != "litellm_credential_name"}
@@ -250,7 +242,11 @@ def set_proxy_model(
             for group_id in group_ids.values()
         )
     db.flush()
-    result = _proxy_deployments(db, model, provider, region)
+    # The model's deployments on the proxy, in the shape of the model detail.
+    prices = db.query(DBRegistryModelPrice).filter_by(model_id=model.id).all()
+    result = _deployment_responses(
+        db, prices, provider, [(d, region.name) for d in _deployments(db, model, region.id)]
+    )
     _save(db, dry_run)
     return result
 
