@@ -141,9 +141,36 @@ def test_delete_unknown_alias_is_404(client, admin_token, aliases):
 def test_dry_run_answers_like_the_write_and_saves_nothing(client, admin_token, registry_db, aliases, call):
     before = _state(registry_db)
 
-    dry = call(client, admin_token, "?dry_run=true")
+    dry = ok(call(client, admin_token, "?dry_run=true"))
     assert _state(registry_db) == before
 
     real = call(client, admin_token, "")
-    assert (dry.status_code, dry.content) == (real.status_code, real.content)
+    assert dry["result"] == (None if real.status_code == 204 else real.json())
     assert _state(registry_db) != before
+
+
+def test_put_dry_run_plans_the_full_alias_map(client, admin_token, aliases, live_proxies):
+    live_proxies.by_url["http://litellm:4000"] = {"aliases": {"zeta": "gpt-4o", "old": "gpt-4o"}}
+
+    body = ok(_put(client, admin_token, "local-us1/new", {"target": "gpt-4o"}, "?dry_run=true"))
+
+    assert body["steps"] == [{
+        "proxy": "local-us1", "action": "write_alias_map", "model": None, "model_name": None, "deployment_id": None,
+        "payload": {"zeta": "gpt-4o", "chat": {"model": "claude-x", "hidden": True}, "new": "gpt-4o"},
+        "changes": {
+            "chat": {"from": None, "to": {"model": "claude-x", "hidden": True}},
+            "new": {"from": None, "to": "gpt-4o"},
+            "old": {"from": "gpt-4o", "to": None},
+        },
+        "problems": [],
+    }]
+
+
+def test_delete_dry_run_of_the_last_alias_warns(client, admin_token, aliases, live_proxies):
+    live_proxies.by_url["http://litellm-eu:4000"] = {"aliases": {"embed": "gpt-4o", "other": "gpt-4o"}}
+
+    body = ok(_delete(client, admin_token, "local-eu1/embed", "?dry_run=true"))
+
+    [step] = body["steps"]
+    assert (step["action"], step["payload"]) == ("write_alias_map", {})
+    assert step["problems"] == ["this would delete every live alias; the phase 3 import must read them first"]

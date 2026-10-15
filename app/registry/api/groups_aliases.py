@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 # The registry's only read of an old catalog table, for the group slugs. It goes when the old catalog goes.
 from app.db.models import DBModelAccessGroup, DBRegion
-from app.registry.api.dry_run import _save, deployment_plans
+from app.registry.api.dry_run import _save, alias_plans, deployment_plans
 from app.registry.api.routes import Refused, _find_proxy, _lock_proxies, _split_key, refuse, router
 from app.registry.models import (
     DBRegistryAccessGroup,
@@ -234,7 +234,9 @@ def list_aliases(response: Response, proxy: str | None = Query(None), db: Sessio
 
 
 # `{alias:path}`: a name with a `/` then reaches the pattern and gets a 422, not a 404.
-@router.put("/aliases/{proxy}/{alias:path}", response_model=RegistryAliasResponse)
+@router.put(
+    "/aliases/{proxy}/{alias:path}", response_model=RegistryAliasResponse | RegistryDryRun[RegistryAliasResponse]
+)
 def set_alias(
     proxy: str,
     body: RegistryAliasUpdate,
@@ -267,16 +269,18 @@ def set_alias(
         row.target = body.target
         row.hidden = body.hidden
     result = RegistryAliasResponse(proxy=region.name, alias=alias, target=body.target, hidden=body.hidden)
-    _save(db, dry_run)
-    return result
+    return _save(db, dry_run, result, response=response, plan=lambda: alias_plans(db, region))
 
 
-@router.delete("/aliases/{proxy}/{alias:path}", status_code=204)
+@router.delete(
+    "/aliases/{proxy}/{alias:path}",
+    response_model=RegistryDryRun[None],
+    responses={204: {"description": "The alias is deleted"}},
+)
 def delete_alias(proxy: str, alias: str, dry_run: bool = Query(False), db: Session = Depends(get_db)):
     region = _find_proxy(db, proxy)
     row = db.query(DBRegistryAlias).filter_by(region_id=region.id, alias=alias).one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="Alias not found")
     db.delete(row)
-    _save(db, dry_run)
-    return Response(status_code=204)
+    return _save(db, dry_run, Response(status_code=204), plan=lambda: alias_plans(db, region))
