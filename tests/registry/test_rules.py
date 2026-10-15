@@ -95,10 +95,10 @@ def test_backend_problem_refuses(backend, provider, model_id, cloud_regions, pro
     assert backend_problem(backend, provider, model_id, cloud_regions) == problem
 
 
-def _availability(db, call_types):
+def _availability(db, call_types, region="us-east-1"):
     db.add(
         DBRegistryCloudAvailability(
-            provider="bedrock", model_id=CLAUDE, cloud_region="us-east-1",
+            provider="bedrock", model_id=CLAUDE, cloud_region=region,
             source="bedrock_community", call_types=call_types, last_seen=date(2026, 9, 27),
         )
     )
@@ -106,23 +106,20 @@ def _availability(db, call_types):
     return Availability(db)
 
 
-def test_default_backend_is_the_geo_profile_when_the_region_offers_one(registry_db):
-    availability = _availability(registry_db, ["ON_DEMAND", "INFERENCE_PROFILE"])
-    assert default_backend("bedrock", CLAUDE, US, availability) == f"bedrock/us.{CLAUDE}"
+@pytest.mark.parametrize(
+    "provider, model_id, cloud_regions, call_types, expected",
+    [
+        ("bedrock", CLAUDE, US, ["ON_DEMAND", "INFERENCE_PROFILE"], f"bedrock/us.{CLAUDE}"),
+        ("bedrock", CLAUDE, US, ["ON_DEMAND"], f"bedrock/{CLAUDE}"),
+        # A proxy with no Bedrock cloud region gets the in-region id.
+        ("bedrock", CLAUDE, {}, ["INFERENCE_PROFILE"], f"bedrock/{CLAUDE}"),
+        ("openai", "gpt-4o", US, ["INFERENCE_PROFILE"], "openai/gpt-4o"),
+    ],
+)
+def test_default_backend(registry_db, provider, model_id, cloud_regions, call_types, expected):
+    availability = _availability(registry_db, call_types)
 
-
-def test_default_backend_is_the_in_region_id_on_demand(registry_db):
-    availability = _availability(registry_db, ["ON_DEMAND"])
-    assert default_backend("bedrock", CLAUDE, US, availability) == f"bedrock/{CLAUDE}"
-
-
-def test_default_backend_with_no_cloud_region_is_the_in_region_id(registry_db):
-    availability = _availability(registry_db, ["INFERENCE_PROFILE"])
-    assert default_backend("bedrock", CLAUDE, {}, availability) == f"bedrock/{CLAUDE}"
-
-
-def test_default_backend_of_another_provider(registry_db):
-    assert default_backend("openai", "gpt-4o", US, Availability(registry_db)) == "openai/gpt-4o"
+    assert default_backend(provider, model_id, cloud_regions, availability) == expected
 
 
 @pytest.mark.parametrize(
@@ -167,30 +164,22 @@ def test_support_rows_reads_only_the_given_models_and_proxies(registry_db, proxy
 
 
 @pytest.mark.parametrize(
-    "eol_date, refused",
-    [(date(2026, 6, 2), True), (TODAY, False), (date(2026, 5, 31), False), (None, False)],
+    "eol_date, expected",
+    [
+        (date(2026, 6, 2), "the model reaches its EOL date on 2026-06-02; use force to remove it before that date"),
+        (TODAY, None),
+        (date(2026, 5, 31), None),
+        (None, None),
+    ],
 )
-def test_removal_problem(eol_date, refused):
-    problem = removal_problem(DBRegistryModel(model_id=CLAUDE, eol_date=eol_date), TODAY)
-
-    if refused:
-        assert problem == f"the model reaches its EOL date on {eol_date}; use force to remove it before that date"
-    else:
-        assert problem is None
+def test_removal_problem(eol_date, expected):
+    assert removal_problem(DBRegistryModel(model_id=CLAUDE, eol_date=eol_date), TODAY) == expected
 
 
 def test_needs_profile_with_no_geo_prefix_gives_no_hint(registry_db):
-    registry_db.add(
-        DBRegistryCloudAvailability(
-            provider="bedrock", model_id=CLAUDE, cloud_region="me-central-1",
-            source="bedrock_community", call_types=["INFERENCE_PROFILE"], last_seen=date(2026, 9, 27),
-        )
-    )
-    registry_db.flush()
+    availability = _availability(registry_db, ["INFERENCE_PROFILE"], "me-central-1")
     model = DBRegistryModel(model_id=CLAUDE, blocked=False)
 
-    problems = enable_problems(
-        model, "bedrock", support_row(), Availability(registry_db), "me-central-1", f"bedrock/{CLAUDE}"
-    )
+    problems = enable_problems(model, "bedrock", support_row(), availability, "me-central-1", f"bedrock/{CLAUDE}")
 
     assert problems == ["the proxy's cloud region offers the model only through a geo profile"]
