@@ -71,7 +71,7 @@ class DBRegistryModel(Base):
     source = Column(String, nullable=False)
     first_seen = Column(Date, nullable=False)
     last_seen = Column(Date, nullable=False)
-    # Moves only when a list field or the status changes, not on the daily last_seen.
+    # Moves only on a real change to the model or its prices, not on the daily last_seen.
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
