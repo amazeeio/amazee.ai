@@ -239,10 +239,6 @@ class ProxyClient:
         value = next((f.get("field_value") for f in fields if f.get("field_name") == "model_group_alias"), None)
         return value if isinstance(value, dict) else {}
 
-    def model_aliases(self) -> set[str]:
-        """Alias names, with no fallback on error: `/model/info` lists each alias again, with the target's id."""
-        return set(self.alias_map())
-
     def version(self) -> str | None:
         try:
             return self._get("/openapi.json").get("info", {}).get("version")

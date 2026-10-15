@@ -193,23 +193,6 @@ def _proxy(handler) -> ProxyClient:
     return client
 
 
-def test_model_aliases_returns_the_alias_names():
-    paths = []
-
-    def handler(request):
-        paths.append(request.url.path)
-        return httpx.Response(200, json={"fields": [
-            {"field_name": "routing_strategy", "field_value": "simple-shuffle"},
-            {"field_name": "model_group_alias", "field_value": {
-                "chat": "claude-x", "old": {"model": "claude-y", "hidden": True},
-            }},
-        ]})
-
-    with _proxy(handler) as client:
-        assert client.model_aliases() == {"chat", "old"}
-    assert paths == ["/router/settings"]
-
-
 @pytest.mark.parametrize(
     "fields",
     [
@@ -217,22 +200,32 @@ def test_model_aliases_returns_the_alias_names():
         [{"field_name": "model_group_alias", "field_value": "chat"}],
     ],
 )
-def test_model_aliases_without_an_alias_map_is_empty(fields):
+def test_alias_map_without_an_alias_map_is_empty(fields):
     with _proxy(lambda request: httpx.Response(200, json={"fields": fields})) as client:
-        assert client.model_aliases() == set()
+        assert client.alias_map() == {}
 
 
-def test_model_aliases_raises_on_an_error_answer():
+def test_alias_map_raises_on_an_error_answer():
+    # The import must fail here: with no alias names, it would store each alias copy as a deployment.
     with _proxy(lambda request: httpx.Response(500)) as client, pytest.raises(httpx.HTTPStatusError):
-        client.model_aliases()
+        client.alias_map()
 
 
 def test_alias_map_returns_the_raw_map():
     aliases = {"chat": "claude-x", "old": {"model": "claude-y", "hidden": True}}
-    answer = {"fields": [{"field_name": "model_group_alias", "field_value": aliases}]}
+    answer = {"fields": [
+        {"field_name": "routing_strategy", "field_value": "simple-shuffle"},
+        {"field_name": "model_group_alias", "field_value": aliases},
+    ]}
+    paths = []
 
-    with _proxy(lambda request: httpx.Response(200, json=answer)) as client:
+    def handler(request):
+        paths.append(request.url.path)
+        return httpx.Response(200, json=answer)
+
+    with _proxy(handler) as client:
         assert client.alias_map() == aliases
+    assert paths == ["/router/settings"]
 
 
 def test_credential_names_skips_a_nameless_entry():
