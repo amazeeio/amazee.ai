@@ -49,6 +49,8 @@ class RegistryModelResponse(BaseModel):
     output_cost_per_token: float | None
     prices: dict
     eol_date: date | None
+    override_eol: date | None
+    blocked: bool
     status: str
     family: str | None
     manufacturer: str | None
