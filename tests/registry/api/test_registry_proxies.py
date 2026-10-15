@@ -176,6 +176,7 @@ def test_proxy_patch_refuses_a_bad_body(client, admin_token, deployed, body):
 def test_proxy_patch_dry_run_saves_nothing(client, admin_token, deployed, registry_db):
     body = ok(_patch(client, admin_token, "local-us1", {"cloud_regions": {"bedrock": None}}, "?dry_run=true"))
 
-    assert body["cloud_regions"] == {}
+    assert body["steps"] == []
+    assert body["result"]["proxy"] == "local-us1" and body["result"]["cloud_regions"] == {}
     registry_db.expire_all()
     assert registry_db.get(DBRegistryProxy, deployed["us"].id).cloud_regions == {"bedrock": "us-east-1"}
