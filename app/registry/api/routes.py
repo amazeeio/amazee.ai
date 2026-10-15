@@ -192,6 +192,7 @@ def _deployment_fields(deployment: DBRegistryModelRegion, proxy: str, groups: di
         "proxy": proxy,
         "model_name": deployment.model_name,
         "litellm_model": deployment.litellm_model,
+        "litellm_deployment_id": deployment.litellm_deployment_id,
         "enabled": deployment.enabled,
         "input_cost_per_token": deployment.input_cost_per_token,
         "output_cost_per_token": deployment.output_cost_per_token,

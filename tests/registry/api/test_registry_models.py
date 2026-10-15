@@ -271,6 +271,7 @@ def test_model_detail(client, admin_token, deployed, registry_db):
         "proxy": "local-us1",
         "model_name": "claude-x",
         "litellm_model": "bedrock/us.anthropic.claude-x-v1:0",
+        "litellm_deployment_id": "us-claude",
         "enabled": True,
         "input_cost_per_token": None,
         "output_cost_per_token": None,

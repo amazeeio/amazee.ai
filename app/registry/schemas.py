@@ -156,6 +156,8 @@ class RegistryDeploymentResponse(BaseModel):
     proxy: str
     model_name: str
     litellm_model: str
+    # Null for a row that the API added and that is not on the proxy yet.
+    litellm_deployment_id: str | None
     enabled: bool
     input_cost_per_token: float | None
     output_cost_per_token: float | None

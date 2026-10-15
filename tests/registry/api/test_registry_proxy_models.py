@@ -102,7 +102,8 @@ def test_put_with_no_body_creates_a_deployment_with_the_defaults(client, admin_t
     body = ok(_put(client, admin_token, "local-us1", "openai/gpt-old"), 201)
 
     assert body == [{
-        "proxy": "local-us1", "model_name": "gpt-old", "litellm_model": "openai/gpt-old", "enabled": True,
+        "proxy": "local-us1", "model_name": "gpt-old", "litellm_model": "openai/gpt-old",
+        "litellm_deployment_id": None, "enabled": True,
         "input_cost_per_token": None, "output_cost_per_token": None, "prices": {}, "access_groups": [],
         "price": None,
     }]
