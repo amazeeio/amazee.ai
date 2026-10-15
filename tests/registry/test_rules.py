@@ -121,6 +121,7 @@ UNSUPPORTED = "the proxy's LiteLLM version does not support the model"
 UNAVAILABLE = "the proxy's cloud region does not offer the model"
 PROVISIONED = "the proxy's cloud region offers the model only with provisioned throughput"
 BLOCKED = "the model is blocked"
+NEEDS_PROFILE = "the proxy's cloud region offers the model only through a geo profile; use the us. prefix"
 
 
 def _support(supported=True, region_available=True):
@@ -137,7 +138,8 @@ def _support(supported=True, region_available=True):
         (_support(region_available=False), ["ON_DEMAND"], False, [UNAVAILABLE]),
         (_support(region_available=None), ["ON_DEMAND"], False, []),
         (_support(), ["PROVISIONED"], False, [PROVISIONED]),
-        (_support(), ["INFERENCE_PROFILE"], False, []),
+        (_support(), ["INFERENCE_PROFILE"], False, [NEEDS_PROFILE]),
+        (_support(), ["ON_DEMAND", "INFERENCE_PROFILE"], False, []),
         (_support(), ["ON_DEMAND"], True, [BLOCKED]),
         (_support(supported=False, region_available=False), ["PROVISIONED"], True,
          [UNSUPPORTED, UNAVAILABLE, PROVISIONED, BLOCKED]),
@@ -178,3 +180,20 @@ def test_removal_problem(eol_date, refused):
         assert problem == f"the model reaches its EOL date on {eol_date}; use force to remove it before that date"
     else:
         assert problem is None
+
+
+def test_needs_profile_with_no_geo_prefix_gives_no_hint(registry_db):
+    registry_db.add(
+        DBRegistryCloudAvailability(
+            provider="bedrock", model_id=CLAUDE, cloud_region="me-central-1",
+            source="bedrock_community", call_types=["INFERENCE_PROFILE"], last_seen=date(2026, 9, 27),
+        )
+    )
+    registry_db.flush()
+    model = DBRegistryModel(model_id=CLAUDE, blocked=False)
+
+    problems = enable_problems(
+        model, "bedrock", _support(), Availability(registry_db), "me-central-1", f"bedrock/{CLAUDE}"
+    )
+
+    assert problems == ["the proxy's cloud region offers the model only through a geo profile"]
