@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -64,19 +64,19 @@ def test_patch_changes_only_the_fields_in_the_body(client, admin_token, models):
 
 
 def test_patch_moves_updated_at_only_on_a_real_change(client, admin_token, registry_db, models):
-    def updated_at():
-        registry_db.expire_all()
-        return model(registry_db, "openai", "gpt-4o").updated_at
+    # A fixed old time, so the test never compares the database clock with the Python clock.
+    old = datetime(2020, 1, 1, tzinfo=UTC)
 
-    before = updated_at()
-    _ok(_patch(client, admin_token, GPT, {"family": None, "blocked": False, "override_eol": None}))
-    assert updated_at() == before
-
-    for change in ({"family": "gpt4"}, {"blocked": True}, {"override_eol": X.isoformat()}):
+    def moved(change):
+        model(registry_db, "openai", "gpt-4o").updated_at = old
+        registry_db.commit()
         _ok(_patch(client, admin_token, GPT, change))
-        after = updated_at()
-        assert after > before, change
-        before = after
+        registry_db.expire_all()
+        return model(registry_db, "openai", "gpt-4o").updated_at != old
+
+    assert not moved({"family": None, "blocked": False, "override_eol": None})
+    for change in ({"family": "gpt4"}, {"blocked": True}, {"override_eol": X.isoformat()}):
+        assert moved(change), change
 
 
 def test_patch_writes_manual_prices(client, admin_token, registry_db, models):
