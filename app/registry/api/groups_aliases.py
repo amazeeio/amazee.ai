@@ -213,7 +213,8 @@ def set_alias(
     db: Session = Depends(get_db),
 ):
     region = _find_proxy(db, proxy)
-    # The alias guard of a rename or a delete reads the aliases under the same lock.
+    # The alias guard of a rename or a delete reads the aliases under the same lock. The lock also makes
+    # alias creates on one proxy run one after the other, so two creates of one alias cannot both insert.
     _lock_proxies(db, [region.id])
     names = {
         name
@@ -225,18 +226,11 @@ def set_alias(
     if body.target not in names:
         raise HTTPException(status_code=422, detail="The target is not a deployment on this proxy")
 
-    lookup = db.query(DBRegistryAlias).filter_by(region_id=region.id, alias=alias)
-    row = lookup.one_or_none()
+    row = db.query(DBRegistryAlias).filter_by(region_id=region.id, alias=alias).one_or_none()
     if row is None:
         db.add(DBRegistryAlias(region_id=region.id, alias=alias, target=body.target, hidden=body.hidden))
-        try:
-            db.flush()
-            response.status_code = 201
-        except IntegrityError:
-            # Another request created the alias after the lookup, so change that row instead.
-            db.rollback()
-            row = lookup.one()
-    if row is not None:
+        response.status_code = 201
+    else:
         row.target = body.target
         row.hidden = body.hidden
     result = RegistryAliasResponse(proxy=region.name, alias=alias, target=body.target, hidden=body.hidden)
