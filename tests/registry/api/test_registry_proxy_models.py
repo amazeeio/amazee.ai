@@ -518,6 +518,24 @@ def test_put_refuses_a_geo_backend_that_the_region_offers_only_provisioned(clien
     ok(_put(client, admin_token, "local-us1", f"bedrock/{NEW}", body, "?force=true"), 201)
 
 
+@pytest.mark.parametrize(
+    "call_types, problems",
+    [(["PROVISIONED"], [PROVISIONED]), (["INFERENCE_PROFILE"], [NEEDS_PROFILE]), (["ON_DEMAND"], [])],
+)
+def test_put_runs_the_call_type_check_on_a_cloud_region_backend(
+    client, admin_token, registry_db, setup, call_types, problems
+):
+    _new_bedrock_model(registry_db, setup["us"].id, call_types)
+    body = {"litellm_model": f"bedrock/us-east-1/{NEW}"}
+
+    response = _put(client, admin_token, "local-us1", f"bedrock/{NEW}", body)
+    if problems:
+        assert response.status_code == 422
+        assert response.json()["detail"] == problems
+        response = _put(client, admin_token, "local-us1", f"bedrock/{NEW}", body, "?force=true")
+    assert ok(response, 201)[0]["litellm_model"] == f"bedrock/us-east-1/{NEW}"
+
+
 def test_put_turns_on_a_stored_mantle_deployment(client, admin_token, registry_db, setup):
     row = add_model(registry_db, "bedrock_mantle", "anthropic.opus")
     registry_db.add_all([
