@@ -154,23 +154,11 @@ def set_access_group_models(
     db: Session = Depends(get_db),
 ):
     group = _find_group(db, slug)
-    refs = list(dict.fromkeys((ref.proxy, ref.model) for ref in body.models))
+    refs = [(ref.proxy, ref.model) for ref in body.models]
     # Every check runs before the first write, so a 422 changes nothing.
     wanted = _deployment_ids(db, refs) if refs else set()
-    current = {
-        row_id
-        for (row_id,) in db.query(DBRegistryModelRegionGroup.model_region_id).filter(
-            DBRegistryModelRegionGroup.access_group_id == group.id
-        )
-    }
-    if current - wanted:
-        db.query(DBRegistryModelRegionGroup).filter(
-            DBRegistryModelRegionGroup.access_group_id == group.id,
-            DBRegistryModelRegionGroup.model_region_id.in_(current - wanted),
-        ).delete(synchronize_session=False)
-    db.add_all(
-        DBRegistryModelRegionGroup(model_region_id=row_id, access_group_id=group.id) for row_id in wanted - current
-    )
+    db.query(DBRegistryModelRegionGroup).filter_by(access_group_id=group.id).delete()
+    db.add_all(DBRegistryModelRegionGroup(model_region_id=row_id, access_group_id=group.id) for row_id in wanted)
     db.flush()
     result = _group_responses(db, [group.id])[0]
     _save(db, dry_run)
