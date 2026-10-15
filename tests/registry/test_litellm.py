@@ -10,6 +10,7 @@ from app.registry.litellm import (
     parse_key,
     registry_provider_and_model,
     split_model,
+    without_alias_copies,
     without_secrets,
 )
 
@@ -223,3 +224,26 @@ def test_model_aliases_without_an_alias_map_is_empty(fields):
 def test_model_aliases_raises_on_an_error_answer():
     with _proxy(lambda request: httpx.Response(500)) as client, pytest.raises(httpx.HTTPStatusError):
         client.model_aliases()
+
+
+def _row(name, dep_id):
+    return {"model_name": name, "model_info": {"id": dep_id}}
+
+
+def test_without_alias_copies_drops_the_copy_of_a_real_row():
+    real, copy_ = _row("claude-x", "1"), _row("chat", "1")
+
+    assert without_alias_copies([copy_, real], {"chat"}) == ([real], ["chat"])
+
+
+def test_without_alias_copies_keeps_a_real_row_whose_name_is_an_alias():
+    rows = [_row("gpt-4o", "1"), _row("old-name", "2")]
+
+    assert without_alias_copies(rows, {"old-name"}) == (rows, [])
+
+
+def test_without_alias_copies_drops_a_self_alias_copy():
+    # The alias has the name of its own target, so the first row is the real one.
+    first, second = _row("claude-x", "1"), _row("claude-x", "1")
+
+    assert without_alias_copies([first, second], {"claude-x"}) == ([first], ["claude-x"])

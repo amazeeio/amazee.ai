@@ -1,6 +1,7 @@
 """Read-only access to LiteLLM: a proxy's admin API and the public model list."""
 
 import re
+from collections.abc import Set as AbstractSet
 from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 import httpx
@@ -178,6 +179,27 @@ def registry_provider_and_model(litellm_params: dict, model_info: dict | None = 
     if provider == "openai" and mantle_region(litellm_params.get("api_base")) is not None:
         return "bedrock_mantle", source_model.removeprefix("openai/")
     return provider, source_model
+
+
+def without_alias_copies(deployments: list[dict], aliases: AbstractSet[str]) -> tuple[list[dict], list[str]]:
+    """The deployments with no alias copies, and the names of the copies.
+
+    `/model/info` lists each alias again, with the id of its target.
+    """
+    real_ids = {
+        (dep.get("model_info") or {}).get("id") for dep in deployments if dep.get("model_name") not in aliases
+    } - {None}
+    kept, copies, kept_ids = [], [], set()
+    for dep in deployments:
+        dep_id = (dep.get("model_info") or {}).get("id")
+        if dep.get("model_name") in aliases and (dep_id in real_ids or dep_id in kept_ids):
+            # Skip only a row that repeats a deployment listed under a real name or kept before it.
+            copies.append(dep.get("model_name"))
+            continue
+        kept.append(dep)
+        if dep_id is not None:
+            kept_ids.add(dep_id)
+    return kept, copies
 
 
 def fetch_json(url: str):
