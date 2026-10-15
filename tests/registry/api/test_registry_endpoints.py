@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -291,3 +292,15 @@ def test_runs_total_count_header(client, admin_token, runs):
 
     filtered = client.get("/registry/runs?step=plugin:deepinfra_api&limit=1", headers=auth(admin_token))
     assert filtered.headers["X-Total-Count"] == "2"
+
+
+def test_registry_writes_show_the_dry_run_body_in_openapi():
+    full = app.openapi()
+    writes = [(route, method) for route in router.routes for method in route.methods if method != "GET"]
+    assert len(writes) >= 10
+
+    for route, method in writes:
+        # A new write that forgets the dry-run wrapper fails here. The POST of a group declares 201.
+        success = full["paths"][route.path_format][method.lower()]["responses"][str(route.status_code or 200)]
+        schema = success["content"]["application/json"]
+        assert "RegistryDryRun" in json.dumps(schema), (method, route.path_format)

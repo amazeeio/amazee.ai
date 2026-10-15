@@ -1,3 +1,4 @@
+import httpx
 import pytest
 from sqlalchemy import event
 
@@ -231,7 +232,7 @@ def test_rollout_dry_run_returns_the_entries_and_saves_nothing(client, admin_tok
     dry = ok(_post(client, admin_token, body, "?dry_run=true"))
 
     assert _state(registry_db) == before
-    assert ok(_post(client, admin_token, body)) == dry
+    assert ok(_post(client, admin_token, body)) == dry["result"]
 
 
 def test_rollout_query_count_does_not_grow_with_the_pairs(client, admin_token, registry_db, setup):
@@ -323,3 +324,21 @@ def test_rollout_turns_on_a_stored_mantle_deployment(client, admin_token, regist
         _entry("local-us1", "bedrock_mantle/anthropic.opus", "updated", "opus", "openai/anthropic.opus"),
     ]
     assert _groups(client, admin_token, "bedrock_mantle/anthropic.opus") == {("local-us1", "opus"): (True, [])}
+
+
+def test_rollout_dry_run_with_a_proxy_that_cannot_be_read(client, admin_token, setup, live_proxies):
+    live_proxies.by_url["http://litellm-eu:4000"] = httpx.ReadTimeout("slow")
+    body = {"models": ["openai/gpt-old"], "proxies": BOTH}
+
+    steps = ok(_post(client, admin_token, body, "?dry_run=true"))["steps"]
+
+    assert [(s["proxy"], s["action"], s["problems"]) for s in steps] == [
+        ("local-eu1", "read_proxy", ["the proxy could not be read: timeout"]),
+        ("local-us1", "create_model", ["the credential cred-us is not on the proxy"]),
+    ]
+
+
+def test_rollout_reads_no_proxy(client, admin_token, setup, live_proxies):
+    ok(_post(client, admin_token, {"models": ["openai/gpt-old"], "proxies": BOTH}))
+
+    assert live_proxies.calls == []
