@@ -1,4 +1,5 @@
 import copy
+import inspect
 
 import httpx
 import pytest
@@ -224,6 +225,50 @@ def test_model_aliases_without_an_alias_map_is_empty(fields):
 def test_model_aliases_raises_on_an_error_answer():
     with _proxy(lambda request: httpx.Response(500)) as client, pytest.raises(httpx.HTTPStatusError):
         client.model_aliases()
+
+
+def test_alias_map_returns_the_raw_map():
+    aliases = {"chat": "claude-x", "old": {"model": "claude-y", "hidden": True}}
+    answer = {"fields": [{"field_name": "model_group_alias", "field_value": aliases}]}
+
+    with _proxy(lambda request: httpx.Response(200, json=answer)) as client:
+        assert client.alias_map() == aliases
+
+
+def test_credential_names_skips_a_nameless_entry():
+    paths = []
+
+    def handler(request):
+        paths.append(request.url.path)
+        return httpx.Response(200, json={"credentials": [
+            {"credential_name": "c1", "credential_info": {}}, {"credential_info": {}}, {"credential_name": "c2"},
+        ]})
+
+    with _proxy(handler) as client:
+        assert client.credential_names() == {"c1", "c2"}
+    assert paths == ["/credentials"]
+
+
+def test_credential_names_raises_on_an_error_answer():
+    with _proxy(lambda request: httpx.Response(500)) as client, pytest.raises(httpx.HTTPStatusError):
+        client.credential_names()
+
+
+def test_proxy_client_sends_only_get_requests():
+    # The registry must never write to a proxy, so a new method that writes fails here.
+    methods = [name for name, _ in inspect.getmembers(ProxyClient, inspect.isfunction) if not name.startswith("_")]
+    assert "model_info" in methods
+    for name in methods:
+        sent = []
+
+        def handler(request):
+            assert request.method == "GET", f"{name} sent {request.method} {request.url.path}"
+            sent.append(request)
+            return httpx.Response(200, json={"data": [], "fields": [], "credentials": [], "info": {}})
+
+        with _proxy(handler) as client:
+            getattr(client, name)()
+        assert sent, f"{name} sent no request"
 
 
 def _row(name, dep_id):

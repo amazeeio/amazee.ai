@@ -230,17 +230,29 @@ class ProxyClient:
     def model_info(self) -> list[dict]:
         return self._get("/model/info").get("data") or []
 
-    def model_aliases(self) -> set[str]:
-        """Alias names, with no fallback on error: `/model/info` lists each alias again, with the target's id."""
+    def alias_map(self) -> dict:
+        """The raw `model_group_alias` map, with no fallback on error.
+
+        A value is a target name, or `{"model": <target>, "hidden": true}`.
+        """
         fields = self._get("/router/settings").get("fields") or []
         value = next((f.get("field_value") for f in fields if f.get("field_name") == "model_group_alias"), None)
-        return set(value) if isinstance(value, dict) else set()
+        return value if isinstance(value, dict) else {}
+
+    def model_aliases(self) -> set[str]:
+        """Alias names, with no fallback on error: `/model/info` lists each alias again, with the target's id."""
+        return set(self.alias_map())
 
     def version(self) -> str | None:
         try:
             return self._get("/openapi.json").get("info", {}).get("version")
         except httpx.HTTPError:
             return None
+
+    def credential_names(self) -> set[str]:
+        """The credential names, with no fallback on error: a planner must know when it could not read them."""
+        credentials = self._get("/credentials").get("credentials") or []
+        return {cred["credential_name"] for cred in credentials if cred.get("credential_name")}
 
     def credential_regions(self) -> dict[str, str]:
         """Map credential name to its `aws_region_name`. Reads nothing else."""
