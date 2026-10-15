@@ -158,6 +158,14 @@ def alias_plans(db: Session, region: DBRegion) -> list[ProxyPlan]:
     return [ProxyPlan(region.name, region.litellm_api_url, region.litellm_api_key, aliases=aliases)]
 
 
+def _readable_row(row: dict) -> dict:
+    """The row with a `litellm_params` or `model_info` that is not a dict read as `{}`.
+
+    The row stays: with no id it is never an alias copy and never matches a deployment.
+    """
+    return {**row, **{name: {} for name in ("litellm_params", "model_info") if not isinstance(row.get(name), dict)}}
+
+
 def read_live(url: str, key: str) -> planner.LiveProxy | str:
     """The live state of a proxy, or a short reason why it could not be read. The reason never holds the URL or key."""
     try:
@@ -176,7 +184,8 @@ def read_live(url: str, key: str) -> planner.LiveProxy | str:
         return "bad JSON"
     if not isinstance(rows, list):
         return "bad JSON"
-    return planner.LiveProxy([row for row in rows if isinstance(row, dict)], aliases, frozenset(credentials))
+    rows = [_readable_row(row) for row in rows if isinstance(row, dict)]
+    return planner.LiveProxy(rows, aliases, frozenset(credentials))
 
 
 def plan_steps(plans: list[ProxyPlan]) -> list[dict]:
