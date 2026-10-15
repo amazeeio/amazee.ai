@@ -12,6 +12,7 @@ ALREADY_RUNS = "the proxy already runs this deployment; the phase 3 import adopt
 NOT_ON_PROXY = "the deployment is not on the proxy"
 PROVISIONED_ONLY = "the deployment is a provisioned-only Bedrock variant; the sync writes no per-token price into it"
 DELETES_EVERY_ALIAS = "this would delete every live alias; the phase 3 import must read them first"
+CREDENTIAL_NOT_ON_PROXY = "the credential {} is not on the proxy"
 
 
 @dataclass(frozen=True)
@@ -62,7 +63,7 @@ def _create(proxy: str, deployment: Deployment, live: LiveProxy, rows: list[dict
     }
     problems = []
     if deployment.credential and deployment.credential not in live.credentials:
-        problems.append(f"the credential {deployment.credential} is not on the proxy")
+        problems.append(CREDENTIAL_NOT_ON_PROXY.format(deployment.credential))
     if any(
         row.get("model_name") == deployment.model_name
         and (row.get("litellm_params") or {}).get("model") == deployment.litellm_model
@@ -72,7 +73,7 @@ def _create(proxy: str, deployment: Deployment, live: LiveProxy, rows: list[dict
     return _step(proxy, "create_model", deployment, payload=payload, problems=problems)
 
 
-def _update(proxy: str, deployment: Deployment, row: dict, fields: frozenset) -> dict | None:
+def _update(proxy: str, deployment: Deployment, row: dict, fields: frozenset, credentials: frozenset) -> dict | None:
     params = row.get("litellm_params") or {}
     live = {
         "model_name": row.get("model_name"),
@@ -93,6 +94,9 @@ def _update(proxy: str, deployment: Deployment, row: dict, fields: frozenset) ->
         if live[name] != wanted[name]
     }
     problems = []
+    # Only a step that changes the credential names it, so a price step does not repeat an old problem.
+    if "credential" in changes and deployment.credential and deployment.credential not in credentials:
+        problems.append(CREDENTIAL_NOT_ON_PROXY.format(deployment.credential))
     if "prices" in fields and deployment.price is not None:
         # A price lives in litellm_params on the proxy; compare only the fields the registry sets.
         live_price = {name: params.get(name) for name in deployment.price}
@@ -150,7 +154,7 @@ def plan(
             steps.append(_create(proxy, deployment, live, rows))
         elif row is None:
             steps.append(_step(proxy, "update_model", deployment, changes={}, problems=[NOT_ON_PROXY]))
-        elif step := _update(proxy, deployment, row, fields):
+        elif step := _update(proxy, deployment, row, fields, live.credentials):
             steps.append(step)
     if aliases is not None and (step := _alias_step(proxy, live.aliases, aliases)):
         steps.append(step)
