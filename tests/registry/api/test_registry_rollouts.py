@@ -186,8 +186,9 @@ def test_rollout_to_a_proxy_that_was_never_imported_gets_409(client, admin_token
     registry_db.commit()
     before = _state(registry_db)
 
-    response = _post(client, admin_token, {"models": ["openai/gpt-old"], "proxies": BOTH})
+    for models in (["openai/gpt-old"], ["openai/gpt-old", "openai/nope"]):
+        response = _post(client, admin_token, {"models": models, "proxies": BOTH})
 
-    assert response.status_code == 409
-    assert response.json()["detail"] == "Import the proxy first: local-eu1"
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Import the proxy first: local-eu1"
     assert _state(registry_db) == before
