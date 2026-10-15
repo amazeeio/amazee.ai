@@ -123,41 +123,26 @@ def update_access_group(
 
 
 def _deployment_ids(db: Session, refs: list[tuple[str, str]]) -> set[int]:
-    """Every deployment of each (proxy, model key), in three queries; a 422 names the first bad entry."""
-    regions = dict(
-        db.query(DBRegion.name, DBRegion.id)
-        .join(DBRegistryProxy, DBRegistryProxy.region_id == DBRegion.id)
-        .filter(DBRegion.name.in_({proxy for proxy, _ in refs}))
-    )
-    for proxy, _ in refs:
-        if proxy not in regions:
-            raise HTTPException(status_code=422, detail=f"Unknown proxy: {proxy}")
-
+    """Every deployment of each (proxy, model key), in one query; a 422 names the first bad entry."""
     # Only the first slash splits: model ids can hold slashes (deepinfra/BAAI/bge-m3).
-    idents = {key: key.partition("/")[::2] for _, key in refs}
-    models = {
-        (provider, model_id): row_id
-        for row_id, provider, model_id in db.query(
-            DBRegistryModel.id, DBRegistryProvider.name, DBRegistryModel.model_id
-        )
-        .join(DBRegistryProvider)
-        .filter(tuple_(DBRegistryProvider.name, DBRegistryModel.model_id).in_(set(idents.values())))
-    }
-    for _, key in refs:
-        if idents[key] not in models:
-            raise HTTPException(status_code=422, detail=f"Unknown model: {key}")
+    idents = {(proxy, *key.partition("/")[::2]) for proxy, key in refs}
+    deployments: dict[tuple[str, str], set[int]] = defaultdict(set)
+    for proxy, provider, model_id, row_id in (
+        db.query(DBRegion.name, DBRegistryProvider.name, DBRegistryModel.model_id, DBRegistryModelRegion.id)
+        .join(DBRegion, DBRegion.id == DBRegistryModelRegion.region_id)
+        # A region with no registry_proxies row is not a proxy of the registry.
+        .join(DBRegistryProxy, DBRegistryProxy.region_id == DBRegion.id)
+        .join(DBRegistryModel, DBRegistryModel.id == DBRegistryModelRegion.model_id)
+        .join(DBRegistryProvider, DBRegistryProvider.id == DBRegistryModel.provider_id)
+        .filter(tuple_(DBRegion.name, DBRegistryProvider.name, DBRegistryModel.model_id).in_(idents))
+    ):
+        deployments[(proxy, f"{provider}/{model_id}")].add(row_id)
 
-    pairs = {(proxy, key): (regions[proxy], models[idents[key]]) for proxy, key in refs}
-    deployments: dict[tuple[int, int], set[int]] = defaultdict(set)
-    for row_id, region_id, model_id in db.query(
-        DBRegistryModelRegion.id, DBRegistryModelRegion.region_id, DBRegistryModelRegion.model_id
-    ).filter(tuple_(DBRegistryModelRegion.region_id, DBRegistryModelRegion.model_id).in_(set(pairs.values()))):
-        deployments[(region_id, model_id)].add(row_id)
     wanted = set()
-    for (proxy, key), pair in pairs.items():
-        if pair not in deployments:
+    for proxy, key in refs:
+        if (proxy, key) not in deployments:
             raise HTTPException(status_code=422, detail=f"{key} has no deployment on {proxy}")
-        wanted |= deployments[pair]
+        wanted |= deployments[(proxy, key)]
     return wanted
 
 
