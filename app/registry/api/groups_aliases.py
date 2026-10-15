@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 # The registry's only read of an old catalog table, for the group slugs. It goes when the old catalog goes.
 from app.db.models import DBModelAccessGroup, DBRegion
-from app.registry.api.routes import _find_proxy, _lock_proxies, _save, _split_key, router
+from app.registry.api.dry_run import _save, deployment_plans
+from app.registry.api.routes import _find_proxy, _lock_proxies, _split_key, router
 from app.registry.models import (
     DBRegistryAccessGroup,
     DBRegistryAlias,
@@ -28,6 +29,7 @@ from app.registry.schemas import (
     RegistryAccessGroupUpdate,
     RegistryAliasResponse,
     RegistryAliasUpdate,
+    RegistryDryRun,
 )
 
 
@@ -92,9 +94,14 @@ def list_access_groups(response: Response, db: Session = Depends(get_db)):
     return groups
 
 
-@router.post("/access-groups", status_code=201, response_model=RegistryAccessGroupResponse)
+@router.post(
+    "/access-groups",
+    status_code=201,
+    response_model=RegistryAccessGroupResponse | RegistryDryRun[RegistryAccessGroupResponse],
+)
 def create_access_group(
     body: RegistryAccessGroupCreate,
+    response: Response,
     dry_run: bool = Query(False),
     db: Session = Depends(get_db),
 ):
@@ -106,12 +113,14 @@ def create_access_group(
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail="Access group already exists") from None
-    result = _group_responses(db, [group.id])[0]
-    _save(db, dry_run)
-    return result
+    # A new group is a label only: the sync sends no group on its own, so there is no plan.
+    return _save(db, dry_run, _group_responses(db, [group.id])[0], response=response)
 
 
-@router.patch("/access-groups/{slug}", response_model=RegistryAccessGroupResponse)
+@router.patch(
+    "/access-groups/{slug}",
+    response_model=RegistryAccessGroupResponse | RegistryDryRun[RegistryAccessGroupResponse],
+)
 def update_access_group(
     slug: str,
     body: RegistryAccessGroupUpdate,
@@ -122,9 +131,8 @@ def update_access_group(
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(group, field, value)
     db.flush()
-    result = _group_responses(db, [group.id])[0]
-    _save(db, dry_run)
-    return result
+    # The label and the description are not synced, so there is no plan.
+    return _save(db, dry_run, _group_responses(db, [group.id])[0])
 
 
 def _deployment_ids(db: Session, refs: list[tuple[str, str]]) -> set[int]:
@@ -154,7 +162,10 @@ def _deployment_ids(db: Session, refs: list[tuple[str, str]]) -> set[int]:
     return wanted
 
 
-@router.put("/access-groups/{slug}/models", response_model=RegistryAccessGroupResponse)
+@router.put(
+    "/access-groups/{slug}/models",
+    response_model=RegistryAccessGroupResponse | RegistryDryRun[RegistryAccessGroupResponse],
+)
 def set_access_group_models(
     slug: str,
     body: RegistryAccessGroupModels,
@@ -167,15 +178,32 @@ def set_access_group_models(
     refs = [(ref.proxy, ref.model) for ref in body.models]
     # Every check runs before the first write, so a 422 changes nothing.
     wanted = _deployment_ids(db, refs) if refs else set()
+    current = {
+        row_id
+        for (row_id,) in db.query(DBRegistryModelRegionGroup.model_region_id).filter_by(access_group_id=group.id)
+    }
     db.query(DBRegistryModelRegionGroup).filter_by(access_group_id=group.id).delete()
     db.add_all(DBRegistryModelRegionGroup(model_region_id=row_id, access_group_id=group.id) for row_id in wanted)
     db.flush()
-    result = _group_responses(db, [group.id])[0]
-    _save(db, dry_run)
-    return result
+
+    def plan():
+        # Only the deployments that gain or lose the group change on a proxy.
+        rows = (
+            db.query(DBRegistryModelRegion)
+            .filter(DBRegistryModelRegion.id.in_(current ^ wanted))
+            .order_by(DBRegistryModelRegion.id)
+            .all()
+        )
+        return deployment_plans(db, rows, frozenset({"access_groups"}), live_only=True)
+
+    return _save(db, dry_run, _group_responses(db, [group.id])[0], plan=plan)
 
 
-@router.delete("/access-groups/{slug}", status_code=204)
+@router.delete(
+    "/access-groups/{slug}",
+    response_model=RegistryDryRun[None],
+    responses={204: {"description": "The access group is deleted"}},
+)
 def delete_access_group(slug: str, dry_run: bool = Query(False), db: Session = Depends(get_db)):
     # The lock stops a PUT from linking the group between the check below and the delete.
     group = _find_group(db, slug, lock=True)
@@ -185,8 +213,8 @@ def delete_access_group(slug: str, dry_run: bool = Query(False), db: Session = D
     if db.query(DBRegistryModelRegionGroup).filter(DBRegistryModelRegionGroup.access_group_id == group.id).first():
         raise HTTPException(status_code=409, detail="Deployments still carry this access group")
     db.delete(group)
-    _save(db, dry_run)
-    return Response(status_code=204)
+    # No plan: the 409 above means that no deployment carries the group, so no deployment changes.
+    return _save(db, dry_run, Response(status_code=204))
 
 
 @router.get("/aliases", response_model=list[RegistryAliasResponse])
