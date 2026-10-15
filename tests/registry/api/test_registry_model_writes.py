@@ -164,6 +164,8 @@ def _price(scope="base", **fields):
 @pytest.mark.parametrize(
     "body",
     [
+        [],
+        "x",
         {},
         {"unknown": 1},
         {"family": ""},
