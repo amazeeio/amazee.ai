@@ -61,7 +61,7 @@ def _access_groups(db: Session, deployment_ids: list[int]) -> dict[int, list[str
 def _save(
     db: Session,
     dry_run: bool,
-    result=None,
+    result,
     *,
     response: Response | None = None,
     plan: Callable[[], list[ProxyPlan]] | None = None,
