@@ -166,8 +166,16 @@ def test_rollout_dry_run_returns_the_entries_and_saves_nothing(client, admin_tok
 
 
 def test_rollout_query_count_does_not_grow_with_the_pairs(client, admin_token, registry_db, setup):
-    for model_id in ("gpt-a", "gpt-b", "gpt-c"):
-        add_model(registry_db, "openai", model_id)
+    models = {model_id: add_model(registry_db, "openai", model_id) for model_id in ("gpt-a", "gpt-b", "gpt-c", "gpt-d")}
+    # Disabled deployments on both proxies, so the larger rollout also runs the `updated` path many times.
+    registry_db.add_all(
+        DBRegistryModelRegion(
+            model_id=models[model_id].id, region_id=region.id, model_name=model_id, litellm_model=f"openai/{model_id}",
+            litellm_deployment_id=f"{model_id}-{region.name}", enabled=False,
+        )
+        for model_id in ("gpt-c", "gpt-d")
+        for region in setup.values()
+    )
     registry_db.commit()
     statements = []
 
@@ -182,8 +190,12 @@ def test_rollout_query_count_does_not_grow_with_the_pairs(client, admin_token, r
     engine = registry_db.get_bind()
     event.listen(engine, "before_cursor_execute", count)
     try:
-        one = run({"models": ["openai/gpt-a"], "proxies": {"local-us1": None}, "groups": ["alpha"]})
-        many = run({"models": ["openai/gpt-b", "openai/gpt-c", "openai/gpt-old"], "proxies": BOTH, "groups": ["alpha"]})
+        # One created pair and one updated pair (gpt-4o is disabled on the EU proxy).
+        one = run({"models": ["openai/gpt-a", "openai/gpt-4o"], "proxies": {"local-eu1": None}, "groups": ["alpha"]})
+        many = run({
+            "models": ["openai/gpt-b", "openai/gpt-old", "openai/gpt-c", "openai/gpt-d"], "proxies": BOTH,
+            "groups": ["alpha"],
+        })
     finally:
         event.remove(engine, "before_cursor_execute", count)
 
