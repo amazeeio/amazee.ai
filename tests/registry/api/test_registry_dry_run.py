@@ -129,8 +129,10 @@ def test_plan_steps_does_not_read_a_proxy_with_no_url_or_an_inactive_one(live_pr
     assert live_proxies.calls == []
 
 
-def test_deployment_plans_read_the_region_state(registry_db, deployed):
-    deployed["eu"].is_active = False
+# A NULL is_active is inactive, as in active_regions().
+@pytest.mark.parametrize("is_active", [False, None])
+def test_deployment_plans_read_the_region_state(registry_db, deployed, is_active):
+    deployed["eu"].is_active = is_active
     deployed["us"].litellm_api_url = None
     registry_db.commit()
 

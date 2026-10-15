@@ -85,7 +85,7 @@ def _save(
 
 def _proxy_plan(region: DBRegion, **wanted) -> ProxyPlan:
     return ProxyPlan(
-        region.name, region.litellm_api_url, region.litellm_api_key, active=region.is_active is not False, **wanted
+        region.name, region.litellm_api_url, region.litellm_api_key, active=region.is_active is True, **wanted
     )
 
 
