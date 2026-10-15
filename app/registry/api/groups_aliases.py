@@ -7,7 +7,7 @@ from sqlalchemy import tuple_
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.db.models import DBRegion
+from app.db.models import DBModelAccessGroup, DBRegion
 from app.registry.api.routes import _save, router
 from app.registry.models import (
     DBRegistryAccessGroup,
@@ -183,3 +183,17 @@ def set_access_group_models(
     result = _group_responses(db, [group.id])[0]
     _save(db, dry_run)
     return result
+
+
+@router.delete("/access-groups/{slug}", status_code=204)
+def delete_access_group(slug: str, dry_run: bool = Query(False), db: Session = Depends(get_db)):
+    group = _find_group(db, slug)
+    # Teams still point at the old catalog's group until the registry pushes groups itself.
+    if db.query(DBModelAccessGroup.id).filter(DBModelAccessGroup.slug == slug).first():
+        raise HTTPException(status_code=409, detail="The old catalog still has this access group")
+    if db.query(DBRegistryModelRegionGroup).filter(DBRegistryModelRegionGroup.access_group_id == group.id).first():
+        raise HTTPException(status_code=409, detail="Deployments still carry this access group")
+    db.delete(group)
+    db.flush()
+    _save(db, dry_run)
+    return Response(status_code=204)

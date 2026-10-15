@@ -1,7 +1,7 @@
 import pytest
 from sqlalchemy import event
 
-from app.db.models import DBRegion
+from app.db.models import DBModelAccessGroup, DBRegion
 from app.registry.models import (
     DBRegistryAccessGroup,
     DBRegistryModel,
@@ -275,3 +275,52 @@ def test_put_dry_run_saves_nothing(client, admin_token, registry_db, groups):
 def test_put_needs_a_system_admin(client, test_token, groups):
     assert client.put(f"{GROUPS}/beta/models", json={"models": []}).status_code == 401
     assert _put(client, test_token, "beta", []).status_code == 403
+
+
+def _delete(client, token, slug, query=""):
+    return client.delete(f"{GROUPS}/{slug}{query}", headers=auth(token))
+
+
+def _slugs(db):
+    return [slug for _, slug, _, _ in _groups_state(db)]
+
+
+def test_delete_removes_the_group(client, admin_token, registry_db, groups):
+    assert _delete(client, admin_token, "alpha").status_code == 204
+    assert _slugs(registry_db) == ["beta"]
+
+
+def test_delete_is_409_while_the_old_catalog_has_the_slug(client, admin_token, registry_db, groups):
+    registry_db.add(DBModelAccessGroup(slug="alpha", label="Alpha"))
+    registry_db.commit()
+
+    response = _delete(client, admin_token, "alpha")
+
+    assert response.status_code == 409, response.text
+    assert "alpha" in _slugs(registry_db)
+
+
+def test_delete_is_409_while_a_deployment_carries_the_group(client, admin_token, registry_db, groups):
+    assert _delete(client, admin_token, "beta").status_code == 409
+    assert "beta" in _slugs(registry_db)
+
+    _ok(_put(client, admin_token, "beta", []))
+
+    assert _delete(client, admin_token, "beta").status_code == 204
+    assert _slugs(registry_db) == ["alpha"]
+
+
+def test_delete_unknown_slug_is_404(client, admin_token, groups):
+    assert _delete(client, admin_token, "nope").status_code == 404
+
+
+def test_delete_dry_run_keeps_the_group(client, admin_token, registry_db, groups):
+    before = _groups_state(registry_db)
+
+    assert _delete(client, admin_token, "alpha", "?dry_run=true").status_code == 204
+    assert _groups_state(registry_db) == before
+
+
+def test_delete_needs_a_system_admin(client, test_token, groups):
+    assert client.delete(f"{GROUPS}/alpha").status_code == 401
+    assert _delete(client, test_token, "alpha").status_code == 403
