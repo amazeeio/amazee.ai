@@ -181,5 +181,6 @@ def _import(db: Session, region: DBRegion) -> dict:
         deployments = client.model_info()
         version = client.version()
         credential_regions = client.credential_regions()
-        aliases = client.model_aliases()
+        # No fallback on error: `/model/info` lists each alias again, with the target's id.
+        aliases = set(client.alias_map())
     return import_deployments(db, region, deployments, version, credential_regions, aliases=aliases)
