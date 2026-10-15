@@ -92,6 +92,17 @@ def test_update_lists_each_changed_field(row, changes):
     assert plan(PROXY, LiveProxy(deployments=[row]), [GPT]) == [_step("update_model", changes=changes)]
 
 
+def test_access_groups_in_another_order_are_the_same_groups():
+    # The database collation sorts `teama` first; Python sorts `team-z` first.
+    deployment = replace(GPT, access_groups=("teama", "team-z"))
+
+    assert plan(PROXY, LiveProxy(deployments=[_live_row(groups=("team-z", "teama"))]), [deployment]) == []
+    [step] = plan(PROXY, LiveProxy(credentials=frozenset({"c1"})), [replace(deployment, deployment_id=None)])
+    assert step["payload"]["model_info"] == {"access_groups": ["team-z", "teama"]}
+    [step] = plan(PROXY, LiveProxy(deployments=[_live_row(groups=("teama",))]), [deployment])
+    assert step["changes"] == {"access_groups": {"from": ["teama"], "to": ["team-z", "teama"]}}
+
+
 def test_update_compares_only_the_given_fields():
     row = _live_row(name="gpt", groups=())
 

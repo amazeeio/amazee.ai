@@ -58,7 +58,7 @@ def _create(proxy: str, deployment: Deployment, live: LiveProxy, rows: list[dict
     payload = {
         "model_name": deployment.model_name,
         "litellm_params": params,
-        "model_info": {"access_groups": list(deployment.access_groups)},
+        "model_info": {"access_groups": sorted(deployment.access_groups)},
     }
     problems = []
     if deployment.credential and deployment.credential not in live.credentials:
@@ -84,7 +84,8 @@ def _update(proxy: str, deployment: Deployment, row: dict, fields: frozenset) ->
         "model_name": deployment.model_name,
         "litellm_model": deployment.litellm_model,
         "credential": deployment.credential,
-        "access_groups": list(deployment.access_groups),
+        # Python order on both sides: the database sorts slugs by its collation, which can differ.
+        "access_groups": sorted(set(deployment.access_groups)),
     }
     changes = {
         name: {"from": live[name], "to": wanted[name]}
