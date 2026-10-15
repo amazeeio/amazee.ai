@@ -1,0 +1,224 @@
+"""The endpoints for models on proxies, on the registry router.
+
+Every write changes only the registry tables. Nothing calls a proxy.
+"""
+
+from datetime import date
+
+from fastapi import Depends, HTTPException, Query, Response
+from sqlalchemy.orm import Session
+
+from app.db.database import get_db
+from app.db.models import DBRegion
+from app.registry.api.routes import _deployment_responses, _find_model, _find_proxy, _save, router
+from app.registry.models import (
+    DBRegistryAccessGroup,
+    DBRegistryAlias,
+    DBRegistryModel,
+    DBRegistryModelPrice,
+    DBRegistryModelRegion,
+    DBRegistryModelRegionGroup,
+    DBRegistryProxy,
+)
+from app.registry.rules import (
+    backend_problem,
+    default_backend,
+    enable_problems,
+    removal_problem,
+    support_rows,
+)
+from app.registry.schemas import RegistryModelDeploymentResponse, RegistryProxyModelUpdate
+from app.registry.support import Availability
+
+
+def _lock_proxies(db: Session, region_ids) -> dict[int, DBRegistryProxy]:
+    """Lock the proxies' rows, so the writes to one proxy run one after the other.
+
+    Two creates at the same time would both add a deployment. The sorted order stops a deadlock between two rollouts.
+    """
+    rows = (
+        db.query(DBRegistryProxy)
+        .filter(DBRegistryProxy.region_id.in_(region_ids))
+        .order_by(DBRegistryProxy.region_id)
+        .with_for_update()
+    )
+    return {row.region_id: row for row in rows}
+
+
+def _group_ids(db: Session, slugs: list[str]) -> dict[str, int]:
+    found = dict(
+        db.query(DBRegistryAccessGroup.slug, DBRegistryAccessGroup.id).filter(DBRegistryAccessGroup.slug.in_(slugs))
+    )
+    unknown = sorted(set(slugs) - found.keys())
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"Unknown access groups: {', '.join(unknown)}")
+    return found
+
+
+def _alias_names(db: Session, region_ids) -> set[tuple[int, str]]:
+    return set(
+        db.query(DBRegistryAlias.region_id, DBRegistryAlias.alias).filter(DBRegistryAlias.region_id.in_(region_ids))
+    )
+
+
+def _alias_name_problem(name: str) -> str:
+    # LiteLLM would send the calls for the alias to this deployment, or the other way round.
+    return f"the model name {name} is an alias on this proxy"
+
+
+def _alias_guard(db: Session, region_id: int, names, changed_ids: list[int]) -> None:
+    """Refuse a delete or a rename that leaves an alias on the proxy with no target. `force` never skips it."""
+    names = set(names)
+    kept = {
+        name
+        for (name,) in db.query(DBRegistryModelRegion.model_name).filter(
+            DBRegistryModelRegion.region_id == region_id,
+            DBRegistryModelRegion.model_name.in_(names),
+            DBRegistryModelRegion.id.not_in(changed_ids),
+        )
+    }
+    # A name that another deployment keeps still works as a target.
+    left = names - kept
+    if not left:
+        return
+    aliases = [
+        alias
+        for (alias,) in db.query(DBRegistryAlias.alias)
+        .filter(DBRegistryAlias.region_id == region_id, DBRegistryAlias.target.in_(left))
+        .order_by(DBRegistryAlias.alias)
+    ]
+    if aliases:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Aliases on this proxy point to this model name: {', '.join(aliases)}. Move or remove them first",
+        )
+
+
+def _deployments(db: Session, model: DBRegistryModel, region_id: int) -> list[DBRegistryModelRegion]:
+    return (
+        db.query(DBRegistryModelRegion)
+        .filter_by(model_id=model.id, region_id=region_id)
+        .order_by(DBRegistryModelRegion.model_name, DBRegistryModelRegion.id)
+        .all()
+    )
+
+
+def _proxy_deployments(
+    db: Session, model: DBRegistryModel, provider: str, region: DBRegion
+) -> list[RegistryModelDeploymentResponse]:
+    """The model's deployments on the proxy, in the shape of the model detail."""
+    prices = db.query(DBRegistryModelPrice).filter_by(model_id=model.id).all()
+    return _deployment_responses(db, prices, provider, [(d, region.name) for d in _deployments(db, model, region.id)])
+
+
+def _set_credential(deployment: DBRegistryModelRegion, name: str | None) -> None:
+    # A new dict, because the JSON column does not see a change in place.
+    params = {k: v for k, v in (deployment.litellm_params or {}).items() if k != "litellm_credential_name"}
+    if name is not None:
+        params["litellm_credential_name"] = name
+    deployment.litellm_params = params
+
+
+def _add_deployment(
+    db: Session, model: DBRegistryModel, region_id: int, model_name: str, backend: str, credential: str | None,
+    enabled: bool,
+) -> DBRegistryModelRegion:
+    # No LiteLLM deployment id and no price yet: the proxy has not seen this deployment.
+    deployment = DBRegistryModelRegion(
+        model_id=model.id, region_id=region_id, model_name=model_name, litellm_model=backend,
+        prices={}, model_info={}, enabled=enabled,
+    )
+    _set_credential(deployment, credential)
+    db.add(deployment)
+    return deployment
+
+
+@router.put("/proxies/{proxy}/models/{key:path}", response_model=list[RegistryModelDeploymentResponse])
+def set_proxy_model(
+    proxy: str,
+    key: str,
+    response: Response,
+    body: RegistryProxyModelUpdate | None = None,
+    dry_run: bool = Query(False),
+    force: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    region = _find_proxy(db, proxy)
+    model, provider = _find_model(db, key)
+    cloud_regions = _lock_proxies(db, [region.id])[region.id].cloud_regions or {}
+    changes = (body or RegistryProxyModelUpdate()).model_dump(exclude_unset=True)
+    group_ids = _group_ids(db, changes["groups"]) if "groups" in changes else None
+    deployments = _deployments(db, model, region.id)
+
+    def check_enable(availability: Availability, backends: list[str]) -> None:
+        if force:
+            return
+        support = support_rows(db, [model.id], [region.id]).get((model.id, region.id))
+        problems = [
+            problem
+            for backend in backends
+            for problem in enable_problems(model, provider, support, availability, cloud_regions.get(provider), backend)
+        ]
+        if problems:
+            raise HTTPException(status_code=422, detail=list(dict.fromkeys(problems)))
+
+    # Every check runs before the first change, so a 4xx changes nothing.
+    if not deployments:
+        availability = Availability(db)
+        name = changes.get("model_name", model.model_id)
+        backend = changes.get("litellm_model") or default_backend(provider, model.model_id, cloud_regions, availability)
+        if (region.id, name) in _alias_names(db, [region.id]):
+            raise HTTPException(status_code=422, detail=_alias_name_problem(name))
+        if problem := backend_problem(backend, provider, model.model_id, cloud_regions):
+            raise HTTPException(status_code=422, detail=problem)
+        enabled = changes.get("enabled", True)
+        if enabled:
+            check_enable(availability, [backend])
+        deployments = [_add_deployment(db, model, region.id, name, backend, changes.get("credential"), enabled)]
+        db.flush()
+        response.status_code = 201
+    else:
+        if len(deployments) > 1 and changes.keys() & {"model_name", "litellm_model"}:
+            raise HTTPException(
+                status_code=422,
+                detail="The model has several deployments on this proxy, so the change cannot pick one model_name "
+                "or litellm_model",
+            )
+        if "litellm_model" in changes and (
+            problem := backend_problem(changes["litellm_model"], provider, model.model_id, cloud_regions)
+        ):
+            raise HTTPException(status_code=422, detail=problem)
+        old_name = deployments[0].model_name
+        if changes.get("model_name", old_name) != old_name:
+            if (region.id, changes["model_name"]) in _alias_names(db, [region.id]):
+                raise HTTPException(status_code=422, detail=_alias_name_problem(changes["model_name"]))
+            _alias_guard(db, region.id, [old_name], [deployments[0].id])
+        enabled = changes.get("enabled")
+        if enabled is False and not force and any(d.enabled for d in deployments):
+            if problem := removal_problem(model, date.today()):
+                raise HTTPException(status_code=409, detail=problem)
+        turning_on = [d for d in deployments if not d.enabled] if enabled else []
+        if turning_on:
+            check_enable(Availability(db), [changes.get("litellm_model", d.litellm_model) for d in turning_on])
+
+        for deployment in deployments:
+            for field in ("model_name", "litellm_model", "enabled"):
+                if field in changes:
+                    setattr(deployment, field, changes[field])
+            if "credential" in changes:
+                _set_credential(deployment, changes["credential"])
+        if group_ids is not None:
+            db.query(DBRegistryModelRegionGroup).filter(
+                DBRegistryModelRegionGroup.model_region_id.in_([d.id for d in deployments])
+            ).delete(synchronize_session=False)
+
+    if group_ids:
+        db.add_all(
+            DBRegistryModelRegionGroup(model_region_id=d.id, access_group_id=group_id)
+            for d in deployments
+            for group_id in group_ids.values()
+        )
+    db.flush()
+    result = _proxy_deployments(db, model, provider, region)
+    _save(db, dry_run)
+    return result

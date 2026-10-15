@@ -294,3 +294,21 @@ class RegistryRefusal(BaseModel):
     # Every message in one line, for a client that reads only `detail`.
     detail: str
     problems: list[RegistryProblem]
+
+
+# A LiteLLM credential name. The secret stays on the proxy.
+Credential = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._-]{1,128}$")]
+
+
+class RegistryProxyModelUpdate(_Strict):
+    """Creates the model's deployment on the proxy, or changes every deployment it has there.
+
+    Not an `_Update`: an empty body is valid and creates a deployment with the defaults.
+    """
+
+    # No `| None` on these four: an explicit null gets a 422. A null credential removes it.
+    model_name: str = Field(None, min_length=1)
+    litellm_model: str = Field(None, min_length=1)
+    credential: Credential | None = None
+    groups: list[str] = None
+    enabled: StrictBool = None
