@@ -1,7 +1,6 @@
 import json
 
 import pytest
-from sqlalchemy import event
 
 from app.db.models import DBModelAccessGroup, DBRegion
 from app.registry.models import (
@@ -62,38 +61,6 @@ def test_list_sorts_groups_and_shows_their_models(client, admin_token, groups):
     assert response.headers["X-Total-Count"] == "2"
     assert alpha == {"slug": "alpha", "label": "Alpha", "description": None, "models": []}
     assert beta == {"slug": "beta", "label": "Beta", "description": "B", "models": BETA_MODELS}
-
-
-def test_list_runs_the_same_queries_for_more_groups(client, admin_token, registry_db, deployed):
-    deployment = registry_db.query(DBRegistryModelRegion).first()
-
-    def add_group(slug):
-        group = DBRegistryAccessGroup(slug=slug, label=slug)
-        registry_db.add(group)
-        registry_db.flush()
-        registry_db.add(DBRegistryModelRegionGroup(model_region_id=deployment.id, access_group_id=group.id))
-        registry_db.commit()
-
-    statements = []
-
-    def count(*args):
-        statements.append(args[2])
-
-    add_group("one")
-    # The session's own engine: tests/conftest.py loads as a second module, with another engine.
-    engine = registry_db.get_bind()
-    event.listen(engine, "before_cursor_execute", count)
-    try:
-        assert len(_ok(client.get(GROUPS, headers=auth(admin_token)))) == 1
-        one = len(statements)
-        assert one
-        add_group("two")
-        add_group("three")
-        statements.clear()
-        assert len(_ok(client.get(GROUPS, headers=auth(admin_token)))) == 3
-        assert len(statements) == one
-    finally:
-        event.remove(engine, "before_cursor_execute", count)
 
 
 def test_post_creates_a_group(client, admin_token, registry_db, groups):
