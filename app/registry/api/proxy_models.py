@@ -60,6 +60,16 @@ def _lock_proxies(db: Session, region_ids) -> dict[int, DBRegistryProxy]:
     return {row.region_id: row for row in rows}
 
 
+def _require_imported(proxies, names: dict[int, str]) -> None:
+    """Refuse a write on a proxy that the importer has not read.
+
+    The import would add the live deployments next to the rows this API wrote, so one model would have two rows.
+    """
+    missing = sorted(names[proxy.region_id] for proxy in proxies if proxy.imported_at is None)
+    if missing:
+        raise HTTPException(status_code=409, detail=f"Import the proxy first: {', '.join(missing)}")
+
+
 def _group_ids(db: Session, slugs: list[str]) -> dict[str, int]:
     found = dict(
         db.query(DBRegistryAccessGroup.slug, DBRegistryAccessGroup.id).filter(DBRegistryAccessGroup.slug.in_(slugs))
@@ -160,7 +170,9 @@ def set_proxy_model(
 ):
     region = _find_proxy(db, proxy)
     model, provider = _find_model(db, key)
-    cloud_regions = _lock_proxies(db, [region.id])[region.id].cloud_regions or {}
+    proxy_row = _lock_proxies(db, [region.id])[region.id]
+    _require_imported([proxy_row], {region.id: region.name})
+    cloud_regions = proxy_row.cloud_regions or {}
     changes = (body or RegistryProxyModelUpdate()).model_dump(exclude_unset=True)
     group_ids = _group_ids(db, changes["groups"]) if "groups" in changes else None
     deployments = _deployments(db, model, region.id)
@@ -256,7 +268,7 @@ def remove_proxy_model(
 ):
     region = _find_proxy(db, proxy)
     model, _ = _find_model(db, key)
-    _lock_proxies(db, [region.id])
+    _require_imported(_lock_proxies(db, [region.id]).values(), {region.id: region.name})
     deployments = _deployments(db, model, region.id)
     if not deployments:
         raise HTTPException(status_code=404, detail="The model has no deployment on this proxy")
@@ -301,6 +313,8 @@ def roll_out(
         raise HTTPException(status_code=422, detail=f"Unknown proxies: {', '.join(unknown)}")
     region_ids = [region.id for region in regions.values()]
     proxies = _lock_proxies(db, region_ids)
+    # One proxy that is not imported refuses the whole call: the admin imports it, then runs the rollout again.
+    _require_imported(proxies.values(), {region.id: region.name for region in regions.values()})
     group_ids = _group_ids(db, body.groups)
 
     model_ids = [model.id for model, _ in models.values()]

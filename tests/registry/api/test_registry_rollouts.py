@@ -7,6 +7,7 @@ from app.registry.models import (
     DBRegistryModelRegion,
     DBRegistryModelRegionGroup,
     DBRegistryModelSupport,
+    DBRegistryProxy,
 )
 from tests.registry.api.conftest import CHECKED_AT, auth, model, ok
 from tests.registry.conftest import add_model
@@ -32,6 +33,8 @@ def setup(registry_db, deployed):
     registry_db.flush()
     us_gpt = registry_db.query(DBRegistryModelRegion).filter_by(litellm_deployment_id="us-gpt").one()
     registry_db.add(DBRegistryModelRegionGroup(model_region_id=us_gpt.id, access_group_id=beta.id))
+    for proxy in registry_db.query(DBRegistryProxy):
+        proxy.imported_at = CHECKED_AT
     registry_db.commit()
     return deployed
 
@@ -186,3 +189,15 @@ def test_rollout_query_count_does_not_grow_with_the_pairs(client, admin_token, r
 
     # More than zero, so the test fails when the listener sees nothing.
     assert one == many > 0
+
+
+def test_rollout_to_a_proxy_that_was_never_imported_gets_409(client, admin_token, registry_db, setup):
+    registry_db.get(DBRegistryProxy, setup["eu"].id).imported_at = None
+    registry_db.commit()
+    before = _state(registry_db)
+
+    response = _post(client, admin_token, {"models": ["openai/gpt-old"], "proxies": BOTH})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Import the proxy first: local-eu1"
+    assert _state(registry_db) == before
