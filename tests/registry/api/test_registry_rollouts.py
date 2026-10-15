@@ -9,34 +9,22 @@ from app.registry.models import (
     DBRegistryModelSupport,
     DBRegistryProxy,
 )
-from tests.registry.api.conftest import CHECKED_AT, auth, model, ok
+from tests.registry.api.conftest import UNSUPPORTED, auth, model, ok
+from tests.registry.api.conftest import deployment_state as _state
 from tests.registry.conftest import add_model
 
 ROLLOUTS = "/registry/rollouts"
-UNSUPPORTED = "the proxy's LiteLLM version does not support the model"
 BOTH = {"local-us1": "cred-us", "local-eu1": None}
 
 
-def _support(model_id, region_id, supported=True):
-    return DBRegistryModelSupport(
-        model_id=model_id, region_id=region_id, priced=True, supported=supported, region_available=True,
-        checked_at=CHECKED_AT,
-    )
-
-
 @pytest.fixture
-def setup(registry_db, deployed):
-    """Two access groups, gpt-4o on the US proxy in `beta`, and support rows for gpt-old on both proxies."""
-    old = model(registry_db, "openai", "gpt-old")
-    alpha, beta = DBRegistryAccessGroup(slug="alpha", label="Alpha"), DBRegistryAccessGroup(slug="beta", label="Beta")
-    registry_db.add_all([alpha, beta, _support(old.id, deployed["us"].id), _support(old.id, deployed["eu"].id)])
-    registry_db.flush()
+def setup(registry_db, writable):
+    """gpt-4o on the US proxy carries `beta`."""
+    beta = registry_db.query(DBRegistryAccessGroup).filter_by(slug="beta").one()
     us_gpt = registry_db.query(DBRegistryModelRegion).filter_by(litellm_deployment_id="us-gpt").one()
     registry_db.add(DBRegistryModelRegionGroup(model_region_id=us_gpt.id, access_group_id=beta.id))
-    for proxy in registry_db.query(DBRegistryProxy):
-        proxy.imported_at = CHECKED_AT
     registry_db.commit()
-    return deployed
+    return writable
 
 
 def _allow_gpt_on_eu(db, region_id):
@@ -49,16 +37,6 @@ def _allow_gpt_on_eu(db, region_id):
 
 def _post(client, token, body, query=""):
     return client.post(f"{ROLLOUTS}{query}", json=body, headers=auth(token))
-
-
-def _state(db):
-    db.expire_all()
-    deployments = [
-        (d.id, d.model_id, d.region_id, d.model_name, d.litellm_model, d.enabled, d.litellm_params)
-        for d in db.query(DBRegistryModelRegion).order_by(DBRegistryModelRegion.id)
-    ]
-    links = sorted((link.model_region_id, link.access_group_id) for link in db.query(DBRegistryModelRegionGroup))
-    return deployments, links
 
 
 def _entry(proxy, key, action, name, backend, problems=()):
