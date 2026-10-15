@@ -54,6 +54,7 @@ def backend_problem(backend: str, provider: str, model_id: str, cloud_regions: d
     # `global` can send a call outside the region at every provider.
     if scope_kind == "geo" and prefix == "global":
         return "the geo prefix global is not allowed on this proxy"
+    # Only a Bedrock geo prefix gets a region check. Another provider's geo form, such as an Azure data zone, passes.
     if provider == "bedrock" and scope_kind == "geo" and prefix not in geo_prefixes(cloud_regions.get("bedrock")):
         return f"the geo prefix {prefix} is not allowed on this proxy"
     return None
