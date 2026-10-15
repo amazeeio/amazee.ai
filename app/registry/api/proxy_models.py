@@ -283,16 +283,6 @@ def roll_out(
     db: Session = Depends(get_db),
 ):
     """Put each model on each proxy, all or nothing. The query count does not grow with the pairs."""
-    keys = list(dict.fromkeys(body.models))
-    idents = {_split_key(key) for key in keys}
-    models = {
-        f"{provider}/{model.model_id}": (model, provider)
-        for model, provider in _model_query(db).filter(
-            tuple_(DBRegistryProvider.name, DBRegistryModel.model_id).in_(idents)
-        )
-    }
-    if unknown := [key for key in keys if key not in models]:
-        raise HTTPException(status_code=422, detail=f"Unknown models: {', '.join(unknown)}")
     regions = {
         region.name: region
         for region in db.query(DBRegion)
@@ -303,8 +293,19 @@ def roll_out(
         raise HTTPException(status_code=422, detail=f"Unknown proxies: {', '.join(unknown)}")
     region_ids = [region.id for region in regions.values()]
     proxies = _lock_proxies(db, region_ids)
-    # One proxy that is not imported refuses the whole call: the admin imports it, then runs the rollout again.
+    # One proxy that is not imported refuses the whole call, before the model check: the admin imports it,
+    # then runs the rollout again.
     _require_imported(proxies.values(), {region.id: region.name for region in regions.values()})
+    keys = list(dict.fromkeys(body.models))
+    idents = {_split_key(key) for key in keys}
+    models = {
+        f"{provider}/{model.model_id}": (model, provider)
+        for model, provider in _model_query(db).filter(
+            tuple_(DBRegistryProvider.name, DBRegistryModel.model_id).in_(idents)
+        )
+    }
+    if unknown := [key for key in keys if key not in models]:
+        raise HTTPException(status_code=422, detail=f"Unknown models: {', '.join(unknown)}")
     group_ids = _group_ids(db, body.groups)
 
     model_ids = [model.id for model, _ in models.values()]
