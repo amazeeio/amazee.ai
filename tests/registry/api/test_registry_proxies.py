@@ -101,7 +101,8 @@ def test_proxy_detail(client, admin_token, deployed, registry_db):
         "checked_at": "2026-01-02T03:04:05Z", "enabled": True,
     }
     assert gpt_entry["deployments"] == [{
-        "proxy": "local-us1", "model_name": "gpt-4o", "litellm_model": "openai/gpt-4o", "enabled": True,
+        "proxy": "local-us1", "model_name": "gpt-4o", "litellm_model": "openai/gpt-4o",
+        "litellm_deployment_id": "us-gpt", "enabled": True,
         "input_cost_per_token": None, "output_cost_per_token": None, "prices": {}, "access_groups": ["team-a"],
     }]
     assert claude["support"]["supported"] is None
