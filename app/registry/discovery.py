@@ -18,7 +18,7 @@ from app.registry.models import (
     DBRegistryProvider,
     models_by_ident,
 )
-from app.registry.plugins.loader import override_sources
+from app.registry.plugins.loader import kept_sources
 from app.registry.prices import apply_prices, parse_prices, price_fields
 from app.registry.runs import record_run
 from app.registry.values import as_date
@@ -113,11 +113,11 @@ def apply_model_list(db: Session, listed: dict[tuple[str, str], dict], today: da
             f"list keeps {kept} of {len(at_risk)} known models; refusing to remove the rest"
         )
 
-    # Models whose base price comes from a first-party plugin keep it as
-    # their headline price; the list must not overwrite it every day.
+    # Models whose base price is manual or from a first-party plugin keep it
+    # as their headline price; the list must not overwrite it every day.
     bases = db.query(DBRegistryModelPrice).filter(DBRegistryModelPrice.scope_kind == "base").all()
-    overrides = override_sources()
-    locked = {p.model_id for p in bases if p.source in overrides}
+    keep = kept_sources()
+    locked = {p.model_id for p in bases if p.source in keep}
     # Priced by a proxy or a plugin: a list entry with no price keeps that.
     priced_elsewhere = {p.model_id for p in bases if p.source != "litellm"}
     lifecycles = {

@@ -1,7 +1,9 @@
 from datetime import date
+from decimal import Decimal
 
+from app.registry.discovery import apply_model_list, entry_fields
 from app.registry.models import DBRegistryModel, DBRegistryModelPrice, DBRegistryProvider
-from app.registry.prices import apply_prices, parse_prices, pick_price, price_fields
+from app.registry.prices import apply_prices, parse_prices, pick_price, price_fields, set_headline
 
 LIST = {
     "anthropic.claude-x-v1:0": {"litellm_provider": "bedrock", "input_cost_per_token": 3e-06},
@@ -127,6 +129,32 @@ def test_proxy_price_is_kept_until_the_list_prices_the_model(registry_db):
     registry_db.commit()
     row = registry_db.get(DBRegistryModelPrice, (model.id, "base", ""))
     assert row.source == "litellm" and row.prices == {"input_cost_per_token": 2e-06}
+
+
+def test_list_keeps_a_manual_base_price_and_its_headline(registry_db):
+    model = _model(registry_db, model_id="amazon.manual")
+    manual = {"input_cost_per_token": 1e-06, "output_cost_per_token": 2e-06}
+    registry_db.add(
+        DBRegistryModelPrice(
+            model_id=model.id, scope_kind="base", scope="", prices=manual,
+            source="manual", last_seen=date(2026, 9, 27),
+        )
+    )
+    set_headline(model, manual)
+    registry_db.commit()
+    ident = ("bedrock", "amazon.manual")
+    listed = {"input_cost_per_token": 3e-06, "output_cost_per_token": 1.5e-05, "mode": "chat"}
+
+    apply_model_list(registry_db, {ident: entry_fields(listed)}, date(2026, 9, 28))
+    apply_prices(registry_db, {ident}, {ident: {("base", ""): price_fields(listed)}}, date(2026, 9, 28))
+    registry_db.commit()
+
+    row = registry_db.get(DBRegistryModelPrice, (model.id, "base", ""))
+    assert row.source == "manual" and row.prices == manual
+    registry_db.refresh(model)
+    assert model.prices == manual
+    assert model.input_cost_per_token == Decimal("1e-06")
+    assert model.output_cost_per_token == Decimal("2e-06")
 
 
 def test_price_fields_drop_non_finite_numbers_and_keep_objects():
