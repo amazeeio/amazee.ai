@@ -17,6 +17,7 @@ from app.registry.litellm import fetch_json, parse_key
 from app.registry.models import (
     DBRegistryCloudAvailability,
     DBRegistryLitellmVersion,
+    DBRegistryModel,
     DBRegistryModelRegion,
     DBRegistryModelSupport,
     DBRegistryProvider,
@@ -82,6 +83,22 @@ class Availability:
         if "PROVISIONED" in call_types:
             return "provisioned_only"
         return None
+
+
+def refresh_region_available(db: Session, region_id: int, cloud_regions: dict, providers) -> None:
+    """Set `region_available` of the proxy's support rows of the given providers again, as the support check does.
+
+    Reads only the stored availability, so a cloud region change shows in rule 4 before the next daily run.
+    """
+    availability = Availability(db)
+    rows = (
+        db.query(DBRegistryModelSupport, DBRegistryProvider.name, DBRegistryModel.model_id)
+        .join(DBRegistryModel, DBRegistryModel.id == DBRegistryModelSupport.model_id)
+        .join(DBRegistryProvider, DBRegistryProvider.id == DBRegistryModel.provider_id)
+        .filter(DBRegistryModelSupport.region_id == region_id, DBRegistryProvider.name.in_(providers))
+    )
+    for support, provider, model_id in rows:
+        support.region_available = availability.available(provider, model_id, cloud_regions.get(provider))
 
 
 def apply_support(

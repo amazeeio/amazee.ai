@@ -47,6 +47,7 @@ from app.registry.schemas import (
     RegistryRefusal,
     RegistryRunResponse,
 )
+from app.registry.support import refresh_region_available
 
 # The job runs daily, so two days with no `ok` run means a run was missed.
 STALE_AFTER = timedelta(hours=48)
@@ -579,14 +580,18 @@ def update_proxy(
 ):
     region = _find_proxy(db, proxy)
     row = _lock_proxies(db, [region.id])[region.id]
-    cloud_regions = dict(row.cloud_regions or {})
+    old = row.cloud_regions or {}
+    cloud_regions = dict(old)
     for provider, cloud_region in body.cloud_regions.items():
         if cloud_region is None:
             cloud_regions.pop(provider, None)
         else:
             cloud_regions[provider] = cloud_region
+    changed = {provider for provider in body.cloud_regions if old.get(provider) != cloud_regions.get(provider)}
     # A new dict: the JSON column does not see a change in place.
     row.cloud_regions = cloud_regions
+    if changed:
+        refresh_region_available(db, region.id, cloud_regions, changed)
     db.flush()
     # The cloud regions stay in the registry, so this write plans no proxy step.
     return _save(db, dry_run, _proxy_responses(db, region.id)[0])
