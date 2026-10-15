@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.registry.litellm import our_entries, parse_key
 from app.registry.models import DBRegistryModel, DBRegistryModelPrice, models_by_ident, prices_by_model
-from app.registry.plugins.loader import override_sources
+from app.registry.plugins.loader import kept_sources
 
 SOURCE = "litellm"
 
@@ -57,8 +57,8 @@ def apply_prices(
         model_id: {(p.scope_kind, p.scope): p for p in rows} for model_id, rows in prices_by_model(db).items()
     }
 
-    # A first-party plugin's price beats the list's; leave those rows alone.
-    locked = override_sources()
+    # A manual price or a first-party plugin's price beats the list's; leave those rows alone.
+    locked = kept_sources()
     stats = {"price_scopes": 0, "price_changes": 0, "price_scopes_dropped": 0}
     for ident in listed_models:
         model = models.get(ident)
