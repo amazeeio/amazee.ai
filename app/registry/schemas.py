@@ -1,6 +1,6 @@
 """Request and response models for the registry API."""
 
-import math
+import json
 from datetime import date, datetime
 from typing import Annotated
 
@@ -20,18 +20,6 @@ Scope = Annotated[str, StringConstraints(pattern=rf"^(base|({'|'.join(SCOPE_KIND
 # Stricter than price_fields(), which takes any name that contains `cost`.
 Name = Annotated[str, StringConstraints(pattern=r"^[a-z0-9_]*cost[a-z0-9_]*$")]
 Amount = Annotated[float, Field(ge=0, allow_inf_nan=False, strict=True)]
-
-
-def _wrap_non_finite(value):
-    """Infinity and NaN in a parsed JSON value as a one-item list of their text.
-    No field accepts a list, so the value still fails, and the 422 can echo it."""
-    if isinstance(value, float) and not math.isfinite(value):
-        return [str(value)]
-    if isinstance(value, dict):
-        return {k: _wrap_non_finite(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_wrap_non_finite(v) for v in value]
-    return value
 
 
 class RegistryRunResponse(BaseModel):
@@ -107,8 +95,9 @@ class RegistryModelUpdate(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _readable_input(cls, data):
-        # A 422 echoes the input, and JSON cannot hold Infinity or NaN, so the error would fail with a 500.
-        return _wrap_non_finite(data)
+        # A 422 echoes the input, and JSON cannot hold Infinity or NaN, so the error would fail
+        # with a 500. A one-item list keeps their name, and no field accepts a list.
+        return json.loads(json.dumps(data), parse_constant=lambda name: [name])
 
     @field_validator("override_eol", mode="before")
     @classmethod
