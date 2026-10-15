@@ -48,14 +48,26 @@ def backend_problem(backend: str, provider: str, model_id: str, cloud_regions: d
     parsed = parse_key(backend, provider)
     if parsed is None or parsed[1] == "cloud_region":
         return "the backend is not a model string the registry deploys"
-    parsed_id, scope_kind, prefix = parsed
-    if parsed_id != model_id:
+    if parsed[0] != model_id:
         return "the backend is for another model"
+    return geo_problem(backend, provider, cloud_regions)
+
+
+def geo_problem(backend: str, provider: str, cloud_regions: dict) -> str | None:
+    """The region part of rule 5 only.
+
+    A stored backend gets only this part: the import found its model from the full litellm_params, and a
+    Bedrock Mantle deployment is stored as `openai/...`.
+    """
+    parsed = parse_key(backend, provider)
+    if parsed is None or parsed[1] != "geo":
+        return None
+    prefix = parsed[2]
     # `global` can send a call outside the region at every provider.
-    if scope_kind == "geo" and prefix == "global":
+    if prefix == "global":
         return "the geo prefix global is not allowed on this proxy"
     # Only a Bedrock geo prefix gets a region check. Another provider's geo form, such as an Azure data zone, passes.
-    if provider == "bedrock" and scope_kind == "geo" and prefix not in geo_prefixes(cloud_regions.get("bedrock")):
+    if provider == "bedrock" and prefix not in geo_prefixes(cloud_regions.get("bedrock")):
         return f"the geo prefix {prefix} is not allowed on this proxy"
     return None
 

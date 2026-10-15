@@ -9,7 +9,7 @@ from app.registry.models import (
     DBRegistryModelSupport,
     DBRegistryProxy,
 )
-from tests.registry.api.conftest import UNSUPPORTED, auth, model, ok
+from tests.registry.api.conftest import UNSUPPORTED, auth, model, ok, support_row
 from tests.registry.api.conftest import deployment_state as _state
 from tests.registry.conftest import add_model
 
@@ -209,3 +209,23 @@ def test_rollout_that_turns_on_an_imported_global_backend_gets_422(client, admin
     assert response.status_code == 422
     assert "the geo prefix global is not allowed on this proxy" in response.json()["detail"][0]["problems"]
     assert _state(registry_db) == before
+
+
+def test_rollout_turns_on_a_stored_mantle_deployment(client, admin_token, registry_db, setup):
+    row = add_model(registry_db, "bedrock_mantle", "anthropic.opus")
+    registry_db.add_all([
+        support_row(row.id, setup["us"].id),
+        # The importer stores a Mantle deployment with the backend of LiteLLM's OpenAI route.
+        DBRegistryModelRegion(
+            model_id=row.id, region_id=setup["us"].id, model_name="opus", litellm_model="openai/anthropic.opus",
+            litellm_deployment_id="us-opus", enabled=False,
+        ),
+    ])
+    registry_db.commit()
+
+    body = {"models": ["bedrock_mantle/anthropic.opus"], "proxies": {"local-us1": None}}
+
+    assert ok(_post(client, admin_token, body)) == [
+        _entry("local-us1", "bedrock_mantle/anthropic.opus", "updated", "opus", "openai/anthropic.opus"),
+    ]
+    assert _groups(client, admin_token, "bedrock_mantle/anthropic.opus") == {("local-us1", "opus"): (True, [])}

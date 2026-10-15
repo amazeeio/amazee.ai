@@ -36,6 +36,7 @@ from app.registry.rules import (
     backend_problem,
     default_backend,
     enable_problems,
+    geo_problem,
     removal_problem,
     support_rows,
 )
@@ -221,10 +222,11 @@ def set_proxy_model(
             if changes.get("enabled", d.enabled)
             and (not d.enabled or changes.get("litellm_model", d.litellm_model) != d.litellm_model)
         ]
-        # Rule 5 also covers a backend that the import stored, and force never skips it.
-        for backend in checked:
-            if problem := backend_problem(backend, provider, model.model_id, cloud_regions):
-                raise HTTPException(status_code=422, detail=problem)
+        # A stored backend gets the region part of rule 5; a new one had the full check above. Force skips neither.
+        if "litellm_model" not in changes:
+            for backend in checked:
+                if problem := geo_problem(backend, provider, cloud_regions):
+                    raise HTTPException(status_code=422, detail=problem)
         if checked:
             check_enable(Availability(db), checked)
 
@@ -344,8 +346,8 @@ def roll_out(
                 for deployment in existing:
                     if deployment.enabled:
                         continue
-                    # Rule 5 also covers a backend that the import stored, and force never skips it.
-                    if problem := backend_problem(deployment.litellm_model, provider, model.model_id, cloud_regions):
+                    # The region part of rule 5 covers a stored backend too, and force never skips it.
+                    if problem := geo_problem(deployment.litellm_model, provider, cloud_regions):
                         problems.append(problem)
                     if not force:
                         problems += enable_problems(
