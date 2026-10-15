@@ -5,24 +5,10 @@ from app.registry.discovery import apply_model_list, entry_fields
 from app.registry.models import DBRegistryModel, DBRegistryModelPrice, DBRegistryProvider
 from app.registry.plugins.runner import apply_plugin, validate
 from app.registry.prices import apply_prices, price_fields, set_manual_prices
+from tests.registry.conftest import add_model
 
 TODAY = date(2026, 10, 1)
 MANUAL = {"input_cost_per_token": 1e-06, "output_cost_per_token": 2e-06}
-
-
-def _model(db, provider_name="bedrock", model_id="anthropic.claude-x-v1:0"):
-    provider = db.query(DBRegistryProvider).filter_by(name=provider_name).first()
-    if provider is None:
-        provider = DBRegistryProvider(name=provider_name)
-        db.add(provider)
-        db.flush()
-    row = DBRegistryModel(
-        provider_id=provider.id, model_id=model_id, supports=[], status="active", source="litellm",
-        first_seen=date(2026, 9, 1), last_seen=date(2026, 9, 1),
-    )
-    db.add(row)
-    db.flush()
-    return row
 
 
 def _price(db, model, kind, scope, prices, source):
@@ -42,7 +28,7 @@ def _rows(db, model):
 
 
 def test_a_price_object_replaces_the_whole_row_of_any_source(registry_db):
-    model = _model(registry_db)
+    model = add_model(registry_db)
     _price(registry_db, model, "geo", "us", {"input_cost_per_token": 3e-06, "cache_read_cost": 1e-07}, "litellm")
 
     set_manual_prices(registry_db, model, {"geo:us": {"output_cost_per_token": 4e-06}}, TODAY)
@@ -52,7 +38,7 @@ def test_a_price_object_replaces_the_whole_row_of_any_source(registry_db):
 
 
 def test_none_removes_only_a_manual_row(registry_db):
-    model = _model(registry_db)
+    model = add_model(registry_db)
     _price(registry_db, model, "geo", "us", {"input_cost_per_token": 3e-06}, "litellm")
     _price(registry_db, model, "geo", "eu", {"input_cost_per_token": 5e-06}, "manual")
 
@@ -63,7 +49,7 @@ def test_none_removes_only_a_manual_row(registry_db):
 
 
 def test_updated_at_moves_only_when_a_price_row_changes(registry_db):
-    model = _model(registry_db)
+    model = add_model(registry_db)
     _price(registry_db, model, "geo", "us", MANUAL, "manual")
     registry_db.commit()
     before = model.updated_at
@@ -80,7 +66,7 @@ def test_updated_at_moves_only_when_a_price_row_changes(registry_db):
 
 
 def test_a_base_price_is_the_headline_until_it_is_removed(registry_db):
-    model = _model(registry_db)
+    model = add_model(registry_db)
 
     set_manual_prices(registry_db, model, {"base": MANUAL}, TODAY)
     registry_db.commit()
@@ -160,7 +146,7 @@ def test_daily_steps_keep_manual_prices_and_the_headline(registry_db):
 
 
 def test_a_fill_plugin_steps_aside_for_a_manual_price(registry_db):
-    model = _model(registry_db, "deepinfra", "m")
+    model = add_model(registry_db, "deepinfra", "m")
     set_manual_prices(registry_db, model, {"base": MANUAL}, TODAY)
     registry_db.commit()
 
