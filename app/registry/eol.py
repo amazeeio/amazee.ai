@@ -43,26 +43,18 @@ def strongest(rows, priority: dict[str, int]) -> dict:
     return best
 
 
-def _eol_rows(db: Session, priority: dict[str, int], ident: tuple[str, str] | None = None):
-    """The lifecycle rows with a real date from a source in `priority`, for one model when `ident` is set."""
-    query = db.query(DBRegistryModelLifecycle).filter(
+def _eol_rows(db: Session, priority: dict[str, int]):
+    """The lifecycle rows with a real date from a source in `priority`."""
+    return db.query(DBRegistryModelLifecycle).filter(
         DBRegistryModelLifecycle.source.in_(priority),
         DBRegistryModelLifecycle.eol_date.isnot(None),
         DBRegistryModelLifecycle.eol_date < PLACEHOLDER_CUTOFF,
     )
-    if ident is not None:
-        query = query.filter(
-            DBRegistryModelLifecycle.provider == ident[0], DBRegistryModelLifecycle.model_id == ident[1]
-        )
-    return query
 
 
 def set_eol(model: DBRegistryModel, winner) -> bool:
     """Set the model's EOL date from its override, else from the winning row. True when it changed."""
-    if model.override_eol is not None:
-        new = model.override_eol
-    else:
-        new = winner.eol_date if winner else None
+    new = model.override_eol or getattr(winner, "eol_date", None)
     if model.eol_date == new:
         return False
     model.eol_date = new
@@ -93,9 +85,8 @@ def apply_eol(db: Session) -> dict:
 def refresh_eol(db: Session, model: DBRegistryModel, provider: str) -> bool:
     """Choose one model's EOL date now. It gives the same result as the daily step for this model."""
     priority = priorities("eol_date")
-    winner = strongest(_eol_rows(db, priority, (provider, model.model_id)), priority).get(
-        (provider, model.model_id)
-    )
+    rows = _eol_rows(db, priority).filter_by(provider=provider, model_id=model.model_id)
+    winner = strongest(rows, priority).get((provider, model.model_id))
     return set_eol(model, winner)
 
 
