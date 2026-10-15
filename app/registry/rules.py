@@ -68,23 +68,19 @@ def geo_problem(backend: str, provider: str, cloud_regions: dict) -> str | None:
     if parsed is None:
         return None
     _, kind, scope = parsed
+    # `global` can send a call outside the region at every provider.
+    if kind == "geo" and scope == "global":
+        return "the geo prefix global is not allowed on this proxy"
+    # Only Bedrock gets a region check. Another provider's geo form, such as an Azure data zone, passes.
+    if provider != "bedrock" or kind == "base":
+        return None
     region = cloud_regions.get("bedrock")
-    if kind == "geo":
-        # `global` can send a call outside the region at every provider.
-        if scope == "global":
-            return "the geo prefix global is not allowed on this proxy"
-        # Only a Bedrock geo prefix gets a region check. Another provider's geo form, such as an Azure data zone, passes.
-        if provider != "bedrock":
-            return None
-        if not region:
-            return UNKNOWN_BEDROCK_REGION
-        if scope not in geo_prefixes(region):
-            return f"the geo prefix {scope} is not allowed on this proxy"
-    elif kind == "cloud_region" and provider == "bedrock":
-        if not region:
-            return UNKNOWN_BEDROCK_REGION
-        if scope != region:
-            return f"the backend names the cloud region {scope}, not the proxy's Bedrock region {region}"
+    if not region:
+        return UNKNOWN_BEDROCK_REGION
+    if kind == "geo" and scope not in geo_prefixes(region):
+        return f"the geo prefix {scope} is not allowed on this proxy"
+    if kind == "cloud_region" and scope != region:
+        return f"the backend names the cloud region {scope}, not the proxy's Bedrock region {region}"
     return None
 
 
