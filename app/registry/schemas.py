@@ -260,3 +260,19 @@ class RegistryAccessGroupModels(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     models: list[RegistryAccessGroupModelRef]
+
+
+class RegistryAliasResponse(BaseModel):
+    proxy: str
+    alias: str
+    # A `model_name` on the same proxy, because LiteLLM maps a name to a name.
+    target: str
+    hidden: bool
+
+
+class RegistryAliasUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target: str = Field(min_length=1)
+    # StrictBool with no `| None`: an explicit null gets a 422.
+    hidden: StrictBool = False

@@ -2,7 +2,7 @@
 
 from collections import defaultdict
 
-from fastapi import Depends, HTTPException, Query, Response
+from fastapi import Depends, HTTPException, Path, Query, Response
 from sqlalchemy import tuple_
 from sqlalchemy.orm import Session
 
@@ -11,6 +11,7 @@ from app.db.models import DBModelAccessGroup, DBRegion
 from app.registry.api.routes import _save, router
 from app.registry.models import (
     DBRegistryAccessGroup,
+    DBRegistryAlias,
     DBRegistryModel,
     DBRegistryModelRegion,
     DBRegistryModelRegionGroup,
@@ -23,7 +24,13 @@ from app.registry.schemas import (
     RegistryAccessGroupModels,
     RegistryAccessGroupResponse,
     RegistryAccessGroupUpdate,
+    RegistryAliasResponse,
+    RegistryAliasUpdate,
 )
+
+
+# No `/`, so an alias is one segment of its URL.
+ALIAS_PATTERN = r"^[A-Za-z0-9._:-]{1,128}$"
 
 
 def _group_responses(db: Session, group_ids: list[int] | None = None) -> list[RegistryAccessGroupResponse]:
@@ -194,6 +201,77 @@ def delete_access_group(slug: str, dry_run: bool = Query(False), db: Session = D
     if db.query(DBRegistryModelRegionGroup).filter(DBRegistryModelRegionGroup.access_group_id == group.id).first():
         raise HTTPException(status_code=409, detail="Deployments still carry this access group")
     db.delete(group)
+    db.flush()
+    _save(db, dry_run)
+    return Response(status_code=204)
+
+
+@router.get("/aliases", response_model=list[RegistryAliasResponse])
+def list_aliases(response: Response, proxy: str | None = Query(None), db: Session = Depends(get_db)):
+    query = db.query(DBRegistryAlias, DBRegion.name).join(DBRegion, DBRegion.id == DBRegistryAlias.region_id)
+    if proxy:
+        query = query.filter(DBRegion.name == proxy)
+    aliases = [
+        RegistryAliasResponse(proxy=name, alias=row.alias, target=row.target, hidden=row.hidden)
+        for row, name in query.order_by(DBRegion.name, DBRegistryAlias.alias)
+    ]
+    response.headers["X-Total-Count"] = str(len(aliases))
+    return aliases
+
+
+def _find_proxy(db: Session, proxy: str) -> DBRegion:
+    region = (
+        db.query(DBRegion)
+        .join(DBRegistryProxy, DBRegistryProxy.region_id == DBRegion.id)
+        .filter(DBRegion.name == proxy)
+        .one_or_none()
+    )
+    if region is None:
+        raise HTTPException(status_code=404, detail="Proxy not found")
+    return region
+
+
+# `{alias:path}`: a name with a `/` then reaches the pattern and gets a 422, not a 404.
+@router.put("/aliases/{proxy}/{alias:path}", response_model=RegistryAliasResponse)
+def set_alias(
+    proxy: str,
+    body: RegistryAliasUpdate,
+    response: Response,
+    alias: str = Path(pattern=ALIAS_PATTERN),
+    dry_run: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    region = _find_proxy(db, proxy)
+    names = {
+        name
+        for (name,) in db.query(DBRegistryModelRegion.model_name).filter(DBRegistryModelRegion.region_id == region.id)
+    }
+    # LiteLLM would send the calls for a real model name to another model.
+    if alias in names:
+        raise HTTPException(status_code=422, detail="The alias is the name of a deployment on this proxy")
+    if body.target not in names:
+        raise HTTPException(status_code=422, detail="The target is not a deployment on this proxy")
+
+    row = db.query(DBRegistryAlias).filter_by(region_id=region.id, alias=alias).one_or_none()
+    if row is None:
+        db.add(DBRegistryAlias(region_id=region.id, alias=alias, target=body.target, hidden=body.hidden))
+        response.status_code = 201
+    else:
+        row.target = body.target
+        row.hidden = body.hidden
+    db.flush()
+    result = RegistryAliasResponse(proxy=region.name, alias=alias, target=body.target, hidden=body.hidden)
+    _save(db, dry_run)
+    return result
+
+
+@router.delete("/aliases/{proxy}/{alias:path}", status_code=204)
+def delete_alias(proxy: str, alias: str, dry_run: bool = Query(False), db: Session = Depends(get_db)):
+    region = _find_proxy(db, proxy)
+    row = db.query(DBRegistryAlias).filter_by(region_id=region.id, alias=alias).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Alias not found")
+    db.delete(row)
     db.flush()
     _save(db, dry_run)
     return Response(status_code=204)

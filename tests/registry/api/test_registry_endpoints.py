@@ -114,6 +114,7 @@ def test_models_limit_and_offset(client, admin_token, models):
         "/registry/proxies/local-us1",
         "/registry/events",
         "/registry/access-groups",
+        "/registry/aliases",
     ],
 )
 def test_registry_endpoints_need_a_system_admin(client, test_token, path):
@@ -129,6 +130,7 @@ def test_registry_endpoints_are_admin_only_in_openapi():
     assert "/registry/models/{key}" in paths
     # The routes of this module live in another file, so the check proves they are on this router.
     assert "/registry/access-groups" in paths
+    assert "/registry/aliases/{proxy}/{alias}" in paths
 
     for route in router.routes:
         for method in route.methods:
