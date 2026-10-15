@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.db.models import DBModelAccessGroup, DBRegion
-from app.registry.api.routes import _save, router
+from app.registry.api.routes import _find_proxy, _save, router
 from app.registry.models import (
     DBRegistryAccessGroup,
     DBRegistryAlias,
@@ -188,18 +188,6 @@ def list_aliases(response: Response, proxy: str | None = Query(None), db: Sessio
     ]
     response.headers["X-Total-Count"] = str(len(aliases))
     return aliases
-
-
-def _find_proxy(db: Session, proxy: str) -> DBRegion:
-    region = (
-        db.query(DBRegion)
-        .join(DBRegistryProxy, DBRegistryProxy.region_id == DBRegion.id)
-        .filter(DBRegion.name == proxy)
-        .one_or_none()
-    )
-    if region is None:
-        raise HTTPException(status_code=404, detail="Proxy not found")
-    return region
 
 
 # `{alias:path}`: a name with a `/` then reaches the pattern and gets a 422, not a 404.
