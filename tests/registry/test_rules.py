@@ -12,6 +12,7 @@ from app.registry.rules import (
     default_backend,
     enable_problems,
     geo_prefixes,
+    geo_problem,
     removal_problem,
     support_rows,
 )
@@ -201,3 +202,18 @@ def test_enable_problems_of_a_geo_backend(registry_db, call_types, region, probl
     model = DBRegistryModel(model_id=CLAUDE, blocked=False)
 
     assert enable_problems(model, "bedrock", support_row(), availability, "us-east-1", f"bedrock/us.{CLAUDE}") == problems
+
+
+@pytest.mark.parametrize(
+    "backend, provider, problem",
+    [
+        ("openai/anthropic.opus", "bedrock_mantle", None),
+        (f"bedrock/us-east-1/{CLAUDE}", "bedrock", None),
+        (f"bedrock/us.{CLAUDE}", "bedrock", None),
+        (f"bedrock/eu.{CLAUDE}", "bedrock", "the geo prefix eu is not allowed on this proxy"),
+        (f"bedrock/global.{CLAUDE}", "bedrock", "the geo prefix global is not allowed on this proxy"),
+        ("azure/global/gpt-4o", "azure", "the geo prefix global is not allowed on this proxy"),
+    ],
+)
+def test_geo_problem_checks_only_the_region_part(backend, provider, problem):
+    assert geo_problem(backend, provider, US) == problem

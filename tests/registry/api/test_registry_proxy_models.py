@@ -458,3 +458,20 @@ def test_put_refuses_a_geo_backend_that_the_region_offers_only_provisioned(clien
     assert response.json()["detail"] == [PROVISIONED]
 
     ok(_put(client, admin_token, "local-us1", f"bedrock/{NEW}", body, "?force=true"), 201)
+
+
+def test_put_turns_on_a_stored_mantle_deployment(client, admin_token, registry_db, setup):
+    row = add_model(registry_db, "bedrock_mantle", "anthropic.opus")
+    registry_db.add_all([
+        support_row(row.id, setup["us"].id),
+        # The importer stores a Mantle deployment with the backend of LiteLLM's OpenAI route.
+        DBRegistryModelRegion(
+            model_id=row.id, region_id=setup["us"].id, model_name="opus", litellm_model="openai/anthropic.opus",
+            litellm_deployment_id="us-opus", enabled=False,
+        ),
+    ])
+    registry_db.commit()
+
+    body = ok(_put(client, admin_token, "local-us1", "bedrock_mantle/anthropic.opus", {"enabled": True}))
+
+    assert [(d["litellm_model"], d["enabled"]) for d in body] == [("openai/anthropic.opus", True)]
