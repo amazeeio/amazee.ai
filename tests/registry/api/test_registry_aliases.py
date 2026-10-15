@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from sqlalchemy.orm import Query
 
 from app.registry.models import DBRegistryAlias
 from tests.registry.api.conftest import auth, ok
@@ -42,6 +43,27 @@ def test_put_creates_then_changes_an_alias(client, admin_token, registry_db, dep
     assert body == {"proxy": "local-us1", "alias": "chat", "target": "gpt-4o", "hidden": True}
     assert [(alias, target, hidden) for _, _, alias, target, hidden, _ in _state(registry_db)] == [
         ("chat", "gpt-4o", True),
+    ]
+
+
+def test_put_that_loses_a_create_race_changes_the_alias(client, admin_token, registry_db, aliases, monkeypatch):
+    # The first alias lookup misses, as if another request created `zeta` after it.
+    real = Query.one_or_none
+    missed = []
+
+    def miss_once(query):
+        if query.column_descriptions[0]["entity"] is DBRegistryAlias and not missed:
+            missed.append(True)
+            return None
+        return real(query)
+
+    monkeypatch.setattr(Query, "one_or_none", miss_once)
+
+    body = ok(_put(client, admin_token, "local-us1/zeta", {"target": "claude-x"}))
+
+    assert missed and body["target"] == "claude-x"
+    assert [(alias, target) for _, _, alias, target, _, _ in _state(registry_db) if alias == "zeta"] == [
+        ("zeta", "claude-x"),
     ]
 
 

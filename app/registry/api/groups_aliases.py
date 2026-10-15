@@ -4,6 +4,7 @@ from collections import defaultdict
 
 from fastapi import Depends, HTTPException, Path, Query, Response
 from sqlalchemy import tuple_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -97,11 +98,14 @@ def create_access_group(
     dry_run: bool = Query(False),
     db: Session = Depends(get_db),
 ):
-    if db.query(DBRegistryAccessGroup).filter(DBRegistryAccessGroup.slug == body.slug).first():
-        raise HTTPException(status_code=409, detail="Access group already exists")
     group = DBRegistryAccessGroup(**body.model_dump())
     db.add(group)
-    db.flush()
+    # The unique slug, not a lookup first, so two requests at the same time cannot both create it.
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Access group already exists") from None
     result = _group_responses(db, [group.id])[0]
     _save(db, dry_run)
     return result
@@ -216,11 +220,18 @@ def set_alias(
     if body.target not in names:
         raise HTTPException(status_code=422, detail="The target is not a deployment on this proxy")
 
-    row = db.query(DBRegistryAlias).filter_by(region_id=region.id, alias=alias).one_or_none()
+    lookup = db.query(DBRegistryAlias).filter_by(region_id=region.id, alias=alias)
+    row = lookup.one_or_none()
     if row is None:
         db.add(DBRegistryAlias(region_id=region.id, alias=alias, target=body.target, hidden=body.hidden))
-        response.status_code = 201
-    else:
+        try:
+            db.flush()
+            response.status_code = 201
+        except IntegrityError:
+            # Another request created the alias after the lookup, so change that row instead.
+            db.rollback()
+            row = lookup.one()
+    if row is not None:
         row.target = body.target
         row.hidden = body.hidden
     result = RegistryAliasResponse(proxy=region.name, alias=alias, target=body.target, hidden=body.hidden)
