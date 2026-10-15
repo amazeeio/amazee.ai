@@ -581,14 +581,10 @@ def update_proxy(
     region = _find_proxy(db, proxy)
     row = _lock_proxies(db, [region.id])[region.id]
     old = row.cloud_regions or {}
-    cloud_regions = dict(old)
-    for provider, cloud_region in body.cloud_regions.items():
-        if cloud_region is None:
-            cloud_regions.pop(provider, None)
-        else:
-            cloud_regions[provider] = cloud_region
+    merged = {**old, **body.cloud_regions}
+    # A new dict, because the JSON column does not see a change in place. A null removes the provider.
+    cloud_regions = {provider: value for provider, value in merged.items() if value is not None}
     changed = {provider for provider in body.cloud_regions if old.get(provider) != cloud_regions.get(provider)}
-    # A new dict: the JSON column does not see a change in place.
     row.cloud_regions = cloud_regions
     if changed:
         refresh_region_available(db, region.id, cloud_regions, changed)
