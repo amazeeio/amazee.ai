@@ -149,6 +149,8 @@ def _price(scope="base", **fields):
         {"blocked": None},
         {"blocked": "yes"},
         {"override_eol": "soon"},
+        {"override_eol": 0},
+        {"override_eol": 10**12},
         {"prices": None},
         {"prices": {}},
         _price("zone:eu"),
