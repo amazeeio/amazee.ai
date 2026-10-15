@@ -71,8 +71,17 @@ def _require_imported(proxies, names: dict[int, str]) -> None:
 
 
 def _group_ids(db: Session, slugs: list[str]) -> dict[str, int]:
+    """The ids of the groups, locked until the links are written.
+
+    FOR KEY SHARE waits for a group PUT or DELETE that holds the group, so the link write cannot deadlock with
+    it or fail on a deleted group. A group deleted in the meantime is then unknown. The sorted order keeps
+    the lock order the same in every call.
+    """
     found = dict(
-        db.query(DBRegistryAccessGroup.slug, DBRegistryAccessGroup.id).filter(DBRegistryAccessGroup.slug.in_(slugs))
+        db.query(DBRegistryAccessGroup.slug, DBRegistryAccessGroup.id)
+        .filter(DBRegistryAccessGroup.slug.in_(slugs))
+        .order_by(DBRegistryAccessGroup.slug)
+        .with_for_update(read=True, key_share=True)
     )
     unknown = sorted(set(slugs) - found.keys())
     if unknown:
