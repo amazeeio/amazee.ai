@@ -1,17 +1,25 @@
 """Request and response models for the registry API."""
 
 import math
-import re
 from datetime import date, datetime
-from typing import Any
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
-from app.registry.values import is_amount
+from app.registry.prices import SCOPE_KINDS
 
-_SCOPE_KEY = re.compile(r"base|(geo|region):[a-z0-9-]+")
-# The same test as price_fields() uses for LiteLLM's names.
-_PRICE_FIELD = re.compile(r"[a-z0-9_]+")
+Scope = Annotated[str, StringConstraints(pattern=rf"^(base|({'|'.join(SCOPE_KINDS)}):[a-z0-9-]+)$")]
+# Stricter than price_fields(), which takes any name that contains `cost`.
+Name = Annotated[str, StringConstraints(pattern=r"^[a-z0-9_]*cost[a-z0-9_]*$")]
+Amount = Annotated[float, Field(ge=0, allow_inf_nan=False, strict=True)]
 
 
 def _wrap_non_finite(value):
@@ -91,9 +99,10 @@ class RegistryModelUpdate(BaseModel):
 
     family: str | None = Field(None, min_length=1)
     override_eol: date | None = None
-    blocked: StrictBool | None = None
+    # No `| None` on these two: an explicit null gets a 422.
+    blocked: StrictBool = None
     # Scope key (`base`, `geo:us`, `region:us-east-1`) -> LiteLLM price fields, or null.
-    prices: dict[str, dict[str, Any] | None] | None = Field(None, min_length=1)
+    prices: dict[Scope, Annotated[dict[Name, Amount], Field(min_length=1)] | None] = Field(None, min_length=1)
 
     @model_validator(mode="before")
     @classmethod
@@ -109,30 +118,10 @@ class RegistryModelUpdate(BaseModel):
             raise ValueError("override_eol must be a date as text, or null")
         return value
 
-    @field_validator("prices")
-    @classmethod
-    def _check_prices(cls, prices):
-        for key, fields in (prices or {}).items():
-            if not _SCOPE_KEY.fullmatch(key):
-                raise ValueError(f"unknown price scope {key!r}")
-            if fields is None:
-                continue
-            if not fields:
-                raise ValueError(f"{key}: a price needs at least one field")
-            for name, value in fields.items():
-                if not _PRICE_FIELD.fullmatch(name) or "cost" not in name:
-                    raise ValueError(f"{key}: {name!r} is not a price field")
-                if not is_amount(value):
-                    raise ValueError(f"{key}: {name} must be a finite number of 0 or more")
-        return prices
-
     @model_validator(mode="after")
     def _check_body(self):
         if not self.model_fields_set:
             raise ValueError("the body changes nothing")
-        for name in ("blocked", "prices"):
-            if name in self.model_fields_set and getattr(self, name) is None:
-                raise ValueError(f"{name} cannot be null")
         return self
 
 

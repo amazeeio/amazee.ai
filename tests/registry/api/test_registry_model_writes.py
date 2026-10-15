@@ -82,6 +82,12 @@ def test_patch_writes_manual_prices(client, admin_token, registry_db, models):
     assert model(registry_db, "openai", "gpt-4o").prices == PRICE
 
 
+def test_patch_takes_a_whole_number_as_a_price(client, admin_token, models):
+    body = _ok(_patch(client, admin_token, GPT, {"prices": {"base": {"input_cost_per_token": 1}}}))
+
+    assert body["prices"] == {"input_cost_per_token": 1}
+
+
 def test_override_eol_beats_the_sources_and_the_daily_step_agrees(client, admin_token, registry_db, models):
     registry_db.add(DBRegistryModelLifecycle(
         provider="openai", model_id="gpt-4o", source="litellm", eol_date=Y, last_seen=TODAY,
