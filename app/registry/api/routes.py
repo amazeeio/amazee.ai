@@ -27,7 +27,8 @@ from app.registry.models import (
     DBRegistryProxy,
     DBRegistryRun,
 )
-from app.registry.prices import pick_price
+from app.registry.eol import refresh_eol
+from app.registry.prices import pick_price, set_manual_prices
 from app.registry.schemas import (
     RegistryDeploymentResponse,
     RegistryEventResponse,
@@ -35,6 +36,7 @@ from app.registry.schemas import (
     RegistryModelDetailResponse,
     RegistryModelProxyResponse,
     RegistryModelResponse,
+    RegistryModelUpdate,
     RegistryProviderResponse,
     RegistryProxyDetailResponse,
     RegistryProxyModelResponse,
@@ -324,9 +326,8 @@ def eol_models(
     return _model_responses(db, _paginate(query, response, offset, limit))
 
 
-# Declared after /models/new and /models/eol: a path parameter would catch those two names.
-@router.get("/models/{key:path}", response_model=RegistryModelDetailResponse)
-def get_model(key: str, db: Session = Depends(get_db)):
+def _find_model(db: Session, key: str) -> tuple[DBRegistryModel, str]:
+    """The model of a `provider/model_id` key, with its provider name."""
     # Only the first slash splits: model ids can hold slashes (deepinfra/BAAI/bge-m3).
     provider, _, model_id = key.partition("/")
     row = (
@@ -336,18 +337,21 @@ def get_model(key: str, db: Session = Depends(get_db)):
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Model not found")
-    model = row[0]
-    base = _model_responses(db, [row])[0]
+    return row
+
+
+def _model_detail(db: Session, model: DBRegistryModel, provider: str) -> RegistryModelDetailResponse:
+    base = _model_responses(db, [(model, provider)])[0]
 
     lifecycle = (
         db.query(DBRegistryModelLifecycle)
-        .filter_by(provider=provider, model_id=model_id)
+        .filter_by(provider=provider, model_id=model.model_id)
         .order_by(DBRegistryModelLifecycle.source)
         .all()
     )
     availability = (
         db.query(DBRegistryCloudAvailability)
-        .filter_by(provider=provider, model_id=model_id)
+        .filter_by(provider=provider, model_id=model.model_id)
         .order_by(DBRegistryCloudAvailability.cloud_region, DBRegistryCloudAvailability.source)
         .all()
     )
@@ -389,6 +393,41 @@ def get_model(key: str, db: Session = Depends(get_db)):
         ],
         history=history,
     )
+
+
+# Declared after /models/new and /models/eol: a path parameter would catch those two names.
+@router.get("/models/{key:path}", response_model=RegistryModelDetailResponse)
+def get_model(key: str, db: Session = Depends(get_db)):
+    model, provider = _find_model(db, key)
+    return _model_detail(db, model, provider)
+
+
+@router.patch("/models/{key:path}", response_model=RegistryModelDetailResponse)
+def update_model(
+    key: str,
+    body: RegistryModelUpdate,
+    dry_run: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    model, provider = _find_model(db, key)
+    changes = body.model_dump(exclude_unset=True)
+    for field in ("family", "override_eol", "blocked"):
+        if field in changes:
+            setattr(model, field, changes[field])
+    if "prices" in changes:
+        # ponytail: a daily step that runs at the same time can overwrite a manual price
+        # written here; the admin sets it again. A row lock in this route would close that.
+        set_manual_prices(db, model, changes["prices"], date.today())
+    if "override_eol" in changes:
+        refresh_eol(db, model, provider)
+    db.flush()
+    detail = _model_detail(db, model, provider)
+    # A dry run makes the same changes, then rolls them back.
+    if dry_run:
+        db.rollback()
+    else:
+        db.commit()
+    return detail
 
 
 @router.get("/providers", response_model=list[RegistryProviderResponse])
