@@ -76,8 +76,9 @@ def _group_responses(db: Session, group_ids: list[int] | None = None) -> list[Re
     ]
 
 
-def _find_group(db: Session, slug: str) -> DBRegistryAccessGroup:
-    group = db.query(DBRegistryAccessGroup).filter(DBRegistryAccessGroup.slug == slug).one_or_none()
+def _find_group(db: Session, slug: str, lock: bool = False) -> DBRegistryAccessGroup:
+    query = db.query(DBRegistryAccessGroup).filter(DBRegistryAccessGroup.slug == slug)
+    group = (query.with_for_update() if lock else query).one_or_none()
     if group is None:
         raise HTTPException(status_code=404, detail="Access group not found")
     return group
@@ -153,7 +154,9 @@ def set_access_group_models(
     dry_run: bool = Query(False),
     db: Session = Depends(get_db),
 ):
-    group = _find_group(db, slug)
+    # The route deletes and inserts every link, so two PUTs on one group at the same time
+    # would insert the same rows twice. The row lock makes them run one after the other.
+    group = _find_group(db, slug, lock=True)
     refs = [(ref.proxy, ref.model) for ref in body.models]
     # Every check runs before the first write, so a 422 changes nothing.
     wanted = _deployment_ids(db, refs) if refs else set()
