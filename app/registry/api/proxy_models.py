@@ -3,14 +3,23 @@
 Every write changes only the registry tables. Nothing calls a proxy.
 """
 
+from collections import defaultdict
 from datetime import date
 
 from fastapi import Depends, HTTPException, Query, Response
+from sqlalchemy import tuple_
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.db.models import DBRegion
-from app.registry.api.routes import _deployment_responses, _find_model, _find_proxy, _save, router
+from app.registry.api.routes import (
+    _deployment_responses,
+    _find_model,
+    _find_proxy,
+    _model_query,
+    _save,
+    router,
+)
 from app.registry.models import (
     DBRegistryAccessGroup,
     DBRegistryAlias,
@@ -18,6 +27,7 @@ from app.registry.models import (
     DBRegistryModelPrice,
     DBRegistryModelRegion,
     DBRegistryModelRegionGroup,
+    DBRegistryProvider,
     DBRegistryProxy,
 )
 from app.registry.rules import (
@@ -27,7 +37,12 @@ from app.registry.rules import (
     removal_problem,
     support_rows,
 )
-from app.registry.schemas import RegistryModelDeploymentResponse, RegistryProxyModelUpdate
+from app.registry.schemas import (
+    RegistryModelDeploymentResponse,
+    RegistryProxyModelUpdate,
+    RegistryRollout,
+    RegistryRolloutEntry,
+)
 from app.registry.support import Availability
 
 
@@ -248,3 +263,113 @@ def remove_proxy_model(
     db.query(DBRegistryModelRegion).filter(DBRegistryModelRegion.id.in_(ids)).delete(synchronize_session=False)
     _save(db, dry_run)
     return Response(status_code=204)
+
+
+@router.post("/rollouts", response_model=list[RegistryRolloutEntry])
+def roll_out(
+    body: RegistryRollout,
+    dry_run: bool = Query(False),
+    force: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    """Put each model on each proxy, all or nothing. The query count does not grow with the pairs."""
+    keys = list(dict.fromkeys(body.models))
+    # Only the first slash splits: model ids can hold slashes (deepinfra/BAAI/bge-m3).
+    idents = {tuple(key.partition("/")[::2]) for key in keys}
+    models = {
+        f"{provider}/{model.model_id}": (model, provider)
+        for model, provider in _model_query(db).filter(
+            tuple_(DBRegistryProvider.name, DBRegistryModel.model_id).in_(idents)
+        )
+    }
+    if unknown := [key for key in keys if key not in models]:
+        raise HTTPException(status_code=422, detail=f"Unknown models: {', '.join(unknown)}")
+    regions = {
+        region.name: region
+        for region in db.query(DBRegion)
+        .join(DBRegistryProxy, DBRegistryProxy.region_id == DBRegion.id)
+        .filter(DBRegion.name.in_(body.proxies))
+    }
+    if unknown := [name for name in body.proxies if name not in regions]:
+        raise HTTPException(status_code=422, detail=f"Unknown proxies: {', '.join(unknown)}")
+    region_ids = [region.id for region in regions.values()]
+    proxies = _lock_proxies(db, region_ids)
+    group_ids = _group_ids(db, body.groups)
+
+    model_ids = [model.id for model, _ in models.values()]
+    deployments: dict[tuple[int, int], list[DBRegistryModelRegion]] = defaultdict(list)
+    for row in (
+        db.query(DBRegistryModelRegion)
+        .filter(DBRegistryModelRegion.model_id.in_(model_ids), DBRegistryModelRegion.region_id.in_(region_ids))
+        .order_by(DBRegistryModelRegion.model_name, DBRegistryModelRegion.id)
+    ):
+        deployments[(row.model_id, row.region_id)].append(row)
+    links = set(
+        db.query(DBRegistryModelRegionGroup.model_region_id, DBRegistryModelRegionGroup.access_group_id).filter(
+            DBRegistryModelRegionGroup.model_region_id.in_([d.id for rows in deployments.values() for d in rows])
+        )
+    )
+    supports = support_rows(db, model_ids, region_ids)
+    availability = Availability(db)
+    aliases = _alias_names(db, region_ids)
+
+    # Every check runs before the first write, so a 422 changes nothing.
+    entries = []
+    for key in keys:
+        model, provider = models[key]
+        for name in body.proxies:
+            region_id = regions[name].id
+            cloud_regions = proxies[region_id].cloud_regions or {}
+            support = supports.get((model.id, region_id))
+            existing = deployments.get((model.id, region_id))
+            problems = []
+            if existing:
+                action, model_name, backend = "updated", existing[0].model_name, existing[0].litellm_model
+                for deployment in existing:
+                    if not deployment.enabled and not force:
+                        problems += enable_problems(
+                            model, provider, support, availability, cloud_regions.get(provider),
+                            deployment.litellm_model,
+                        )
+            else:
+                action, model_name = "created", model.model_id
+                backend = default_backend(provider, model.model_id, cloud_regions, availability)
+                if (region_id, model_name) in aliases:
+                    problems.append(_alias_name_problem(model_name))
+                if problem := backend_problem(backend, provider, model.model_id, cloud_regions):
+                    problems.append(problem)
+                if not force:
+                    problems += enable_problems(
+                        model, provider, support, availability, cloud_regions.get(provider), backend
+                    )
+            entries.append(RegistryRolloutEntry(
+                proxy=name, model=key, action=action, model_name=model_name, litellm_model=backend,
+                problems=list(dict.fromkeys(problems)),
+            ))
+    if any(entry.problems for entry in entries):
+        raise HTTPException(status_code=422, detail=[entry.model_dump() for entry in entries])
+
+    targets = []
+    for entry in entries:
+        model, _ = models[entry.model]
+        region_id = regions[entry.proxy].id
+        existing = deployments.get((model.id, region_id))
+        if existing:
+            # The credential of a deployment that exists stays as it is.
+            for deployment in existing:
+                deployment.enabled = True
+        else:
+            existing = [_add_deployment(
+                db, model, region_id, entry.model_name, entry.litellm_model, body.proxies[entry.proxy], True,
+            )]
+        targets += existing
+    db.flush()
+    # Add the groups and keep the links the deployments already have.
+    db.add_all(
+        DBRegistryModelRegionGroup(model_region_id=deployment.id, access_group_id=group_id)
+        for deployment in targets
+        for group_id in group_ids.values()
+        if (deployment.id, group_id) not in links
+    )
+    _save(db, dry_run)
+    return entries

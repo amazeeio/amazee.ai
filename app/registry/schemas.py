@@ -312,3 +312,20 @@ class RegistryProxyModelUpdate(_Strict):
     credential: Credential | None = None
     groups: list[str] = None
     enabled: StrictBool = None
+
+
+class RegistryRollout(_Strict):
+    models: list[str] = Field(min_length=1)
+    # Proxy name: the credential name for the deployments that the rollout creates there, or null.
+    proxies: dict[str, Credential | None] = Field(min_length=1)
+    groups: list[str] = Field(default_factory=list)
+
+
+class RegistryRolloutEntry(BaseModel):
+    proxy: str
+    model: str
+    action: Literal["created", "updated"]
+    model_name: str
+    litellm_model: str
+    # Empty after a success. A 422 lists every entry, each with its own problems.
+    problems: list[str]
