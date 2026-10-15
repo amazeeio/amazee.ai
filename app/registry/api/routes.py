@@ -11,7 +11,7 @@ from app.core.config import catalog_manages
 from app.core.security import get_role_min_system_admin
 from app.db.database import get_db
 from app.db.models import DBRegion
-from app.registry.api.dry_run import _access_groups, _save
+from app.registry.api.dry_run import _access_groups, _save, deployment_plans
 from app.registry.importer import STEP as IMPORT_STEP
 from app.registry.models import (
     DBRegistryCloudAvailability,
@@ -30,6 +30,7 @@ from app.registry.eol import refresh_eol
 from app.registry.prices import pick_price, set_manual_prices
 from app.registry.schemas import (
     RegistryDeploymentResponse,
+    RegistryDryRun,
     RegistryEventResponse,
     RegistryModelDeploymentResponse,
     RegistryModelDetailResponse,
@@ -429,7 +430,10 @@ def get_model(key: str, db: Session = Depends(get_db)):
     return _model_detail(db, model, provider)
 
 
-@router.patch("/models/{key:path}", response_model=RegistryModelDetailResponse)
+@router.patch(
+    "/models/{key:path}",
+    response_model=RegistryModelDetailResponse | RegistryDryRun[RegistryModelDetailResponse],
+)
 def update_model(
     key: str,
     body: RegistryModelUpdate,
@@ -450,8 +454,13 @@ def update_model(
         refresh_eol(db, model, provider)
     db.flush()
     detail = _model_detail(db, model, provider)
-    _save(db, dry_run)
-    return detail
+
+    def plan():
+        rows = db.query(DBRegistryModelRegion).filter_by(model_id=model.id).all()
+        return deployment_plans(db, rows, frozenset({"prices"}), live_only=True)
+
+    # Only a price is synced into the deployments; family, override_eol and blocked stay in the registry.
+    return _save(db, dry_run, detail, plan=plan if "prices" in changes else None)
 
 
 @router.get("/providers", response_model=list[RegistryProviderResponse])
@@ -537,7 +546,7 @@ def get_proxy(proxy: str, db: Session = Depends(get_db)):
     )
 
 
-@router.patch("/proxies/{proxy}", response_model=RegistryProxyResponse)
+@router.patch("/proxies/{proxy}", response_model=RegistryProxyResponse | RegistryDryRun[RegistryProxyResponse])
 def update_proxy(
     proxy: str,
     body: RegistryProxyUpdate,
@@ -555,9 +564,8 @@ def update_proxy(
     # A new dict: the JSON column does not see a change in place.
     row.cloud_regions = cloud_regions
     db.flush()
-    result = _proxy_responses(db, region.id)[0]
-    _save(db, dry_run)
-    return result
+    # The cloud regions stay in the registry, so this write plans no proxy step.
+    return _save(db, dry_run, _proxy_responses(db, region.id)[0])
 
 
 @router.get("/events", response_model=list[RegistryEventResponse])

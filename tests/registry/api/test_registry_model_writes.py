@@ -1,6 +1,7 @@
 import json
 from datetime import UTC, date, datetime
 
+import httpx
 import pytest
 
 from app.registry.eol import apply_eol
@@ -121,10 +122,61 @@ def test_dry_run_returns_the_change_and_saves_nothing(client, admin_token, regis
         headers=auth(admin_token),
     ))
 
-    assert body["family"] == "gpt4" and body["blocked"] is True
-    assert body["override_eol"] == body["eol_date"] == X.isoformat()
-    assert body["prices"] == PRICE
+    result = body["result"]
+    assert result["family"] == "gpt4" and result["blocked"] is True
+    assert result["override_eol"] == result["eol_date"] == X.isoformat()
+    assert result["prices"] == PRICE
     assert _state(registry_db) == before
+
+
+US_URL = "http://litellm:4000"
+
+
+def _live_gpt(**prices):
+    return {"model_info": [{
+        "model_name": "gpt-4o", "litellm_params": {"model": "openai/gpt-4o", **prices}, "model_info": {"id": "us-gpt"},
+    }]}
+
+
+def test_price_dry_run_plans_the_price_of_each_live_deployment(client, admin_token, deployed, live_proxies):
+    live_proxies.by_url[US_URL] = _live_gpt(input_cost_per_token=5e-06)
+
+    body = ok(_patch(client, admin_token, f"{GPT}?dry_run=true", {"prices": {"base": PRICE}}))
+
+    assert body["result"]["prices"] == PRICE
+    assert body["steps"] == [{
+        "proxy": "local-us1", "action": "update_model", "model": "openai/gpt-4o", "model_name": "gpt-4o",
+        "deployment_id": "us-gpt", "payload": None,
+        "changes": {"prices": {"from": {"input_cost_per_token": 5e-06, "output_cost_per_token": None}, "to": PRICE}},
+        "problems": [],
+    }]
+    # The EU deployment is turned off, so its proxy is not read.
+    assert live_proxies.calls == [US_URL]
+
+
+def test_family_dry_run_plans_nothing(client, admin_token, deployed, live_proxies):
+    body = ok(_patch(client, admin_token, f"{GPT}?dry_run=true", {"family": "gpt4", "blocked": True}))
+
+    assert body["steps"] == []
+    assert live_proxies.calls == []
+
+
+def test_price_write_reads_no_proxy(client, admin_token, deployed, live_proxies):
+    body = ok(_patch(client, admin_token, GPT, {"prices": {"base": PRICE}}))
+
+    assert body["prices"] == PRICE
+    assert live_proxies.calls == []
+
+
+def test_price_dry_run_with_a_proxy_that_cannot_be_read(client, admin_token, deployed, live_proxies):
+    live_proxies.by_url[US_URL] = httpx.ConnectError("down")
+
+    body = ok(_patch(client, admin_token, f"{GPT}?dry_run=true", {"prices": {"base": PRICE}}))
+
+    assert body["steps"] == [{
+        "proxy": "local-us1", "action": "read_proxy", "model": None, "model_name": None, "deployment_id": None,
+        "payload": None, "changes": None, "problems": ["the proxy could not be read: ConnectError"],
+    }]
 
 
 def test_patch_reaches_a_model_id_with_a_slash(client, admin_token, registry_db, models):
