@@ -181,6 +181,25 @@ def test_enable_problems_price(registry_db, priced, prices, own_prices, backend,
     assert enable_problems(model, "bedrock", support, availability, "us-east-1", backend, prices, own_prices) == problems
 
 
+@pytest.mark.parametrize(
+    "backend, region, call_types, expected",
+    [
+        (f"bedrock/us-east-1/{CLAUDE}", "us-east-1", ["PROVISIONED"], "provisioned_only"),
+        (f"bedrock/us-east-1/{CLAUDE}", "us-east-1", ["INFERENCE_PROFILE"], "needs_profile"),
+        (f"bedrock/us-east-1/{CLAUDE}", "us-east-1", ["ON_DEMAND", "PROVISIONED"], None),
+        # The cloud-region form reads the region it names, not the given region.
+        (f"bedrock/us-east-1/{CLAUDE}", "eu-west-1", ["PROVISIONED"], "provisioned_only"),
+        (f"bedrock/{CLAUDE}", "us-east-1", ["PROVISIONED"], "provisioned_only"),
+        (f"bedrock/{CLAUDE}", "eu-west-1", ["PROVISIONED"], None),
+        (f"bedrock/us.{CLAUDE}", "us-east-1", ["PROVISIONED"], None),
+    ],
+)
+def test_in_region_problem(registry_db, backend, region, call_types, expected):
+    availability = _availability(registry_db, call_types)
+
+    assert availability.in_region_problem("bedrock", CLAUDE, region, backend) == expected
+
+
 def test_support_rows_reads_only_the_given_models_and_proxies(registry_db, proxy_region):
     other = DBRegion(name="local-eu1", litellm_api_url="http://eu", litellm_api_key="sk", is_active=True)
     registry_db.add(other)

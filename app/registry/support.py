@@ -69,14 +69,19 @@ class Availability:
         return (provider, model_id, region) in self.call_types
 
     def in_region_problem(self, provider: str, model_id: str, region: str | None, deployed_model: str) -> str | None:
-        """Why an in-region id cannot be called on demand, or None.
+        """Why an in-region id (`bedrock/x` or `bedrock/<aws-region>/x`) cannot be called on demand, or None.
 
         `needs_profile`: the region offers the model only through a geo
         profile (`us.x`). `provisioned_only`: only with bought throughput.
         """
         parsed = parse_key(deployed_model, provider)
+        if provider != "bedrock" or not parsed or parsed[1] not in ("base", "cloud_region"):
+            return None
+        # The cloud-region form calls the region it names, and a stored backend can name another region.
+        if parsed[1] == "cloud_region":
+            region = parsed[2]
         call_types = self.call_types.get((provider, model_id, region)) or []
-        if provider != "bedrock" or not parsed or parsed[1] != "base" or "ON_DEMAND" in call_types:
+        if "ON_DEMAND" in call_types:
             return None
         if "INFERENCE_PROFILE" in call_types:
             return "needs_profile"
