@@ -51,7 +51,9 @@ def backend_problem(backend: str, provider: str, model_id: str, cloud_regions: d
     parsed_id, scope_kind, prefix = parsed
     if parsed_id != model_id:
         return "the backend is for another model"
-    # Other providers get a geo check when their region data exists; the map below is for Bedrock only.
+    # `global` can send a call outside the region at every provider.
+    if scope_kind == "geo" and prefix == "global":
+        return "the geo prefix global is not allowed on this proxy"
     if provider == "bedrock" and scope_kind == "geo" and prefix not in geo_prefixes(cloud_regions.get("bedrock")):
         return f"the geo prefix {prefix} is not allowed on this proxy"
     return None

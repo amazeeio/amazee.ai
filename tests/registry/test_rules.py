@@ -72,6 +72,7 @@ def test_backend_problem_passes(backend, provider, model_id, cloud_regions):
     [
         (f"bedrock/eu.{CLAUDE}", "bedrock", CLAUDE, US, "the geo prefix eu is not allowed on this proxy"),
         (f"bedrock/global.{CLAUDE}", "bedrock", CLAUDE, US, "the geo prefix global is not allowed on this proxy"),
+        ("azure/global/gpt-4o", "azure", "gpt-4o", {}, "the geo prefix global is not allowed on this proxy"),
         (f"bedrock/us.{CLAUDE}", "bedrock", CLAUDE, {}, "the geo prefix us is not allowed on this proxy"),
         ("bedrock/us.anthropic.other-v1:0", "bedrock", CLAUDE, US, "the backend is for another model"),
         (f"openai/{CLAUDE}", "bedrock", CLAUDE, US, "the backend is for another model"),
