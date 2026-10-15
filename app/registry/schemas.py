@@ -20,6 +20,8 @@ Scope = Annotated[str, StringConstraints(pattern=rf"^(base|({'|'.join(SCOPE_KIND
 # Stricter than price_fields(), which takes any name that contains `cost`.
 Name = Annotated[str, StringConstraints(pattern=r"^[a-z0-9_]*cost[a-z0-9_]*$")]
 Amount = Annotated[float, Field(ge=0, allow_inf_nan=False, strict=True)]
+# The slug goes into LiteLLM model_info.access_groups and team model lists, so it keeps the old catalog's rule.
+SLUG_PATTERN = r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
 
 
 class RegistryRunResponse(BaseModel):
@@ -213,3 +215,33 @@ class RegistryEventResponse(BaseModel):
     type: str
     created_at: datetime
     data: dict
+
+
+class RegistryAccessGroupModelResponse(BaseModel):
+    proxy: str
+    model: str
+    # The deployments of the model on this proxy that carry the group.
+    model_names: list[str]
+
+
+class RegistryAccessGroupResponse(BaseModel):
+    slug: str
+    label: str | None
+    description: str | None
+    models: list[RegistryAccessGroupModelResponse]
+
+
+class RegistryAccessGroupCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    slug: str = Field(min_length=1, max_length=64, pattern=SLUG_PATTERN)
+    label: str = Field(min_length=1)
+    description: str | None = None
+
+
+class RegistryAccessGroupUpdate(_Update):
+    """The slug never changes: LiteLLM and teams know the group only by it."""
+
+    # No `| None`: an explicit null gets a 422. A null description clears it.
+    label: str = Field(None, min_length=1)
+    description: str | None = None
