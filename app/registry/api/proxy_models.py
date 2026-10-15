@@ -325,7 +325,7 @@ def roll_out(
     aliases = _alias_names(db, region_ids)
 
     # Every check runs before the first write, so a 422 changes nothing.
-    entries = []
+    entries, pairs = [], []
     for key in keys:
         model, provider = models[key]
         for name in body.proxies:
@@ -357,14 +357,12 @@ def roll_out(
                 proxy=name, model=key, action=action, model_name=model_name, litellm_model=backend,
                 problems=list(dict.fromkeys(problems)),
             ))
+            pairs.append((model, region_id, existing))
     if any(entry.problems for entry in entries):
         raise HTTPException(status_code=422, detail=[entry.model_dump() for entry in entries])
 
     targets = []
-    for entry in entries:
-        model, _ = models[entry.model]
-        region_id = regions[entry.proxy].id
-        existing = deployments.get((model.id, region_id))
+    for entry, (model, region_id, existing) in zip(entries, pairs, strict=True):
         if existing:
             # The credential of a deployment that exists stays as it is.
             for deployment in existing:
