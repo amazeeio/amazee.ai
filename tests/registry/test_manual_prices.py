@@ -1,8 +1,10 @@
 from datetime import date
 from decimal import Decimal
 
+from app.registry.discovery import apply_model_list, entry_fields
 from app.registry.models import DBRegistryModel, DBRegistryModelPrice, DBRegistryProvider
-from app.registry.prices import set_manual_prices
+from app.registry.plugins.runner import apply_plugin, validate
+from app.registry.prices import apply_prices, price_fields, set_manual_prices
 
 TODAY = date(2026, 10, 1)
 MANUAL = {"input_cost_per_token": 1e-06, "output_cost_per_token": 2e-06}
@@ -85,3 +87,93 @@ def test_scope_keys_give_their_scope_kinds(registry_db):
     registry_db.commit()
 
     assert set(_rows(registry_db, model)) == {("base", ""), ("geo", "eu"), ("cloud_region", "us-east-1")}
+
+
+LIST_ENTRY = {"input_cost_per_token": 3e-06, "output_cost_per_token": 6e-06, "mode": "chat"}
+LIST_GEO = {"input_cost_per_token": 3.3e-06}
+MANUAL_GEO = {"input_cost_per_token": 1.5e-06}
+IDENT = ("deepinfra", "m")
+
+
+def _list_run(db, today):
+    """The model list step as the daily job runs it, with the real kept sources."""
+    listed = apply_model_list(db, {IDENT: entry_fields(LIST_ENTRY)}, today)
+    db.commit()
+    prices = apply_prices(db, {IDENT}, {IDENT: {("base", ""): price_fields(LIST_ENTRY), ("geo", "us"): LIST_GEO}}, today)
+    db.commit()
+    return listed, prices
+
+
+def _plugin_run(db, role, today):
+    records = validate(
+        {"schema": 1, "source": "test_src", "models": [{
+            "provider": "deepinfra", "model_id": "m",
+            "prices": {"base": {"input_cost_per_token": 2e-06}, "geo:us": {"input_cost_per_token": 2.2e-06},
+                       "region:us-east-1": {"input_cost_per_token": 2.4e-06}},
+        }]},
+        "test_src",
+    )
+    stats = apply_plugin(db, "test_src", role, records, today)
+    db.commit()
+    return stats
+
+
+def _listed_model(db):
+    db.add(DBRegistryProvider(name="deepinfra"))
+    db.commit()
+    _list_run(db, TODAY)
+    return db.query(DBRegistryModel).filter_by(model_id="m").one()
+
+
+def test_daily_steps_keep_manual_prices_and_the_headline(registry_db):
+    model = _listed_model(registry_db)
+    assert _rows(registry_db, model) == {
+        ("base", ""): ("litellm", price_fields(LIST_ENTRY)), ("geo", "us"): ("litellm", LIST_GEO),
+    }
+
+    set_manual_prices(registry_db, model, {"base": MANUAL, "geo:us": MANUAL_GEO}, TODAY)
+    registry_db.commit()
+
+    for today in (date(2026, 10, 2), date(2026, 10, 3)):
+        listed, prices = _list_run(registry_db, today)
+        plugin = _plugin_run(registry_db, "override", today)
+
+    assert _rows(registry_db, model) == {
+        ("base", ""): ("manual", MANUAL),
+        ("geo", "us"): ("manual", MANUAL_GEO),
+        ("cloud_region", "us-east-1"): ("test_src", {"input_cost_per_token": 2.4e-06}),
+    }
+    registry_db.refresh(model)
+    assert model.prices == MANUAL
+    assert model.input_cost_per_token == Decimal("1e-06")
+    assert listed["updated"] == 0
+    assert prices["price_changes"] == 0 and prices["price_scopes_dropped"] == 0
+    assert plugin["price_changes"] == 0
+
+
+def test_a_fill_plugin_steps_aside_for_a_manual_price(registry_db):
+    model = _model(registry_db, "deepinfra", "m")
+    set_manual_prices(registry_db, model, {"base": MANUAL}, TODAY)
+    registry_db.commit()
+
+    _plugin_run(registry_db, "fill", TODAY)
+
+    assert _rows(registry_db, model) == {("base", ""): ("manual", MANUAL)}
+    registry_db.refresh(model)
+    assert model.prices == MANUAL
+
+
+def test_the_list_prices_the_model_again_after_its_manual_base_is_removed(registry_db):
+    model = _listed_model(registry_db)
+    set_manual_prices(registry_db, model, {"base": MANUAL}, TODAY)
+    registry_db.commit()
+
+    set_manual_prices(registry_db, model, {"base": None}, TODAY)
+    registry_db.commit()
+    registry_db.refresh(model)
+    assert model.prices == {}
+
+    _list_run(registry_db, date(2026, 10, 2))
+    registry_db.refresh(model)
+    assert _rows(registry_db, model)[("base", "")] == ("litellm", price_fields(LIST_ENTRY))
+    assert model.prices == price_fields(LIST_ENTRY)
