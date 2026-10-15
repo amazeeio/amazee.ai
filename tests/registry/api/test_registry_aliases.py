@@ -2,9 +2,8 @@ import json
 
 import pytest
 
-from app.db.models import DBRegion
 from app.registry.models import DBRegistryAlias
-from tests.registry.api.conftest import auth
+from tests.registry.api.conftest import auth, ok
 
 ALIASES = "/registry/aliases"
 
@@ -36,13 +35,11 @@ def _state(db):
 
 
 def test_put_creates_then_changes_an_alias(client, admin_token, registry_db, deployed):
-    response = _put(client, admin_token, "local-us1/chat", {"target": "claude-x"})
-    assert response.status_code == 201, response.text
-    assert response.json() == {"proxy": "local-us1", "alias": "chat", "target": "claude-x", "hidden": False}
+    body = ok(_put(client, admin_token, "local-us1/chat", {"target": "claude-x"}), 201)
+    assert body == {"proxy": "local-us1", "alias": "chat", "target": "claude-x", "hidden": False}
 
-    response = _put(client, admin_token, "local-us1/chat", {"target": "gpt-4o", "hidden": True})
-    assert response.status_code == 200, response.text
-    assert response.json() == {"proxy": "local-us1", "alias": "chat", "target": "gpt-4o", "hidden": True}
+    body = ok(_put(client, admin_token, "local-us1/chat", {"target": "gpt-4o", "hidden": True}))
+    assert body == {"proxy": "local-us1", "alias": "chat", "target": "gpt-4o", "hidden": True}
     assert [(alias, target, hidden) for _, _, alias, target, hidden, _ in _state(registry_db)] == [
         ("chat", "gpt-4o", True),
     ]
@@ -51,13 +48,12 @@ def test_put_creates_then_changes_an_alias(client, admin_token, registry_db, dep
 def test_get_sorts_by_proxy_then_alias(client, admin_token, aliases):
     response = client.get(ALIASES, headers=auth(admin_token))
 
-    assert response.status_code == 200, response.text
-    assert response.headers["X-Total-Count"] == "3"
-    assert response.json() == [
+    assert ok(response) == [
         {"proxy": "local-eu1", "alias": "embed", "target": "gpt-4o", "hidden": False},
         {"proxy": "local-us1", "alias": "chat", "target": "claude-x", "hidden": True},
         {"proxy": "local-us1", "alias": "zeta", "target": "gpt-4o", "hidden": False},
     ]
+    assert response.headers["X-Total-Count"] == "3"
 
 
 def test_get_filters_by_proxy(client, admin_token, aliases):
@@ -104,11 +100,7 @@ def test_put_takes_a_name_of_128_allowed_characters(client, admin_token, deploye
 
 
 @pytest.mark.parametrize("proxy", ["nope", "local-ap1"])
-def test_unknown_proxy_is_404(client, admin_token, registry_db, aliases, proxy):
-    # A region with no registry_proxies row is not a proxy of the registry.
-    registry_db.add(DBRegion(name="local-ap1", litellm_api_url="http://ap", litellm_api_key="sk", is_active=True))
-    registry_db.commit()
-
+def test_unknown_proxy_is_404(client, admin_token, aliases, bare_region, proxy):
     assert _put(client, admin_token, f"{proxy}/chat", {"target": "gpt-4o"}).status_code == 404
     assert _delete(client, admin_token, f"{proxy}/chat").status_code == 404
 

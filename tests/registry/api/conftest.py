@@ -67,6 +67,20 @@ def auth(token):
     return {"Authorization": f"Bearer {token}"}
 
 
+def ok(response, status=200):
+    assert response.status_code == status, response.text
+    return response.json()
+
+
+@pytest.fixture
+def bare_region(registry_db):
+    """A region with no registry_proxies row, so it is not a proxy of the registry."""
+    region = DBRegion(name="local-ap1", litellm_api_url="http://ap", litellm_api_key="sk", is_active=True)
+    registry_db.add(region)
+    registry_db.commit()
+    return region
+
+
 def model(db, provider, model_id):
     return (
         db.query(DBRegistryModel)
