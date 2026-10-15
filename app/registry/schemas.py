@@ -2,7 +2,7 @@
 
 import json
 from datetime import date, datetime
-from typing import Annotated, Generic, Literal, TypeVar
+from typing import Annotated, Literal
 
 from pydantic import (
     BaseModel,
@@ -338,10 +338,7 @@ class RegistryPlanStep(BaseModel):
     problems: list[str] = []
 
 
-T = TypeVar("T")
-
-
-class RegistryDryRun(BaseModel, Generic[T]):
+class RegistryDryRun[T](BaseModel):
     # The body of the write, or null where the write answers 204.
     result: T
     steps: list[RegistryPlanStep]
