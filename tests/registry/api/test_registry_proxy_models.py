@@ -8,47 +8,38 @@ from app.registry.models import (
     DBRegistryCloudAvailability,
     DBRegistryModelRegion,
     DBRegistryModelRegionGroup,
-    DBRegistryModelSupport,
     DBRegistryProxy,
 )
-from tests.registry.api.conftest import CHECKED_AT, auth, model, ok
+from tests.registry.api.conftest import (
+    BLOCKED,
+    NEEDS_PROFILE,
+    PROVISIONED,
+    UNAVAILABLE,
+    UNKNOWN,
+    UNSUPPORTED,
+    auth,
+    model,
+    ok,
+    support_row,
+)
+from tests.registry.api.conftest import deployment_state as _state
 from tests.registry.conftest import add_model
 
 PROXIES = "/registry/proxies"
 NEW = "anthropic.new-v1:0"
-UNKNOWN = "support is unknown: the support check has no result for this proxy"
-UNSUPPORTED = "the proxy's LiteLLM version does not support the model"
-UNAVAILABLE = "the proxy's cloud region does not offer the model"
-PROVISIONED = "the proxy's cloud region offers the model only with provisioned throughput"
-NEEDS_PROFILE = "the proxy's cloud region offers the model only through a geo profile; use the us. prefix"
-BLOCKED = "the model is blocked"
 FUTURE = date(2999, 1, 1)
 PAST = date(2000, 1, 1)
 
 
 @pytest.fixture
-def setup(registry_db, deployed):
-    """Two access groups, the alias `zeta` on gpt-4o and `chat` on claude-x, and a support row for gpt-old."""
-    old = model(registry_db, "openai", "gpt-old")
+def setup(registry_db, writable):
+    """The alias `zeta` on gpt-4o and `chat` on claude-x, on the US proxy."""
     registry_db.add_all([
-        DBRegistryAccessGroup(slug="alpha", label="Alpha"),
-        DBRegistryAccessGroup(slug="beta", label="Beta"),
-        DBRegistryAlias(region_id=deployed["us"].id, alias="zeta", target="gpt-4o"),
-        DBRegistryAlias(region_id=deployed["us"].id, alias="chat", target="claude-x"),
-        _support(old.id, deployed["us"].id),
-        _support(old.id, deployed["eu"].id),
+        DBRegistryAlias(region_id=writable["us"].id, alias="zeta", target="gpt-4o"),
+        DBRegistryAlias(region_id=writable["us"].id, alias="chat", target="claude-x"),
     ])
-    for proxy in registry_db.query(DBRegistryProxy):
-        proxy.imported_at = CHECKED_AT
     registry_db.commit()
-    return deployed
-
-
-def _support(model_id, region_id, supported=True, region_available=True):
-    return DBRegistryModelSupport(
-        model_id=model_id, region_id=region_id, priced=True, supported=supported,
-        region_available=region_available, checked_at=CHECKED_AT,
-    )
+    return writable
 
 
 def _new_bedrock_model(db, region_id, call_types=("ON_DEMAND",), support=True, **support_fields):
@@ -61,26 +52,13 @@ def _new_bedrock_model(db, region_id, call_types=("ON_DEMAND",), support=True, *
         )
     )
     if support:
-        db.add(_support(row.id, region_id, **support_fields))
+        db.add(support_row(row.id, region_id, **support_fields))
     db.commit()
     return row
 
 
 def _put(client, token, proxy, key, body=None, query=""):
     return client.put(f"{PROXIES}/{proxy}/models/{key}{query}", json=body, headers=auth(token))
-
-
-def _state(db):
-    db.expire_all()
-    deployments = [
-        (d.id, d.model_id, d.region_id, d.model_name, d.litellm_model, d.litellm_deployment_id, d.enabled,
-         d.litellm_params, d.model_info, d.prices)
-        for d in db.query(DBRegistryModelRegion).order_by(DBRegistryModelRegion.id)
-    ]
-    links = sorted(
-        (link.model_region_id, link.access_group_id) for link in db.query(DBRegistryModelRegionGroup)
-    )
-    return deployments, links
 
 
 def _deployment(db, region_id, model_name):
@@ -346,7 +324,7 @@ def test_put_dry_run_returns_the_write_and_saves_nothing(client, admin_token, re
 
 def test_put_reaches_a_model_id_with_a_slash(client, admin_token, registry_db, setup):
     row = add_model(registry_db, "deepinfra", "BAAI/bge-m3")
-    registry_db.add(_support(row.id, setup["us"].id))
+    registry_db.add(support_row(row.id, setup["us"].id))
     registry_db.commit()
 
     body = ok(_put(client, admin_token, "local-us1", "deepinfra/BAAI/bge-m3"), 201)

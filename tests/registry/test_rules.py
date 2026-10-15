@@ -1,10 +1,10 @@
-from datetime import UTC, date, datetime
+from datetime import date
 
 import pytest
 
 from app.db.models import DBRegion
 from app.registry.config import BEDROCK_GEO_PREFIXES
-from app.registry.models import DBRegistryCloudAvailability, DBRegistryModel, DBRegistryModelSupport
+from app.registry.models import DBRegistryCloudAvailability, DBRegistryModel
 from app.registry.rules import (
     _GEOS_BY_FAMILY,
     _GEOS_BY_REGION,
@@ -16,11 +16,19 @@ from app.registry.rules import (
     support_rows,
 )
 from app.registry.support import Availability
+from tests.registry.api.conftest import (
+    BLOCKED,
+    NEEDS_PROFILE,
+    PROVISIONED,
+    UNAVAILABLE,
+    UNKNOWN,
+    UNSUPPORTED,
+    support_row,
+)
 from tests.registry.conftest import add_model
 
 CLAUDE = "anthropic.claude-x-v1:0"
 US = {"bedrock": "us-east-1"}
-CHECKED_AT = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
 TODAY = date(2026, 6, 1)
 
 
@@ -117,32 +125,20 @@ def test_default_backend_of_another_provider(registry_db):
     assert default_backend("openai", "gpt-4o", US, Availability(registry_db)) == "openai/gpt-4o"
 
 
-UNKNOWN = "support is unknown: the support check has no result for this proxy"
-UNSUPPORTED = "the proxy's LiteLLM version does not support the model"
-UNAVAILABLE = "the proxy's cloud region does not offer the model"
-PROVISIONED = "the proxy's cloud region offers the model only with provisioned throughput"
-BLOCKED = "the model is blocked"
-NEEDS_PROFILE = "the proxy's cloud region offers the model only through a geo profile; use the us. prefix"
-
-
-def _support(supported=True, region_available=True):
-    return DBRegistryModelSupport(priced=True, supported=supported, region_available=region_available)
-
-
 @pytest.mark.parametrize(
     "support, call_types, blocked, problems",
     [
-        (_support(), ["ON_DEMAND"], False, []),
+        (support_row(), ["ON_DEMAND"], False, []),
         (None, ["ON_DEMAND"], False, [UNKNOWN]),
-        (_support(supported=None), ["ON_DEMAND"], False, [UNKNOWN]),
-        (_support(supported=False), ["ON_DEMAND"], False, [UNSUPPORTED]),
-        (_support(region_available=False), ["ON_DEMAND"], False, [UNAVAILABLE]),
-        (_support(region_available=None), ["ON_DEMAND"], False, []),
-        (_support(), ["PROVISIONED"], False, [PROVISIONED]),
-        (_support(), ["INFERENCE_PROFILE"], False, [NEEDS_PROFILE]),
-        (_support(), ["ON_DEMAND", "INFERENCE_PROFILE"], False, []),
-        (_support(), ["ON_DEMAND"], True, [BLOCKED]),
-        (_support(supported=False, region_available=False), ["PROVISIONED"], True,
+        (support_row(supported=None), ["ON_DEMAND"], False, [UNKNOWN]),
+        (support_row(supported=False), ["ON_DEMAND"], False, [UNSUPPORTED]),
+        (support_row(region_available=False), ["ON_DEMAND"], False, [UNAVAILABLE]),
+        (support_row(region_available=None), ["ON_DEMAND"], False, []),
+        (support_row(), ["PROVISIONED"], False, [PROVISIONED]),
+        (support_row(), ["INFERENCE_PROFILE"], False, [NEEDS_PROFILE]),
+        (support_row(), ["ON_DEMAND", "INFERENCE_PROFILE"], False, []),
+        (support_row(), ["ON_DEMAND"], True, [BLOCKED]),
+        (support_row(supported=False, region_available=False), ["PROVISIONED"], True,
          [UNSUPPORTED, UNAVAILABLE, PROVISIONED, BLOCKED]),
     ],
 )
@@ -158,7 +154,7 @@ def test_support_rows_reads_only_the_given_models_and_proxies(registry_db, proxy
     registry_db.add(other)
     first, second = add_model(registry_db), add_model(registry_db, model_id="anthropic.other-v1:0")
     registry_db.add_all(
-        DBRegistryModelSupport(model_id=m.id, region_id=r.id, priced=True, checked_at=CHECKED_AT)
+        support_row(m.id, r.id)
         for m in (first, second)
         for r in (proxy_region, other)
     )
@@ -194,7 +190,7 @@ def test_needs_profile_with_no_geo_prefix_gives_no_hint(registry_db):
     model = DBRegistryModel(model_id=CLAUDE, blocked=False)
 
     problems = enable_problems(
-        model, "bedrock", _support(), Availability(registry_db), "me-central-1", f"bedrock/{CLAUDE}"
+        model, "bedrock", support_row(), Availability(registry_db), "me-central-1", f"bedrock/{CLAUDE}"
     )
 
     assert problems == ["the proxy's cloud region offers the model only through a geo profile"]
