@@ -212,6 +212,19 @@ def test_put_removes_the_group_from_every_model_left_out(client, admin_token, re
     assert len(_links_state(registry_db)) == 2
 
 
+def test_put_keeps_adds_and_removes_links_in_one_call(client, admin_token, registry_db, groups):
+    us_claude = {"proxy": "local-us1", "model": "bedrock/anthropic.claude-x-v1:0"}
+    _ok(_put(client, admin_token, "alpha", [{"proxy": "local-eu1", "model": "openai/gpt-4o"}, us_claude]))
+
+    _ok(_put(client, admin_token, "alpha", [us_claude, US_GPT]))
+
+    alpha = registry_db.query(DBRegistryAccessGroup).filter_by(slug="alpha").one()
+    ids = dict(registry_db.query(DBRegistryModelRegion.litellm_deployment_id, DBRegistryModelRegion.id))
+    assert {link for link in _links_state(registry_db) if link[0] == alpha.id} == {
+        (alpha.id, ids["us-claude"]), (alpha.id, ids["us-gpt"]), (alpha.id, ids["us-gpt-2"]),
+    }
+
+
 def test_put_with_an_empty_list_clears_the_group(client, admin_token, registry_db, groups):
     assert _ok(_put(client, admin_token, "beta", []))["models"] == []
     assert _links_state(registry_db) == []
