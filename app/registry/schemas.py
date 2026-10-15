@@ -80,10 +80,21 @@ class RegistryModelResponse(BaseModel):
     proxies: list[RegistryModelProxyResponse]
 
 
-class _Update(BaseModel):
+class _Strict(BaseModel):
+    """A request body."""
+
     # An unknown field would otherwise be dropped, and the call would change nothing.
     model_config = ConfigDict(extra="forbid")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _readable_input(cls, data):
+        # A 422 echoes the input, and JSON cannot hold Infinity or NaN, so the error would fail
+        # with a 500. A one-item list keeps their name, and no field accepts a list.
+        return json.loads(json.dumps(data), parse_constant=lambda name: [name])
+
+
+class _Update(_Strict):
     @model_validator(mode="after")
     def _check_body(self):
         if not self.model_fields_set:
@@ -101,13 +112,6 @@ class RegistryModelUpdate(_Update):
     blocked: StrictBool = None
     # Scope key (`base`, `geo:us`, `region:us-east-1`) -> LiteLLM price fields, or null.
     prices: dict[Scope, Annotated[dict[Name, Amount], Field(min_length=1)] | None] = Field(None, min_length=1)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _readable_input(cls, data):
-        # A 422 echoes the input, and JSON cannot hold Infinity or NaN, so the error would fail
-        # with a 500. A one-item list keeps their name, and no field accepts a list.
-        return json.loads(json.dumps(data), parse_constant=lambda name: [name])
 
     @field_validator("override_eol", mode="before")
     @classmethod
@@ -231,9 +235,7 @@ class RegistryAccessGroupResponse(BaseModel):
     models: list[RegistryAccessGroupModelResponse]
 
 
-class RegistryAccessGroupCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class RegistryAccessGroupCreate(_Strict):
     slug: str = Field(min_length=1, max_length=64, pattern=SLUG_PATTERN)
     label: str = Field(min_length=1)
     description: str | None = None
@@ -247,17 +249,13 @@ class RegistryAccessGroupUpdate(_Update):
     description: str | None = None
 
 
-class RegistryAccessGroupModelRef(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class RegistryAccessGroupModelRef(_Strict):
     proxy: str
     model: str
 
 
-class RegistryAccessGroupModels(BaseModel):
+class RegistryAccessGroupModels(_Strict):
     """The full list of models that carry the group; an empty list removes it from all."""
-
-    model_config = ConfigDict(extra="forbid")
 
     models: list[RegistryAccessGroupModelRef]
 
@@ -270,9 +268,7 @@ class RegistryAliasResponse(BaseModel):
     hidden: bool
 
 
-class RegistryAliasUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class RegistryAliasUpdate(_Strict):
     target: str = Field(min_length=1)
     # StrictBool with no `| None`: an explicit null gets a 422.
     hidden: StrictBool = False
