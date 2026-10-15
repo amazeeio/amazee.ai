@@ -122,6 +122,8 @@ def _model_responses(db: Session, rows: list) -> list[RegistryModelResponse]:
             output_cost_per_token=model.output_cost_per_token,
             prices=model.prices,
             eol_date=model.eol_date,
+            override_eol=model.override_eol,
+            blocked=model.blocked,
             status=model.status,
             family=model.family,
             manufacturer=model.manufacturer,
