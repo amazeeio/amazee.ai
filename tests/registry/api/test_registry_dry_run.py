@@ -44,7 +44,10 @@ def test_read_live_refuses_a_model_list_that_is_not_a_list(live_proxies):
 
 
 def test_read_live_drops_rows_that_are_not_dicts(live_proxies):
-    row = {"model_name": "gpt-4o", "litellm_params": {"model": "openai/gpt-4o"}, "model_info": {"id": "us-gpt"}}
+    row = {
+        "model_name": "gpt-4o", "litellm_params": {"model": "openai/gpt-4o"},
+        "model_info": {"id": "us-gpt", "access_groups": ["beta"]},
+    }
     live_proxies.by_url[US_URL] = {"model_info": [row, "x"], "aliases": {"chat": "gpt-4o"}, "credentials": ["c1"]}
 
     assert read_live(US_URL, "sk-test") == LiveProxy([row], {"chat": "gpt-4o"}, frozenset({"c1"}))
@@ -60,13 +63,44 @@ def test_read_live_reads_a_bad_params_or_info_value_as_empty(live_proxies):
     )
     odd = Deployment(model="openai/odd", model_name="odd", litellm_model="openai/odd")
 
-    assert read_live(US_URL, "sk-test").deployments[1] == {"model_name": "odd", "litellm_params": {}, "model_info": {}}
+    assert read_live(US_URL, "sk-test").deployments[1] == {
+        "model_name": "odd", "litellm_params": {}, "model_info": {"access_groups": []},
+    }
     steps = plan_steps([ProxyPlan("local-us1", US_URL, "sk-test", [removed, odd])])
 
     # The alias copy is still removed, the id still matches, and the bad row is not the same deployment as `odd`.
     assert [(s["action"], s["deployment_id"], s["problems"]) for s in steps] == [
         ("delete_model", "us-gpt", []), ("create_model", None, []),
     ]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"model_name": ["gpt-4o"]},
+        {"model_info": {"id": ["us-gpt"]}},
+        {"model_info": {"id": 7}},
+        {"model_info": {"id": "x", "access_groups": "beta"}},
+        {"model_info": {"id": "x", "access_groups": ["beta", 1]}},
+    ],
+)
+def test_read_live_refuses_a_value_of_the_wrong_type(live_proxies, bad):
+    good = {"model_name": "gpt-4o", "litellm_params": {"model": "openai/gpt-4o"}, "model_info": {"id": "us-gpt"}}
+    live_proxies.by_url[US_URL] = {"model_info": [good, {"model_name": "odd", **bad}]}
+
+    assert read_live(US_URL, "sk-test") == "bad data"
+    assert plan_steps([ProxyPlan("local-us1", US_URL, "sk-test")])[0]["problems"] == [
+        "the proxy could not be read: bad data"
+    ]
+
+
+@pytest.mark.parametrize("info", [{"id": "x"}, {"id": "x", "access_groups": None}, {"id": None}])
+def test_read_live_reads_no_access_groups_as_empty(live_proxies, info):
+    live_proxies.by_url[US_URL] = {"model_info": [{"model_name": None, "model_info": info}]}
+
+    [row] = read_live(US_URL, "sk-test").deployments
+
+    assert row["model_info"]["access_groups"] == []
 
 
 def test_plan_steps_gives_a_read_step_for_a_proxy_that_fails(live_proxies):
