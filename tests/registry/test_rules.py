@@ -13,6 +13,7 @@ from app.registry.rules import (
     default_backend,
     enable_problems,
     geo_prefixes,
+    UNKNOWN_BEDROCK_REGION,
     geo_problem,
     removal_problem,
     support_rows,
@@ -68,7 +69,9 @@ def test_every_geo_prefix_is_a_bedrock_geo_prefix():
     [
         (f"bedrock/us.{CLAUDE}", "bedrock", CLAUDE, US),
         (f"bedrock/{CLAUDE}", "bedrock", CLAUDE, US),
+        (f"bedrock/{CLAUDE}", "bedrock", CLAUDE, {}),
         (f"bedrock_converse/us.{CLAUDE}", "bedrock", CLAUDE, US),
+        (f"bedrock/us-east-1/{CLAUDE}", "bedrock", CLAUDE, US),
         ("azure/eu/gpt-4o", "azure", "gpt-4o", {}),
         ("openai/gpt-4o", "openai", "gpt-4o", {}),
     ],
@@ -83,14 +86,15 @@ def test_backend_problem_passes(backend, provider, model_id, cloud_regions):
         (f"bedrock/eu.{CLAUDE}", "bedrock", CLAUDE, US, "the geo prefix eu is not allowed on this proxy"),
         (f"bedrock/global.{CLAUDE}", "bedrock", CLAUDE, US, "the geo prefix global is not allowed on this proxy"),
         ("azure/global/gpt-4o", "azure", "gpt-4o", {}, "the geo prefix global is not allowed on this proxy"),
-        (f"bedrock/us.{CLAUDE}", "bedrock", CLAUDE, {}, "the geo prefix us is not allowed on this proxy"),
+        (f"bedrock/us.{CLAUDE}", "bedrock", CLAUDE, {}, UNKNOWN_BEDROCK_REGION),
         ("bedrock/us.anthropic.other-v1:0", "bedrock", CLAUDE, US, "the backend is for another model"),
         (f"openai/{CLAUDE}", "bedrock", CLAUDE, US, "the backend is for another model"),
         (CLAUDE, "bedrock", CLAUDE, US, "the backend is for another model"),
         (
-            f"bedrock/us-east-1/{CLAUDE}", "bedrock", CLAUDE, US,
-            "the backend is not a model string the registry deploys",
+            f"bedrock/eu-west-1/{CLAUDE}", "bedrock", CLAUDE, US,
+            "the backend names the cloud region eu-west-1, not the proxy's Bedrock region us-east-1",
         ),
+        (f"bedrock/us-east-1/{CLAUDE}", "bedrock", CLAUDE, {}, UNKNOWN_BEDROCK_REGION),
     ],
 )
 def test_backend_problem_refuses(backend, provider, model_id, cloud_regions, problem):
@@ -235,15 +239,24 @@ def test_enable_problems_of_a_geo_backend(registry_db, call_types, region, probl
 
 
 @pytest.mark.parametrize(
-    "backend, provider, problem",
+    "backend, provider, cloud_regions, problem",
     [
-        ("openai/anthropic.opus", "bedrock_mantle", None),
-        (f"bedrock/us-east-1/{CLAUDE}", "bedrock", None),
-        (f"bedrock/us.{CLAUDE}", "bedrock", None),
-        (f"bedrock/eu.{CLAUDE}", "bedrock", "the geo prefix eu is not allowed on this proxy"),
-        (f"bedrock/global.{CLAUDE}", "bedrock", "the geo prefix global is not allowed on this proxy"),
-        ("azure/global/gpt-4o", "azure", "the geo prefix global is not allowed on this proxy"),
+        ("openai/anthropic.opus", "bedrock_mantle", US, None),
+        (f"bedrock/us-east-1/{CLAUDE}", "bedrock", US, None),
+        (
+            f"bedrock/eu-west-1/{CLAUDE}", "bedrock", US,
+            "the backend names the cloud region eu-west-1, not the proxy's Bedrock region us-east-1",
+        ),
+        (f"bedrock/us.{CLAUDE}", "bedrock", US, None),
+        (f"bedrock/eu.{CLAUDE}", "bedrock", US, "the geo prefix eu is not allowed on this proxy"),
+        (f"bedrock/global.{CLAUDE}", "bedrock", US, "the geo prefix global is not allowed on this proxy"),
+        ("azure/global/gpt-4o", "azure", US, "the geo prefix global is not allowed on this proxy"),
+        (f"bedrock/{CLAUDE}", "bedrock", {}, None),
+        (f"bedrock/us.{CLAUDE}", "bedrock", {}, UNKNOWN_BEDROCK_REGION),
+        (f"bedrock/us-east-1/{CLAUDE}", "bedrock", {}, UNKNOWN_BEDROCK_REGION),
+        (f"bedrock/global.{CLAUDE}", "bedrock", {}, "the geo prefix global is not allowed on this proxy"),
+        ("azure/eu/gpt-4o", "azure", {}, None),
     ],
 )
-def test_geo_problem_checks_only_the_region_part(backend, provider, problem):
-    assert geo_problem(backend, provider, US) == problem
+def test_geo_problem_checks_only_the_region_part(backend, provider, cloud_regions, problem):
+    assert geo_problem(backend, provider, cloud_regions) == problem

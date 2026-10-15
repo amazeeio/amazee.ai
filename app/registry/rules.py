@@ -28,6 +28,8 @@ _GEOS_BY_FAMILY = (
     ("il-", ("il",)),
     ("mx-", ("mx",)),
 )
+# `{proxy}` and `{key}` are the literal path text: the rule functions do not know the names.
+UNKNOWN_BEDROCK_REGION = "the proxy's Bedrock region is unknown; set it with PATCH /registry/proxies/{proxy}"
 NO_PRICE = "the model has no price on the proxy or in the registry; set one with PATCH /registry/models/{key}"
 
 
@@ -43,12 +45,15 @@ def geo_prefixes(cloud_region: str | None) -> tuple[str, ...]:
 
 
 def backend_problem(backend: str, provider: str, model_id: str, cloud_regions: dict) -> str | None:
-    """Rule 5: why a backend string cannot be deployed for this model on this proxy, or None."""
+    """Rule 5: why a backend string cannot be deployed for this model on this proxy, or None.
+
+    A Bedrock backend in the cloud-region form must name the proxy's Bedrock region.
+    """
     head, sep, _ = backend.partition("/")
     if not sep or normalize_provider(head) != provider:
         return "the backend is for another model"
     parsed = parse_key(backend, provider)
-    if parsed is None or parsed[1] == "cloud_region":
+    if parsed is None or (parsed[1] == "cloud_region" and provider != "bedrock"):
         return "the backend is not a model string the registry deploys"
     if parsed[0] != model_id:
         return "the backend is for another model"
@@ -59,18 +64,29 @@ def geo_problem(backend: str, provider: str, cloud_regions: dict) -> str | None:
     """The region part of rule 5 only.
 
     A stored backend gets only this part: the import found its model from the full litellm_params, and a
-    Bedrock Mantle deployment is stored as `openai/...`.
+    Bedrock Mantle deployment is stored as `openai/...`. A Bedrock geo or cloud-region form needs a known region.
     """
     parsed = parse_key(backend, provider)
-    if parsed is None or parsed[1] != "geo":
+    if parsed is None:
         return None
-    prefix = parsed[2]
-    # `global` can send a call outside the region at every provider.
-    if prefix == "global":
-        return "the geo prefix global is not allowed on this proxy"
-    # Only a Bedrock geo prefix gets a region check. Another provider's geo form, such as an Azure data zone, passes.
-    if provider == "bedrock" and prefix not in geo_prefixes(cloud_regions.get("bedrock")):
-        return f"the geo prefix {prefix} is not allowed on this proxy"
+    _, kind, scope = parsed
+    region = cloud_regions.get("bedrock")
+    if kind == "geo":
+        # `global` can send a call outside the region at every provider.
+        if scope == "global":
+            return "the geo prefix global is not allowed on this proxy"
+        # Only a Bedrock geo prefix gets a region check. Another provider's geo form, such as an Azure data zone, passes.
+        if provider != "bedrock":
+            return None
+        if not region:
+            return UNKNOWN_BEDROCK_REGION
+        if scope not in geo_prefixes(region):
+            return f"the geo prefix {scope} is not allowed on this proxy"
+    elif kind == "cloud_region" and provider == "bedrock":
+        if not region:
+            return UNKNOWN_BEDROCK_REGION
+        if scope != region:
+            return f"the backend names the cloud region {scope}, not the proxy's Bedrock region {region}"
     return None
 
 
