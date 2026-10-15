@@ -78,12 +78,20 @@ class RegistryModelResponse(BaseModel):
     proxies: list[RegistryModelProxyResponse]
 
 
-class RegistryModelUpdate(BaseModel):
-    """Only the fields in the body change. `null` clears `family` and
-    `override_eol`; a `null` price removes the scope's manual price."""
-
+class _Update(BaseModel):
     # An unknown field would otherwise be dropped, and the call would change nothing.
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _check_body(self):
+        if not self.model_fields_set:
+            raise ValueError("the body changes nothing")
+        return self
+
+
+class RegistryModelUpdate(_Update):
+    """Only the fields in the body change. `null` clears `family` and
+    `override_eol`; a `null` price removes the scope's manual price."""
 
     family: str | None = Field(None, min_length=1)
     override_eol: date | None = None
@@ -108,12 +116,6 @@ class RegistryModelUpdate(BaseModel):
         if not isinstance(value, str):
             raise ValueError("override_eol must be a date as text, or null")
         return date.fromisoformat(value)
-
-    @model_validator(mode="after")
-    def _check_body(self):
-        if not self.model_fields_set:
-            raise ValueError("the body changes nothing")
-        return self
 
 
 class RegistryLifecycleResponse(BaseModel):
