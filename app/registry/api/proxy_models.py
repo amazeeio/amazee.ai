@@ -214,15 +214,19 @@ def set_proxy_model(
             if problem := removal_problem(model, date.today()):
                 raise HTTPException(status_code=409, detail=problem)
         # A new backend string on a deployment that is on after the PUT can be one the region cannot run.
-        # A change of only groups, credential or model_name keeps the backend, so it skips rule 4.
+        # A change of only groups, credential or model_name keeps the backend, so it skips rules 4 and 5.
         checked = [
-            d
+            changes.get("litellm_model", d.litellm_model)
             for d in deployments
             if changes.get("enabled", d.enabled)
             and (not d.enabled or changes.get("litellm_model", d.litellm_model) != d.litellm_model)
         ]
+        # Rule 5 also covers a backend that the import stored, and force never skips it.
+        for backend in checked:
+            if problem := backend_problem(backend, provider, model.model_id, cloud_regions):
+                raise HTTPException(status_code=422, detail=problem)
         if checked:
-            check_enable(Availability(db), [changes.get("litellm_model", d.litellm_model) for d in checked])
+            check_enable(Availability(db), checked)
 
         for deployment in deployments:
             for field in ("model_name", "litellm_model", "enabled"):
@@ -338,7 +342,12 @@ def roll_out(
             if existing:
                 action, model_name, backend = "updated", existing[0].model_name, existing[0].litellm_model
                 for deployment in existing:
-                    if not deployment.enabled and not force:
+                    if deployment.enabled:
+                        continue
+                    # Rule 5 also covers a backend that the import stored, and force never skips it.
+                    if problem := backend_problem(deployment.litellm_model, provider, model.model_id, cloud_regions):
+                        problems.append(problem)
+                    if not force:
                         problems += enable_problems(
                             model, provider, support, availability, cloud_regions.get(provider),
                             deployment.litellm_model,

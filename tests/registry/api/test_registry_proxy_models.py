@@ -430,3 +430,20 @@ def test_writes_on_a_proxy_that_was_never_imported_get_409(client, admin_token, 
         assert response.status_code == 409
         assert response.json()["detail"] == "Import the proxy first: local-eu1"
     assert _state(registry_db) == before
+
+
+@pytest.mark.parametrize("query", ["", "?force=true"])
+def test_put_that_turns_on_an_imported_global_backend_gets_422(client, admin_token, registry_db, setup, query):
+    row = _new_bedrock_model(registry_db, setup["us"].id)
+    registry_db.add(DBRegistryModelRegion(
+        model_id=row.id, region_id=setup["us"].id, model_name=NEW, litellm_model=f"bedrock/global.{NEW}",
+        litellm_deployment_id="us-global", enabled=False,
+    ))
+    registry_db.commit()
+    before = _state(registry_db)
+
+    response = _put(client, admin_token, "local-us1", f"bedrock/{NEW}", {"enabled": True}, query)
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "the geo prefix global is not allowed on this proxy"
+    assert _state(registry_db) == before

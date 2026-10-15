@@ -192,3 +192,20 @@ def test_rollout_to_a_proxy_that_was_never_imported_gets_409(client, admin_token
         assert response.status_code == 409
         assert response.json()["detail"] == "Import the proxy first: local-eu1"
     assert _state(registry_db) == before
+
+
+@pytest.mark.parametrize("query", ["", "?force=true"])
+def test_rollout_that_turns_on_an_imported_global_backend_gets_422(client, admin_token, registry_db, setup, query):
+    row = add_model(registry_db, model_id="anthropic.new-v1:0")
+    registry_db.add(DBRegistryModelRegion(
+        model_id=row.id, region_id=setup["us"].id, model_name="new", litellm_model="bedrock/global.anthropic.new-v1:0",
+        litellm_deployment_id="us-global", enabled=False,
+    ))
+    registry_db.commit()
+    before = _state(registry_db)
+
+    response = _post(client, admin_token, {"models": ["bedrock/anthropic.new-v1:0"], "proxies": {"local-us1": None}}, query)
+
+    assert response.status_code == 422
+    assert "the geo prefix global is not allowed on this proxy" in response.json()["detail"][0]["problems"]
+    assert _state(registry_db) == before
