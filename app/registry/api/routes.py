@@ -62,6 +62,14 @@ def _paginate(query, response: Response, offset: int, limit: int) -> list:
     return query.offset(offset).limit(limit).all()
 
 
+def _save(db: Session, dry_run: bool) -> None:
+    """A dry run makes the same changes, then rolls them back."""
+    if dry_run:
+        db.rollback()
+    else:
+        db.commit()
+
+
 def _proxy_results(
     db: Session, model_ids: list[int] | None = None, region_id: int | None = None
 ) -> dict[int, list[RegistryModelProxyResponse]]:
@@ -424,11 +432,7 @@ def update_model(
         refresh_eol(db, model, provider)
     db.flush()
     detail = _model_detail(db, model, provider)
-    # A dry run makes the same changes, then rolls them back.
-    if dry_run:
-        db.rollback()
-    else:
-        db.commit()
+    _save(db, dry_run)
     return detail
 
 
