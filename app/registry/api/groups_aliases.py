@@ -49,6 +49,8 @@ def _group_responses(db: Session, group_ids: list[int] | None = None) -> list[Re
         .join(DBRegistryModel, DBRegistryModel.id == DBRegistryModelRegion.model_id)
         .join(DBRegistryProvider, DBRegistryProvider.id == DBRegistryModel.provider_id)
         .order_by(DBRegion.name, DBRegistryProvider.name, DBRegistryModel.model_id, DBRegistryModelRegion.model_name)
+        # Load-balanced deployments share one model_name.
+        .distinct()
     )
     if group_ids is not None:
         groups = groups.filter(DBRegistryAccessGroup.id.in_(group_ids))
@@ -57,10 +59,7 @@ def _group_responses(db: Session, group_ids: list[int] | None = None) -> list[Re
     # The query order is already sorted, and dicts keep it.
     models: dict[int, dict[tuple[str, str], list[str]]] = defaultdict(dict)
     for group_id, proxy, provider, model_id, model_name in links:
-        names = models[group_id].setdefault((proxy, f"{provider}/{model_id}"), [])
-        # Load-balanced deployments share one model_name.
-        if model_name not in names:
-            names.append(model_name)
+        models[group_id].setdefault((proxy, f"{provider}/{model_id}"), []).append(model_name)
 
     return [
         RegistryAccessGroupResponse(
