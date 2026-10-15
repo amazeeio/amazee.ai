@@ -2,7 +2,7 @@
 
 import json
 from datetime import date, datetime
-from typing import Annotated, Literal
+from typing import Annotated, Generic, Literal, TypeVar
 
 from pydantic import (
     BaseModel,
@@ -342,3 +342,28 @@ class RegistryRolloutEntry(BaseModel):
     action: Literal["created", "updated"]
     model_name: str
     litellm_model: str
+
+
+class RegistryPlanStep(BaseModel):
+    """One step that the sync would take on a proxy. A dry run only shows it."""
+
+    proxy: str
+    action: Literal["create_model", "update_model", "delete_model", "write_alias_map", "read_proxy"]
+    model: str | None = None
+    model_name: str | None = None
+    # The LiteLLM deployment id.
+    deployment_id: str | None = None
+    # What the sync would send, for a create or the full alias map.
+    payload: dict | None = None
+    # Each changed field or alias as {"from": live, "to": wanted}.
+    changes: dict | None = None
+    problems: list[str] = []
+
+
+T = TypeVar("T")
+
+
+class RegistryDryRun(BaseModel, Generic[T]):
+    # The body of the write, or null where the write answers 204.
+    result: T
+    steps: list[RegistryPlanStep]

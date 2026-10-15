@@ -12,9 +12,9 @@ from app.core.config import catalog_manages
 from app.core.security import get_role_min_system_admin
 from app.db.database import get_db
 from app.db.models import DBRegion
+from app.registry.api.dry_run import _access_groups, _save
 from app.registry.importer import STEP as IMPORT_STEP
 from app.registry.models import (
-    DBRegistryAccessGroup,
     DBRegistryCloudAvailability,
     DBRegistryEvent,
     DBRegistryModel,
@@ -22,7 +22,6 @@ from app.registry.models import (
     DBRegistryModelLifecycle,
     DBRegistryModelPrice,
     DBRegistryModelRegion,
-    DBRegistryModelRegionGroup,
     DBRegistryModelSupport,
     DBRegistryProvider,
     DBRegistryProxy,
@@ -84,16 +83,6 @@ def _paginate(query, response: Response, offset: int, limit: int) -> list:
     """The page of an ordered query, with the total before paging in X-Total-Count."""
     response.headers["X-Total-Count"] = str(query.count())
     return query.offset(offset).limit(limit).all()
-
-
-def _save(db: Session, dry_run: bool) -> None:
-    """A dry run makes the same changes, then rolls them back."""
-    # The flush runs the database checks, so a dry run fails where the write would.
-    db.flush()
-    if dry_run:
-        db.rollback()
-    else:
-        db.commit()
 
 
 def _proxy_results(
@@ -171,21 +160,6 @@ def _model_responses(db: Session, rows: list) -> list[RegistryModelResponse]:
         )
         for model, provider_name in rows
     ]
-
-
-def _access_groups(db: Session, deployment_ids: list[int]) -> dict[int, list[str]]:
-    """The sorted access group slugs of each deployment."""
-    groups: dict[int, list[str]] = defaultdict(list)
-    if deployment_ids:
-        rows = (
-            db.query(DBRegistryModelRegionGroup.model_region_id, DBRegistryAccessGroup.slug)
-            .join(DBRegistryAccessGroup, DBRegistryAccessGroup.id == DBRegistryModelRegionGroup.access_group_id)
-            .filter(DBRegistryModelRegionGroup.model_region_id.in_(deployment_ids))
-            .order_by(DBRegistryAccessGroup.slug)
-        )
-        for deployment_id, slug in rows:
-            groups[deployment_id].append(slug)
-    return groups
 
 
 def _deployment_fields(deployment: DBRegistryModelRegion, proxy: str, groups: dict[int, list[str]]) -> dict:
