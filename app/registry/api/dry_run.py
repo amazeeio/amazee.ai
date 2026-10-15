@@ -158,12 +158,25 @@ def alias_plans(db: Session, region: DBRegion) -> list[ProxyPlan]:
     return [ProxyPlan(region.name, region.litellm_api_url, region.litellm_api_key, aliases=aliases)]
 
 
-def _readable_row(row: dict) -> dict:
-    """The row with a `litellm_params` or `model_info` that is not a dict read as `{}`.
+def _readable_row(row: dict) -> dict | None:
+    """The row in the types the planner compares, or None when a value has another type.
 
-    The row stays: with no id it is never an alias copy and never matches a deployment.
+    A `litellm_params` or `model_info` that is not a dict reads as `{}`: with no id, the row is never an alias
+    copy and never matches a deployment. A missing or null `access_groups` reads as `[]`.
     """
-    return {**row, **{name: {} for name in ("litellm_params", "model_info") if not isinstance(row.get(name), dict)}}
+    row = {**row, **{name: {} for name in ("litellm_params", "model_info") if not isinstance(row.get(name), dict)}}
+    info = row["model_info"]
+    groups = info.get("access_groups")
+    groups = [] if groups is None else groups
+    if not (
+        isinstance(row.get("model_name"), str | None)
+        and isinstance(info.get("id"), str | None)
+        and isinstance(groups, list)
+        and all(isinstance(group, str) for group in groups)
+    ):
+        return None
+    row["model_info"] = {**info, "access_groups": groups}
+    return row
 
 
 def read_live(url: str, key: str) -> planner.LiveProxy | str:
@@ -185,6 +198,8 @@ def read_live(url: str, key: str) -> planner.LiveProxy | str:
     if not isinstance(rows, list):
         return "bad JSON"
     rows = [_readable_row(row) for row in rows if isinstance(row, dict)]
+    if None in rows:
+        return "bad data"
     return planner.LiveProxy(rows, aliases, frozenset(credentials))
 
 
