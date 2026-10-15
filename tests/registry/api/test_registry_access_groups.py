@@ -1,8 +1,15 @@
 import pytest
 from sqlalchemy import event
 
-from app.registry.models import DBRegistryAccessGroup, DBRegistryModelRegion, DBRegistryModelRegionGroup
-from tests.registry.api.conftest import auth, model
+from app.db.models import DBRegion
+from app.registry.models import (
+    DBRegistryAccessGroup,
+    DBRegistryModel,
+    DBRegistryModelRegion,
+    DBRegistryModelRegionGroup,
+    DBRegistryProvider,
+)
+from tests.registry.api.conftest import TODAY, auth, model
 
 GROUPS = "/registry/access-groups"
 
@@ -166,3 +173,105 @@ def test_group_writes_need_a_system_admin(client, test_token, groups):
     for call in calls:
         assert call({}).status_code == 401
         assert call(auth(test_token)).status_code == 403
+
+
+US_GPT = {"proxy": "local-us1", "model": "openai/gpt-4o"}
+
+
+def _put(client, token, slug, models, query=""):
+    return client.put(f"{GROUPS}/{slug}/models{query}", json={"models": models}, headers=auth(token))
+
+
+def _links_state(db):
+    db.expire_all()
+    return sorted(
+        (link.access_group_id, link.model_region_id) for link in db.query(DBRegistryModelRegionGroup)
+    )
+
+
+def test_put_links_every_deployment_of_the_model_on_that_proxy(client, admin_token, registry_db, groups):
+    body = _ok(_put(client, admin_token, "alpha", [US_GPT]))
+
+    assert body["models"] == [{**US_GPT, "model_names": ["chat-gpt", "gpt-4o"]}]
+    alpha = registry_db.query(DBRegistryAccessGroup).filter_by(slug="alpha").one()
+    assert registry_db.query(DBRegistryModelRegionGroup).filter_by(access_group_id=alpha.id).count() == 2
+
+
+def test_put_removes_the_group_from_every_model_left_out(client, admin_token, registry_db, groups):
+    body = _ok(_put(client, admin_token, "beta", [US_GPT, US_GPT]))
+
+    assert body["models"] == [{**US_GPT, "model_names": ["chat-gpt", "gpt-4o"]}]
+    assert len(_links_state(registry_db)) == 2
+
+
+def test_put_with_an_empty_list_clears_the_group(client, admin_token, registry_db, groups):
+    assert _ok(_put(client, admin_token, "beta", []))["models"] == []
+    assert _links_state(registry_db) == []
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        [US_GPT, {"proxy": "nope", "model": "openai/gpt-4o"}],
+        [US_GPT, {"proxy": "local-ap1", "model": "openai/gpt-4o"}],
+        [US_GPT, {"proxy": "local-us1", "model": "openai/nope"}],
+        [US_GPT, {"proxy": "local-us1", "model": "gpt-4o"}],
+        [US_GPT, {"proxy": "local-eu1", "model": "bedrock/anthropic.claude-x-v1:0"}],
+        [US_GPT, {"proxy": "local-us1", "model": "openai/gpt-old"}],
+        [{**US_GPT, "enabled": True}],
+        [{"proxy": "local-us1"}],
+    ],
+)
+def test_put_rejects_a_bad_entry_and_changes_nothing(client, admin_token, registry_db, groups, entries):
+    # A region with no registry_proxies row is not a proxy of the registry.
+    registry_db.add(DBRegion(name="local-ap1", litellm_api_url="http://ap", litellm_api_key="sk", is_active=True))
+    registry_db.commit()
+    before = _links_state(registry_db)
+
+    assert _put(client, admin_token, "alpha", entries).status_code == 422
+    assert _put(client, admin_token, "beta", entries).status_code == 422
+    assert _links_state(registry_db) == before
+
+
+def test_put_without_the_models_field_is_422(client, admin_token, groups):
+    response = client.put(f"{GROUPS}/beta/models", json={}, headers=auth(admin_token))
+
+    assert response.status_code == 422
+
+
+def test_put_unknown_slug_is_404(client, admin_token, groups):
+    assert _put(client, admin_token, "nope", [US_GPT]).status_code == 404
+
+
+def test_put_reaches_a_model_id_with_a_slash(client, admin_token, registry_db, groups, deployed):
+    deepinfra = DBRegistryProvider(name="deepinfra")
+    registry_db.add(deepinfra)
+    registry_db.flush()
+    bge = DBRegistryModel(
+        provider_id=deepinfra.id, model_id="BAAI/bge-m3", source="litellm", first_seen=TODAY, last_seen=TODAY,
+    )
+    registry_db.add(bge)
+    registry_db.flush()
+    registry_db.add(DBRegistryModelRegion(
+        model_id=bge.id, region_id=deployed["us"].id, model_name="bge-m3",
+        litellm_model="deepinfra/BAAI/bge-m3", litellm_deployment_id="us-bge",
+    ))
+    registry_db.commit()
+
+    body = _ok(_put(client, admin_token, "alpha", [{"proxy": "local-us1", "model": "deepinfra/BAAI/bge-m3"}]))
+
+    assert body["models"] == [{"proxy": "local-us1", "model": "deepinfra/BAAI/bge-m3", "model_names": ["bge-m3"]}]
+
+
+def test_put_dry_run_saves_nothing(client, admin_token, registry_db, groups):
+    before = _links_state(registry_db)
+
+    body = _ok(_put(client, admin_token, "beta", [US_GPT], "?dry_run=true"))
+
+    assert body["models"] == [{**US_GPT, "model_names": ["chat-gpt", "gpt-4o"]}]
+    assert _links_state(registry_db) == before
+
+
+def test_put_needs_a_system_admin(client, test_token, groups):
+    assert client.put(f"{GROUPS}/beta/models", json={"models": []}).status_code == 401
+    assert _put(client, test_token, "beta", []).status_code == 403
