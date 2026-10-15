@@ -27,10 +27,11 @@ def _live_row(dep_id="d1", name="gpt-4o", model="openai/gpt-4o", credential="c1"
     return {"model_name": name, "litellm_params": litellm_params, "model_info": info}
 
 
-def _step(action, deployment=GPT, payload=None, changes=None, problems=()):
+def _step(action, deployment=None, payload=None, changes=None, problems=()):
     return {
-        "proxy": PROXY, "action": action, "model": deployment.model, "model_name": deployment.model_name,
-        "deployment_id": deployment.deployment_id, "payload": payload, "changes": changes, "problems": list(problems),
+        "proxy": PROXY, "action": action, "model": deployment and deployment.model,
+        "model_name": deployment and deployment.model_name, "deployment_id": deployment and deployment.deployment_id,
+        "payload": payload, "changes": changes, "problems": list(problems),
     }
 
 
@@ -89,7 +90,7 @@ def test_update_gives_no_step_when_nothing_differs():
     ],
 )
 def test_update_lists_each_changed_field(row, changes):
-    assert plan(PROXY, LiveProxy(deployments=[row]), [GPT]) == [_step("update_model", changes=changes)]
+    assert plan(PROXY, LiveProxy(deployments=[row]), [GPT]) == [_step("update_model", GPT, changes=changes)]
 
 
 def test_access_groups_in_another_order_are_the_same_groups():
@@ -113,7 +114,7 @@ def test_update_compares_only_the_given_fields():
 
 def test_update_of_a_deployment_that_is_not_on_the_proxy():
     assert plan(PROXY, LiveProxy(deployments=[_live_row(dep_id="d2")]), [GPT]) == [
-        _step("update_model", changes={}, problems=[NOT_ON_PROXY])
+        _step("update_model", GPT, changes={}, problems=[NOT_ON_PROXY])
     ]
 
 
@@ -177,20 +178,13 @@ def test_an_alias_copy_does_not_count_as_a_running_deployment():
     assert step["problems"] == []
 
 
-def _alias_step(payload, changes, problems=()):
-    return {
-        "proxy": PROXY, "action": "write_alias_map", "model": None, "model_name": None, "deployment_id": None,
-        "payload": payload, "changes": changes, "problems": list(problems),
-    }
-
-
 def test_alias_map_lists_added_changed_and_removed_aliases():
     live = LiveProxy(
         aliases={"chat": "gpt-4o", "old": "gpt-3", "fast": {"model": "gpt-4o", "hidden": True}, "same": "x"}
     )
     wanted = {"chat": "gpt-5", "new": {"model": "gpt-4o", "hidden": True}, "fast": "gpt-4o", "same": "x"}
 
-    assert plan(PROXY, live, aliases=wanted) == [_alias_step(wanted, {
+    assert plan(PROXY, live, aliases=wanted) == [_step("write_alias_map", payload=wanted, changes={
         "chat": {"from": "gpt-4o", "to": "gpt-5"},
         "fast": {"from": {"model": "gpt-4o", "hidden": True}, "to": "gpt-4o"},
         "new": {"from": None, "to": {"model": "gpt-4o", "hidden": True}},
@@ -209,7 +203,9 @@ def test_alias_map_gives_no_step_when_equal():
 def test_an_empty_alias_map_that_removes_live_aliases_has_a_problem():
     [step] = plan(PROXY, LiveProxy(aliases={"chat": "gpt-4o"}), aliases={})
 
-    assert step == _alias_step({}, {"chat": {"from": "gpt-4o", "to": None}}, [DELETES_EVERY_ALIAS])
+    assert step == _step(
+        "write_alias_map", payload={}, changes={"chat": {"from": "gpt-4o", "to": None}}, problems=[DELETES_EVERY_ALIAS]
+    )
 
 
 def test_no_wanted_alias_map_plans_no_alias_step():
