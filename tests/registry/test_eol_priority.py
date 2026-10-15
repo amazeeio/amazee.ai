@@ -1,9 +1,11 @@
 from datetime import date
 from types import SimpleNamespace
 
+import pytest
+
 from app.registry import config
 from app.registry.discovery import apply_model_list
-from app.registry.eol import apply_eol, run_eol
+from app.registry.eol import apply_eol, refresh_eol, run_eol
 from app.registry.models import DBRegistryModel, DBRegistryModelLifecycle, DBRegistryProvider, DBRegistryRun
 from app.registry.plugins.runner import apply_plugin, run_plugins, validate
 from app.registry.support import run_support_check
@@ -168,3 +170,34 @@ def test_daily_job_runs_eol_after_the_plugins_and_before_the_support_check():
 
     steps = [step for _, step in trigger_registry_daily_job.STEPS]
     assert steps.index(run_plugins) < steps.index(run_eol) < steps.index(run_support_check)
+
+
+def test_override_beats_every_source(registry_db):
+    model = _model(registry_db, "bedrock", "m")
+    model.override_eol = date(2028, 1, 1)
+    _life(registry_db, "litellm", Y)
+    _life(registry_db, "bedrock_community", X)
+
+    stats = apply_eol(registry_db)
+
+    assert model.eol_date == date(2028, 1, 1)
+    assert stats["won"] == {"override_eol": 1}
+
+
+@pytest.mark.parametrize("override", [None, date(2028, 1, 1)])
+def test_refresh_eol_gives_the_daily_result(registry_db, override):
+    model = _model(registry_db, "bedrock", "m")
+    other = _model(registry_db, "bedrock", "other", eol_date=Y)
+    model.override_eol = override
+    _life(registry_db, "litellm", Y)
+    _life(registry_db, "bedrock_community", X)
+    _life(registry_db, "litellm", X, model_id="other")
+
+    assert refresh_eol(registry_db, model, "bedrock") is True
+    # Only the one model changes.
+    assert other.eol_date == Y
+    assert model.eol_date == (override or X)
+
+    stats = apply_eol(registry_db)
+    assert other.eol_date == X
+    assert stats["changed"] == 1
