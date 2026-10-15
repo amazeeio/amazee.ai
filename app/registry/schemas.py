@@ -90,7 +90,7 @@ class _Strict(BaseModel):
     @classmethod
     def _readable_input(cls, data):
         # A 422 echoes the input, and JSON cannot hold Infinity or NaN, so the error would fail
-        # with a 500. A one-item list keeps their name, and no field accepts a list.
+        # with a 500. Each one becomes a one-item list of its name, which no field takes as valid.
         return json.loads(json.dumps(data), parse_constant=lambda name: [name])
 
 
