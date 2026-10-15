@@ -212,9 +212,16 @@ def set_proxy_model(
         if enabled is False and not force and any(d.enabled for d in deployments):
             if problem := removal_problem(model, date.today()):
                 raise HTTPException(status_code=409, detail=problem)
-        turning_on = [d for d in deployments if not d.enabled] if enabled else []
-        if turning_on:
-            check_enable(Availability(db), [changes.get("litellm_model", d.litellm_model) for d in turning_on])
+        # A new backend string on a deployment that is on after the PUT can be one the region cannot run.
+        # A change of only groups, credential or model_name keeps the backend, so it skips rule 4.
+        checked = [
+            d
+            for d in deployments
+            if changes.get("enabled", d.enabled)
+            and (not d.enabled or changes.get("litellm_model", d.litellm_model) != d.litellm_model)
+        ]
+        if checked:
+            check_enable(Availability(db), [changes.get("litellm_model", d.litellm_model) for d in checked])
 
         for deployment in deployments:
             for field in ("model_name", "litellm_model", "enabled"):

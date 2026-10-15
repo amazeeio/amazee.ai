@@ -247,11 +247,35 @@ def test_put_that_turns_a_deployment_on_runs_the_enable_check(client, admin_toke
     assert ok(_put(client, admin_token, "local-eu1", "openai/gpt-4o", {"enabled": True}, "?force=true"))[0]["enabled"]
 
 
-def test_put_that_changes_only_groups_skips_the_enable_check(client, admin_token, setup):
+def test_put_that_changes_only_groups_or_credential_skips_the_enable_check(client, admin_token, setup):
     # claude-x is enabled on the US proxy, but its support is unknown.
-    body = ok(_put(client, admin_token, "local-us1", "bedrock/anthropic.claude-x-v1:0", {"groups": ["alpha"]}))
+    body = ok(_put(
+        client, admin_token, "local-us1", "bedrock/anthropic.claude-x-v1:0", {"groups": ["alpha"], "credential": "c1"}
+    ))
 
     assert body[0]["access_groups"] == ["alpha"]
+
+
+@pytest.mark.parametrize(
+    "call_types, problem", [(["PROVISIONED"], PROVISIONED), (["INFERENCE_PROFILE"], NEEDS_PROFILE)]
+)
+def test_put_that_changes_the_backend_of_an_enabled_deployment_runs_the_enable_check(
+    client, admin_token, registry_db, setup, call_types, problem
+):
+    row = _new_bedrock_model(registry_db, setup["us"].id, call_types)
+    registry_db.add(DBRegistryModelRegion(
+        model_id=row.id, region_id=setup["us"].id, model_name=NEW, litellm_model=f"bedrock/us.{NEW}", enabled=True,
+    ))
+    registry_db.commit()
+    body = {"litellm_model": f"bedrock/{NEW}"}
+
+    response = _put(client, admin_token, "local-us1", f"bedrock/{NEW}", body)
+    assert response.status_code == 422
+    assert response.json()["detail"] == [problem]
+
+    assert ok(_put(client, admin_token, "local-us1", f"bedrock/{NEW}", body, "?force=true"))[0]["litellm_model"] == (
+        f"bedrock/{NEW}"
+    )
 
 
 @pytest.mark.parametrize(
