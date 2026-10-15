@@ -183,3 +183,21 @@ def test_needs_profile_with_no_geo_prefix_gives_no_hint(registry_db):
     problems = enable_problems(model, "bedrock", support_row(), availability, "me-central-1", f"bedrock/{CLAUDE}")
 
     assert problems == ["the proxy's cloud region offers the model only through a geo profile"]
+
+
+@pytest.mark.parametrize(
+    "call_types, region, problems",
+    [
+        (["PROVISIONED"], "us-east-1", [PROVISIONED]),
+        (["ON_DEMAND"], "us-east-1", ["the proxy's cloud region does not offer the model through a geo profile"]),
+        (["INFERENCE_PROFILE"], "us-east-1", []),
+        (["ON_DEMAND", "INFERENCE_PROFILE"], "us-east-1", []),
+        # No call types for the proxy's region: support and region availability decide.
+        (["PROVISIONED"], "eu-west-1", []),
+    ],
+)
+def test_enable_problems_of_a_geo_backend(registry_db, call_types, region, problems):
+    availability = _availability(registry_db, call_types, region)
+    model = DBRegistryModel(model_id=CLAUDE, blocked=False)
+
+    assert enable_problems(model, "bedrock", support_row(), availability, "us-east-1", f"bedrock/us.{CLAUDE}") == problems
