@@ -363,6 +363,29 @@ def _find_proxy(db: Session, proxy: str) -> DBRegion:
     return region
 
 
+def _deployment_responses(
+    db: Session, price_scopes: list, provider: str, deployments: list[tuple[DBRegistryModelRegion, str]]
+) -> list[RegistryModelDeploymentResponse]:
+    """The response of each (deployment, proxy name) of one model, with the price the registry writes."""
+    cloud_regions = dict(
+        db.query(DBRegistryProxy.region_id, DBRegistryProxy.cloud_regions).filter(
+            DBRegistryProxy.region_id.in_({deployment.region_id for deployment, _ in deployments})
+        )
+    )
+    groups = _access_groups(db, [deployment.id for deployment, _ in deployments])
+    # pick_price gets the deployed model string, so a geo id gets its geo price.
+    return [
+        RegistryModelDeploymentResponse(
+            **_deployment_fields(deployment, proxy, groups),
+            price=pick_price(
+                price_scopes, provider, deployment.litellm_model,
+                (cloud_regions.get(deployment.region_id) or {}).get(provider),
+            ),
+        )
+        for deployment, proxy in deployments
+    ]
+
+
 def _model_detail(db: Session, model: DBRegistryModel, provider: str) -> RegistryModelDetailResponse:
     base = _model_responses(db, [(model, provider)])[0]
 
@@ -385,12 +408,6 @@ def _model_detail(db: Session, model: DBRegistryModel, provider: str) -> Registr
         .order_by(DBRegion.name, DBRegistryModelRegion.model_name)
         .all()
     )
-    cloud_regions = dict(
-        db.query(DBRegistryProxy.region_id, DBRegistryProxy.cloud_regions).filter(
-            DBRegistryProxy.region_id.in_({deployment.region_id for deployment, _ in deployments})
-        )
-    )
-    groups = _access_groups(db, [deployment.id for deployment, _ in deployments])
     history = (
         db.query(DBRegistryModelHistory)
         .filter(DBRegistryModelHistory.model_id == model.id)
@@ -403,17 +420,7 @@ def _model_detail(db: Session, model: DBRegistryModel, provider: str) -> Registr
         supports=model.supports,
         lifecycle=lifecycle,
         availability=availability,
-        # pick_price gets the deployed model string, so a geo id gets its geo price.
-        deployments=[
-            RegistryModelDeploymentResponse(
-                **_deployment_fields(deployment, proxy, groups),
-                price=pick_price(
-                    base.price_scopes, provider, deployment.litellm_model,
-                    (cloud_regions.get(deployment.region_id) or {}).get(provider),
-                ),
-            )
-            for deployment, proxy in deployments
-        ],
+        deployments=_deployment_responses(db, base.price_scopes, provider, deployments),
         history=history,
     )
 
