@@ -3,7 +3,12 @@
 Kept apart from the API, so the planner can use them with no API import.
 """
 
+from datetime import date
+
+from sqlalchemy.orm import Session
+
 from app.registry.litellm import normalize_provider, parse_key
+from app.registry.models import DBRegistryModel, DBRegistryModelSupport
 from app.registry.support import Availability
 
 _GEOS_BY_REGION = {
@@ -61,3 +66,44 @@ def default_backend(provider: str, model_id: str, cloud_regions: dict, availabil
         if geos and "INFERENCE_PROFILE" in (availability.call_types.get(("bedrock", model_id, region)) or []):
             return f"bedrock/{geos[0]}.{model_id}"
     return f"{provider}/{model_id}"
+
+
+def support_rows(db: Session, model_ids, region_ids) -> dict[tuple[int, int], DBRegistryModelSupport]:
+    """The support rows of the given models on the given proxies, by (model_id, region_id), in one query."""
+    if not model_ids or not region_ids:
+        return {}
+    rows = db.query(DBRegistryModelSupport).filter(
+        DBRegistryModelSupport.model_id.in_(model_ids), DBRegistryModelSupport.region_id.in_(region_ids)
+    )
+    return {(row.model_id, row.region_id): row for row in rows}
+
+
+def enable_problems(
+    model: DBRegistryModel,
+    provider: str,
+    support: DBRegistryModelSupport | None,
+    availability: Availability,
+    cloud_region: str | None,
+    backend: str,
+) -> list[str]:
+    """Rule 4: why the model cannot be turned on with this backend on the proxy. Reads only the given data."""
+    problems = []
+    if support is None or support.supported is None:
+        problems.append("support is unknown: the support check has no result for this proxy")
+    elif support.supported is False:
+        problems.append("the proxy's LiteLLM version does not support the model")
+    if support is not None and support.region_available is False:
+        problems.append("the proxy's cloud region does not offer the model")
+    # `needs_profile` is not a refusal: the daily support check lists it as a warning.
+    if availability.in_region_problem(provider, model.model_id, cloud_region, backend) == "provisioned_only":
+        problems.append("the proxy's cloud region offers the model only with provisioned throughput")
+    if model.blocked:
+        problems.append("the model is blocked")
+    return problems
+
+
+def removal_problem(model: DBRegistryModel, today: date) -> str | None:
+    """Rule 1: a model leaves a proxy only on or after its EOL date. `eol_date` already holds the override."""
+    if model.eol_date is not None and model.eol_date > today:
+        return f"the model reaches its EOL date on {model.eol_date}; use force to remove it before that date"
+    return None
