@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from app.db.models import DBModelAccessGroup, DBRegion
+from app.db.models import DBModelAccessGroup
 from app.registry.models import (
     DBRegistryAccessGroup,
     DBRegistryModel,
@@ -10,7 +10,7 @@ from app.registry.models import (
     DBRegistryModelRegionGroup,
     DBRegistryProvider,
 )
-from tests.registry.api.conftest import TODAY, auth, model
+from tests.registry.api.conftest import TODAY, auth, model, ok
 
 GROUPS = "/registry/access-groups"
 
@@ -34,11 +34,6 @@ def groups(registry_db, deployed):
     registry_db.commit()
 
 
-def _ok(response, status=200):
-    assert response.status_code == status, response.text
-    return response.json()
-
-
 def _groups_state(db):
     db.expire_all()
     return [
@@ -57,14 +52,14 @@ BETA_MODELS = [
 def test_list_sorts_groups_and_shows_their_models(client, admin_token, groups):
     response = client.get(GROUPS, headers=auth(admin_token))
 
-    alpha, beta = _ok(response)
+    alpha, beta = ok(response)
     assert response.headers["X-Total-Count"] == "2"
     assert alpha == {"slug": "alpha", "label": "Alpha", "description": None, "models": []}
     assert beta == {"slug": "beta", "label": "Beta", "description": "B", "models": BETA_MODELS}
 
 
 def test_post_creates_a_group(client, admin_token, registry_db, groups):
-    body = _ok(client.post(GROUPS, json={"slug": "gamma-2", "label": "Gamma"}, headers=auth(admin_token)), 201)
+    body = ok(client.post(GROUPS, json={"slug": "gamma-2", "label": "Gamma"}, headers=auth(admin_token)), 201)
 
     assert body == {"slug": "gamma-2", "label": "Gamma", "description": None, "models": []}
     assert ("gamma-2", "Gamma") in [(slug, label) for _, slug, label, _ in _groups_state(registry_db)]
@@ -106,10 +101,10 @@ def test_post_rejects_a_bad_body(client, admin_token, registry_db, groups, body)
 
 
 def test_patch_changes_only_the_fields_in_the_body(client, admin_token, groups):
-    body = _ok(client.patch(f"{GROUPS}/beta", json={"label": "Beta 2"}, headers=auth(admin_token)))
+    body = ok(client.patch(f"{GROUPS}/beta", json={"label": "Beta 2"}, headers=auth(admin_token)))
     assert (body["label"], body["description"], body["models"]) == ("Beta 2", "B", BETA_MODELS)
 
-    body = _ok(client.patch(f"{GROUPS}/beta", json={"description": None}, headers=auth(admin_token)))
+    body = ok(client.patch(f"{GROUPS}/beta", json={"description": None}, headers=auth(admin_token)))
     assert (body["slug"], body["label"], body["description"]) == ("beta", "Beta 2", None)
 
 
@@ -128,11 +123,11 @@ def test_patch_unknown_slug_is_404(client, admin_token, groups):
 def test_dry_run_of_post_and_patch_saves_nothing(client, admin_token, registry_db, groups):
     before = _groups_state(registry_db)
 
-    body = _ok(client.post(
+    body = ok(client.post(
         f"{GROUPS}?dry_run=true", json={"slug": "gamma", "label": "Gamma"}, headers=auth(admin_token)
     ), 201)
     assert body["slug"] == "gamma"
-    body = _ok(client.patch(
+    body = ok(client.patch(
         f"{GROUPS}/beta?dry_run=true", json={"label": "New", "description": None}, headers=auth(admin_token)
     ))
     assert (body["label"], body["description"], body["models"]) == ("New", None, BETA_MODELS)
@@ -155,7 +150,7 @@ def _links_state(db):
 
 
 def test_put_links_every_deployment_of_the_model_on_that_proxy(client, admin_token, registry_db, groups):
-    body = _ok(_put(client, admin_token, "alpha", [US_GPT]))
+    body = ok(_put(client, admin_token, "alpha", [US_GPT]))
 
     assert body["models"] == [{**US_GPT, "model_names": ["chat-gpt", "gpt-4o"]}]
     alpha = registry_db.query(DBRegistryAccessGroup).filter_by(slug="alpha").one()
@@ -163,7 +158,7 @@ def test_put_links_every_deployment_of_the_model_on_that_proxy(client, admin_tok
 
 
 def test_put_removes_the_group_from_every_model_left_out(client, admin_token, registry_db, groups):
-    body = _ok(_put(client, admin_token, "beta", [US_GPT, US_GPT]))
+    body = ok(_put(client, admin_token, "beta", [US_GPT, US_GPT]))
 
     assert body["models"] == [{**US_GPT, "model_names": ["chat-gpt", "gpt-4o"]}]
     assert len(_links_state(registry_db)) == 2
@@ -171,9 +166,9 @@ def test_put_removes_the_group_from_every_model_left_out(client, admin_token, re
 
 def test_put_keeps_adds_and_removes_links_in_one_call(client, admin_token, registry_db, groups):
     us_claude = {"proxy": "local-us1", "model": "bedrock/anthropic.claude-x-v1:0"}
-    _ok(_put(client, admin_token, "alpha", [{"proxy": "local-eu1", "model": "openai/gpt-4o"}, us_claude]))
+    ok(_put(client, admin_token, "alpha", [{"proxy": "local-eu1", "model": "openai/gpt-4o"}, us_claude]))
 
-    _ok(_put(client, admin_token, "alpha", [us_claude, US_GPT]))
+    ok(_put(client, admin_token, "alpha", [us_claude, US_GPT]))
 
     alpha = registry_db.query(DBRegistryAccessGroup).filter_by(slug="alpha").one()
     ids = dict(registry_db.query(DBRegistryModelRegion.litellm_deployment_id, DBRegistryModelRegion.id))
@@ -183,7 +178,7 @@ def test_put_keeps_adds_and_removes_links_in_one_call(client, admin_token, regis
 
 
 def test_put_with_an_empty_list_clears_the_group(client, admin_token, registry_db, groups):
-    assert _ok(_put(client, admin_token, "beta", []))["models"] == []
+    assert ok(_put(client, admin_token, "beta", []))["models"] == []
     assert _links_state(registry_db) == []
 
 
@@ -200,10 +195,7 @@ def test_put_with_an_empty_list_clears_the_group(client, admin_token, registry_d
         [{"proxy": "local-us1"}],
     ],
 )
-def test_put_rejects_a_bad_entry_and_changes_nothing(client, admin_token, registry_db, groups, entries):
-    # A region with no registry_proxies row is not a proxy of the registry.
-    registry_db.add(DBRegion(name="local-ap1", litellm_api_url="http://ap", litellm_api_key="sk", is_active=True))
-    registry_db.commit()
+def test_put_rejects_a_bad_entry_and_changes_nothing(client, admin_token, registry_db, groups, bare_region, entries):
     before = _links_state(registry_db)
 
     assert _put(client, admin_token, "alpha", entries).status_code == 422
@@ -236,7 +228,7 @@ def test_put_reaches_a_model_id_with_a_slash(client, admin_token, registry_db, g
     ))
     registry_db.commit()
 
-    body = _ok(_put(client, admin_token, "alpha", [{"proxy": "local-us1", "model": "deepinfra/BAAI/bge-m3"}]))
+    body = ok(_put(client, admin_token, "alpha", [{"proxy": "local-us1", "model": "deepinfra/BAAI/bge-m3"}]))
 
     assert body["models"] == [{"proxy": "local-us1", "model": "deepinfra/BAAI/bge-m3", "model_names": ["bge-m3"]}]
 
@@ -244,7 +236,7 @@ def test_put_reaches_a_model_id_with_a_slash(client, admin_token, registry_db, g
 def test_put_dry_run_saves_nothing(client, admin_token, registry_db, groups):
     before = _links_state(registry_db)
 
-    body = _ok(_put(client, admin_token, "beta", [US_GPT], "?dry_run=true"))
+    body = ok(_put(client, admin_token, "beta", [US_GPT], "?dry_run=true"))
 
     assert body["models"] == [{**US_GPT, "model_names": ["chat-gpt", "gpt-4o"]}]
     assert _links_state(registry_db) == before
@@ -277,7 +269,7 @@ def test_delete_is_409_while_a_deployment_carries_the_group(client, admin_token,
     assert _delete(client, admin_token, "beta").status_code == 409
     assert "beta" in _slugs(registry_db)
 
-    _ok(_put(client, admin_token, "beta", []))
+    ok(_put(client, admin_token, "beta", []))
 
     assert _delete(client, admin_token, "beta").status_code == 204
     assert _slugs(registry_db) == ["alpha"]
