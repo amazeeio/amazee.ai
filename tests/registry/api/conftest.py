@@ -1,5 +1,6 @@
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -70,6 +71,45 @@ def models(registry_db):
         ),
     ])
     registry_db.commit()
+
+
+class _FakeProxyClient:
+    """Answers like a proxy from `live_proxies.by_url`; a URL that is not there is an empty proxy."""
+
+    def __init__(self, proxies, url, key):
+        self._proxies, self._url = proxies, url
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        pass
+
+    def _answer(self):
+        return self._proxies.by_url.get(self._url, {})
+
+    def model_info(self):
+        self._proxies.calls.append(self._url)
+        answer = self._answer()
+        if isinstance(answer, Exception):
+            raise answer
+        return answer.get("model_info", [])
+
+    def alias_map(self):
+        return self._answer().get("aliases", {})
+
+    def credential_names(self):
+        return set(self._answer().get("credentials", ()))
+
+
+@pytest.fixture(autouse=True)
+def live_proxies(monkeypatch):
+    """No API test reaches the network: each dry-run read of a proxy goes to this fake and is put in `calls`."""
+    proxies = SimpleNamespace(by_url={}, calls=[])
+    monkeypatch.setattr(
+        "app.registry.api.dry_run.ProxyClient", lambda url, key: _FakeProxyClient(proxies, url, key)
+    )
+    return proxies
 
 
 def auth(token):

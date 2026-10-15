@@ -1,0 +1,110 @@
+from datetime import date
+
+import httpx
+import pytest
+
+from app.registry.api.dry_run import ProxyPlan, deployment_plans, plan_steps, read_live
+from app.registry.models import DBRegistryCloudAvailability, DBRegistryModelRegion
+from app.registry.planner import DEPLOYMENT_FIELDS, Deployment, LiveProxy
+
+US_URL = "http://litellm:4000"
+EU_URL = "http://litellm-eu:4000"
+_REQUEST = httpx.Request("GET", f"{US_URL}/model/info")
+
+
+@pytest.mark.parametrize(
+    "error, reason",
+    [
+        (httpx.ConnectError("connect to http://litellm:4000 with sk-test failed"), "ConnectError"),
+        (httpx.ReadTimeout("sk-test"), "timeout"),
+        (httpx.HTTPStatusError("sk-test", request=_REQUEST, response=httpx.Response(500, request=_REQUEST)), "HTTP 500"),
+        (ValueError("sk-test"), "bad JSON"),
+    ],
+)
+def test_read_live_gives_a_short_reason(live_proxies, error, reason):
+    live_proxies.by_url[US_URL] = error
+
+    assert read_live(US_URL, "sk-test") == reason
+
+
+def test_read_live_refuses_a_model_list_that_is_not_a_list(live_proxies):
+    live_proxies.by_url[US_URL] = {"model_info": {"data": []}}
+
+    assert read_live(US_URL, "sk-test") == "bad JSON"
+
+
+def test_read_live_drops_rows_that_are_not_dicts(live_proxies):
+    row = {"model_name": "gpt-4o", "model_info": {"id": "us-gpt"}}
+    live_proxies.by_url[US_URL] = {"model_info": [row, "x"], "aliases": {"chat": "gpt-4o"}, "credentials": ["c1"]}
+
+    assert read_live(US_URL, "sk-test") == LiveProxy([row], {"chat": "gpt-4o"}, frozenset({"c1"}))
+
+
+def test_plan_steps_gives_a_read_step_for_a_proxy_that_fails(live_proxies):
+    live_proxies.by_url[EU_URL] = httpx.ConnectError("down")
+    new = Deployment(model="openai/gpt-4o", model_name="gpt-4o", litellm_model="openai/gpt-4o")
+    plans = [
+        ProxyPlan("local-us1", US_URL, "sk-test", [new]),
+        ProxyPlan("local-eu1", EU_URL, "sk-test", [new]),
+    ]
+
+    steps = plan_steps(plans)
+
+    assert steps[0] == {
+        "proxy": "local-eu1", "action": "read_proxy", "problems": ["the proxy could not be read: ConnectError"],
+    }
+    assert [(s["proxy"], s["action"]) for s in steps[1:]] == [("local-us1", "create_model")]
+    assert "sk-test" not in repr(plans)
+
+
+def _rows(db):
+    return db.query(DBRegistryModelRegion).order_by(DBRegistryModelRegion.litellm_deployment_id).all()
+
+
+def test_deployment_plans_give_one_plan_per_proxy(registry_db, deployed):
+    plans = {plan.proxy: plan for plan in deployment_plans(registry_db, _rows(registry_db), DEPLOYMENT_FIELDS)}
+
+    assert set(plans) == {"local-eu1", "local-us1"}
+    assert (plans["local-us1"].url, plans["local-us1"].key) == (US_URL, "sk-test")
+    assert plans["local-eu1"].deployments == [Deployment(
+        model="openai/gpt-4o", model_name="gpt-4o", litellm_model="openai/gpt-4o", deployment_id="eu-gpt",
+        keep=False,
+    )]
+    assert [d.deployment_id for d in plans["local-us1"].deployments] == ["us-claude", "us-gpt"]
+    assert all(d.keep and d.price is None for d in plans["local-us1"].deployments)
+
+
+def test_deployment_plans_live_only_and_removed(registry_db, deployed):
+    live = deployment_plans(registry_db, _rows(registry_db), DEPLOYMENT_FIELDS, live_only=True)
+    assert [plan.proxy for plan in live] == ["local-us1"]
+
+    removed = deployment_plans(registry_db, _rows(registry_db), DEPLOYMENT_FIELDS, removed=True)
+    assert all(not d.keep for plan in removed for d in plan.deployments)
+
+
+def test_deployment_plans_read_the_price_and_the_credential(registry_db, deployed):
+    gpt = registry_db.query(DBRegistryModelRegion).filter_by(litellm_deployment_id="us-gpt").one()
+    gpt.litellm_params = {"model": "openai/gpt-4o", "litellm_credential_name": "c1"}
+    registry_db.commit()
+
+    [plan] = deployment_plans(registry_db, [gpt], frozenset({"prices"}))
+
+    assert plan.fields == frozenset({"prices"})
+    assert plan.deployments[0].credential == "c1"
+    # The base price, because pick_price finds no geo or region price for openai/gpt-4o.
+    assert plan.deployments[0].price == {"input_cost_per_token": 2.5e-06}
+    assert plan.deployments[0].provisioned_only is False
+
+
+def test_deployment_plans_find_a_provisioned_only_bedrock_variant(registry_db, deployed):
+    claude = registry_db.query(DBRegistryModelRegion).filter_by(litellm_deployment_id="us-claude").one()
+    claude.litellm_model = "bedrock/anthropic.claude-x-v1:0"
+    registry_db.add(DBRegistryCloudAvailability(
+        provider="bedrock", model_id="anthropic.claude-x-v1:0", cloud_region="us-east-1",
+        source="bedrock_community", call_types=["PROVISIONED"], last_seen=date(2026, 1, 1),
+    ))
+    registry_db.commit()
+
+    [plan] = deployment_plans(registry_db, [claude], frozenset({"prices"}))
+
+    assert plan.deployments[0].provisioned_only is True
