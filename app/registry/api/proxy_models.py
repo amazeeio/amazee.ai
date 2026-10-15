@@ -273,9 +273,7 @@ def remove_proxy_model(
     _alias_guard(db, region.id, [d.model_name for d in deployments], ids)
     if not force and (problem := removal_problem(model, date.today())):
         raise HTTPException(status_code=409, detail=problem)
-    db.query(DBRegistryModelRegionGroup).filter(DBRegistryModelRegionGroup.model_region_id.in_(ids)).delete(
-        synchronize_session=False
-    )
+    # The foreign key of the group links cascades, so this also removes them.
     db.query(DBRegistryModelRegion).filter(DBRegistryModelRegion.id.in_(ids)).delete(synchronize_session=False)
     _save(db, dry_run)
     return Response(status_code=204)
