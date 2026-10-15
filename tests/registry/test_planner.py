@@ -90,7 +90,26 @@ def test_update_gives_no_step_when_nothing_differs():
     ],
 )
 def test_update_lists_each_changed_field(row, changes):
-    assert plan(PROXY, LiveProxy(deployments=[row]), [GPT]) == [_step("update_model", GPT, changes=changes)]
+    live = LiveProxy(deployments=[row], credentials=frozenset({"c1"}))
+
+    assert plan(PROXY, live, [GPT]) == [_step("update_model", GPT, changes=changes)]
+
+
+def test_update_to_a_missing_credential_has_a_problem():
+    [step] = plan(PROXY, LiveProxy(deployments=[_live_row(credential="c0")], credentials=frozenset({"c0"})), [GPT])
+
+    assert step["changes"] == {"credential": {"from": "c0", "to": "c1"}}
+    assert step["problems"] == ["the credential c1 is not on the proxy"]
+
+
+def test_update_that_keeps_a_missing_credential_has_no_credential_problem():
+    row = _live_row(name="gpt", input_cost_per_token=1e-06)
+    price = {"input_cost_per_token": 2e-06}
+
+    [name_step] = plan(PROXY, LiveProxy(deployments=[row]), [GPT])
+    [price_step] = plan(PROXY, LiveProxy(deployments=[row]), [replace(GPT, price=price)], frozenset({"prices"}))
+
+    assert name_step["problems"] == price_step["problems"] == []
 
 
 def test_access_groups_in_another_order_are_the_same_groups():
