@@ -120,6 +120,32 @@ def test_plan_steps_gives_a_read_step_for_a_proxy_that_fails(live_proxies):
     assert "sk-test" not in repr(plans)
 
 
+@pytest.mark.parametrize(
+    "url, active, reason",
+    [(None, True, "no proxy URL"), ("", True, "no proxy URL"), (US_URL, False, "the proxy is inactive")],
+)
+def test_plan_steps_does_not_read_a_proxy_with_no_url_or_an_inactive_one(live_proxies, url, active, reason):
+    steps = plan_steps([ProxyPlan("local-us1", url, "sk-test", active=active)])
+
+    assert steps == [
+        {"proxy": "local-us1", "action": "read_proxy", "problems": [f"the proxy could not be read: {reason}"]}
+    ]
+    assert live_proxies.calls == []
+
+
+def test_deployment_plans_read_the_region_state(registry_db, deployed):
+    deployed["eu"].is_active = False
+    deployed["us"].litellm_api_url = None
+    registry_db.commit()
+
+    plans = {plan.proxy: plan for plan in deployment_plans(registry_db, _rows(registry_db), DEPLOYMENT_FIELDS)}
+
+    assert (plans["local-eu1"].active, plans["local-us1"].active, plans["local-us1"].url) == (False, True, None)
+    assert [step["problems"] for step in plan_steps(list(plans.values()))] == [
+        ["the proxy could not be read: the proxy is inactive"], ["the proxy could not be read: no proxy URL"],
+    ]
+
+
 def _rows(db):
     return db.query(DBRegistryModelRegion).order_by(DBRegistryModelRegion.litellm_deployment_id).all()
 
