@@ -7,6 +7,7 @@ from sqlalchemy import tuple_
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
+# The registry's only read of an old catalog table, for the group slugs. It goes when the old catalog goes.
 from app.db.models import DBModelAccessGroup, DBRegion
 from app.registry.api.routes import _find_proxy, _save, router
 from app.registry.models import (
