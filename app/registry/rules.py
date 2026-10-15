@@ -79,6 +79,33 @@ def support_rows(db: Session, model_ids, region_ids) -> dict[tuple[int, int], DB
     return {(row.model_id, row.region_id): row for row in rows}
 
 
+def _call_type_problem(
+    provider: str, model_id: str, availability: Availability, cloud_region: str | None, backend: str
+) -> str | None:
+    """Why the proxy's cloud region cannot call the model in this backend form, or None.
+
+    LiteLLM fails these at call time. With no call types for the region, support and region availability decide.
+    """
+    provisioned = "the proxy's cloud region offers the model only with provisioned throughput"
+    parsed = parse_key(backend, provider)
+    call_types = availability.call_types.get((provider, model_id, cloud_region))
+    if provider == "bedrock" and parsed and parsed[1] == "geo" and call_types:
+        if "INFERENCE_PROFILE" in call_types:
+            return None
+        if set(call_types) == {"PROVISIONED"}:
+            return provisioned
+        return "the proxy's cloud region does not offer the model through a geo profile"
+    # The default backend never gives `needs_profile`, so it refuses only an in-region id that a request gives.
+    in_region = availability.in_region_problem(provider, model_id, cloud_region, backend)
+    if in_region == "provisioned_only":
+        return provisioned
+    if in_region == "needs_profile":
+        geos = geo_prefixes(cloud_region)
+        hint = f"; use the {geos[0]}. prefix" if geos else ""
+        return f"the proxy's cloud region offers the model only through a geo profile{hint}"
+    return None
+
+
 def enable_problems(
     model: DBRegistryModel,
     provider: str,
@@ -95,15 +122,8 @@ def enable_problems(
         problems.append("the proxy's LiteLLM version does not support the model")
     if support is not None and support.region_available is False:
         problems.append("the proxy's cloud region does not offer the model")
-    # LiteLLM fails both at call time. The default backend never gives `needs_profile`,
-    # so it refuses only an in-region id that a request gives on purpose.
-    in_region = availability.in_region_problem(provider, model.model_id, cloud_region, backend)
-    if in_region == "provisioned_only":
-        problems.append("the proxy's cloud region offers the model only with provisioned throughput")
-    elif in_region == "needs_profile":
-        geos = geo_prefixes(cloud_region)
-        hint = f"; use the {geos[0]}. prefix" if geos else ""
-        problems.append(f"the proxy's cloud region offers the model only through a geo profile{hint}")
+    if problem := _call_type_problem(provider, model.model_id, availability, cloud_region, backend):
+        problems.append(problem)
     if model.blocked:
         problems.append("the model is blocked")
     return problems

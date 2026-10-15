@@ -447,3 +447,14 @@ def test_put_that_turns_on_an_imported_global_backend_gets_422(client, admin_tok
     assert response.status_code == 422
     assert response.json()["detail"] == "the geo prefix global is not allowed on this proxy"
     assert _state(registry_db) == before
+
+
+def test_put_refuses_a_geo_backend_that_the_region_offers_only_provisioned(client, admin_token, registry_db, setup):
+    _new_bedrock_model(registry_db, setup["us"].id, ["PROVISIONED"])
+    body = {"litellm_model": f"bedrock/us.{NEW}"}
+
+    response = _put(client, admin_token, "local-us1", f"bedrock/{NEW}", body)
+    assert response.status_code == 422
+    assert response.json()["detail"] == [PROVISIONED]
+
+    ok(_put(client, admin_token, "local-us1", f"bedrock/{NEW}", body, "?force=true"), 201)
