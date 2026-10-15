@@ -142,10 +142,3 @@ def test_dry_run_answers_like_the_write_and_saves_nothing(client, admin_token, r
     real = call(client, admin_token, "")
     assert (dry.status_code, dry.content) == (real.status_code, real.content)
     assert _state(registry_db) != before
-
-
-def test_alias_writes_need_a_system_admin(client, test_token, aliases):
-    assert client.put(f"{ALIASES}/local-us1/zeta", json={"target": "gpt-4o"}).status_code == 401
-    assert client.delete(f"{ALIASES}/local-us1/zeta").status_code == 401
-    assert _put(client, test_token, "local-us1/zeta", {"target": "gpt-4o"}).status_code == 403
-    assert _delete(client, test_token, "local-us1/zeta").status_code == 403

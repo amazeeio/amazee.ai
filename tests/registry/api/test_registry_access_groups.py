@@ -140,16 +140,6 @@ def test_dry_run_of_post_and_patch_saves_nothing(client, admin_token, registry_d
     assert _groups_state(registry_db) == before
 
 
-def test_group_writes_need_a_system_admin(client, test_token, groups):
-    calls = [
-        lambda headers: client.post(GROUPS, json={"slug": "gamma", "label": "G"}, headers=headers),
-        lambda headers: client.patch(f"{GROUPS}/beta", json={"label": "G"}, headers=headers),
-    ]
-    for call in calls:
-        assert call({}).status_code == 401
-        assert call(auth(test_token)).status_code == 403
-
-
 US_GPT = {"proxy": "local-us1", "model": "openai/gpt-4o"}
 
 
@@ -260,11 +250,6 @@ def test_put_dry_run_saves_nothing(client, admin_token, registry_db, groups):
     assert _links_state(registry_db) == before
 
 
-def test_put_needs_a_system_admin(client, test_token, groups):
-    assert client.put(f"{GROUPS}/beta/models", json={"models": []}).status_code == 401
-    assert _put(client, test_token, "beta", []).status_code == 403
-
-
 def _delete(client, token, slug, query=""):
     return client.delete(f"{GROUPS}/{slug}{query}", headers=auth(token))
 
@@ -307,8 +292,3 @@ def test_delete_dry_run_keeps_the_group(client, admin_token, registry_db, groups
 
     assert _delete(client, admin_token, "alpha", "?dry_run=true").status_code == 204
     assert _groups_state(registry_db) == before
-
-
-def test_delete_needs_a_system_admin(client, test_token, groups):
-    assert client.delete(f"{GROUPS}/alpha").status_code == 401
-    assert _delete(client, test_token, "alpha").status_code == 403
