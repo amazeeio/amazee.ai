@@ -73,8 +73,6 @@ def default_backend(provider: str, model_id: str, cloud_regions: dict, availabil
 
 def support_rows(db: Session, model_ids, region_ids) -> dict[tuple[int, int], DBRegistryModelSupport]:
     """The support rows of the given models on the given proxies, by (model_id, region_id), in one query."""
-    if not model_ids or not region_ids:
-        return {}
     rows = db.query(DBRegistryModelSupport).filter(
         DBRegistryModelSupport.model_id.in_(model_ids), DBRegistryModelSupport.region_id.in_(region_ids)
     )
