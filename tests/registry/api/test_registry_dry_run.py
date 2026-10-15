@@ -16,7 +16,7 @@ _REQUEST = httpx.Request("GET", f"{US_URL}/model/info")
     "error, reason",
     [
         (httpx.ConnectError(f"connect to {US_URL} with sk-test failed"), "ConnectError"),
-        (httpx.ReadTimeout("sk-test"), "timeout"),
+        (httpx.ReadTimeout("sk-test"), "ReadTimeout"),
         (httpx.HTTPStatusError("sk-test", request=_REQUEST, response=httpx.Response(500, request=_REQUEST)), "HTTP 500"),
         (ValueError("sk-test"), "bad JSON"),
         (httpx.InvalidURL("sk-test"), "InvalidURL"),
