@@ -350,6 +350,19 @@ def _find_model(db: Session, key: str) -> tuple[DBRegistryModel, str]:
     return row
 
 
+def _find_proxy(db: Session, proxy: str) -> DBRegion:
+    """The region of a proxy name; only a region with a registry_proxies row is a proxy."""
+    region = (
+        db.query(DBRegion)
+        .join(DBRegistryProxy, DBRegistryProxy.region_id == DBRegion.id)
+        .filter(DBRegion.name == proxy)
+        .one_or_none()
+    )
+    if region is None:
+        raise HTTPException(status_code=404, detail="Proxy not found")
+    return region
+
+
 def _model_detail(db: Session, model: DBRegistryModel, provider: str) -> RegistryModelDetailResponse:
     base = _model_responses(db, [(model, provider)])[0]
 
@@ -475,10 +488,8 @@ def list_proxies(response: Response, db: Session = Depends(get_db)):
 
 @router.get("/proxies/{proxy}", response_model=RegistryProxyDetailResponse)
 def get_proxy(proxy: str, db: Session = Depends(get_db)):
-    region = db.query(DBRegion).filter(DBRegion.name == proxy).one_or_none()
-    found = _proxy_responses(db, region.id) if region else []
-    if not found:
-        raise HTTPException(status_code=404, detail="Proxy not found")
+    region = _find_proxy(db, proxy)
+    found = _proxy_responses(db, region.id)
 
     checked_at = (
         db.query(func.max(DBRegistryModelSupport.checked_at))
