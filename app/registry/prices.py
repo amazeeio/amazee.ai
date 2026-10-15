@@ -13,9 +13,20 @@ from sqlalchemy.orm import Session
 
 from app.registry.litellm import our_entries, parse_key
 from app.registry.models import DBRegistryModel, DBRegistryModelPrice, models_by_ident, prices_by_model
-from app.registry.plugins.loader import kept_sources
+from app.registry.plugins.loader import MANUAL, kept_sources
 
 SOURCE = "litellm"
+_SCOPE_KINDS = {"geo": "geo", "region": "cloud_region"}
+
+
+def parse_scope(name) -> tuple[str, str]:
+    """`base`, `geo:<geo>` or `region:<cloud region>` as (scope_kind, scope)."""
+    if name == "base":
+        return "base", ""
+    kind, sep, value = str(name).partition(":")
+    if not sep or not value or kind not in _SCOPE_KINDS:
+        raise ValueError(f"unknown price scope {name!r}")
+    return _SCOPE_KINDS[kind], value
 
 
 def price_fields(entry: dict) -> dict:
@@ -99,6 +110,24 @@ def upsert_scopes(
                 changes += 1
             row.last_seen = today
     return changes
+
+
+def set_manual_prices(db: Session, model: DBRegistryModel, prices: dict, today: date) -> None:
+    """An admin's price replaces the scope's row whatever its source; `None`
+    removes only a manual row. `prices` maps a scope key to fields or `None`."""
+    have = {(p.scope_kind, p.scope): p for p in db.query(DBRegistryModelPrice).filter_by(model_id=model.id)}
+    wanted = {}
+    for name, fields in prices.items():
+        key = parse_scope(name)
+        if fields is not None:
+            wanted[key] = fields
+        elif (row := have.get(key)) is not None and row.source == MANUAL:
+            db.delete(row)
+            if key == ("base", ""):
+                set_headline(model, {})
+    upsert_scopes(db, model.id, have, wanted, MANUAL, today)
+    if ("base", "") in wanted:
+        set_headline(model, wanted[("base", "")])
 
 
 def set_headline(model: DBRegistryModel, fields: dict) -> None:

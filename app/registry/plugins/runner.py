@@ -21,24 +21,14 @@ from app.registry.models import (
     prices_by_model,
 )
 from app.registry.plugins.loader import load_plugins
-from app.registry.prices import set_headline, upsert_scopes
+from app.registry.prices import parse_scope, set_headline, upsert_scopes
 from app.registry.runs import record_run
 from app.registry.values import is_amount
 
 logger = logging.getLogger(__name__)
 
 SCHEMA = 1
-_SCOPE_KINDS = {"geo": "geo", "region": "cloud_region"}
 _LIFECYCLE_DATES = ("launched_at", "legacy_at", "extended_access_until", "eol_date")
-
-
-def _scope(name) -> tuple[str, str]:
-    if name == "base":
-        return "base", ""
-    kind, sep, value = str(name).partition(":")
-    if not sep or not value or kind not in _SCOPE_KINDS:
-        raise ValueError(f"unknown price scope {name!r}")
-    return _SCOPE_KINDS[kind], value
 
 
 def _count(value, what) -> int | None:
@@ -74,7 +64,7 @@ def validate(output, source: str) -> list[dict]:
                 if "cost" not in field or not is_amount(value):
                     raise ValueError(f"{ident}: bad price {field}={value!r}")
             if fields:
-                prices[_scope(name)] = dict(sorted(fields.items()))
+                prices[parse_scope(name)] = dict(sorted(fields.items()))
         lifecycle = m.get("lifecycle")
         if lifecycle is not None:
             if not isinstance(lifecycle, dict):
