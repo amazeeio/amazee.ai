@@ -16,7 +16,7 @@ from app.registry.models import DBRegistryModel, DBRegistryModelPrice, models_by
 from app.registry.plugins.loader import MANUAL, kept_sources
 
 SOURCE = "litellm"
-_SCOPE_KINDS = {"geo": "geo", "region": "cloud_region"}
+SCOPE_KINDS = {"geo": "geo", "region": "cloud_region"}
 
 
 def parse_scope(name) -> tuple[str, str]:
@@ -24,9 +24,9 @@ def parse_scope(name) -> tuple[str, str]:
     if name == "base":
         return "base", ""
     kind, sep, value = str(name).partition(":")
-    if not sep or not value or kind not in _SCOPE_KINDS:
+    if not sep or not value or kind not in SCOPE_KINDS:
         raise ValueError(f"unknown price scope {name!r}")
-    return _SCOPE_KINDS[kind], value
+    return SCOPE_KINDS[kind], value
 
 
 def price_fields(entry: dict) -> dict:
