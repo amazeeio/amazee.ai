@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from app.registry.discovery import apply_model_list, entry_fields
@@ -51,18 +51,18 @@ def test_none_removes_only_a_manual_row(registry_db):
 def test_updated_at_moves_only_when_a_price_row_changes(registry_db):
     model = add_model(registry_db)
     _price(registry_db, model, "geo", "us", MANUAL, "manual")
-    registry_db.commit()
-    before = model.updated_at
+    # A fixed old time, so the test never compares the database clock with the Python clock.
+    old = datetime(2020, 1, 1, tzinfo=UTC)
 
-    set_manual_prices(registry_db, model, {"geo:us": MANUAL, "geo:eu": None}, TODAY)
-    assert model.updated_at == before
+    def moved(prices):
+        model.updated_at = old
+        registry_db.commit()
+        set_manual_prices(registry_db, model, prices, TODAY)
+        return model.updated_at != old
 
-    set_manual_prices(registry_db, model, {"geo:us": None}, TODAY)
-    deleted = model.updated_at
-    assert deleted > before
-
-    set_manual_prices(registry_db, model, {"geo:eu": MANUAL}, TODAY)
-    assert model.updated_at > deleted
+    assert not moved({"geo:us": MANUAL, "geo:eu": None})
+    assert moved({"geo:us": None})
+    assert moved({"geo:eu": MANUAL})
 
 
 def test_a_base_price_is_the_headline_until_it_is_removed(registry_db):
