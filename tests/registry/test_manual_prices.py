@@ -62,6 +62,23 @@ def test_none_removes_only_a_manual_row(registry_db):
     assert _rows(registry_db, model) == {("geo", "us"): ("litellm", {"input_cost_per_token": 3e-06})}
 
 
+def test_updated_at_moves_only_when_a_price_row_changes(registry_db):
+    model = _model(registry_db)
+    _price(registry_db, model, "geo", "us", MANUAL, "manual")
+    registry_db.commit()
+    before = model.updated_at
+
+    set_manual_prices(registry_db, model, {"geo:us": MANUAL, "geo:eu": None}, TODAY)
+    assert model.updated_at == before
+
+    set_manual_prices(registry_db, model, {"geo:us": None}, TODAY)
+    deleted = model.updated_at
+    assert deleted > before
+
+    set_manual_prices(registry_db, model, {"geo:eu": MANUAL}, TODAY)
+    assert model.updated_at > deleted
+
+
 def test_a_base_price_is_the_headline_until_it_is_removed(registry_db):
     model = _model(registry_db)
 

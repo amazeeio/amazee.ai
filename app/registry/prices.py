@@ -117,15 +117,19 @@ def set_manual_prices(db: Session, model: DBRegistryModel, prices: dict, today: 
     removes only a manual row. `prices` maps a scope key to fields or `None`."""
     have = {(p.scope_kind, p.scope): p for p in db.query(DBRegistryModelPrice).filter_by(model_id=model.id)}
     wanted = {}
+    changes = 0
     for name, fields in prices.items():
         key = parse_scope(name)
         if fields is not None:
             wanted[key] = fields
         elif (row := have.get(key)) is not None and row.source == MANUAL:
             db.delete(row)
+            changes += 1
             if key == ("base", ""):
                 set_headline(model, {})
-    upsert_scopes(db, model.id, have, wanted, MANUAL, today)
+    changes += upsert_scopes(db, model.id, have, wanted, MANUAL, today)
+    if changes:
+        model.updated_at = datetime.now(UTC)
     if ("base", "") in wanted:
         set_headline(model, wanted[("base", "")])
 

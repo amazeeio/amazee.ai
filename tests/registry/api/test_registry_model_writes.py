@@ -63,6 +63,22 @@ def test_patch_changes_only_the_fields_in_the_body(client, admin_token, models):
     assert body["family"] is None and body["manufacturer"] == "anthropic"
 
 
+def test_patch_moves_updated_at_only_on_a_real_change(client, admin_token, registry_db, models):
+    def updated_at():
+        registry_db.expire_all()
+        return model(registry_db, "openai", "gpt-4o").updated_at
+
+    before = updated_at()
+    _ok(_patch(client, admin_token, GPT, {"family": None, "blocked": False, "override_eol": None}))
+    assert updated_at() == before
+
+    for change in ({"family": "gpt4"}, {"blocked": True}, {"override_eol": X.isoformat()}):
+        _ok(_patch(client, admin_token, GPT, change))
+        after = updated_at()
+        assert after > before, change
+        before = after
+
+
 def test_patch_writes_manual_prices(client, admin_token, registry_db, models):
     # A null removes only a manual price, so the list's geo price stays.
     body = _ok(_patch(client, admin_token, GPT, {"prices": {"geo:eu": None}}))

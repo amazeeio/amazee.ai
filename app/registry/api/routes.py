@@ -412,8 +412,9 @@ def update_model(
     model, provider = _find_model(db, key)
     changes = body.model_dump(exclude_unset=True)
     for field in ("family", "override_eol", "blocked"):
-        if field in changes:
+        if field in changes and getattr(model, field) != changes[field]:
             setattr(model, field, changes[field])
+            model.updated_at = datetime.now(UTC)
     if "prices" in changes:
         # ponytail: a daily step that runs at the same time can overwrite a manual price
         # written here; the admin sets it again. A row lock in this route would close that.
