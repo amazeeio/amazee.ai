@@ -40,6 +40,7 @@ class ProxyPlan:
     deployments: list[planner.Deployment] = field(default_factory=list)
     fields: frozenset = planner.DEPLOYMENT_FIELDS
     aliases: dict | None = None
+    active: bool = True
 
 
 def _access_groups(db: Session, deployment_ids: list[int]) -> dict[int, list[str]]:
@@ -82,6 +83,12 @@ def _save(
     return RegistryDryRun(result=None if isinstance(result, Response) else result, steps=plan_steps(plans))
 
 
+def _proxy_plan(region: DBRegion, **wanted) -> ProxyPlan:
+    return ProxyPlan(
+        region.name, region.litellm_api_url, region.litellm_api_key, active=region.is_active is not False, **wanted
+    )
+
+
 def deployment_plans(
     db: Session, rows: list[DBRegistryModelRegion], fields: frozenset, *, removed: bool = False,
     live_only: bool = False,
@@ -96,12 +103,7 @@ def deployment_plans(
         return []
     region_ids = {row.region_id for row in rows}
     model_ids = {row.model_id for row in rows}
-    regions = {
-        region_id: (name, url, key)
-        for region_id, name, url, key in db.query(
-            DBRegion.id, DBRegion.name, DBRegion.litellm_api_url, DBRegion.litellm_api_key
-        ).filter(DBRegion.id.in_(region_ids))
-    }
+    regions = {region.id: region for region in db.query(DBRegion).filter(DBRegion.id.in_(region_ids))}
     models = {
         model_id: (provider, name)
         for model_id, provider, name in db.query(DBRegistryModel.id, DBRegistryProvider.name, DBRegistryModel.model_id)
@@ -146,7 +148,10 @@ def deployment_plans(
             price=price,
             provisioned_only=provisioned_only,
         ))
-    return [ProxyPlan(*regions[region_id], deployments, fields) for region_id, deployments in by_region.items()]
+    return [
+        _proxy_plan(regions[region_id], deployments=deployments, fields=fields)
+        for region_id, deployments in by_region.items()
+    ]
 
 
 def alias_plans(db: Session, region: DBRegion) -> list[ProxyPlan]:
@@ -155,7 +160,7 @@ def alias_plans(db: Session, region: DBRegion) -> list[ProxyPlan]:
         row.alias: {"model": row.target, "hidden": True} if row.hidden else row.target
         for row in db.query(DBRegistryAlias).filter(DBRegistryAlias.region_id == region.id)
     }
-    return [ProxyPlan(region.name, region.litellm_api_url, region.litellm_api_key, aliases=aliases)]
+    return [_proxy_plan(region, aliases=aliases)]
 
 
 def _readable_row(row: dict) -> dict | None:
@@ -209,7 +214,12 @@ def plan_steps(plans: list[ProxyPlan]) -> list[dict]:
     # ponytail: the reads run one after the other, so each proxy that does not answer adds up to
     # HTTP_TIMEOUT_SECONDS. Read the proxies at the same time if the dry runs become too slow.
     for plan in sorted(plans, key=lambda plan: plan.proxy):
-        live = read_live(plan.url, plan.key)
+        if not plan.url:
+            live = "no proxy URL"
+        elif not plan.active:
+            live = "the proxy is inactive"
+        else:
+            live = read_live(plan.url, plan.key)
         if isinstance(live, str):
             steps.append(
                 {"proxy": plan.proxy, "action": "read_proxy", "problems": [f"the proxy could not be read: {live}"]}
