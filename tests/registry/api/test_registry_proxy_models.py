@@ -9,6 +9,7 @@ from app.registry.models import (
     DBRegistryModelRegion,
     DBRegistryModelRegionGroup,
     DBRegistryModelSupport,
+    DBRegistryProxy,
 )
 from tests.registry.api.conftest import CHECKED_AT, auth, model, ok
 from tests.registry.conftest import add_model
@@ -37,6 +38,8 @@ def setup(registry_db, deployed):
         _support(old.id, deployed["us"].id),
         _support(old.id, deployed["eu"].id),
     ])
+    for proxy in registry_db.query(DBRegistryProxy):
+        proxy.imported_at = CHECKED_AT
     registry_db.commit()
     return deployed
 
@@ -432,4 +435,19 @@ def test_delete_dry_run_keeps_the_rows(client, admin_token, registry_db, setup):
     before = _state(registry_db)
 
     assert _delete(client, admin_token, "local-eu1", "openai/gpt-4o", "?dry_run=true").status_code == 204
+    assert _state(registry_db) == before
+
+
+def test_writes_on_a_proxy_that_was_never_imported_get_409(client, admin_token, registry_db, setup):
+    registry_db.get(DBRegistryProxy, setup["eu"].id).imported_at = None
+    registry_db.commit()
+    before = _state(registry_db)
+
+    for response in (
+        _put(client, admin_token, "local-eu1", "openai/gpt-old"),
+        _put(client, admin_token, "local-eu1", "openai/gpt-4o", {"groups": ["alpha"]}),
+        _delete(client, admin_token, "local-eu1", "openai/gpt-4o"),
+    ):
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Import the proxy first: local-eu1"
     assert _state(registry_db) == before
