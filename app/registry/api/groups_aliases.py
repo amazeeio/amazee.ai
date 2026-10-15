@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 # The registry's only read of an old catalog table, for the group slugs. It goes when the old catalog goes.
 from app.db.models import DBModelAccessGroup, DBRegion
-from app.registry.api.routes import Refused, _find_proxy, _save, refuse, router
+from app.registry.api.routes import Refused, _find_proxy, _lock_proxies, _save, refuse, router
 from app.registry.models import (
     DBRegistryAccessGroup,
     DBRegistryAlias,
@@ -213,6 +213,8 @@ def set_alias(
     db: Session = Depends(get_db),
 ):
     region = _find_proxy(db, proxy)
+    # The alias guard of a rename or a delete reads the aliases under the same lock.
+    _lock_proxies(db, [region.id])
     names = {
         name
         for (name,) in db.query(DBRegistryModelRegion.model_name).filter(DBRegistryModelRegion.region_id == region.id)

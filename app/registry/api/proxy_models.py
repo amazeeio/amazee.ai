@@ -16,6 +16,7 @@ from app.registry.api.routes import (
     _deployment_responses,
     _find_model,
     _find_proxy,
+    _lock_proxies,
     _model_query,
     _save,
     router,
@@ -44,20 +45,6 @@ from app.registry.schemas import (
     RegistryRolloutEntry,
 )
 from app.registry.support import Availability
-
-
-def _lock_proxies(db: Session, region_ids) -> dict[int, DBRegistryProxy]:
-    """Lock the proxies' rows, so the writes to one proxy run one after the other.
-
-    Two creates at the same time would both add a deployment. The sorted order stops a deadlock between two rollouts.
-    """
-    rows = (
-        db.query(DBRegistryProxy)
-        .filter(DBRegistryProxy.region_id.in_(region_ids))
-        .order_by(DBRegistryProxy.region_id)
-        .with_for_update()
-    )
-    return {row.region_id: row for row in rows}
 
 
 def _require_imported(proxies, names: dict[int, str]) -> None:
