@@ -101,6 +101,14 @@ class RegistryModelUpdate(BaseModel):
         # A 422 echoes the input, and JSON cannot hold Infinity or NaN, so the error would fail with a 500.
         return _wrap_non_finite(data)
 
+    @field_validator("override_eol", mode="before")
+    @classmethod
+    def _date_as_text(cls, value):
+        # Pydantic reads a number as Unix time, so 0 would give 1970-01-01.
+        if value is not None and not isinstance(value, str):
+            raise ValueError("override_eol must be a date as text, or null")
+        return value
+
     @field_validator("prices")
     @classmethod
     def _check_prices(cls, prices):
