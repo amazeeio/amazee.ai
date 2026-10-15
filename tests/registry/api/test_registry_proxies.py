@@ -6,6 +6,7 @@ from app.core.config import settings
 from app.db.models import DBRegion
 from app.registry.models import (
     DBRegistryAccessGroup,
+    DBRegistryCloudAvailability,
     DBRegistryModelRegion,
     DBRegistryModelRegionGroup,
     DBRegistryModelSupport,
@@ -178,3 +179,33 @@ def test_proxy_patch_dry_run_saves_nothing(client, admin_token, deployed, regist
     assert body["result"]["proxy"] == "local-us1" and body["result"]["cloud_regions"] == {}
     registry_db.expire_all()
     assert registry_db.get(DBRegistryProxy, deployed["us"].id).cloud_regions == {"bedrock": "us-east-1"}
+
+
+def test_proxy_patch_sets_region_available_again(client, admin_token, deployed, registry_db):
+    claude = model(registry_db, "bedrock", "anthropic.claude-x-v1:0")
+    gpt = model(registry_db, "openai", "gpt-4o")
+    common = {"provider": "bedrock", "source": "bedrock_community", "call_types": ["ON_DEMAND"], "last_seen": TODAY}
+    registry_db.add_all([
+        DBRegistryCloudAvailability(model_id=claude.model_id, cloud_region="us-east-1", **common),
+        # eu-west-1 is a known region with no claude-x, so the model is not available there.
+        DBRegistryCloudAvailability(model_id="anthropic.other-v1:0", cloud_region="eu-west-1", **common),
+    ])
+    registry_db.commit()
+
+    def available(model_id):
+        registry_db.expire_all()
+        return registry_db.query(DBRegistryModelSupport).filter_by(
+            model_id=model_id, region_id=deployed["us"].id
+        ).one().region_available
+
+    ok(_patch(client, admin_token, "local-us1", {"cloud_regions": {"bedrock": "eu-west-1"}}))
+    assert available(claude.id) is False
+    ok(_patch(client, admin_token, "local-us1", {"cloud_regions": {"bedrock": "us-east-1"}}))
+    assert available(claude.id) is True
+    ok(_patch(client, admin_token, "local-us1", {"cloud_regions": {"bedrock": None}}))
+    assert available(claude.id) is None
+    # Another provider's support row stays as it is.
+    assert available(gpt.id) is True
+
+    ok(_patch(client, admin_token, "local-us1", {"cloud_regions": {"bedrock": "eu-west-1"}}, "?dry_run=true"))
+    assert available(claude.id) is None
