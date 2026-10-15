@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from app.db.models import DBRegion
@@ -79,12 +81,19 @@ def test_get_filters_by_proxy(client, admin_token, aliases):
         ("local-us1/zeta", {"target": ""}),
         ("local-us1/zeta", {"hidden": True}),
         ("local-us1/zeta", {"target": "claude-x", "default": True}),
+        # json.dumps writes the JSON literal Infinity, which Python's parser reads back.
+        ("local-us1/zeta", {"target": float("inf")}),
     ],
 )
 def test_put_rejects_a_bad_alias_or_body(client, admin_token, registry_db, aliases, path, body):
     before = _state(registry_db)
 
-    assert _put(client, admin_token, path, body).status_code == 422
+    response = client.put(
+        f"{ALIASES}/{path}", content=json.dumps(body),
+        headers={**auth(admin_token), "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 422, response.text
     assert _state(registry_db) == before
 
 

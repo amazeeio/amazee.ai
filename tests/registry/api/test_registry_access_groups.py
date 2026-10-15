@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from sqlalchemy import event
 
@@ -121,12 +123,18 @@ def test_post_with_a_known_slug_is_409(client, admin_token, registry_db, groups)
         {"slug": "abc"},
         {"slug": "abc", "label": ""},
         {"slug": "abc", "label": "x", "public": True},
+        # json.dumps writes the JSON literal NaN, which Python's parser reads back.
+        {"slug": "abc", "label": float("nan")},
     ],
 )
 def test_post_rejects_a_bad_body(client, admin_token, registry_db, groups, body):
     before = _groups_state(registry_db)
 
-    assert client.post(GROUPS, json=body, headers=auth(admin_token)).status_code == 422
+    response = client.post(
+        GROUPS, content=json.dumps(body), headers={**auth(admin_token), "Content-Type": "application/json"}
+    )
+
+    assert response.status_code == 422, response.text
     assert _groups_state(registry_db) == before
 
 
