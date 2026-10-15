@@ -243,3 +243,18 @@ class RegistryAccessGroupUpdate(_Update):
     # No `| None`: an explicit null gets a 422. A null description clears it.
     label: str = Field(None, min_length=1)
     description: str | None = None
+
+
+class RegistryAccessGroupModelRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    proxy: str
+    model: str
+
+
+class RegistryAccessGroupModels(BaseModel):
+    """The full list of models that carry the group; an empty list removes it from all."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    models: list[RegistryAccessGroupModelRef]
