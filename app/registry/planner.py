@@ -142,7 +142,7 @@ def plan(
     by_id.pop(None, None)
     steps = []
     for deployment in deployments:
-        row = by_id.get(deployment.deployment_id) if deployment.deployment_id else None
+        row = by_id.get(deployment.deployment_id)
         if not deployment.keep:
             if row is not None:
                 steps.append(_step(proxy, "delete_model", deployment))
