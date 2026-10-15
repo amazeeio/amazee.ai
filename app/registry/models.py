@@ -139,6 +139,21 @@ class DBRegistryModelRegionGroup(Base):
     )
 
 
+class DBRegistryAlias(Base):
+    """One entry of a proxy's `model_group_alias` map; `target` is a `model_name` on that proxy, not a model key."""
+
+    __tablename__ = "registry_aliases"
+    __table_args__ = (UniqueConstraint("region_id", "alias"),)
+
+    id = Column(Integer, primary_key=True)
+    region_id = Column(Integer, ForeignKey("regions.id", ondelete="CASCADE"), nullable=False)
+    alias = Column(String, nullable=False)
+    target = Column(String, nullable=False)
+    hidden = Column(Boolean, nullable=False, default=False, server_default=false())
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class DBRegistryRun(Base):
     __tablename__ = "registry_runs"
 
