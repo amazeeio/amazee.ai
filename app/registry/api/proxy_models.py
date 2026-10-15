@@ -222,3 +222,29 @@ def set_proxy_model(
     result = _proxy_deployments(db, model, provider, region)
     _save(db, dry_run)
     return result
+
+
+@router.delete("/proxies/{proxy}/models/{key:path}", status_code=204)
+def remove_proxy_model(
+    proxy: str,
+    key: str,
+    dry_run: bool = Query(False),
+    force: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    region = _find_proxy(db, proxy)
+    model, _ = _find_model(db, key)
+    _lock_proxies(db, [region.id])
+    deployments = _deployments(db, model, region.id)
+    if not deployments:
+        raise HTTPException(status_code=404, detail="The model has no deployment on this proxy")
+    ids = [d.id for d in deployments]
+    _alias_guard(db, region.id, [d.model_name for d in deployments], ids)
+    if not force and (problem := removal_problem(model, date.today())):
+        raise HTTPException(status_code=409, detail=problem)
+    db.query(DBRegistryModelRegionGroup).filter(DBRegistryModelRegionGroup.model_region_id.in_(ids)).delete(
+        synchronize_session=False
+    )
+    db.query(DBRegistryModelRegion).filter(DBRegistryModelRegion.id.in_(ids)).delete(synchronize_session=False)
+    _save(db, dry_run)
+    return Response(status_code=204)

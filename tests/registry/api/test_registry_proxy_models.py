@@ -312,3 +312,88 @@ def test_put_reaches_a_model_id_with_a_slash(client, admin_token, registry_db, s
     body = ok(_put(client, admin_token, "local-us1", "deepinfra/BAAI/bge-m3"), 201)
 
     assert [(d["model_name"], d["litellm_model"]) for d in body] == [("BAAI/bge-m3", "deepinfra/BAAI/bge-m3")]
+
+
+def _delete(client, token, proxy, key, query=""):
+    return client.delete(f"{PROXIES}/{proxy}/models/{key}{query}", headers=auth(token))
+
+
+def _deployments_of(db, provider, model_id):
+    db.expire_all()
+    row = model(db, provider, model_id)
+    return sorted(
+        (d.region_id, d.model_name) for d in db.query(DBRegistryModelRegion).filter_by(model_id=row.id)
+    )
+
+
+def test_delete_removes_every_deployment_on_the_proxy(client, admin_token, registry_db, setup):
+    claude = model(registry_db, "bedrock", "anthropic.claude-x-v1:0")
+    registry_db.add(DBRegistryModelRegion(
+        model_id=claude.id, region_id=setup["us"].id, model_name="claude-x-b", litellm_model=f"bedrock/{claude.model_id}",
+    ))
+    registry_db.add(DBRegistryModelRegion(
+        model_id=claude.id, region_id=setup["eu"].id, model_name="claude-x", litellm_model=f"bedrock/{claude.model_id}",
+    ))
+    registry_db.commit()
+    _link(registry_db, setup["us"].id, "claude-x-b", "alpha")
+    # The alias `chat` points to claude-x on the US proxy, so move it first.
+    registry_db.query(DBRegistryAlias).filter_by(alias="chat").delete()
+    registry_db.commit()
+
+    assert _delete(client, admin_token, "local-us1", "bedrock/anthropic.claude-x-v1:0").status_code == 204
+
+    assert _deployments_of(registry_db, "bedrock", "anthropic.claude-x-v1:0") == [(setup["eu"].id, "claude-x")]
+    assert registry_db.query(DBRegistryModelRegionGroup).count() == 0
+
+
+@pytest.mark.parametrize(
+    "proxy, key", [("local-us1", "openai/gpt-old"), ("nope", "openai/gpt-4o"), ("local-us1", "openai/nope")]
+)
+def test_delete_not_found(client, admin_token, setup, proxy, key):
+    assert _delete(client, admin_token, proxy, key).status_code == 404
+
+
+@pytest.mark.parametrize(
+    "eol_date, query, status",
+    [(FUTURE, "", 409), (FUTURE, "?force=true", 204), (PAST, "", 204), (None, "", 204)],
+)
+def test_delete_checks_the_eol_date(client, admin_token, registry_db, setup, eol_date, query, status):
+    # The EU proxy has no alias, so only the EOL date can refuse.
+    model(registry_db, "openai", "gpt-4o").eol_date = eol_date
+    registry_db.commit()
+
+    response = _delete(client, admin_token, "local-eu1", "openai/gpt-4o", query)
+
+    assert response.status_code == status, response.text
+    if status == 409:
+        assert str(FUTURE) in response.json()["detail"]
+
+
+@pytest.mark.parametrize("query", ["", "?force=true"])
+def test_delete_refuses_to_leave_an_alias_with_no_target(client, admin_token, registry_db, setup, query):
+    before = _state(registry_db)
+
+    response = _delete(client, admin_token, "local-us1", "openai/gpt-4o", query)
+
+    assert response.status_code == 409
+    assert "zeta" in response.json()["detail"]
+    assert _state(registry_db) == before
+
+
+def test_delete_passes_when_another_deployment_keeps_the_alias_target(client, admin_token, registry_db, setup):
+    old = model(registry_db, "openai", "gpt-old")
+    registry_db.add(DBRegistryModelRegion(
+        model_id=old.id, region_id=setup["us"].id, model_name="gpt-4o", litellm_model="openai/gpt-old",
+    ))
+    registry_db.commit()
+
+    assert _delete(client, admin_token, "local-us1", "openai/gpt-4o").status_code == 204
+    assert _deployments_of(registry_db, "openai", "gpt-4o") == [(setup["eu"].id, "gpt-4o")]
+
+
+def test_delete_dry_run_keeps_the_rows(client, admin_token, registry_db, setup):
+    _link(registry_db, setup["eu"].id, "gpt-4o", "alpha")
+    before = _state(registry_db)
+
+    assert _delete(client, admin_token, "local-eu1", "openai/gpt-4o", "?dry_run=true").status_code == 204
+    assert _state(registry_db) == before
