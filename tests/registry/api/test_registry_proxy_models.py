@@ -19,6 +19,7 @@ UNKNOWN = "support is unknown: the support check has no result for this proxy"
 UNSUPPORTED = "the proxy's LiteLLM version does not support the model"
 UNAVAILABLE = "the proxy's cloud region does not offer the model"
 PROVISIONED = "the proxy's cloud region offers the model only with provisioned throughput"
+NEEDS_PROFILE = "the proxy's cloud region offers the model only through a geo profile; use the us. prefix"
 BLOCKED = "the model is blocked"
 FUTURE = date(2999, 1, 1)
 PAST = date(2000, 1, 1)
@@ -224,6 +225,17 @@ def test_put_enable_check(client, admin_token, registry_db, setup, kwargs, probl
     assert response.json()["detail"] == [problem]
 
     ok(_put(client, admin_token, "local-us1", f"bedrock/{NEW}", query="?force=true"), 201)
+
+
+def test_put_refuses_an_in_region_id_that_needs_a_geo_profile(client, admin_token, registry_db, setup):
+    _new_bedrock_model(registry_db, setup["us"].id, ["INFERENCE_PROFILE"])
+    body = {"litellm_model": f"bedrock/{NEW}"}
+
+    response = _put(client, admin_token, "local-us1", f"bedrock/{NEW}", body)
+    assert response.status_code == 422
+    assert response.json()["detail"] == [NEEDS_PROFILE]
+
+    ok(_put(client, admin_token, "local-us1", f"bedrock/{NEW}", body, "?force=true"), 201)
 
 
 def test_put_that_turns_a_deployment_on_runs_the_enable_check(client, admin_token, registry_db, setup):

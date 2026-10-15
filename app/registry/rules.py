@@ -94,9 +94,15 @@ def enable_problems(
         problems.append("the proxy's LiteLLM version does not support the model")
     if support is not None and support.region_available is False:
         problems.append("the proxy's cloud region does not offer the model")
-    # `needs_profile` is not a refusal: the daily support check lists it as a warning.
-    if availability.in_region_problem(provider, model.model_id, cloud_region, backend) == "provisioned_only":
+    # LiteLLM fails both at call time. The default backend never gives `needs_profile`,
+    # so it refuses only an in-region id that a request gives on purpose.
+    in_region = availability.in_region_problem(provider, model.model_id, cloud_region, backend)
+    if in_region == "provisioned_only":
         problems.append("the proxy's cloud region offers the model only with provisioned throughput")
+    elif in_region == "needs_profile":
+        geos = geo_prefixes(cloud_region)
+        hint = f"; use the {geos[0]}. prefix" if geos else ""
+        problems.append(f"the proxy's cloud region offers the model only through a geo profile{hint}")
     if model.blocked:
         problems.append("the model is blocked")
     return problems
