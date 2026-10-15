@@ -295,7 +295,7 @@ def test_rollout_dry_run_with_a_proxy_that_cannot_be_read(client, admin_token, s
     steps = ok(_post(client, admin_token, body, "?dry_run=true"))["steps"]
 
     assert [(s["proxy"], s["action"], s["problems"]) for s in steps] == [
-        ("local-eu1", "read_proxy", ["the proxy could not be read: timeout"]),
+        ("local-eu1", "read_proxy", ["the proxy could not be read: ReadTimeout"]),
         ("local-us1", "create_model", ["the credential cred-us is not on the proxy"]),
     ]
 
