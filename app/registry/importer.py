@@ -174,6 +174,7 @@ def import_deployments(
         proxy = DBRegistryProxy(region_id=region.id)
         db.add(proxy)
     proxy.litellm_version = version
+    # The adopt-mode import must merge these with the stored regions, not replace them: an admin can set them.
     proxy.cloud_regions = _proxy_cloud_regions(deployments, credential_regions)
     proxy.imported_at = datetime.now(UTC)
     return stats
