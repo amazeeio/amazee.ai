@@ -19,6 +19,7 @@ from app.registry.api.routes import (
     _lock_proxies,
     _model_query,
     _save,
+    _split_key,
     router,
 )
 from app.registry.models import (
@@ -289,8 +290,7 @@ def roll_out(
 ):
     """Put each model on each proxy, all or nothing. The query count does not grow with the pairs."""
     keys = list(dict.fromkeys(body.models))
-    # Only the first slash splits: model ids can hold slashes (deepinfra/BAAI/bge-m3).
-    idents = {tuple(key.partition("/")[::2]) for key in keys}
+    idents = {_split_key(key) for key in keys}
     models = {
         f"{provider}/{model.model_id}": (model, provider)
         for model, provider in _model_query(db).filter(
