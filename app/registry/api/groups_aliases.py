@@ -140,6 +140,10 @@ def _deployment_ids(db: Session, refs: list[tuple[str, str]]) -> set[int]:
         .join(DBRegistryModel, DBRegistryModel.id == DBRegistryModelRegion.model_id)
         .join(DBRegistryProvider, DBRegistryProvider.id == DBRegistryModel.provider_id)
         .filter(tuple_(DBRegion.name, DBRegistryProvider.name, DBRegistryModel.model_id).in_(idents))
+        # Lock each deployment before its links, the same order as a delete of the deployment, so the two
+        # cannot deadlock. A deployment deleted in the meantime is then not found and gets the 422 below.
+        .order_by(DBRegistryModelRegion.id)
+        .with_for_update(read=True, key_share=True, of=DBRegistryModelRegion)
     ):
         deployments[(proxy, f"{provider}/{model_id}")].add(row_id)
 
