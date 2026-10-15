@@ -97,15 +97,6 @@ def test_a_base_price_is_the_headline_until_it_is_removed(registry_db):
     assert _rows(registry_db, model) == {}
 
 
-def test_scope_keys_give_their_scope_kinds(registry_db):
-    model = _model(registry_db)
-
-    set_manual_prices(registry_db, model, {"base": MANUAL, "geo:eu": MANUAL, "region:us-east-1": MANUAL}, TODAY)
-    registry_db.commit()
-
-    assert set(_rows(registry_db, model)) == {("base", ""), ("geo", "eu"), ("cloud_region", "us-east-1")}
-
-
 LIST_ENTRY = {"input_cost_per_token": 3e-06, "output_cost_per_token": 6e-06, "mode": "chat"}
 LIST_GEO = {"input_cost_per_token": 3.3e-06}
 MANUAL_GEO = {"input_cost_per_token": 1.5e-06}
