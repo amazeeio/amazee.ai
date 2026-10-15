@@ -13,6 +13,7 @@ from app.registry.models import (
     DBRegistryProvider,
     DBRegistryRun,
 )
+from app.registry.plugins.loader import MANUAL
 from app.registry.plugins.runner import apply_plugin, run_plugins, validate
 from app.registry.prices import apply_prices
 
@@ -99,8 +100,8 @@ def test_override_beats_litellm_and_litellm_leaves_it_alone(registry_db):
     assert model.prices == {"input_cost_per_token": 2e-06}
 
     with (
-        patch("app.registry.prices.kept_sources", return_value={"test_src"}),
-        patch("app.registry.discovery.kept_sources", return_value={"test_src"}),
+        patch("app.registry.prices.kept_sources", return_value={MANUAL, "test_src"}),
+        patch("app.registry.discovery.kept_sources", return_value={MANUAL, "test_src"}),
     ):
         listed = {("deepinfra", "m"): {"prices": {"input_cost_per_token": 1e-06}, "input_cost_per_token": 1e-06, "mode": "chat"}}
         apply_model_list(registry_db, listed, date(2026, 9, 28))
@@ -294,8 +295,8 @@ def test_a_dropped_model_loses_its_prices_and_the_list_takes_over(registry_db):
     assert registry_db.get(DBRegistryModelPrice, (kept[0].id, "base", "")).source == "test_src"
 
     with (
-        patch("app.registry.prices.kept_sources", return_value={"test_src"}),
-        patch("app.registry.discovery.kept_sources", return_value={"test_src"}),
+        patch("app.registry.prices.kept_sources", return_value={MANUAL, "test_src"}),
+        patch("app.registry.discovery.kept_sources", return_value={MANUAL, "test_src"}),
     ):
         listed = {("deepinfra", m.model_id): {"prices": {"input_cost_per_token": 1e-06}, "input_cost_per_token": 1e-06}
                   for m in [*kept, dropped]}
