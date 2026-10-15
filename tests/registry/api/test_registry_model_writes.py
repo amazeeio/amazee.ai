@@ -55,8 +55,8 @@ def test_patch_changes_only_the_fields_in_the_body(client, admin_token, models):
     assert body["family"] == "gpt4" and body["blocked"] is True
     assert body["override_eol"] is None and body["mode"] == "chat"
 
-    body = _ok(_patch(client, admin_token, GPT, {"override_eol": "2026-12-01"}))
-    assert body["override_eol"] == body["eol_date"] == "2026-12-01"
+    body = _ok(_patch(client, admin_token, GPT, {"override_eol": "2027-01-01"}))
+    assert body["override_eol"] == body["eol_date"] == "2027-01-01"
     assert body["family"] == "gpt4" and body["blocked"] is True
 
     body = _ok(_patch(client, admin_token, CLAUDE, {"family": None}))
@@ -173,6 +173,9 @@ def _price(scope="base", **fields):
         {"override_eol": "soon"},
         {"override_eol": 0},
         {"override_eol": 10**12},
+        {"override_eol": "0"},
+        {"override_eol": "1798761600"},
+        {"override_eol": "2027-01-01T00:00:00"},
         {"prices": None},
         {"prices": {}},
         _price("zone:eu"),

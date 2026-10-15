@@ -101,11 +101,13 @@ class RegistryModelUpdate(BaseModel):
 
     @field_validator("override_eol", mode="before")
     @classmethod
-    def _date_as_text(cls, value):
-        # Pydantic reads a number as Unix time, so 0 would give 1970-01-01.
-        if value is not None and not isinstance(value, str):
+    def _iso_date(cls, value):
+        # Pydantic reads a number, or a number as text, as Unix time, so 0 would give 1970-01-01.
+        if value is None:
+            return None
+        if not isinstance(value, str):
             raise ValueError("override_eol must be a date as text, or null")
-        return value
+        return date.fromisoformat(value)
 
     @model_validator(mode="after")
     def _check_body(self):
