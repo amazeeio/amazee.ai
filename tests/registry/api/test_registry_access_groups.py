@@ -10,7 +10,7 @@ from app.registry.models import (
     DBRegistryModelRegionGroup,
     DBRegistryProvider,
 )
-from tests.registry.api.conftest import TODAY, auth, model, ok
+from tests.registry.api.conftest import TODAY, US_URL, auth, live_row, model, ok
 
 GROUPS = "/registry/access-groups"
 
@@ -270,22 +270,16 @@ def test_put_dry_run_saves_nothing(client, admin_token, registry_db, groups):
     assert _links_state(registry_db) == before
 
 
-def _live(dep_id, name, model, groups):
-    return {
-        "model_name": name, "litellm_params": {"model": model}, "model_info": {"id": dep_id, "access_groups": groups},
-    }
-
-
 def test_put_dry_run_plans_the_group_change_of_each_live_deployment(client, admin_token, registry_db, groups,
                                                                      live_proxies):
     alpha = registry_db.query(DBRegistryAccessGroup).filter_by(slug="alpha").one()
     claude = registry_db.query(DBRegistryModelRegion).filter_by(litellm_deployment_id="us-claude").one()
     registry_db.add(DBRegistryModelRegionGroup(model_region_id=claude.id, access_group_id=alpha.id))
     registry_db.commit()
-    live_proxies.by_url["http://litellm:4000"] = {"model_info": [
-        _live("us-gpt", "gpt-4o", "openai/gpt-4o", ["beta"]),
-        _live("us-claude", "claude-x", "bedrock/us.anthropic.claude-x-v1:0", ["beta", "alpha"]),
-        _live("us-gpt-2", "chat-gpt", "openai/gpt-4o", ["beta"]),
+    live_proxies.by_url[US_URL] = {"model_info": [
+        live_row("us-gpt", "gpt-4o", "openai/gpt-4o", groups=["beta"]),
+        live_row("us-claude", "claude-x", "bedrock/us.anthropic.claude-x-v1:0", groups=["beta", "alpha"]),
+        live_row("us-gpt-2", "chat-gpt", "openai/gpt-4o", groups=["beta"]),
     ]}
 
     body = ok(_put(client, admin_token, "alpha", [US_GPT], "?dry_run=true"))
@@ -295,7 +289,7 @@ def test_put_dry_run_plans_the_group_change_of_each_live_deployment(client, admi
         ("update_model", "us-claude", {"access_groups": {"from": ["alpha", "beta"], "to": ["beta"]}}),
         ("update_model", "us-gpt-2", {"access_groups": {"from": ["beta"], "to": ["alpha", "beta"]}}),
     ]
-    assert live_proxies.calls == ["http://litellm:4000"]
+    assert live_proxies.calls == [US_URL]
 
 
 def test_put_reads_no_proxy(client, admin_token, groups, live_proxies):

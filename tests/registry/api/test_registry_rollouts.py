@@ -11,7 +11,7 @@ from app.registry.models import (
     DBRegistryProxy,
 )
 from app.registry.rules import NO_PRICE
-from tests.registry.api.conftest import UNSUPPORTED, auth, messages, model, ok, support_row
+from tests.registry.api.conftest import EU_URL, UNSUPPORTED, auth, messages, model, ok, support_row
 from tests.registry.api.conftest import deployment_state as _state
 from tests.registry.conftest import add_model
 
@@ -327,7 +327,7 @@ def test_rollout_turns_on_a_stored_mantle_deployment(client, admin_token, regist
 
 
 def test_rollout_dry_run_with_a_proxy_that_cannot_be_read(client, admin_token, setup, live_proxies):
-    live_proxies.by_url["http://litellm-eu:4000"] = httpx.ReadTimeout("slow")
+    live_proxies.by_url[EU_URL] = httpx.ReadTimeout("slow")
     body = {"models": ["openai/gpt-old"], "proxies": BOTH}
 
     steps = ok(_post(client, admin_token, body, "?dry_run=true"))["steps"]

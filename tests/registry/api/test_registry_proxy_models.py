@@ -12,12 +12,15 @@ from app.registry.models import (
 )
 from tests.registry.api.conftest import (
     BLOCKED,
+    EU_URL,
     NEEDS_PROFILE,
     PROVISIONED,
     UNAVAILABLE,
     UNKNOWN,
     UNSUPPORTED,
+    US_URL,
     auth,
+    live_row,
     messages,
     model,
     ok,
@@ -613,17 +616,6 @@ def test_put_turns_on_a_stored_mantle_deployment(client, admin_token, registry_d
     assert [(d["litellm_model"], d["enabled"]) for d in body] == [("openai/anthropic.opus", True)]
 
 
-US_URL = "http://litellm:4000"
-EU_URL = "http://litellm-eu:4000"
-
-
-def _live(dep_id, name, model, credential=None, groups=()):
-    params = {"model": model}
-    if credential:
-        params["litellm_credential_name"] = credential
-    return {"model_name": name, "litellm_params": params, "model_info": {"id": dep_id, "access_groups": list(groups)}}
-
-
 def test_put_create_dry_run_plans_the_create(client, admin_token, setup, live_proxies):
     live_proxies.by_url[US_URL] = {"credentials": ["c1"]}
     body = {"credential": "c1", "groups": ["alpha"]}
@@ -642,7 +634,7 @@ def test_put_create_dry_run_plans_the_create(client, admin_token, setup, live_pr
 
 
 def test_put_create_dry_run_shows_the_credential_and_the_running_deployment(client, admin_token, setup, live_proxies):
-    live_proxies.by_url[US_URL] = {"model_info": [_live("x9", "gpt-old", "openai/gpt-old")], "credentials": ["c2"]}
+    live_proxies.by_url[US_URL] = {"model_info": [live_row("x9", "gpt-old", "openai/gpt-old")], "credentials": ["c2"]}
 
     response = _put(client, admin_token, "local-us1", "openai/gpt-old", {"credential": "c1"}, "?dry_run=true")
 
@@ -654,7 +646,7 @@ def test_put_create_dry_run_shows_the_credential_and_the_running_deployment(clie
 
 
 def test_put_change_dry_run_plans_the_update(client, admin_token, setup, live_proxies):
-    live_proxies.by_url[US_URL] = {"model_info": [_live("us-gpt", "gpt-4o", "openai/gpt-4o", groups=["beta"])]}
+    live_proxies.by_url[US_URL] = {"model_info": [live_row("us-gpt", "gpt-4o", "openai/gpt-4o", groups=["beta"])]}
     body = {"credential": "c1", "groups": ["alpha"]}
 
     steps = ok(_put(client, admin_token, "local-us1", "openai/gpt-4o", body, "?dry_run=true"))["steps"]
@@ -665,7 +657,9 @@ def test_put_change_dry_run_plans_the_update(client, admin_token, setup, live_pr
     })]
 
 
-@pytest.mark.parametrize("live, actions", [([_live("eu-gpt", "gpt-4o", "openai/gpt-4o")], ["delete_model"]), ([], [])])
+@pytest.mark.parametrize(
+    "live, actions", [([live_row("eu-gpt", "gpt-4o", "openai/gpt-4o")], ["delete_model"]), ([], [])]
+)
 def test_delete_dry_run_plans_the_delete_of_a_live_deployment(client, admin_token, setup, live_proxies, live, actions):
     live_proxies.by_url[EU_URL] = {"model_info": live}
 
