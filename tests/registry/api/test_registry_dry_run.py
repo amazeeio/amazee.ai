@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from app.registry.api.dry_run import ProxyPlan, deployment_plans, plan_steps, read_live
+from app.registry.litellm import ProxyClient
 from app.registry.models import DBRegistryCloudAvailability, DBRegistryModelRegion
 from app.registry.planner import DEPLOYMENT_FIELDS, Deployment, LiveProxy
 
@@ -19,12 +20,21 @@ _REQUEST = httpx.Request("GET", f"{US_URL}/model/info")
         (httpx.ReadTimeout("sk-test"), "timeout"),
         (httpx.HTTPStatusError("sk-test", request=_REQUEST, response=httpx.Response(500, request=_REQUEST)), "HTTP 500"),
         (ValueError("sk-test"), "bad JSON"),
+        (httpx.InvalidURL("sk-test"), "InvalidURL"),
     ],
 )
 def test_read_live_gives_a_short_reason(live_proxies, error, reason):
     live_proxies.by_url[US_URL] = error
 
     assert read_live(US_URL, "sk-test") == reason
+
+
+def test_read_live_of_a_malformed_url_sends_nothing(monkeypatch):
+    monkeypatch.setattr("app.registry.api.dry_run.ProxyClient", ProxyClient)
+    # A request would fail the test, so the URL must be refused before any request.
+    monkeypatch.setattr(httpx.Client, "send", lambda *args, **kwargs: pytest.fail("a request was sent"))
+
+    assert read_live("http://proxy:notaport", "sk-test") == "InvalidURL"
 
 
 def test_read_live_refuses_a_model_list_that_is_not_a_list(live_proxies):
