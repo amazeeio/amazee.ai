@@ -170,7 +170,8 @@ def set_access_group_models(
 
 @router.delete("/access-groups/{slug}", status_code=204)
 def delete_access_group(slug: str, dry_run: bool = Query(False), db: Session = Depends(get_db)):
-    group = _find_group(db, slug)
+    # The lock stops a PUT from linking the group between the check below and the delete.
+    group = _find_group(db, slug, lock=True)
     # Teams still point at the old catalog's group until the registry pushes groups itself.
     if db.query(DBModelAccessGroup.id).filter(DBModelAccessGroup.slug == slug).first():
         raise HTTPException(status_code=409, detail="The old catalog still has this access group")
