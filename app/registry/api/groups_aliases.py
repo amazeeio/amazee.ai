@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 # The registry's only read of an old catalog table, for the group slugs. It goes when the old catalog goes.
 from app.db.models import DBModelAccessGroup, DBRegion
-from app.registry.api.routes import _find_proxy, _save, router
+from app.registry.api.routes import _find_proxy, _lock_proxies, _save, _split_key, router
 from app.registry.models import (
     DBRegistryAccessGroup,
     DBRegistryAlias,
@@ -129,8 +129,7 @@ def update_access_group(
 
 def _deployment_ids(db: Session, refs: list[tuple[str, str]]) -> set[int]:
     """Every deployment of each (proxy, model key), in one query; a 422 names the first bad entry."""
-    # Only the first slash splits: model ids can hold slashes (deepinfra/BAAI/bge-m3).
-    idents = {(proxy, *key.partition("/")[::2]) for proxy, key in refs}
+    idents = {(proxy, *_split_key(key)) for proxy, key in refs}
     deployments: dict[tuple[str, str], set[int]] = defaultdict(set)
     for proxy, provider, model_id, row_id in (
         db.query(DBRegion.name, DBRegistryProvider.name, DBRegistryModel.model_id, DBRegistryModelRegion.id)
@@ -140,6 +139,10 @@ def _deployment_ids(db: Session, refs: list[tuple[str, str]]) -> set[int]:
         .join(DBRegistryModel, DBRegistryModel.id == DBRegistryModelRegion.model_id)
         .join(DBRegistryProvider, DBRegistryProvider.id == DBRegistryModel.provider_id)
         .filter(tuple_(DBRegion.name, DBRegistryProvider.name, DBRegistryModel.model_id).in_(idents))
+        # Lock each deployment before its links, the same order as a delete of the deployment, so the two
+        # cannot deadlock. A deployment deleted in the meantime is then not found and gets the 422 below.
+        .order_by(DBRegistryModelRegion.id)
+        .with_for_update(read=True, key_share=True, of=DBRegistryModelRegion)
     ):
         deployments[(proxy, f"{provider}/{model_id}")].add(row_id)
 
@@ -210,6 +213,9 @@ def set_alias(
     db: Session = Depends(get_db),
 ):
     region = _find_proxy(db, proxy)
+    # The alias guard of a rename or a delete reads the aliases under the same lock. The lock also makes
+    # alias creates on one proxy run one after the other, so two creates of one alias cannot both insert.
+    _lock_proxies(db, [region.id])
     names = {
         name
         for (name,) in db.query(DBRegistryModelRegion.model_name).filter(DBRegistryModelRegion.region_id == region.id)
@@ -220,18 +226,11 @@ def set_alias(
     if body.target not in names:
         raise HTTPException(status_code=422, detail="The target is not a deployment on this proxy")
 
-    lookup = db.query(DBRegistryAlias).filter_by(region_id=region.id, alias=alias)
-    row = lookup.one_or_none()
+    row = db.query(DBRegistryAlias).filter_by(region_id=region.id, alias=alias).one_or_none()
     if row is None:
         db.add(DBRegistryAlias(region_id=region.id, alias=alias, target=body.target, hidden=body.hidden))
-        try:
-            db.flush()
-            response.status_code = 201
-        except IntegrityError:
-            # Another request created the alias after the lookup, so change that row instead.
-            db.rollback()
-            row = lookup.one()
-    if row is not None:
+        response.status_code = 201
+    else:
         row.target = body.target
         row.hidden = body.hidden
     result = RegistryAliasResponse(proxy=region.name, alias=alias, target=body.target, hidden=body.hidden)

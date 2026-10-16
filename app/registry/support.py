@@ -120,12 +120,18 @@ def apply_support(
         row.checked_at = now
 
     idents = {model_id: ident for ident, model_id in models.items()}
-    deployed = db.query(
-        DBRegistryModelRegion.model_name,
-        DBRegistryModelRegion.model_id,
-        DBRegistryModelRegion.litellm_model,
-        DBRegistryModelRegion.prices,
-    ).filter_by(region_id=region.id, enabled=True).all()
+    # Only rows with a LiteLLM deployment id run on the proxy. A row the API added waits for a push.
+    deployed = (
+        db.query(
+            DBRegistryModelRegion.model_name,
+            DBRegistryModelRegion.model_id,
+            DBRegistryModelRegion.litellm_model,
+            DBRegistryModelRegion.prices,
+        )
+        .filter_by(region_id=region.id, enabled=True)
+        .filter(DBRegistryModelRegion.litellm_deployment_id.is_not(None))
+        .all()
+    )
 
     def deployment_priced(mid, litellm_model, own_prices) -> bool:
         # The deployment's own price wins; else the proxy's list must have the

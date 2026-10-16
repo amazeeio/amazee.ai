@@ -5,9 +5,11 @@ import pytest
 
 from app.db.models import DBRegion
 from app.registry.models import (
+    DBRegistryAccessGroup,
     DBRegistryModel,
     DBRegistryModelPrice,
     DBRegistryModelRegion,
+    DBRegistryModelRegionGroup,
     DBRegistryModelSupport,
     DBRegistryProvider,
     DBRegistryProxy,
@@ -22,6 +24,13 @@ MODEL_FIELDS = {
 }
 TODAY = date(2026, 1, 1)
 CHECKED_AT = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+# The problem texts of rule 4, the enable check.
+UNKNOWN = "support is unknown: the support check has no result for this proxy"
+UNSUPPORTED = "the proxy's LiteLLM version does not support the model"
+UNAVAILABLE = "the proxy's cloud region does not offer the model"
+PROVISIONED = "the proxy's cloud region offers the model only with provisioned throughput"
+NEEDS_PROFILE = "the proxy's cloud region offers the model only through a geo profile; use the us. prefix"
+BLOCKED = "the model is blocked"
 
 
 @pytest.fixture
@@ -129,3 +138,38 @@ def deployed(registry_db, models, proxy_region):
     ])
     registry_db.commit()
     return {"us": proxy_region, "eu": eu}
+
+
+def support_row(model_id=None, region_id=None, supported=True, region_available=True):
+    return DBRegistryModelSupport(
+        model_id=model_id, region_id=region_id, priced=True, supported=supported,
+        region_available=region_available, checked_at=CHECKED_AT,
+    )
+
+
+def deployment_state(db):
+    """Every deployment and group link, to show that a refused call or a dry run changed nothing."""
+    db.expire_all()
+    deployments = [
+        (d.id, d.model_id, d.region_id, d.model_name, d.litellm_model, d.litellm_deployment_id, d.enabled,
+         d.litellm_params, d.model_info, d.prices)
+        for d in db.query(DBRegistryModelRegion).order_by(DBRegistryModelRegion.id)
+    ]
+    links = sorted((link.model_region_id, link.access_group_id) for link in db.query(DBRegistryModelRegionGroup))
+    return deployments, links
+
+
+@pytest.fixture
+def writable(registry_db, deployed):
+    """The `deployed` proxies, imported, with the access groups alpha and beta and support rows for gpt-old."""
+    old = model(registry_db, "openai", "gpt-old")
+    registry_db.add_all([
+        DBRegistryAccessGroup(slug="alpha", label="Alpha"),
+        DBRegistryAccessGroup(slug="beta", label="Beta"),
+        support_row(old.id, deployed["us"].id),
+        support_row(old.id, deployed["eu"].id),
+    ])
+    for proxy in registry_db.query(DBRegistryProxy):
+        proxy.imported_at = CHECKED_AT
+    registry_db.commit()
+    return deployed

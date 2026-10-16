@@ -94,7 +94,7 @@ class DBRegistryProxy(Base):
     litellm_version = Column(String, nullable=True)
     # The cloud region the proxy calls, per provider: {"bedrock": "us-east-1"}.
     cloud_regions = Column(JSON, nullable=False, default=dict)
-    # Set once by the import. After it, the registry owns what runs on the proxy.
+    # Set once by the import. The API adds planned deployments to the proxy only after it.
     imported_at = Column(DateTime(timezone=True), nullable=True)
 
 
@@ -123,6 +123,7 @@ class DBRegistryModelRegion(Base):
     # Secret values removed; os.environ/ references and credential names kept.
     litellm_params = Column(JSON, nullable=False, default=dict)
     # As /model/info returns it, with LiteLLM's list data merged in that cannot be told apart.
+    # Empty for a row that the API added.
     model_info = Column(JSON, nullable=False, default=dict)
     enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

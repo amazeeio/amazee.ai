@@ -2,7 +2,7 @@
 
 import json
 from datetime import date, datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import (
     BaseModel,
@@ -156,6 +156,8 @@ class RegistryDeploymentResponse(BaseModel):
     proxy: str
     model_name: str
     litellm_model: str
+    # Null for a row that the API added and that is not on the proxy yet.
+    litellm_deployment_id: str | None
     enabled: bool
     input_cost_per_token: float | None
     output_cost_per_token: float | None
@@ -270,3 +272,41 @@ class RegistryAliasUpdate(_Strict):
     target: str = Field(min_length=1)
     # StrictBool with no `| None`: an explicit null gets a 422.
     hidden: StrictBool = False
+
+
+# A LiteLLM credential name. The secret stays on the proxy. Real names hold spaces
+# (`AWS Bedrock`), but not at the ends, where they are easy to miss.
+Credential = Annotated[
+    str, StringConstraints(pattern=r"^[A-Za-z0-9._-](?:[A-Za-z0-9._ -]{0,126}[A-Za-z0-9._-])?$")
+]
+
+
+class RegistryProxyModelUpdate(_Strict):
+    """Creates the model's deployment on the proxy, or changes every deployment it has there.
+
+    Not an `_Update`: an empty body is valid and creates a deployment with the defaults.
+    """
+
+    # No `| None` on these four: an explicit null gets a 422. A null credential removes it.
+    model_name: str = Field(None, min_length=1)
+    litellm_model: str = Field(None, min_length=1)
+    credential: Credential | None = None
+    groups: list[str] = None
+    enabled: StrictBool = None
+
+
+class RegistryRollout(_Strict):
+    models: list[str] = Field(min_length=1)
+    # Proxy name: the credential name for the deployments that the rollout creates there, or null.
+    proxies: dict[str, Credential | None] = Field(min_length=1)
+    groups: list[str] = Field(default_factory=list)
+
+
+class RegistryRolloutEntry(BaseModel):
+    proxy: str
+    model: str
+    action: Literal["created", "updated"]
+    model_name: str
+    litellm_model: str
+    # Empty after a success. A 422 lists every entry, each with its own problems.
+    problems: list[str]
