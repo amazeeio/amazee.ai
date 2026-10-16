@@ -314,6 +314,53 @@ def test_put_refuses_a_model_name_that_is_an_alias(client, admin_token, setup):
     ok(_put(client, admin_token, "local-eu1", "openai/gpt-old", {"model_name": "chat"}), 201)
 
 
+USED = "the model name {} is used by another model on this proxy"
+
+
+def _name_deployment(db, region_id, model_name, provider="bedrock", model_id="anthropic.claude-x-v1:0"):
+    """One more deployment of a model under the given name."""
+    db.add(DBRegistryModelRegion(
+        model_id=model(db, provider, model_id).id, region_id=region_id, model_name=model_name,
+        litellm_model=f"{provider}/{model_id}",
+    ))
+    db.commit()
+
+
+@pytest.mark.parametrize("query", ["", "?force=true"])
+def test_put_create_refuses_a_model_name_that_another_model_uses(client, admin_token, registry_db, setup, query):
+    _name_deployment(registry_db, setup["us"].id, "gpt-old")
+    before = _state(registry_db)
+
+    for body, name in ((None, "gpt-old"), ({"model_name": "claude-x"}, "claude-x")):
+        response = _put(client, admin_token, "local-us1", "openai/gpt-old", body, query)
+        assert response.status_code == 422
+        assert response.json()["detail"] == USED.format(name)
+    assert _state(registry_db) == before
+    # The name is free on the other proxy.
+    ok(_put(client, admin_token, "local-eu1", "openai/gpt-old", {"model_name": "claude-x"}), 201)
+
+
+@pytest.mark.parametrize("query", ["", "?force=true"])
+def test_put_refuses_a_rename_to_a_model_name_that_another_model_uses(client, admin_token, registry_db, setup, query):
+    # The EU proxy has no alias, so the alias guard does not refuse the rename first.
+    _name_deployment(registry_db, setup["eu"].id, "claude-x")
+    before = _state(registry_db)
+
+    response = _put(client, admin_token, "local-eu1", "openai/gpt-4o", {"model_name": "claude-x"}, query)
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == USED.format("claude-x")
+    assert _state(registry_db) == before
+
+
+def test_put_keeps_two_deployments_of_one_model_under_one_name(client, admin_token, registry_db, setup):
+    _name_deployment(registry_db, setup["us"].id, "gpt-4o", "openai", "gpt-4o")
+
+    body = ok(_put(client, admin_token, "local-us1", "openai/gpt-4o", {"groups": ["alpha"]}))
+
+    assert [d["model_name"] for d in body] == ["gpt-4o", "gpt-4o"]
+
+
 def test_put_dry_run_returns_the_write_and_saves_nothing(client, admin_token, registry_db, setup):
     _link(registry_db, setup["us"].id, "gpt-4o", "beta")
     before = _state(registry_db)

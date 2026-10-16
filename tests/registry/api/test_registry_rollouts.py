@@ -87,6 +87,51 @@ def test_rollout_accepts_a_credential_name_with_a_space(client, admin_token, reg
     assert deployment.litellm_params == {"litellm_credential_name": "AWS Bedrock"}
 
 
+@pytest.mark.parametrize("query", ["", "?force=true"])
+def test_rollout_refuses_a_default_name_that_another_model_uses(client, admin_token, registry_db, setup, query):
+    claude = model(registry_db, "bedrock", "anthropic.claude-x-v1:0")
+    registry_db.add(DBRegistryModelRegion(
+        model_id=claude.id, region_id=setup["us"].id, model_name="gpt-old", litellm_model="bedrock/x",
+    ))
+    registry_db.commit()
+    before = _state(registry_db)
+
+    response = _post(client, admin_token, {"models": ["openai/gpt-old"], "proxies": BOTH}, query)
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == [
+        _entry("local-us1", "openai/gpt-old", "created", "gpt-old", "openai/gpt-old",
+               ["the model name gpt-old is used by another model on this proxy"]),
+        _entry("local-eu1", "openai/gpt-old", "created", "gpt-old", "openai/gpt-old"),
+    ]
+    assert _state(registry_db) == before
+
+
+def test_rollout_refuses_two_new_models_under_one_name(client, admin_token, registry_db, setup):
+    add_model(registry_db, "bedrock", "gpt-old")
+    registry_db.commit()
+
+    body = {"models": ["openai/gpt-old", "bedrock/gpt-old"], "proxies": {"local-eu1": None}}
+    response = _post(client, admin_token, body, "?force=true")
+
+    assert response.status_code == 422
+    assert [entry["problems"] for entry in response.json()["detail"]] == [
+        [], ["the model name gpt-old is used by another model on this proxy"],
+    ]
+
+
+def test_rollout_updates_two_deployments_of_one_model_under_one_name(client, admin_token, registry_db, setup):
+    gpt = model(registry_db, "openai", "gpt-4o")
+    registry_db.add(DBRegistryModelRegion(
+        model_id=gpt.id, region_id=setup["us"].id, model_name="gpt-4o", litellm_model="openai/gpt-4o",
+    ))
+    registry_db.commit()
+
+    assert ok(_post(client, admin_token, {"models": ["openai/gpt-4o"], "proxies": {"local-us1": None}})) == [
+        _entry("local-us1", "openai/gpt-4o", "updated", "gpt-4o", "openai/gpt-4o"),
+    ]
+
+
 def test_rollout_is_all_or_nothing(client, admin_token, registry_db, setup):
     before = _state(registry_db)
     body = {"models": ["openai/gpt-old", "openai/gpt-4o"], "proxies": BOTH, "groups": ["alpha"]}
