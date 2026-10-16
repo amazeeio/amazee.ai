@@ -98,6 +98,7 @@ def list_access_groups(response: Response, db: Session = Depends(get_db)):
     "/access-groups",
     status_code=201,
     response_model=RegistryAccessGroupResponse | RegistryDryRun[RegistryAccessGroupResponse],
+    responses={200: {"model": RegistryDryRun[RegistryAccessGroupResponse], "description": "The dry run"}},
 )
 def create_access_group(
     body: RegistryAccessGroupCreate,
@@ -232,7 +233,9 @@ def list_aliases(response: Response, proxy: str | None = Query(None), db: Sessio
 
 # `{alias:path}`: a name with a `/` then reaches the pattern and gets a 422, not a 404.
 @router.put(
-    "/aliases/{proxy}/{alias:path}", response_model=RegistryAliasResponse | RegistryDryRun[RegistryAliasResponse]
+    "/aliases/{proxy}/{alias:path}",
+    response_model=RegistryAliasResponse | RegistryDryRun[RegistryAliasResponse],
+    responses={201: {"model": RegistryAliasResponse, "description": "The alias is created"}},
 )
 def set_alias(
     proxy: str,
