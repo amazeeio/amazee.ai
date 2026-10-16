@@ -78,6 +78,15 @@ def test_rollout_creates_and_updates_in_body_order(client, admin_token, registry
     assert params == {setup["us"].id: {"litellm_credential_name": "cred-us"}, setup["eu"].id: {}}
 
 
+def test_rollout_accepts_a_credential_name_with_a_space(client, admin_token, registry_db, setup):
+    ok(_post(client, admin_token, {"models": ["openai/gpt-old"], "proxies": {"local-us1": "AWS Bedrock"}}))
+
+    deployment = registry_db.query(DBRegistryModelRegion).filter_by(
+        model_id=model(registry_db, "openai", "gpt-old").id
+    ).one()
+    assert deployment.litellm_params == {"litellm_credential_name": "AWS Bedrock"}
+
+
 def test_rollout_is_all_or_nothing(client, admin_token, registry_db, setup):
     before = _state(registry_db)
     body = {"models": ["openai/gpt-old", "openai/gpt-4o"], "proxies": BOTH, "groups": ["alpha"]}
@@ -121,7 +130,9 @@ def test_rollout_refuses_a_model_name_that_is_an_alias(client, admin_token, regi
         {"models": ["openai/gpt-old"], "proxies": BOTH, "groups": ["nope"]},
         {"models": [], "proxies": BOTH},
         {"models": ["openai/gpt-old"], "proxies": {}},
-        {"models": ["openai/gpt-old"], "proxies": {"local-us1": "bad name"}},
+        {"models": ["openai/gpt-old"], "proxies": {"local-us1": "bad/name"}},
+        {"models": ["openai/gpt-old"], "proxies": {"local-us1": " AWS"}},
+        {"models": ["openai/gpt-old"], "proxies": {"local-us1": "AWS "}},
         {"models": ["openai/gpt-old"], "proxies": BOTH, "foo": 1},
     ],
 )
