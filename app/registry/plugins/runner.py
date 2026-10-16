@@ -20,25 +20,15 @@ from app.registry.models import (
     models_by_ident,
     prices_by_model,
 )
-from app.registry.plugins.loader import load_plugins
-from app.registry.prices import set_headline, upsert_scopes
+from app.registry.plugins.loader import MANUAL, load_plugins
+from app.registry.prices import parse_scope, set_headline, upsert_scopes
 from app.registry.runs import record_run
 from app.registry.values import is_amount
 
 logger = logging.getLogger(__name__)
 
 SCHEMA = 1
-_SCOPE_KINDS = {"geo": "geo", "region": "cloud_region"}
 _LIFECYCLE_DATES = ("launched_at", "legacy_at", "extended_access_until", "eol_date")
-
-
-def _scope(name) -> tuple[str, str]:
-    if name == "base":
-        return "base", ""
-    kind, sep, value = str(name).partition(":")
-    if not sep or not value or kind not in _SCOPE_KINDS:
-        raise ValueError(f"unknown price scope {name!r}")
-    return _SCOPE_KINDS[kind], value
 
 
 def _count(value, what) -> int | None:
@@ -74,7 +64,7 @@ def validate(output, source: str) -> list[dict]:
                 if "cost" not in field or not is_amount(value):
                     raise ValueError(f"{ident}: bad price {field}={value!r}")
             if fields:
-                prices[_scope(name)] = dict(sorted(fields.items()))
+                prices[parse_scope(name)] = dict(sorted(fields.items()))
         lifecycle = m.get("lifecycle")
         if lifecycle is not None:
             if not isinstance(lifecycle, dict):
@@ -122,14 +112,16 @@ def _apply_prices(db, model, own, source, role, prices, today, stats, fill_modes
         for key, row in mine.items():
             _delete_price(db, model, key, row)
         return
+    manual = {(p.scope_kind, p.scope) for p in own if p.source == MANUAL}
     stats["price_changes"] += upsert_scopes(
-        db, model.id, {(p.scope_kind, p.scope): p for p in own}, prices, source, today
+        db, model.id, {(p.scope_kind, p.scope): p for p in own}, prices, source, today, keep={MANUAL}
     )
     for key, row in mine.items():
         if key not in prices:
             _delete_price(db, model, key, row)
     # The headline is the base price only; a geo price never stands in for it.
-    if ("base", "") in prices:
+    # The admin's base price stays the headline.
+    if ("base", "") in prices and ("base", "") not in manual:
         set_headline(model, prices[("base", "")])
     if prices:
         stats["priced"] += 1

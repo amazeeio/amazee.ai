@@ -37,10 +37,10 @@ def test_transform_maps_units_and_modes():
 
 
 def test_loader_finds_the_deepinfra_plugin():
-    from app.registry.plugins.loader import load_plugins, override_sources
+    from app.registry.plugins.loader import kept_sources, load_plugins
 
     assert load_plugins()["deepinfra_api"] is deepinfra
-    assert "deepinfra_api" in override_sources()
+    assert "deepinfra_api" in kept_sources()
 
 
 def _fake_loader(monkeypatch, mods):
@@ -113,7 +113,7 @@ def test_disabled_plugin_is_skipped(monkeypatch):
 
 def test_disabled_override_plugin_keeps_its_precedence(monkeypatch):
     from app.registry import config
-    from app.registry.plugins.loader import override_sources
+    from app.registry.plugins.loader import kept_sources
 
     monkeypatch.setattr(config, "DISABLED_PLUGINS", {"deepinfra_api"})
-    assert "deepinfra_api" in override_sources()
+    assert "deepinfra_api" in kept_sources()

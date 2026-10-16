@@ -17,7 +17,7 @@ RUN_FIELDS = {"id", "step", "started_at", "finished_at", "status", "stats", "err
 MODEL_FIELDS = {
     "provider", "model_id", "mode", "max_input_tokens", "max_output_tokens",
     "input_cost_per_token", "output_cost_per_token", "prices", "eol_date",
-    "status", "family", "manufacturer", "source", "first_seen", "last_seen", "price_scopes",
+    "override_eol", "blocked", "status", "family", "manufacturer", "source", "first_seen", "last_seen", "price_scopes",
     "proxies",
 }
 TODAY = date(2026, 1, 1)

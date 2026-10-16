@@ -1,9 +1,12 @@
+from datetime import date
+
 import pytest
 from sqlalchemy import text
 
 # Import the tables here, so _REGISTRY_TABLES does not depend on app.main importing the registry.
 import app.registry.models  # noqa: F401
 from app.db.models import Base, DBRegion
+from app.registry.models import DBRegistryModel, DBRegistryProvider
 
 _REGISTRY_TABLES = ", ".join(
     f'"{t.name}"' for t in Base.metadata.sorted_tables if t.name.startswith("registry_")
@@ -30,3 +33,18 @@ def proxy_region(registry_db):
     registry_db.add(region)
     registry_db.commit()
     return region
+
+
+def add_model(db, provider_name="bedrock", model_id="anthropic.claude-x-v1:0"):
+    provider = db.query(DBRegistryProvider).filter_by(name=provider_name).first()
+    if provider is None:
+        provider = DBRegistryProvider(name=provider_name)
+        db.add(provider)
+        db.flush()
+    row = DBRegistryModel(
+        provider_id=provider.id, model_id=model_id, supports=[], status="active", source="litellm",
+        first_seen=date(2026, 9, 1), last_seen=date(2026, 9, 1),
+    )
+    db.add(row)
+    db.flush()
+    return row

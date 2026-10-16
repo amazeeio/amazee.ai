@@ -1,8 +1,25 @@
-"""Response models for the registry API."""
+"""Request and response models for the registry API."""
 
+import json
 from datetime import date, datetime
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
+
+from app.registry.prices import SCOPE_KINDS
+
+Scope = Annotated[str, StringConstraints(pattern=rf"^(base|({'|'.join(SCOPE_KINDS)}):[a-z0-9-]+)$")]
+# Stricter than price_fields(), which takes any name that contains `cost`.
+Name = Annotated[str, StringConstraints(pattern=r"^[a-z0-9_]*cost[a-z0-9_]*$")]
+Amount = Annotated[float, Field(ge=0, allow_inf_nan=False, strict=True)]
 
 
 class RegistryRunResponse(BaseModel):
@@ -49,6 +66,8 @@ class RegistryModelResponse(BaseModel):
     output_cost_per_token: float | None
     prices: dict
     eol_date: date | None
+    override_eol: date | None
+    blocked: bool
     status: str
     family: str | None
     manufacturer: str | None
@@ -57,6 +76,44 @@ class RegistryModelResponse(BaseModel):
     last_seen: date
     price_scopes: list[RegistryModelPriceResponse]
     proxies: list[RegistryModelProxyResponse]
+
+
+class RegistryModelUpdate(BaseModel):
+    """Only the fields in the body change. `null` clears `family` and
+    `override_eol`; a `null` price removes the scope's manual price."""
+
+    # An unknown field would otherwise be dropped, and the call would change nothing.
+    model_config = ConfigDict(extra="forbid")
+
+    family: str | None = Field(None, min_length=1)
+    override_eol: date | None = None
+    # No `| None` on these two: an explicit null gets a 422.
+    blocked: StrictBool = None
+    # Scope key (`base`, `geo:us`, `region:us-east-1`) -> LiteLLM price fields, or null.
+    prices: dict[Scope, Annotated[dict[Name, Amount], Field(min_length=1)] | None] = Field(None, min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _readable_input(cls, data):
+        # A 422 echoes the input, and JSON cannot hold Infinity or NaN, so the error would fail
+        # with a 500. A one-item list keeps their name, and no field accepts a list.
+        return json.loads(json.dumps(data), parse_constant=lambda name: [name])
+
+    @field_validator("override_eol", mode="before")
+    @classmethod
+    def _iso_date(cls, value):
+        # Pydantic reads a number, or a number as text, as Unix time, so 0 would give 1970-01-01.
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("override_eol must be a date as text, or null")
+        return date.fromisoformat(value)
+
+    @model_validator(mode="after")
+    def _check_body(self):
+        if not self.model_fields_set:
+            raise ValueError("the body changes nothing")
+        return self
 
 
 class RegistryLifecycleResponse(BaseModel):
