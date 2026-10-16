@@ -89,6 +89,23 @@ def _alias_name_problem(name: str) -> str:
     return f"the model name {name} is an alias on this proxy"
 
 
+def _name_owners(db: Session, region_ids, names) -> dict[tuple[int, str], set[int]]:
+    """The ids of the models that have a deployment with each of the names, per proxy."""
+    owners = defaultdict(set)
+    for region_id, name, model_id in db.query(
+        DBRegistryModelRegion.region_id, DBRegistryModelRegion.model_name, DBRegistryModelRegion.model_id
+    ).filter(DBRegistryModelRegion.region_id.in_(region_ids), DBRegistryModelRegion.model_name.in_(names)):
+        owners[(region_id, name)].add(model_id)
+    return owners
+
+
+def _used_name_problem(owners, region_id: int, name: str, model_id: int) -> str | None:
+    # LiteLLM would send the calls for the name to either model. Deployments of one model may share a name.
+    if owners.get((region_id, name), set()) - {model_id}:
+        return f"the model name {name} is used by another model on this proxy"
+    return None
+
+
 def _alias_guard(db: Session, region_id: int, names, changed_ids: list[int]) -> None:
     """Refuse a delete or a rename that leaves an alias on the proxy with no target. `force` never skips it."""
     names = set(names)
@@ -186,6 +203,8 @@ def set_proxy_model(
         backend = changes.get("litellm_model") or default_backend(provider, model.model_id, cloud_regions, availability)
         if (region.id, name) in _alias_names(db, [region.id]):
             raise HTTPException(status_code=422, detail=_alias_name_problem(name))
+        if problem := _used_name_problem(_name_owners(db, [region.id], [name]), region.id, name, model.id):
+            raise HTTPException(status_code=422, detail=problem)
         if problem := backend_problem(backend, provider, model.model_id, cloud_regions):
             raise HTTPException(status_code=422, detail=problem)
         enabled = changes.get("enabled", True)
@@ -209,6 +228,9 @@ def set_proxy_model(
         if changes.get("model_name", old_name) != old_name:
             if (region.id, changes["model_name"]) in _alias_names(db, [region.id]):
                 raise HTTPException(status_code=422, detail=_alias_name_problem(changes["model_name"]))
+            owners = _name_owners(db, [region.id], [changes["model_name"]])
+            if problem := _used_name_problem(owners, region.id, changes["model_name"], model.id):
+                raise HTTPException(status_code=422, detail=problem)
             _alias_guard(db, region.id, [old_name], [deployments[0].id])
         enabled = changes.get("enabled")
         if enabled is False and not force and any(d.enabled for d in deployments):
@@ -330,6 +352,7 @@ def roll_out(
     supports = support_rows(db, model_ids, region_ids)
     availability = Availability(db)
     aliases = _alias_names(db, region_ids)
+    owners = _name_owners(db, region_ids, [model.model_id for model, _ in models.values()])
 
     # Every check runs before the first write, so a 422 changes nothing.
     entries, pairs = [], []
@@ -359,6 +382,10 @@ def roll_out(
                 backend = default_backend(provider, model.model_id, cloud_regions, availability)
                 if (region_id, model_name) in aliases:
                     problems.append(_alias_name_problem(model_name))
+                if problem := _used_name_problem(owners, region_id, model_name, model.id):
+                    problems.append(problem)
+                # Two models of this rollout with the same model id must not share the name either.
+                owners[(region_id, model_name)].add(model.id)
                 if problem := backend_problem(backend, provider, model.model_id, cloud_regions):
                     problems.append(problem)
                 if not force:
