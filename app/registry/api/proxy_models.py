@@ -170,6 +170,7 @@ def _add_deployment(
 @router.put(
     "/proxies/{proxy}/models/{key:path}",
     response_model=list[RegistryModelDeploymentResponse] | RegistryDryRun[list[RegistryModelDeploymentResponse]],
+    responses={201: {"model": list[RegistryModelDeploymentResponse], "description": "The deployment is created"}},
 )
 def set_proxy_model(
     proxy: str,
