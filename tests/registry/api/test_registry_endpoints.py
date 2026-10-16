@@ -4,6 +4,7 @@ import pytest
 
 from app.main import _OPENAPI_TIERS, _scope_schema, app
 from app.registry.api.routes import router
+from app.registry.importer import STEP as IMPORT_STEP
 from app.registry.models import DBRegistryEvent, DBRegistryRun
 from tests.registry.api.conftest import CHECKED_AT, MODEL_FIELDS, RUN_FIELDS, auth, model
 
@@ -226,6 +227,20 @@ def test_runs_stale_flag(client, admin_token, registry_db):
         ("history", "failed", True),
         ("history", "ok", True),
     ]
+
+
+def test_runs_proxy_import_is_never_stale(client, admin_token, registry_db):
+    old = datetime.now(UTC) - timedelta(days=30)
+    registry_db.add_all([
+        DBRegistryRun(step=IMPORT_STEP, status="ok", started_at=old),
+        DBRegistryRun(step="history", status="ok", started_at=old),
+    ])
+    registry_db.commit()
+
+    response = client.get("/registry/runs", headers=auth(admin_token))
+
+    assert response.status_code == 200, response.text
+    assert [(r["step"], r["stale"]) for r in response.json()] == [("history", True), (IMPORT_STEP, False)]
 
 
 def test_runs_total_count_header(client, admin_token, runs):

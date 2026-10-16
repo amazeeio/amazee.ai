@@ -11,6 +11,7 @@ from app.core.config import catalog_manages
 from app.core.security import get_role_min_system_admin
 from app.db.database import get_db
 from app.db.models import DBRegion
+from app.registry.importer import STEP as IMPORT_STEP
 from app.registry.models import (
     DBRegistryAccessGroup,
     DBRegistryCloudAvailability,
@@ -221,6 +222,8 @@ def list_runs(
         .filter(DBRegistryRun.status == "ok", DBRegistryRun.started_at >= datetime.now(UTC) - STALE_AFTER)
         .distinct()
     }
+    # The import runs one time per proxy, not daily, so an old import is never a missed run.
+    fresh.add(IMPORT_STEP)
     # A run row is inserted when its step starts, so the id order is the start order.
     return [
         RegistryRunResponse.model_validate(run).model_copy(update={"stale": run.step not in fresh})
