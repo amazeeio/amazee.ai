@@ -64,7 +64,7 @@
     "eslint-config-next": "^16",
     "eslint-plugin-unused-imports": "^4.4.1",
     "jsdom": "^26.1.0",
-    "msw": "^2.10.2",
+    "msw": "^3.0.2",
     "postcss": "^8.5.18",
     "prettier": "^3.5.3",
     "tailwindcss": "^3.4.1",
