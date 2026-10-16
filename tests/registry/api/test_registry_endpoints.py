@@ -102,22 +102,32 @@ def test_models_limit_and_offset(client, admin_token, models):
 
 
 @pytest.mark.parametrize(
-    "path",
+    "method, path",
     [
-        "/registry/runs",
-        "/registry/models",
-        "/registry/models/new",
-        "/registry/models/eol",
-        "/registry/models/openai/gpt-4o",
-        "/registry/providers",
-        "/registry/proxies",
-        "/registry/proxies/local-us1",
-        "/registry/events",
+        ("GET", "/registry/runs"),
+        ("GET", "/registry/models"),
+        ("GET", "/registry/models/new"),
+        ("GET", "/registry/models/eol"),
+        ("GET", "/registry/models/openai/gpt-4o"),
+        ("GET", "/registry/providers"),
+        ("GET", "/registry/proxies"),
+        ("GET", "/registry/proxies/local-us1"),
+        ("GET", "/registry/events"),
+        ("GET", "/registry/access-groups"),
+        ("POST", "/registry/access-groups"),
+        ("PATCH", "/registry/access-groups/beta"),
+        ("PUT", "/registry/access-groups/beta/models"),
+        ("DELETE", "/registry/access-groups/beta"),
+        ("GET", "/registry/aliases"),
+        ("PUT", "/registry/aliases/local-us1/zeta"),
+        ("DELETE", "/registry/aliases/local-us1/zeta"),
     ],
 )
-def test_registry_endpoints_need_a_system_admin(client, test_token, path):
-    assert client.get(path).status_code == 401
-    assert client.get(path, headers=auth(test_token)).status_code == 403
+def test_registry_endpoints_need_a_system_admin(client, test_token, method, path):
+    # A JSON body, so the auth check is the only reason for the error.
+    body = None if method in ("GET", "DELETE") else {}
+    assert client.request(method, path, json=body).status_code == 401
+    assert client.request(method, path, json=body, headers=auth(test_token)).status_code == 403
 
 
 def test_registry_endpoints_are_admin_only_in_openapi():
@@ -126,6 +136,9 @@ def test_registry_endpoints_are_admin_only_in_openapi():
     paths = [route.path_format for route in router.routes]
     # path_format drops the converter, as the OpenAPI document does.
     assert "/registry/models/{key}" in paths
+    # The routes of this module live in another file, so the check proves they are on this router.
+    assert "/registry/access-groups" in paths
+    assert "/registry/aliases/{proxy}/{alias}" in paths
 
     for route in router.routes:
         for method in route.methods:

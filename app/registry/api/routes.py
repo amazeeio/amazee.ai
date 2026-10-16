@@ -62,6 +62,16 @@ def _paginate(query, response: Response, offset: int, limit: int) -> list:
     return query.offset(offset).limit(limit).all()
 
 
+def _save(db: Session, dry_run: bool) -> None:
+    """A dry run makes the same changes, then rolls them back."""
+    # The flush runs the database checks, so a dry run fails where the write would.
+    db.flush()
+    if dry_run:
+        db.rollback()
+    else:
+        db.commit()
+
+
 def _proxy_results(
     db: Session, model_ids: list[int] | None = None, region_id: int | None = None
 ) -> dict[int, list[RegistryModelProxyResponse]]:
@@ -340,6 +350,19 @@ def _find_model(db: Session, key: str) -> tuple[DBRegistryModel, str]:
     return row
 
 
+def _find_proxy(db: Session, proxy: str) -> DBRegion:
+    """The region of a proxy name; only a region with a registry_proxies row is a proxy."""
+    region = (
+        db.query(DBRegion)
+        .join(DBRegistryProxy, DBRegistryProxy.region_id == DBRegion.id)
+        .filter(DBRegion.name == proxy)
+        .one_or_none()
+    )
+    if region is None:
+        raise HTTPException(status_code=404, detail="Proxy not found")
+    return region
+
+
 def _model_detail(db: Session, model: DBRegistryModel, provider: str) -> RegistryModelDetailResponse:
     base = _model_responses(db, [(model, provider)])[0]
 
@@ -423,11 +446,7 @@ def update_model(
         refresh_eol(db, model, provider)
     db.flush()
     detail = _model_detail(db, model, provider)
-    # A dry run makes the same changes, then rolls them back.
-    if dry_run:
-        db.rollback()
-    else:
-        db.commit()
+    _save(db, dry_run)
     return detail
 
 
@@ -469,10 +488,8 @@ def list_proxies(response: Response, db: Session = Depends(get_db)):
 
 @router.get("/proxies/{proxy}", response_model=RegistryProxyDetailResponse)
 def get_proxy(proxy: str, db: Session = Depends(get_db)):
-    region = db.query(DBRegion).filter(DBRegion.name == proxy).one_or_none()
-    found = _proxy_responses(db, region.id) if region else []
-    if not found:
-        raise HTTPException(status_code=404, detail="Proxy not found")
+    region = _find_proxy(db, proxy)
+    found = _proxy_responses(db, region.id)
 
     checked_at = (
         db.query(func.max(DBRegistryModelSupport.checked_at))

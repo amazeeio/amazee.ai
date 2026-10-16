@@ -10,7 +10,7 @@ from app.registry.models import (
     DBRegistryModelPrice,
     DBRegistryProvider,
 )
-from tests.registry.api.conftest import TODAY, auth, model
+from tests.registry.api.conftest import TODAY, auth, model, ok
 
 GPT = "/registry/models/openai/gpt-4o"
 CLAUDE = "/registry/models/bedrock/anthropic.claude-x-v1:0"
@@ -21,11 +21,6 @@ Y = date(2027, 6, 1)
 
 def _patch(client, token, path, body):
     return client.patch(path, json=body, headers=auth(token))
-
-
-def _ok(response):
-    assert response.status_code == 200, response.text
-    return response.json()
 
 
 def _state(db):
@@ -51,15 +46,15 @@ def test_patch_needs_a_system_admin(client, test_token, models):
 
 
 def test_patch_changes_only_the_fields_in_the_body(client, admin_token, models):
-    body = _ok(_patch(client, admin_token, GPT, {"family": "gpt4", "blocked": True}))
+    body = ok(_patch(client, admin_token, GPT, {"family": "gpt4", "blocked": True}))
     assert body["family"] == "gpt4" and body["blocked"] is True
     assert body["override_eol"] is None and body["mode"] == "chat"
 
-    body = _ok(_patch(client, admin_token, GPT, {"override_eol": "2027-01-01"}))
+    body = ok(_patch(client, admin_token, GPT, {"override_eol": "2027-01-01"}))
     assert body["override_eol"] == body["eol_date"] == "2027-01-01"
     assert body["family"] == "gpt4" and body["blocked"] is True
 
-    body = _ok(_patch(client, admin_token, CLAUDE, {"family": None}))
+    body = ok(_patch(client, admin_token, CLAUDE, {"family": None}))
     assert body["family"] is None and body["manufacturer"] == "anthropic"
 
 
@@ -70,7 +65,7 @@ def test_patch_moves_updated_at_only_on_a_real_change(client, admin_token, regis
     def moved(change):
         model(registry_db, "openai", "gpt-4o").updated_at = old
         registry_db.commit()
-        _ok(_patch(client, admin_token, GPT, change))
+        ok(_patch(client, admin_token, GPT, change))
         registry_db.expire_all()
         return model(registry_db, "openai", "gpt-4o").updated_at != old
 
@@ -81,12 +76,12 @@ def test_patch_moves_updated_at_only_on_a_real_change(client, admin_token, regis
 
 def test_patch_writes_manual_prices(client, admin_token, registry_db, models):
     # A null removes only a manual price, so the list's geo price stays.
-    body = _ok(_patch(client, admin_token, GPT, {"prices": {"geo:eu": None}}))
+    body = ok(_patch(client, admin_token, GPT, {"prices": {"geo:eu": None}}))
     assert {(s["scope_kind"], s["scope"], s["source"]) for s in body["price_scopes"]} == {
         ("base", "", "litellm"), ("geo", "eu", "litellm"),
     }
 
-    body = _ok(_patch(client, admin_token, GPT, {"prices": {"base": PRICE, "geo:eu": PRICE, "region:us-east-1": PRICE}}))
+    body = ok(_patch(client, admin_token, GPT, {"prices": {"base": PRICE, "geo:eu": PRICE, "region:us-east-1": PRICE}}))
 
     assert {(s["scope_kind"], s["scope"], s["source"]) for s in body["price_scopes"]} == {
         ("base", "", "manual"), ("geo", "eu", "manual"), ("cloud_region", "us-east-1", "manual"),
@@ -99,7 +94,7 @@ def test_patch_writes_manual_prices(client, admin_token, registry_db, models):
 
 
 def test_patch_takes_a_whole_number_as_a_price(client, admin_token, models):
-    body = _ok(_patch(client, admin_token, GPT, {"prices": {"base": {"input_cost_per_token": 1}}}))
+    body = ok(_patch(client, admin_token, GPT, {"prices": {"base": {"input_cost_per_token": 1}}}))
 
     assert body["prices"] == {"input_cost_per_token": 1}
 
@@ -110,17 +105,17 @@ def test_override_eol_beats_the_sources_and_the_daily_step_agrees(client, admin_
     ))
     registry_db.commit()
 
-    assert _ok(_patch(client, admin_token, GPT, {"override_eol": X.isoformat()}))["eol_date"] == X.isoformat()
+    assert ok(_patch(client, admin_token, GPT, {"override_eol": X.isoformat()}))["eol_date"] == X.isoformat()
     assert apply_eol(registry_db)["changed"] == 0
 
-    assert _ok(_patch(client, admin_token, GPT, {"override_eol": None}))["eol_date"] == Y.isoformat()
+    assert ok(_patch(client, admin_token, GPT, {"override_eol": None}))["eol_date"] == Y.isoformat()
     assert apply_eol(registry_db)["changed"] == 0
 
 
 def test_dry_run_returns_the_change_and_saves_nothing(client, admin_token, registry_db, models):
     before = _state(registry_db)
 
-    body = _ok(client.patch(
+    body = ok(client.patch(
         f"{GPT}?dry_run=true",
         json={"family": "gpt4", "override_eol": X.isoformat(), "blocked": True, "prices": {"base": PRICE}},
         headers=auth(admin_token),
@@ -141,7 +136,7 @@ def test_patch_reaches_a_model_id_with_a_slash(client, admin_token, registry_db,
     ))
     registry_db.commit()
 
-    body = _ok(_patch(client, admin_token, "/registry/models/deepinfra/BAAI/bge-m3", {"family": "bge"}))
+    body = ok(_patch(client, admin_token, "/registry/models/deepinfra/BAAI/bge-m3", {"family": "bge"}))
 
     assert (body["provider"], body["model_id"], body["family"]) == ("deepinfra", "BAAI/bge-m3", "bge")
 

@@ -20,6 +20,8 @@ Scope = Annotated[str, StringConstraints(pattern=rf"^(base|({'|'.join(SCOPE_KIND
 # Stricter than price_fields(), which takes any name that contains `cost`.
 Name = Annotated[str, StringConstraints(pattern=r"^[a-z0-9_]*cost[a-z0-9_]*$")]
 Amount = Annotated[float, Field(ge=0, allow_inf_nan=False, strict=True)]
+# The slug goes into LiteLLM model_info.access_groups and team model lists, so it keeps the old catalog's rule.
+SLUG_PATTERN = r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
 
 
 class RegistryRunResponse(BaseModel):
@@ -78,12 +80,31 @@ class RegistryModelResponse(BaseModel):
     proxies: list[RegistryModelProxyResponse]
 
 
-class RegistryModelUpdate(BaseModel):
-    """Only the fields in the body change. `null` clears `family` and
-    `override_eol`; a `null` price removes the scope's manual price."""
+class _Strict(BaseModel):
+    """A request body."""
 
     # An unknown field would otherwise be dropped, and the call would change nothing.
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _readable_input(cls, data):
+        # A 422 echoes the input, and JSON cannot hold Infinity or NaN, so the error would fail
+        # with a 500. Each one becomes a one-item list of its name, which no field takes as valid.
+        return json.loads(json.dumps(data), parse_constant=lambda name: [name])
+
+
+class _Update(_Strict):
+    @model_validator(mode="after")
+    def _check_body(self):
+        if not self.model_fields_set:
+            raise ValueError("the body changes nothing")
+        return self
+
+
+class RegistryModelUpdate(_Update):
+    """Only the fields in the body change. `null` clears `family` and
+    `override_eol`; a `null` price removes the scope's manual price."""
 
     family: str | None = Field(None, min_length=1)
     override_eol: date | None = None
@@ -91,13 +112,6 @@ class RegistryModelUpdate(BaseModel):
     blocked: StrictBool = None
     # Scope key (`base`, `geo:us`, `region:us-east-1`) -> LiteLLM price fields, or null.
     prices: dict[Scope, Annotated[dict[Name, Amount], Field(min_length=1)] | None] = Field(None, min_length=1)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _readable_input(cls, data):
-        # A 422 echoes the input, and JSON cannot hold Infinity or NaN, so the error would fail
-        # with a 500. A one-item list keeps their name, and no field accepts a list.
-        return json.loads(json.dumps(data), parse_constant=lambda name: [name])
 
     @field_validator("override_eol", mode="before")
     @classmethod
@@ -108,12 +122,6 @@ class RegistryModelUpdate(BaseModel):
         if not isinstance(value, str):
             raise ValueError("override_eol must be a date as text, or null")
         return date.fromisoformat(value)
-
-    @model_validator(mode="after")
-    def _check_body(self):
-        if not self.model_fields_set:
-            raise ValueError("the body changes nothing")
-        return self
 
 
 class RegistryLifecycleResponse(BaseModel):
@@ -209,3 +217,56 @@ class RegistryEventResponse(BaseModel):
     type: str
     created_at: datetime
     data: dict
+
+
+class RegistryAccessGroupModelResponse(BaseModel):
+    proxy: str
+    model: str
+    # The deployments of the model on this proxy that carry the group.
+    model_names: list[str]
+
+
+class RegistryAccessGroupResponse(BaseModel):
+    slug: str
+    label: str | None
+    description: str | None
+    models: list[RegistryAccessGroupModelResponse]
+
+
+class RegistryAccessGroupCreate(_Strict):
+    slug: str = Field(min_length=1, max_length=64, pattern=SLUG_PATTERN)
+    label: str = Field(min_length=1)
+    description: str | None = None
+
+
+class RegistryAccessGroupUpdate(_Update):
+    """The slug never changes: LiteLLM and teams know the group only by it."""
+
+    # No `| None`: an explicit null gets a 422. A null description clears it.
+    label: str = Field(None, min_length=1)
+    description: str | None = None
+
+
+class RegistryAccessGroupModelRef(_Strict):
+    proxy: str
+    model: str
+
+
+class RegistryAccessGroupModels(_Strict):
+    """The full list of models that carry the group; an empty list removes it from all."""
+
+    models: list[RegistryAccessGroupModelRef]
+
+
+class RegistryAliasResponse(BaseModel):
+    proxy: str
+    alias: str
+    # A `model_name` on the same proxy, because LiteLLM maps a name to a name.
+    target: str
+    hidden: bool
+
+
+class RegistryAliasUpdate(_Strict):
+    target: str = Field(min_length=1)
+    # StrictBool with no `| None`: an explicit null gets a 422.
+    hidden: StrictBool = False
