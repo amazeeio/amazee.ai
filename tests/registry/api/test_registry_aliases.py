@@ -3,6 +3,7 @@ import json
 import pytest
 
 from app.registry.models import DBRegistryAlias
+from app.registry.planner import DELETES_EVERY_ALIAS, REMOVES_LIVE_ALIAS
 from tests.registry.api.conftest import EU_URL, US_URL, auth, ok
 
 ALIASES = "/registry/aliases"
@@ -149,8 +150,18 @@ def test_put_dry_run_plans_the_full_alias_map(client, admin_token, aliases, live
             "new": {"from": None, "to": "gpt-4o"},
             "old": {"from": "gpt-4o", "to": None},
         },
-        "problems": [],
+        "problems": [REMOVES_LIVE_ALIAS.format("old")],
     }]
+
+
+def test_delete_dry_run_does_not_warn_for_the_deleted_alias(client, admin_token, aliases, live_proxies):
+    live_proxies.by_url[US_URL] = {"aliases": {"zeta": "gpt-4o", "chat": {"model": "claude-x", "hidden": True}}}
+
+    body = ok(_delete(client, admin_token, "local-us1/zeta", "?dry_run=true"))
+
+    [step] = body["steps"]
+    assert step["changes"] == {"zeta": {"from": "gpt-4o", "to": None}}
+    assert step["problems"] == []
 
 
 def test_delete_dry_run_of_the_last_alias_warns(client, admin_token, aliases, live_proxies):
@@ -160,4 +171,5 @@ def test_delete_dry_run_of_the_last_alias_warns(client, admin_token, aliases, li
 
     [step] = body["steps"]
     assert (step["action"], step["payload"]) == ("write_alias_map", {})
-    assert step["problems"] == ["this would delete every live alias; the phase 3 import must read them first"]
+    # The deleted alias gets no problem of its own; the other live alias does.
+    assert step["problems"] == [DELETES_EVERY_ALIAS, REMOVES_LIVE_ALIAS.format("other")]

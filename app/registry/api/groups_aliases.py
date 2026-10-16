@@ -278,4 +278,4 @@ def delete_alias(proxy: str, alias: str, dry_run: bool = Query(False), db: Sessi
     if row is None:
         raise HTTPException(status_code=404, detail="Alias not found")
     db.delete(row)
-    return _save(db, dry_run, Response(status_code=204), plan=lambda: alias_plans(db, region))
+    return _save(db, dry_run, Response(status_code=204), plan=lambda: alias_plans(db, region, alias))
