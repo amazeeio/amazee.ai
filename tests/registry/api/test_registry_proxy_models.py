@@ -12,12 +12,15 @@ from app.registry.models import (
 )
 from tests.registry.api.conftest import (
     BLOCKED,
+    EU_URL,
     NEEDS_PROFILE,
     PROVISIONED,
     UNAVAILABLE,
     UNKNOWN,
     UNSUPPORTED,
+    US_URL,
     auth,
+    live_row,
     model,
     ok,
     support_row,
@@ -367,12 +370,12 @@ def test_put_dry_run_returns_the_write_and_saves_nothing(client, admin_token, re
     create = {"credential": "c1", "groups": ["alpha"]}
     change = {"credential": "c2", "groups": ["alpha"]}
 
-    dry_create = ok(_put(client, admin_token, "local-us1", "openai/gpt-old", create, "?dry_run=true"), 201)
+    dry_create = ok(_put(client, admin_token, "local-us1", "openai/gpt-old", create, "?dry_run=true"))
     dry_change = ok(_put(client, admin_token, "local-us1", "openai/gpt-4o", change, "?dry_run=true"))
     assert _state(registry_db) == before
 
-    assert ok(_put(client, admin_token, "local-us1", "openai/gpt-old", create), 201) == dry_create
-    assert ok(_put(client, admin_token, "local-us1", "openai/gpt-4o", change)) == dry_change
+    assert ok(_put(client, admin_token, "local-us1", "openai/gpt-old", create), 201) == dry_create["result"]
+    assert ok(_put(client, admin_token, "local-us1", "openai/gpt-4o", change)) == dry_change["result"]
 
 
 def test_put_reaches_a_model_id_with_a_slash(client, admin_token, registry_db, setup):
@@ -466,7 +469,9 @@ def test_delete_dry_run_keeps_the_rows(client, admin_token, registry_db, setup):
     _link(registry_db, setup["eu"].id, "gpt-4o", "alpha")
     before = _state(registry_db)
 
-    assert _delete(client, admin_token, "local-eu1", "openai/gpt-4o", "?dry_run=true").status_code == 204
+    assert ok(_delete(client, admin_token, "local-eu1", "openai/gpt-4o", "?dry_run=true")) == {
+        "result": None, "steps": [],
+    }
     assert _state(registry_db) == before
 
 
@@ -513,6 +518,24 @@ def test_put_refuses_a_geo_backend_that_the_region_offers_only_provisioned(clien
     ok(_put(client, admin_token, "local-us1", f"bedrock/{NEW}", body, "?force=true"), 201)
 
 
+@pytest.mark.parametrize(
+    "call_types, problems",
+    [(["PROVISIONED"], [PROVISIONED]), (["INFERENCE_PROFILE"], [NEEDS_PROFILE]), (["ON_DEMAND"], [])],
+)
+def test_put_runs_the_call_type_check_on_a_cloud_region_backend(
+    client, admin_token, registry_db, setup, call_types, problems
+):
+    _new_bedrock_model(registry_db, setup["us"].id, call_types)
+    body = {"litellm_model": f"bedrock/us-east-1/{NEW}"}
+
+    response = _put(client, admin_token, "local-us1", f"bedrock/{NEW}", body)
+    if problems:
+        assert response.status_code == 422
+        assert response.json()["detail"] == problems
+        response = _put(client, admin_token, "local-us1", f"bedrock/{NEW}", body, "?force=true")
+    assert ok(response, 201)[0]["litellm_model"] == f"bedrock/us-east-1/{NEW}"
+
+
 def test_put_turns_on_a_stored_mantle_deployment(client, admin_token, registry_db, setup):
     row = add_model(registry_db, "bedrock_mantle", "anthropic.opus")
     registry_db.add_all([
@@ -528,3 +551,62 @@ def test_put_turns_on_a_stored_mantle_deployment(client, admin_token, registry_d
     body = ok(_put(client, admin_token, "local-us1", "bedrock_mantle/anthropic.opus", {"enabled": True}))
 
     assert [(d["litellm_model"], d["enabled"]) for d in body] == [("openai/anthropic.opus", True)]
+
+
+def test_put_create_dry_run_plans_the_create(client, admin_token, setup, live_proxies):
+    live_proxies.by_url[US_URL] = {"credentials": ["c1"]}
+    body = {"credential": "c1", "groups": ["alpha"]}
+
+    steps = ok(_put(client, admin_token, "local-us1", "openai/gpt-old", body, "?dry_run=true"))["steps"]
+
+    assert steps == [{
+        "proxy": "local-us1", "action": "create_model", "model": "openai/gpt-old", "model_name": "gpt-old",
+        "deployment_id": None, "changes": None, "problems": [],
+        "payload": {
+            "model_name": "gpt-old",
+            "litellm_params": {"model": "openai/gpt-old", "litellm_credential_name": "c1"},
+            "model_info": {"access_groups": ["alpha"]},
+        },
+    }]
+
+
+def test_put_create_dry_run_shows_the_credential_and_the_running_deployment(client, admin_token, setup, live_proxies):
+    live_proxies.by_url[US_URL] = {"model_info": [live_row("x9", "gpt-old", "openai/gpt-old")], "credentials": ["c2"]}
+
+    response = _put(client, admin_token, "local-us1", "openai/gpt-old", {"credential": "c1"}, "?dry_run=true")
+
+    [step] = ok(response)["steps"]
+    assert step["problems"] == [
+        "the credential c1 is not on the proxy",
+        "the proxy already runs this deployment; the phase 3 import adopts it",
+    ]
+
+
+def test_put_change_dry_run_plans_the_update(client, admin_token, setup, live_proxies):
+    live_proxies.by_url[US_URL] = {"model_info": [live_row("us-gpt", "gpt-4o", "openai/gpt-4o", groups=["beta"])]}
+    body = {"credential": "c1", "groups": ["alpha"]}
+
+    steps = ok(_put(client, admin_token, "local-us1", "openai/gpt-4o", body, "?dry_run=true"))["steps"]
+
+    assert [(s["action"], s["deployment_id"], s["changes"]) for s in steps] == [("update_model", "us-gpt", {
+        "access_groups": {"from": ["beta"], "to": ["alpha"]},
+        "credential": {"from": None, "to": "c1"},
+    })]
+
+
+@pytest.mark.parametrize(
+    "live, actions", [([live_row("eu-gpt", "gpt-4o", "openai/gpt-4o")], ["delete_model"]), ([], [])]
+)
+def test_delete_dry_run_plans_the_delete_of_a_live_deployment(client, admin_token, setup, live_proxies, live, actions):
+    live_proxies.by_url[EU_URL] = {"model_info": live}
+
+    steps = ok(_delete(client, admin_token, "local-eu1", "openai/gpt-4o", "?dry_run=true"))["steps"]
+
+    assert [(s["action"], s["deployment_id"]) for s in steps] == [(action, "eu-gpt") for action in actions]
+
+
+def test_writes_read_no_proxy(client, admin_token, setup, live_proxies):
+    ok(_put(client, admin_token, "local-us1", "openai/gpt-old"), 201)
+    assert _delete(client, admin_token, "local-eu1", "openai/gpt-4o").status_code == 204
+
+    assert live_proxies.calls == []

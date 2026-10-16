@@ -1,6 +1,7 @@
 """Read-only access to LiteLLM: a proxy's admin API and the public model list."""
 
 import re
+from collections.abc import Set as AbstractSet
 from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 import httpx
@@ -180,6 +181,27 @@ def registry_provider_and_model(litellm_params: dict, model_info: dict | None = 
     return provider, source_model
 
 
+def without_alias_copies(deployments: list[dict], aliases: AbstractSet[str]) -> tuple[list[dict], list[str]]:
+    """The deployments with no alias copies, and the names of the copies.
+
+    `/model/info` lists each alias again, with the id of its target.
+    """
+    real_ids = {
+        (dep.get("model_info") or {}).get("id") for dep in deployments if dep.get("model_name") not in aliases
+    } - {None}
+    kept, copies, kept_ids = [], [], set()
+    for dep in deployments:
+        dep_id = (dep.get("model_info") or {}).get("id")
+        if dep.get("model_name") in aliases and (dep_id in real_ids or dep_id in kept_ids):
+            # Skip only a row that repeats a deployment listed under a real name or kept before it.
+            copies.append(dep.get("model_name"))
+            continue
+        kept.append(dep)
+        if dep_id is not None:
+            kept_ids.add(dep_id)
+    return kept, copies
+
+
 def fetch_json(url: str):
     response = httpx.get(url, timeout=HTTP_TIMEOUT_SECONDS)
     response.raise_for_status()
@@ -208,17 +230,25 @@ class ProxyClient:
     def model_info(self) -> list[dict]:
         return self._get("/model/info").get("data") or []
 
-    def model_aliases(self) -> set[str]:
-        """Alias names, with no fallback on error: `/model/info` lists each alias again, with the target's id."""
+    def alias_map(self) -> dict:
+        """The raw `model_group_alias` map, with no fallback on error.
+
+        A value is a target name, or `{"model": <target>, "hidden": true}`.
+        """
         fields = self._get("/router/settings").get("fields") or []
         value = next((f.get("field_value") for f in fields if f.get("field_name") == "model_group_alias"), None)
-        return set(value) if isinstance(value, dict) else set()
+        return value if isinstance(value, dict) else {}
 
     def version(self) -> str | None:
         try:
             return self._get("/openapi.json").get("info", {}).get("version")
         except httpx.HTTPError:
             return None
+
+    def credential_names(self) -> set[str]:
+        """The credential names, with no fallback on error: a planner must know when it could not read them."""
+        credentials = self._get("/credentials").get("credentials") or []
+        return {cred["credential_name"] for cred in credentials if cred.get("credential_name")}
 
     def credential_regions(self) -> dict[str, str]:
         """Map credential name to its `aws_region_name`. Reads nothing else."""

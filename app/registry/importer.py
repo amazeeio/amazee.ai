@@ -18,6 +18,7 @@ from app.registry.litellm import (
     mantle_region,
     registry_provider_and_model,
     split_model,
+    without_alias_copies,
     without_secrets,
 )
 from app.registry.models import (
@@ -101,17 +102,9 @@ def import_deployments(
         raise AlreadyImported(f"region {region.name} was imported at {proxy.imported_at}")
     today = today or date.today()
 
-    stats = {"deployments": len(deployments), "imported": 0, "skipped": [], "aliases": []}
-    real_ids = {
-        (dep.get("model_info") or {}).get("id") for dep in deployments if dep.get("model_name") not in aliases
-    } - {None}
-    stored_ids = set()
-    for dep in deployments:
-        dep_id = (dep.get("model_info") or {}).get("id")
-        if dep.get("model_name") in aliases and (dep_id in real_ids or dep_id in stored_ids):
-            # Skip only a row that repeats a deployment listed under a real name or already stored.
-            stats["aliases"].append(dep.get("model_name"))
-            continue
+    kept, copies = without_alias_copies(deployments, aliases)
+    stats = {"deployments": len(deployments), "imported": 0, "skipped": [], "aliases": copies}
+    for dep in kept:
         params = dep.get("litellm_params") or {}
         info = dep.get("model_info") or {}
         litellm_model = params.get("model") or ""
@@ -167,13 +160,12 @@ def import_deployments(
             group = _get_or_create(db, DBRegistryAccessGroup, slug=slug, defaults={"label": slug})
             db.add(DBRegistryModelRegionGroup(model_region_id=model_region.id, access_group_id=group.id))
         stats["imported"] += 1
-        if dep_id is not None:
-            stored_ids.add(dep_id)
 
     if proxy is None:
         proxy = DBRegistryProxy(region_id=region.id)
         db.add(proxy)
     proxy.litellm_version = version
+    # The adopt-mode import must merge these with the stored regions, not replace them: an admin can set them.
     proxy.cloud_regions = _proxy_cloud_regions(deployments, credential_regions)
     proxy.imported_at = datetime.now(UTC)
     return stats
@@ -189,5 +181,6 @@ def _import(db: Session, region: DBRegion) -> dict:
         deployments = client.model_info()
         version = client.version()
         credential_regions = client.credential_regions()
-        aliases = client.model_aliases()
+        # No fallback on error: `/model/info` lists each alias again, with the target's id.
+        aliases = set(client.alias_map())
     return import_deployments(db, region, deployments, version, credential_regions, aliases=aliases)

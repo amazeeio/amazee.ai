@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -112,6 +113,7 @@ def test_models_limit_and_offset(client, admin_token, models):
         ("GET", "/registry/providers"),
         ("GET", "/registry/proxies"),
         ("GET", "/registry/proxies/local-us1"),
+        ("PATCH", "/registry/proxies/local-us1"),
         ("GET", "/registry/events"),
         ("GET", "/registry/access-groups"),
         ("POST", "/registry/access-groups"),
@@ -269,3 +271,49 @@ def test_runs_total_count_header(client, admin_token, runs):
 
     filtered = client.get("/registry/runs?step=plugin:deepinfra_api&limit=1", headers=auth(admin_token))
     assert filtered.headers["X-Total-Count"] == "2"
+
+
+def _ref(name):
+    return {"$ref": f"#/components/schemas/{name}"}
+
+
+DEPLOYMENTS = {"type": "array", "items": _ref("RegistryModelDeploymentResponse")}
+
+
+@pytest.mark.parametrize(
+    "path, method, codes",
+    [
+        ("/registry/access-groups", "post", {
+            "201": {"anyOf": [_ref("RegistryAccessGroupResponse"), _ref("RegistryDryRun_RegistryAccessGroupResponse_")]},
+            "200": _ref("RegistryDryRun_RegistryAccessGroupResponse_"),
+        }),
+        ("/registry/proxies/{proxy}/models/{key}", "put", {
+            "200": {"anyOf": [DEPLOYMENTS, _ref("RegistryDryRun_list_RegistryModelDeploymentResponse__")]},
+            "201": DEPLOYMENTS,
+        }),
+        ("/registry/aliases/{proxy}/{alias}", "put", {
+            "200": {"anyOf": [_ref("RegistryAliasResponse"), _ref("RegistryDryRun_RegistryAliasResponse_")]},
+            "201": _ref("RegistryAliasResponse"),
+        }),
+    ],
+)
+def test_registry_writes_declare_every_success_code_in_openapi(path, method, codes):
+    responses = app.openapi()["paths"][path][method]["responses"]
+
+    for code, schema in codes.items():
+        assert code in responses, (path, method, code)
+        found = responses[code]["content"]["application/json"]["schema"]
+        # The union schema can carry a title; only the shape matters here.
+        assert {k: v for k, v in found.items() if k != "title"} == schema, (path, method, code)
+
+
+def test_registry_writes_show_the_dry_run_body_in_openapi():
+    full = app.openapi()
+    writes = [(route, method) for route in router.routes for method in route.methods if method != "GET"]
+    assert len(writes) >= 10
+
+    for route, method in writes:
+        # A new write that forgets the dry-run wrapper fails here. The POST of a group declares 201.
+        success = full["paths"][route.path_format][method.lower()]["responses"][str(route.status_code or 200)]
+        schema = success["content"]["application/json"]
+        assert "RegistryDryRun" in json.dumps(schema), (method, route.path_format)

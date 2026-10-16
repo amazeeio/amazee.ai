@@ -10,7 +10,7 @@ from app.registry.models import (
     DBRegistryModelRegionGroup,
     DBRegistryProvider,
 )
-from tests.registry.api.conftest import TODAY, auth, model, ok
+from tests.registry.api.conftest import TODAY, US_URL, auth, live_row, model, ok
 
 GROUPS = "/registry/access-groups"
 
@@ -120,19 +120,22 @@ def test_patch_unknown_slug_is_404(client, admin_token, groups):
     assert client.patch(f"{GROUPS}/nope", json={"label": "x"}, headers=auth(admin_token)).status_code == 404
 
 
-def test_dry_run_of_post_and_patch_saves_nothing(client, admin_token, registry_db, groups):
+def test_dry_run_of_post_and_patch_saves_nothing(client, admin_token, registry_db, groups, live_proxies):
     before = _groups_state(registry_db)
 
     body = ok(client.post(
         f"{GROUPS}?dry_run=true", json={"slug": "gamma", "label": "Gamma"}, headers=auth(admin_token)
-    ), 201)
-    assert body["slug"] == "gamma"
+    ))
+    assert body["result"]["slug"] == "gamma" and body["steps"] == []
     body = ok(client.patch(
         f"{GROUPS}/beta?dry_run=true", json={"label": "New", "description": None}, headers=auth(admin_token)
     ))
-    assert (body["label"], body["description"], body["models"]) == ("New", None, BETA_MODELS)
+    result = body["result"]
+    assert (result["label"], result["description"], result["models"]) == ("New", None, BETA_MODELS)
+    assert body["steps"] == []
 
     assert _groups_state(registry_db) == before
+    assert live_proxies.calls == []
 
 
 US_GPT = {"proxy": "local-us1", "model": "openai/gpt-4o"}
@@ -238,8 +241,36 @@ def test_put_dry_run_saves_nothing(client, admin_token, registry_db, groups):
 
     body = ok(_put(client, admin_token, "beta", [US_GPT], "?dry_run=true"))
 
-    assert body["models"] == [{**US_GPT, "model_names": ["chat-gpt", "gpt-4o"]}]
+    assert body["result"]["models"] == [{**US_GPT, "model_names": ["chat-gpt", "gpt-4o"]}]
     assert _links_state(registry_db) == before
+
+
+def test_put_dry_run_plans_the_group_change_of_each_live_deployment(client, admin_token, registry_db, groups,
+                                                                     live_proxies):
+    alpha = registry_db.query(DBRegistryAccessGroup).filter_by(slug="alpha").one()
+    claude = registry_db.query(DBRegistryModelRegion).filter_by(litellm_deployment_id="us-claude").one()
+    registry_db.add(DBRegistryModelRegionGroup(model_region_id=claude.id, access_group_id=alpha.id))
+    registry_db.commit()
+    live_proxies.by_url[US_URL] = {"model_info": [
+        live_row("us-gpt", "gpt-4o", "openai/gpt-4o", groups=["beta"]),
+        live_row("us-claude", "claude-x", "bedrock/us.anthropic.claude-x-v1:0", groups=["beta", "alpha"]),
+        live_row("us-gpt-2", "chat-gpt", "openai/gpt-4o", groups=["beta"]),
+    ]}
+
+    body = ok(_put(client, admin_token, "alpha", [US_GPT], "?dry_run=true"))
+
+    assert [(s["action"], s["deployment_id"], s["changes"]) for s in body["steps"]] == [
+        ("update_model", "us-gpt", {"access_groups": {"from": ["beta"], "to": ["alpha", "beta"]}}),
+        ("update_model", "us-claude", {"access_groups": {"from": ["alpha", "beta"], "to": ["beta"]}}),
+        ("update_model", "us-gpt-2", {"access_groups": {"from": ["beta"], "to": ["alpha", "beta"]}}),
+    ]
+    assert live_proxies.calls == [US_URL]
+
+
+def test_put_reads_no_proxy(client, admin_token, groups, live_proxies):
+    ok(_put(client, admin_token, "alpha", [US_GPT]))
+
+    assert live_proxies.calls == []
 
 
 def _delete(client, token, slug, query=""):
@@ -279,8 +310,9 @@ def test_delete_unknown_slug_is_404(client, admin_token, groups):
     assert _delete(client, admin_token, "nope").status_code == 404
 
 
-def test_delete_dry_run_keeps_the_group(client, admin_token, registry_db, groups):
+def test_delete_dry_run_keeps_the_group(client, admin_token, registry_db, groups, live_proxies):
     before = _groups_state(registry_db)
 
-    assert _delete(client, admin_token, "alpha", "?dry_run=true").status_code == 204
+    assert ok(_delete(client, admin_token, "alpha", "?dry_run=true")) == {"result": None, "steps": []}
     assert _groups_state(registry_db) == before
+    assert live_proxies.calls == []
