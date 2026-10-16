@@ -274,8 +274,11 @@ class RegistryAliasUpdate(_Strict):
     hidden: StrictBool = False
 
 
-# A LiteLLM credential name. The secret stays on the proxy.
-Credential = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._-]{1,128}$")]
+# A LiteLLM credential name. The secret stays on the proxy. Real names hold spaces
+# (`AWS Bedrock`), but not at the ends, where they are easy to miss.
+Credential = Annotated[
+    str, StringConstraints(pattern=r"^[A-Za-z0-9._-](?:[A-Za-z0-9._ -]{0,126}[A-Za-z0-9._-])?$")
+]
 
 
 class RegistryProxyModelUpdate(_Strict):

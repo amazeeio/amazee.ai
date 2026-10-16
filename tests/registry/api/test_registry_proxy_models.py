@@ -132,6 +132,12 @@ def test_put_changes_one_deployment(client, admin_token, registry_db, setup):
     assert len(registry_db.query(DBRegistryModelRegionGroup).filter_by(model_region_id=row.id).all()) == 1
 
 
+def test_put_accepts_a_credential_name_with_a_space(client, admin_token, registry_db, setup):
+    ok(_put(client, admin_token, "local-us1", "openai/gpt-4o", {"credential": "AWS Bedrock"}))
+
+    assert _deployment(registry_db, setup["us"].id, "gpt-4o").litellm_params == {"litellm_credential_name": "AWS Bedrock"}
+
+
 def test_put_changes_every_deployment_of_the_model(client, admin_token, registry_db, setup):
     gpt = model(registry_db, "openai", "gpt-4o")
     registry_db.add(DBRegistryModelRegion(
@@ -157,8 +163,8 @@ def test_put_not_found(client, admin_token, setup, bare_region, proxy, key):
 
 @pytest.mark.parametrize(
     "body",
-    [{"groups": ["nope"]}, {"credential": "bad name"}, {"credential": "x" * 129}, {"foo": 1}, {"enabled": None},
-     {"model_name": None}],
+    [{"groups": ["nope"]}, {"credential": "bad/name"}, {"credential": " AWS"}, {"credential": "AWS "},
+     {"credential": "x" * 129}, {"foo": 1}, {"enabled": None}, {"model_name": None}],
 )
 def test_put_refuses_a_bad_body(client, admin_token, registry_db, setup, body):
     before = _state(registry_db)
