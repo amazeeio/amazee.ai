@@ -12,6 +12,9 @@ ALREADY_RUNS = "the proxy already runs this deployment; the phase 3 import adopt
 NOT_ON_PROXY = "the deployment is not on the proxy"
 PROVISIONED_ONLY = "the deployment is a provisioned-only Bedrock variant; the sync writes no per-token price into it"
 DELETES_EVERY_ALIAS = "this would delete every live alias; the phase 3 import must read them first"
+REMOVES_LIVE_ALIAS = (
+    "the live alias {} is not in the registry, so the sync would remove it; the phase 3 import must read it first"
+)
 CREDENTIAL_NOT_ON_PROXY = "the credential {} is not on the proxy"
 
 
@@ -117,7 +120,7 @@ def _alias(value) -> tuple | None:
     return None if value is None else (value, False)
 
 
-def _alias_step(proxy: str, live: dict, wanted: dict) -> dict | None:
+def _alias_step(proxy: str, live: dict, wanted: dict, removed_alias: str | None) -> dict | None:
     changes = {
         name: {"from": live.get(name), "to": wanted.get(name)}
         for name in sorted(live.keys() | wanted.keys())
@@ -126,6 +129,10 @@ def _alias_step(proxy: str, live: dict, wanted: dict) -> dict | None:
     if not changes:
         return None
     problems = [DELETES_EVERY_ALIAS] if live and not wanted else []
+    # The full map drops every live alias that the registry does not have, not only the one a DELETE names.
+    problems += [
+        REMOVES_LIVE_ALIAS.format(name) for name in sorted(live.keys() - wanted.keys()) if name != removed_alias
+    ]
     # The sync always sends the full map, so the payload is the full map.
     return _step(proxy, "write_alias_map", payload=dict(wanted), changes=changes, problems=problems)
 
@@ -136,10 +143,12 @@ def plan(
     deployments=(),
     fields: frozenset = DEPLOYMENT_FIELDS,
     aliases: dict | None = None,
+    removed_alias: str | None = None,
 ) -> list[dict]:
     """The steps that bring the proxy to the wanted state. Only the names in `fields` are compared.
 
     `aliases` is the wanted full alias map in the LiteLLM form, or None when the write changes no alias.
+    `removed_alias` is the alias that the write deletes on purpose, so its removal is no problem.
     """
     rows, _ = without_alias_copies(live.deployments, set(live.aliases))
     by_id = {(row.get("model_info") or {}).get("id"): row for row in rows}
@@ -156,6 +165,6 @@ def plan(
             steps.append(_step(proxy, "update_model", deployment, changes={}, problems=[NOT_ON_PROXY]))
         elif step := _update(proxy, deployment, row, fields, live.credentials):
             steps.append(step)
-    if aliases is not None and (step := _alias_step(proxy, live.aliases, aliases)):
+    if aliases is not None and (step := _alias_step(proxy, live.aliases, aliases, removed_alias)):
         steps.append(step)
     return steps

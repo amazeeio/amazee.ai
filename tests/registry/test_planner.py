@@ -7,6 +7,7 @@ from app.registry.planner import (
     DELETES_EVERY_ALIAS,
     NOT_ON_PROXY,
     PROVISIONED_ONLY,
+    REMOVES_LIVE_ALIAS,
     Deployment,
     LiveProxy,
     plan,
@@ -208,7 +209,23 @@ def test_alias_map_lists_added_changed_and_removed_aliases():
         "fast": {"from": {"model": "gpt-4o", "hidden": True}, "to": "gpt-4o"},
         "new": {"from": None, "to": {"model": "gpt-4o", "hidden": True}},
         "old": {"from": "gpt-3", "to": None},
-    })]
+    }, problems=[REMOVES_LIVE_ALIAS.format("old")])]
+
+
+def test_alias_map_warns_for_each_live_alias_it_removes():
+    live = LiveProxy(aliases={"a": "gpt-4o", "b": "gpt-4o", "keep": "gpt-4o"})
+
+    [step] = plan(PROXY, live, aliases={"keep": "gpt-4o", "new": "gpt-4o"})
+
+    assert step["problems"] == [REMOVES_LIVE_ALIAS.format("a"), REMOVES_LIVE_ALIAS.format("b")]
+
+
+def test_alias_map_does_not_warn_for_the_alias_the_write_deletes():
+    live = LiveProxy(aliases={"chat": "gpt-4o", "keep": "gpt-4o"})
+
+    [step] = plan(PROXY, live, aliases={"keep": "gpt-4o"}, removed_alias="chat")
+
+    assert step == _step("write_alias_map", payload={"keep": "gpt-4o"}, changes={"chat": {"from": "gpt-4o", "to": None}})
 
 
 def test_alias_map_gives_no_step_when_equal():
@@ -223,7 +240,8 @@ def test_an_empty_alias_map_that_removes_live_aliases_has_a_problem():
     [step] = plan(PROXY, LiveProxy(aliases={"chat": "gpt-4o"}), aliases={})
 
     assert step == _step(
-        "write_alias_map", payload={}, changes={"chat": {"from": "gpt-4o", "to": None}}, problems=[DELETES_EVERY_ALIAS]
+        "write_alias_map", payload={}, changes={"chat": {"from": "gpt-4o", "to": None}},
+        problems=[DELETES_EVERY_ALIAS, REMOVES_LIVE_ALIAS.format("chat")],
     )
 
 

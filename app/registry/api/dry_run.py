@@ -40,6 +40,7 @@ class ProxyPlan:
     deployments: list[planner.Deployment] = field(default_factory=list)
     fields: frozenset = planner.DEPLOYMENT_FIELDS
     aliases: dict | None = None
+    removed_alias: str | None = None
     active: bool = True
 
 
@@ -154,13 +155,13 @@ def deployment_plans(
     ]
 
 
-def alias_plans(db: Session, region: DBRegion) -> list[ProxyPlan]:
+def alias_plans(db: Session, region: DBRegion, removed_alias: str | None = None) -> list[ProxyPlan]:
     """The full alias map of the proxy, in the LiteLLM form, because the sync always sends the full map."""
     aliases = {
         row.alias: {"model": row.target, "hidden": True} if row.hidden else row.target
         for row in db.query(DBRegistryAlias).filter(DBRegistryAlias.region_id == region.id)
     }
-    return [_proxy_plan(region, aliases=aliases)]
+    return [_proxy_plan(region, aliases=aliases, removed_alias=removed_alias)]
 
 
 def _readable_row(row: dict) -> dict | None:
@@ -223,5 +224,5 @@ def plan_steps(plans: list[ProxyPlan]) -> list[dict]:
                 {"proxy": plan.proxy, "action": "read_proxy", "problems": [f"the proxy could not be read: {live}"]}
             )
         else:
-            steps += planner.plan(plan.proxy, live, plan.deployments, plan.fields, plan.aliases)
+            steps += planner.plan(plan.proxy, live, plan.deployments, plan.fields, plan.aliases, plan.removed_alias)
     return steps
