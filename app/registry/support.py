@@ -211,6 +211,8 @@ def _check_support(db: Session) -> dict:
     }
     release_models: dict[str, set] = {}
     now = datetime.now(UTC)
+    # Fetch every list before the first lock, so a slow proxy does not hold up writes to a proxy already checked.
+    fetched = []
     for region in active_regions(db):
         url = region.litellm_api_url.rstrip("/") + PRICE_LIST_PATH
         try:
@@ -221,13 +223,14 @@ def _check_support(db: Session) -> dict:
             continue
         priced_list = priced_entries(price_list) if isinstance(price_list, dict) else {}
         proxy_models = set(parse_model_list(priced_list, providers)[0])
-        proxy_prices = parse_prices(priced_list, providers)
         if not proxy_models:
             # A broken or empty list must not mark every model unpriced.
             stats["unreachable"][region.name] = "price list has no priced models of our providers"
             continue
-        # Lock and read the proxy after the slow fetch. A cloud region PATCH that committed during the fetch
-        # wins, and a later PATCH waits for this run, so its refresh is the last write. Region id order as in the API.
+        fetched.append((region, proxy_models, parse_prices(priced_list, providers)))
+    for region, proxy_models, proxy_prices in fetched:
+        # Lock and read the proxy after the fetches. A cloud region PATCH that committed during them wins,
+        # and a later PATCH waits for this run, so its refresh is the last write. Region id order as in the API.
         proxy = (
             db.query(DBRegistryProxy)
             .filter_by(region_id=region.id)
