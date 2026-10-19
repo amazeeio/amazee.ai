@@ -204,7 +204,6 @@ def _check_support(db: Session) -> dict:
     stats: dict = {"regions": {}, "unreachable": {}}
     providers = {p.name for p in db.query(DBRegistryProvider)}
     models = {ident: model.id for ident, model in models_by_ident(db).items()}
-    proxies = {p.region_id: p for p in db.query(DBRegistryProxy)}
     availability = Availability(db)
     releases = {
         row.version: row.payload
@@ -227,7 +226,15 @@ def _check_support(db: Session) -> dict:
             # A broken or empty list must not mark every model unpriced.
             stats["unreachable"][region.name] = "price list has no priced models of our providers"
             continue
-        proxy = proxies.get(region.id)
+        # Lock and read the proxy after the slow fetch. A cloud region PATCH that committed during the fetch
+        # wins, and a later PATCH waits for this run, so its refresh is the last write. Region id order as in the API.
+        proxy = (
+            db.query(DBRegistryProxy)
+            .filter_by(region_id=region.id)
+            .populate_existing()
+            .with_for_update()
+            .one_or_none()
+        )
         version = proxy.litellm_version if proxy else None
         cloud_regions = proxy.cloud_regions if proxy else {}
         if version in releases and version not in release_models:
