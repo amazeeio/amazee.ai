@@ -479,6 +479,8 @@ def list_events(
     response: Response,
     event_type: str | None = Query(None, alias="type"),
     since: datetime | None = Query(None),
+    model: str | None = Query(None),
+    proxy: str | None = Query(None),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -494,6 +496,13 @@ def list_events(
         query = query.filter(DBRegistryEvent.type == event_type)
     if since:
         query = query.filter(DBRegistryEvent.created_at >= since)
+    if model:
+        # Only the first slash splits: model ids can hold slashes (deepinfra/BAAI/bge-m3).
+        provider, _, model_id = model.partition("/")
+        query = query.filter(DBRegistryProvider.name == provider, DBRegistryModel.model_id == model_id)
+    if proxy:
+        # A model event with no proxy, such as an EOL date, does not match.
+        query = query.filter(DBRegion.name == proxy)
     # The events of one run share now(), so the id keeps their order.
     query = query.order_by(DBRegistryEvent.created_at.desc(), DBRegistryEvent.id.desc())
     return [

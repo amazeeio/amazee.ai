@@ -192,6 +192,27 @@ def test_events_filters(client, admin_token, events):
     assert keys(type="model.nope") == []
 
 
+def test_events_filter_by_model_and_proxy(client, admin_token, events):
+    def found(**params):
+        return [(e["key"], e["type"]) for e in _events(client, admin_token, **params).json()]
+
+    assert found(model="openai/gpt-4o") == [
+        ("openai/gpt-4o", "model.support_changed"), ("openai/gpt-4o", "model.discovered"),
+    ]
+    # A model id with a colon, and the provider part must match too.
+    assert found(model="bedrock/anthropic.claude-x-v1:0") == [
+        ("bedrock/anthropic.claude-x-v1:0", "model.eol_announced"),
+    ]
+    assert found(model="bedrock/gpt-4o") == []
+    # Only the events with that proxy: model events with no proxy do not match.
+    assert found(proxy="local-us1") == [("openai/gpt-4o", "model.support_changed")]
+    assert found(proxy="local-eu1") == []
+    assert found(model="openai/gpt-4o", proxy="local-us1", type="model.support_changed") == [
+        ("openai/gpt-4o", "model.support_changed"),
+    ]
+    assert _events(client, admin_token, model="openai/gpt-4o").headers["X-Total-Count"] == "2"
+
+
 def test_events_limit_and_offset(client, admin_token, events):
     response = _events(client, admin_token, limit=2, offset=1)
 
