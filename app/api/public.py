@@ -78,7 +78,32 @@ def _evict_stale_dedicated_entries() -> None:
         _dedicated_cache["team_expires"].pop(key, None)
 
 
-def _infer_provider(item: dict[str, Any]) -> str:
+# Catalog provider -> public value. The cloud ones keep the names this
+# endpoint has always served; everything else (deepinfra, mistral, …) is
+# passed through instead of collapsing to "other".
+_PUBLIC_PROVIDER = {"bedrock": "aws", "vertex_ai": "gcp"}
+
+
+def _catalog_providers(db: Session) -> dict[str, str]:
+    """``{model_id.lower(): public provider}`` for live catalog models. Aliases
+    are left out: their catalog provider is just "alias"."""
+    rows = (
+        db.query(DBModel.model_id, DBModel.provider)
+        .filter(DBModel.deleted_at.is_(None), DBModel.provider != "alias")
+        .all()
+    )
+    return {
+        model_id.lower(): _PUBLIC_PROVIDER.get(provider, provider)
+        for model_id, provider in rows
+    }
+
+
+def _infer_provider(item: dict[str, Any], catalog: dict[str, str] | None = None) -> str:
+    """The catalog's provider when it has the model; otherwise a guess from
+    LiteLLM (dedicated regions serve models the catalog never saw)."""
+    model_id = item.get("model_name") or item.get("model_info", {}).get("key") or ""
+    if catalog and model_id.lower() in catalog:
+        return catalog[model_id.lower()]
     provider = item.get("model_info", {}).get("litellm_provider")
     if provider and isinstance(provider, str):
         lowered = provider.lower()
@@ -590,6 +615,7 @@ def _extract_model_summary(
     alias_map: dict[str, str] | None = None,
     eol_dates: dict[str, str] | None = None,
     manufacturers: dict[str, tuple[str, str | None]] | None = None,
+    providers: dict[str, str] | None = None,
 ) -> PublicModelSummary:
     model_info = item.get("model_info", {})
     model_id = item.get("model_name") or model_info.get("key") or "unknown"
@@ -634,7 +660,7 @@ def _extract_model_summary(
         display_name=_to_display_name(model_id, aliases),
         aliases=aliases,
         metadata_raw=metadata_raw,
-        provider=_infer_provider(item),
+        provider=_infer_provider(item, providers),
         type=model_type,
         context_length=context_length,
         max_output_tokens=model_info.get("max_output_tokens"),
@@ -746,7 +772,10 @@ def _filter_region_groups_by_access(
             DBModelAccessGroup.slug,
             DBModelAccessGroup.is_public,
         )
-        .join(DBModelAccessGroupRegion, DBModelAccessGroupRegion.group_id == DBModelAccessGroup.id)
+        .join(
+            DBModelAccessGroupRegion,
+            DBModelAccessGroupRegion.group_id == DBModelAccessGroup.id,
+        )
         .filter(DBModelAccessGroupRegion.region_id.in_(region_ids))
         .all()
     ):
@@ -755,7 +784,9 @@ def _filter_region_groups_by_access(
             public_slugs.add(slug)
 
     group_ids = {gid for slugs in deployed.values() for gid in slugs.values()}
-    slug_by_id = {gid: slug for slugs in deployed.values() for slug, gid in slugs.items()}
+    slug_by_id = {
+        gid: slug for slugs in deployed.values() for slug, gid in slugs.items()
+    }
     groups_by_model: dict[str, set[str]] = {}
     for group_id, model_name in (
         db.query(DBModelAccessGroupModel.group_id, DBModel.model_id)
@@ -773,7 +804,10 @@ def _filter_region_groups_by_access(
         team_slugs = {
             slug
             for (slug,) in db.query(DBModelAccessGroup.slug)
-            .join(DBTeamModelAccessGroup, DBTeamModelAccessGroup.group_id == DBModelAccessGroup.id)
+            .join(
+                DBTeamModelAccessGroup,
+                DBTeamModelAccessGroup.group_id == DBModelAccessGroup.id,
+            )
             .filter(DBTeamModelAccessGroup.team_id == user.team_id)
             .all()
         }
@@ -782,7 +816,9 @@ def _filter_region_groups_by_access(
     alias_targets: dict[tuple[int, str], str] = {
         (region_id, alias_name): target_name
         for region_id, alias_name, target_name in (
-            db.query(DBModelAliasTarget.region_id, DBModel.model_id, target_model.model_id)
+            db.query(
+                DBModelAliasTarget.region_id, DBModel.model_id, target_model.model_id
+            )
             .join(DBModel, DBModel.id == DBModelAliasTarget.alias_model_id)
             .join(target_model, target_model.id == DBModelAliasTarget.target_model_id)
             .filter(
@@ -796,7 +832,11 @@ def _filter_region_groups_by_access(
     overrides: dict[tuple[int, str], set[str]] = {
         (region_id, model_name): set(slugs)
         for region_id, model_name, slugs in (
-            db.query(DBModelRegion.region_id, DBModel.model_id, DBModelRegion.access_groups_override)
+            db.query(
+                DBModelRegion.region_id,
+                DBModel.model_id,
+                DBModelRegion.access_groups_override,
+            )
             .join(DBModel, DBModel.id == DBModelRegion.model_id)
             .filter(
                 DBModelRegion.region_id.in_(region_ids),
@@ -816,7 +856,9 @@ def _filter_region_groups_by_access(
             continue
         region_slugs = set(deployed[region.id])
         default_slug = slug_by_id.get(region.default_access_group_id)
-        enforced = region.default_access_group_id is not None and catalog_manages(region.name)
+        enforced = region.default_access_group_id is not None and catalog_manages(
+            region.name
+        )
         if is_admin:
             visible_slugs = region_slugs
         else:
@@ -825,7 +867,9 @@ def _filter_region_groups_by_access(
         models: list[PublicModelSummary] = []
         for model in group.models:
             effective = alias_targets.get((region.id, model.model_id), model.model_id)
-            member_of = overrides.get((region.id, effective), groups_by_model.get(effective, set()))
+            member_of = overrides.get(
+                (region.id, effective), groups_by_model.get(effective, set())
+            )
             shown = member_of & visible_slugs
             if enforced and not is_admin and not shown:
                 continue
@@ -912,6 +956,7 @@ async def _fetch_region_model_group(
     region_name: str,
     eol_dates: dict[str, str] | None = None,
     manufacturers: dict[str, tuple[str, str | None]] | None = None,
+    providers: dict[str, str] | None = None,
 ) -> PublicRegionModels:
     async with _REGION_SEMAPHORE:
         try:
@@ -935,7 +980,12 @@ async def _fetch_region_model_group(
                 status="ga",
                 models=[
                     _extract_model_summary(
-                        item, profit_margin, alias_map, eol_dates, manufacturers
+                        item,
+                        profit_margin,
+                        alias_map,
+                        eol_dates,
+                        manufacturers,
+                        providers,
                     )
                     for item in items
                 ],
@@ -978,6 +1028,7 @@ async def list_public_models(
     access_group_filters = _parse_csv_filters(access_group)
     eol_dates = eol_dates_by_model(db)
     manufacturers = _catalog_manufacturers(db)
+    providers = _catalog_providers(db)
 
     # --- Public regions (cached globally) ---
     if _models_cache["expires_at"] > now:
@@ -1010,6 +1061,7 @@ async def list_public_models(
                     region.name,
                     eol_dates,
                     manufacturers,
+                    providers,
                 )
                 for region in regions_to_fetch
             ]
@@ -1095,6 +1147,7 @@ async def list_public_models(
                             region.name,
                             eol_dates,
                             manufacturers,
+                            providers,
                         )
                         for region in dedicated_to_fetch
                     ]
@@ -1126,7 +1179,9 @@ async def list_public_models(
     request.state._public_models_is_authenticated = user is not None
 
     visible_groups = _filter_region_groups_by_access(db, visible_groups, user)
-    visible_groups = _filter_region_groups_by_access_group(visible_groups, access_group_filters)
+    visible_groups = _filter_region_groups_by_access_group(
+        visible_groups, access_group_filters
+    )
     return _filter_region_groups_by_alias(visible_groups, alias_filters)
 
 
@@ -1159,6 +1214,7 @@ _AWS_REGION_GROUPS: dict[str, dict[str, str]] = {
     "EU": {"upstream_region": "eu-central-1", "provider_prefix": "eu."},
     "AU": {"upstream_region": "ap-southeast-2", "provider_prefix": "au."},
 }
+
 
 def _build_available_aws_models_by_group(
     upstream_models: list[dict[str, Any]],
