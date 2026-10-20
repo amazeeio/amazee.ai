@@ -160,6 +160,7 @@ def _deployment_fields(deployment: DBRegistryModelRegion, proxy: str, groups: di
         "output_cost_per_token": deployment.output_cost_per_token,
         "prices": deployment.prices,
         "access_groups": groups.get(deployment.id, []),
+        "credential": (deployment.litellm_params or {}).get("litellm_credential_name"),
     }
 
 

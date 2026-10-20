@@ -276,6 +276,7 @@ def test_model_detail(client, admin_token, deployed, registry_db):
         "output_cost_per_token": None,
         "prices": {},
         "access_groups": ["team-a", "team-b"],
+        "credential": "AWS Bedrock",
         # The deployed string has the `us.` geo prefix, so the geo price beats the cloud region price.
         "price": {
             "scope_kind": "geo", "scope": "us", "prices": {"input_cost_per_token": 3.3e-06}, "source": "litellm",

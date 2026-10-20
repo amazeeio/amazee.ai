@@ -103,10 +103,12 @@ def test_proxy_detail(client, admin_token, deployed, registry_db):
     assert gpt_entry["deployments"] == [{
         "proxy": "local-us1", "model_name": "gpt-4o", "litellm_model": "openai/gpt-4o", "enabled": True,
         "input_cost_per_token": None, "output_cost_per_token": None, "prices": {}, "access_groups": ["team-a"],
+        "credential": None,
     }]
     assert claude["support"]["supported"] is None
     assert [d["model_name"] for d in claude["deployments"]] == ["claude-x"]
     assert claude["deployments"][0]["access_groups"] == []
+    assert claude["deployments"][0]["credential"] == "AWS Bedrock"
     assert old_entry["status"] == "removed"
     assert old_entry["support"]["enabled"] is None
     assert old_entry["deployments"] == []

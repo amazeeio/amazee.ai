@@ -96,6 +96,8 @@ class RegistryDeploymentResponse(BaseModel):
     output_cost_per_token: float | None
     prices: dict
     access_groups: list[str]
+    # The name of the LiteLLM credential, or null when the credential is inline. Never its values.
+    credential: str | None
 
 
 class RegistryModelDeploymentResponse(RegistryDeploymentResponse):

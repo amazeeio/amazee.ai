@@ -100,7 +100,7 @@ def deployed(registry_db, models, proxy_region):
         DBRegistryModelRegion(
             model_id=claude.id, region_id=proxy_region.id, model_name="claude-x",
             litellm_model="bedrock/us.anthropic.claude-x-v1:0", litellm_deployment_id="us-claude",
-            enabled=True,
+            enabled=True, litellm_params={"litellm_credential_name": "AWS Bedrock"},
         ),
         DBRegistryModelSupport(
             model_id=gpt.id, region_id=proxy_region.id, priced=True, supported=True,
