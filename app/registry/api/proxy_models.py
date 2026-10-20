@@ -20,6 +20,7 @@ from app.registry.api.routes import (
     _model_query,
     _save,
     _split_key,
+    refuse,
     router,
 )
 from app.registry.models import (
@@ -42,6 +43,7 @@ from app.registry.rules import (
 )
 from app.registry.schemas import (
     RegistryModelDeploymentResponse,
+    RegistryProblem,
     RegistryProxyModelUpdate,
     RegistryRollout,
     RegistryRolloutEntry,
@@ -49,17 +51,19 @@ from app.registry.schemas import (
 from app.registry.support import Availability
 
 
-def _require_imported(proxies, names: dict[int, str]) -> None:
-    """Refuse a write on a proxy that the importer has not read.
+def _import_problems(proxies, names: dict[int, str]) -> list[RegistryProblem]:
+    """A write on a proxy that the importer has not read is refused, before the other checks.
 
     The import would add the live deployments next to the rows this API wrote, so one model would have two rows.
+    The other checks would also read the deployments as they are before the import.
     """
-    missing = sorted(names[proxy.region_id] for proxy in proxies if proxy.imported_at is None)
-    if missing:
-        raise HTTPException(status_code=409, detail=f"Import the proxy first: {', '.join(missing)}")
+    return [
+        RegistryProblem(message=f"Import the proxy {name} first", proxy=name, status=409)
+        for name in sorted(names[proxy.region_id] for proxy in proxies if proxy.imported_at is None)
+    ]
 
 
-def _group_ids(db: Session, slugs: list[str]) -> dict[str, int]:
+def _group_ids(db: Session, slugs: list[str], problems: list[RegistryProblem]) -> dict[str, int]:
     """The ids of the groups, locked until the links are written.
 
     FOR KEY SHARE waits for a group PUT or DELETE that holds the group, so the link write cannot deadlock with
@@ -72,9 +76,7 @@ def _group_ids(db: Session, slugs: list[str]) -> dict[str, int]:
         .order_by(DBRegistryAccessGroup.slug)
         .with_for_update(read=True, key_share=True)
     )
-    unknown = sorted(set(slugs) - found.keys())
-    if unknown:
-        raise HTTPException(status_code=422, detail=f"Unknown access groups: {', '.join(unknown)}")
+    problems += [RegistryProblem(message=f"Unknown access group {slug}") for slug in sorted(set(slugs) - found.keys())]
     return found
 
 
@@ -106,8 +108,8 @@ def _used_name_problem(owners, region_id: int, name: str, model_id: int) -> str 
     return None
 
 
-def _alias_guard(db: Session, region_id: int, names, changed_ids: list[int]) -> None:
-    """Refuse a delete or a rename that leaves an alias on the proxy with no target. `force` never skips it."""
+def _alias_problem(db: Session, region_id: int, names, changed_ids: list[int]) -> str | None:
+    """Why a delete or a rename leaves an alias on the proxy with no target, or None. `force` never skips it."""
     names = set(names)
     kept = {
         name
@@ -120,7 +122,7 @@ def _alias_guard(db: Session, region_id: int, names, changed_ids: list[int]) -> 
     # A name that another deployment keeps still works as a target.
     left = names - kept
     if not left:
-        return
+        return None
     aliases = [
         alias
         for (alias,) in db.query(DBRegistryAlias.alias)
@@ -128,10 +130,8 @@ def _alias_guard(db: Session, region_id: int, names, changed_ids: list[int]) -> 
         .order_by(DBRegistryAlias.alias)
     ]
     if aliases:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Aliases on this proxy point to this model name: {', '.join(aliases)}. Move or remove them first",
-        )
+        return f"Aliases on this proxy point to this model name: {', '.join(aliases)}. Move or remove them first"
+    return None
 
 
 def _deployments(db: Session, model: DBRegistryModel, region_id: int) -> list[DBRegistryModelRegion]:
@@ -178,23 +178,23 @@ def set_proxy_model(
     region = _find_proxy(db, proxy)
     model, provider = _find_model(db, key)
     proxy_row = _lock_proxies(db, [region.id])[region.id]
-    _require_imported([proxy_row], {region.id: region.name})
+    refuse(_import_problems([proxy_row], {region.id: region.name}))
     cloud_regions = proxy_row.cloud_regions or {}
     changes = (body or RegistryProxyModelUpdate()).model_dump(exclude_unset=True)
-    group_ids = _group_ids(db, changes["groups"]) if "groups" in changes else None
+    problems: list[RegistryProblem] = []
+    group_ids = _group_ids(db, changes["groups"], problems) if "groups" in changes else None
     deployments = _deployments(db, model, region.id)
+
+    def add(message: str, status: int = 422) -> None:
+        problems.append(RegistryProblem(message=message, proxy=region.name, model=key, status=status))
 
     def check_enable(availability: Availability, backends: list[str]) -> None:
         if force:
             return
         support = support_rows(db, [model.id], [region.id]).get((model.id, region.id))
-        problems = [
-            problem
-            for backend in backends
-            for problem in enable_problems(model, provider, support, availability, cloud_regions.get(provider), backend)
-        ]
-        if problems:
-            raise HTTPException(status_code=422, detail=list(dict.fromkeys(problems)))
+        for backend in backends:
+            for problem in enable_problems(model, provider, support, availability, cloud_regions.get(provider), backend):
+                add(problem)
 
     # Every check runs before the first change, so a 4xx changes nothing.
     if not deployments:
@@ -202,40 +202,43 @@ def set_proxy_model(
         name = changes.get("model_name", model.model_id)
         backend = changes.get("litellm_model") or default_backend(provider, model.model_id, cloud_regions, availability)
         if (region.id, name) in _alias_names(db, [region.id]):
-            raise HTTPException(status_code=422, detail=_alias_name_problem(name))
+            add(_alias_name_problem(name))
         if problem := _used_name_problem(_name_owners(db, [region.id], [name]), region.id, name, model.id):
-            raise HTTPException(status_code=422, detail=problem)
+            add(problem)
         if problem := backend_problem(backend, provider, model.model_id, cloud_regions):
-            raise HTTPException(status_code=422, detail=problem)
+            add(problem)
         enabled = changes.get("enabled", True)
         if enabled:
             check_enable(availability, [backend])
+        refuse(problems)
         deployments = [_add_deployment(db, model, region.id, name, backend, changes.get("credential"), enabled)]
         db.flush()
         response.status_code = 201
     else:
-        if len(deployments) > 1 and changes.keys() & {"model_name", "litellm_model"}:
-            raise HTTPException(
-                status_code=422,
-                detail="The model has several deployments on this proxy, so the change cannot pick one model_name "
-                "or litellm_model",
+        several = len(deployments) > 1 and bool(changes.keys() & {"model_name", "litellm_model"})
+        if several:
+            add(
+                "The model has several deployments on this proxy, so the change cannot pick one model_name "
+                "or litellm_model"
             )
         if "litellm_model" in changes and (
             problem := backend_problem(changes["litellm_model"], provider, model.model_id, cloud_regions)
         ):
-            raise HTTPException(status_code=422, detail=problem)
+            add(problem)
         old_name = deployments[0].model_name
-        if changes.get("model_name", old_name) != old_name:
+        # With several deployments, the rename is already refused, and the first one is not the one renamed.
+        if not several and changes.get("model_name", old_name) != old_name:
             if (region.id, changes["model_name"]) in _alias_names(db, [region.id]):
-                raise HTTPException(status_code=422, detail=_alias_name_problem(changes["model_name"]))
+                add(_alias_name_problem(changes["model_name"]))
             owners = _name_owners(db, [region.id], [changes["model_name"]])
             if problem := _used_name_problem(owners, region.id, changes["model_name"], model.id):
-                raise HTTPException(status_code=422, detail=problem)
-            _alias_guard(db, region.id, [old_name], [deployments[0].id])
+                add(problem)
+            if problem := _alias_problem(db, region.id, [old_name], [deployments[0].id]):
+                add(problem, 409)
         enabled = changes.get("enabled")
         if enabled is False and not force and any(d.enabled for d in deployments):
             if problem := removal_problem(model, date.today()):
-                raise HTTPException(status_code=409, detail=problem)
+                add(problem, 409)
         # A new backend string on a deployment that is on after the PUT can be one the region cannot run.
         # A change of only groups, credential or model_name keeps the backend, so it skips rules 4 and 5.
         checked = [
@@ -248,9 +251,10 @@ def set_proxy_model(
         if "litellm_model" not in changes:
             for backend in checked:
                 if problem := geo_problem(backend, provider, cloud_regions):
-                    raise HTTPException(status_code=422, detail=problem)
+                    add(problem)
         if checked:
             check_enable(Availability(db), checked)
+        refuse(problems)
 
         for deployment in deployments:
             for field in ("model_name", "litellm_model", "enabled"):
@@ -289,14 +293,17 @@ def remove_proxy_model(
 ):
     region = _find_proxy(db, proxy)
     model, _ = _find_model(db, key)
-    _require_imported(_lock_proxies(db, [region.id]).values(), {region.id: region.name})
+    refuse(_import_problems(_lock_proxies(db, [region.id]).values(), {region.id: region.name}))
     deployments = _deployments(db, model, region.id)
     if not deployments:
         raise HTTPException(status_code=404, detail="The model has no deployment on this proxy")
     ids = [d.id for d in deployments]
-    _alias_guard(db, region.id, [d.model_name for d in deployments], ids)
+    found = []
+    if problem := _alias_problem(db, region.id, [d.model_name for d in deployments], ids):
+        found.append(problem)
     if not force and (problem := removal_problem(model, date.today())):
-        raise HTTPException(status_code=409, detail=problem)
+        found.append(problem)
+    refuse([RegistryProblem(message=problem, proxy=region.name, model=key, status=409) for problem in found])
     # The foreign key of the group links cascades, so this also removes them.
     db.query(DBRegistryModelRegion).filter(DBRegistryModelRegion.id.in_(ids)).delete(synchronize_session=False)
     _save(db, dry_run)
@@ -317,13 +324,13 @@ def roll_out(
         .join(DBRegistryProxy, DBRegistryProxy.region_id == DBRegion.id)
         .filter(DBRegion.name.in_(body.proxies))
     }
-    if unknown := [name for name in body.proxies if name not in regions]:
-        raise HTTPException(status_code=422, detail=f"Unknown proxies: {', '.join(unknown)}")
+    problems = [
+        RegistryProblem(message=f"Unknown proxy {name}", proxy=name) for name in body.proxies if name not in regions
+    ]
     region_ids = [region.id for region in regions.values()]
     proxies = _lock_proxies(db, region_ids)
-    # One proxy that is not imported refuses the whole call, before the model check: the admin imports it,
-    # then runs the rollout again.
-    _require_imported(proxies.values(), {region.id: region.name for region in regions.values()})
+    # One proxy that is not imported refuses the whole call: the admin imports it, then runs the rollout again.
+    problems += _import_problems(proxies.values(), {region.id: region.name for region in regions.values()})
     keys = list(dict.fromkeys(body.models))
     idents = {_split_key(key) for key in keys}
     models = {
@@ -332,9 +339,10 @@ def roll_out(
             tuple_(DBRegistryProvider.name, DBRegistryModel.model_id).in_(idents)
         )
     }
-    if unknown := [key for key in keys if key not in models]:
-        raise HTTPException(status_code=422, detail=f"Unknown models: {', '.join(unknown)}")
-    group_ids = _group_ids(db, body.groups)
+    problems += [RegistryProblem(message=f"Unknown model {key}", model=key) for key in keys if key not in models]
+    # The rules below need a known model on a known, imported proxy for each pair.
+    refuse(problems)
+    group_ids = _group_ids(db, body.groups, problems)
 
     model_ids = [model.id for model, _ in models.values()]
     deployments: dict[tuple[int, int], list[DBRegistryModelRegion]] = defaultdict(list)
@@ -354,7 +362,7 @@ def roll_out(
     aliases = _alias_names(db, region_ids)
     owners = _name_owners(db, region_ids, [model.model_id for model, _ in models.values()])
 
-    # Every check runs before the first write, so a 422 changes nothing.
+    # Every check runs before the first write, so a 4xx changes nothing.
     entries, pairs = [], []
     for key in keys:
         model, provider = models[key]
@@ -363,7 +371,7 @@ def roll_out(
             cloud_regions = proxies[region_id].cloud_regions or {}
             support = supports.get((model.id, region_id))
             existing = deployments.get((model.id, region_id))
-            problems = []
+            found = []
             if existing:
                 action, model_name, backend = "updated", existing[0].model_name, existing[0].litellm_model
                 for deployment in existing:
@@ -371,9 +379,9 @@ def roll_out(
                         continue
                     # The region part of rule 5 covers a stored backend too, and force never skips it.
                     if problem := geo_problem(deployment.litellm_model, provider, cloud_regions):
-                        problems.append(problem)
+                        found.append(problem)
                     if not force:
-                        problems += enable_problems(
+                        found += enable_problems(
                             model, provider, support, availability, cloud_regions.get(provider),
                             deployment.litellm_model,
                         )
@@ -381,24 +389,23 @@ def roll_out(
                 action, model_name = "created", model.model_id
                 backend = default_backend(provider, model.model_id, cloud_regions, availability)
                 if (region_id, model_name) in aliases:
-                    problems.append(_alias_name_problem(model_name))
+                    found.append(_alias_name_problem(model_name))
                 if problem := _used_name_problem(owners, region_id, model_name, model.id):
-                    problems.append(problem)
+                    found.append(problem)
                 # Two models of this rollout with the same model id must not share the name either.
                 owners[(region_id, model_name)].add(model.id)
                 if problem := backend_problem(backend, provider, model.model_id, cloud_regions):
-                    problems.append(problem)
+                    found.append(problem)
                 if not force:
-                    problems += enable_problems(
+                    found += enable_problems(
                         model, provider, support, availability, cloud_regions.get(provider), backend
                     )
+            problems += [RegistryProblem(message=problem, proxy=name, model=key) for problem in found]
             entries.append(RegistryRolloutEntry(
                 proxy=name, model=key, action=action, model_name=model_name, litellm_model=backend,
-                problems=list(dict.fromkeys(problems)),
             ))
             pairs.append((model, region_id, existing))
-    if any(entry.problems for entry in entries):
-        raise HTTPException(status_code=422, detail=[entry.model_dump() for entry in entries])
+    refuse(problems)
 
     targets = []
     for entry, (model, region_id, existing) in zip(entries, pairs, strict=True):

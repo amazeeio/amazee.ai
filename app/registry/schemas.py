@@ -332,5 +332,3 @@ class RegistryRolloutEntry(BaseModel):
     action: Literal["created", "updated"]
     model_name: str
     litellm_model: str
-    # Empty after a success. A 422 lists every entry, each with its own problems.
-    problems: list[str]

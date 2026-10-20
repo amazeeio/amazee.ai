@@ -76,6 +76,11 @@ def auth(token):
     return {"Authorization": f"Bearer {token}"}
 
 
+def messages(response) -> list[str]:
+    """The messages of a refusal, in order."""
+    return [problem["message"] for problem in response.json()["problems"]]
+
+
 def ok(response, status=200):
     assert response.status_code == status, response.text
     return response.json()

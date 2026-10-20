@@ -9,7 +9,7 @@ from app.registry.models import (
     DBRegistryModelSupport,
     DBRegistryProxy,
 )
-from tests.registry.api.conftest import UNSUPPORTED, auth, model, ok, support_row
+from tests.registry.api.conftest import UNSUPPORTED, auth, messages, model, ok, support_row
 from tests.registry.api.conftest import deployment_state as _state
 from tests.registry.conftest import add_model
 
@@ -39,11 +39,8 @@ def _post(client, token, body, query=""):
     return client.post(f"{ROLLOUTS}{query}", json=body, headers=auth(token))
 
 
-def _entry(proxy, key, action, name, backend, problems=()):
-    return {
-        "proxy": proxy, "model": key, "action": action, "model_name": name, "litellm_model": backend,
-        "problems": list(problems),
-    }
+def _entry(proxy, key, action, name, backend):
+    return {"proxy": proxy, "model": key, "action": action, "model_name": name, "litellm_model": backend}
 
 
 def _groups(client, token, key):
@@ -99,11 +96,10 @@ def test_rollout_refuses_a_default_name_that_another_model_uses(client, admin_to
     response = _post(client, admin_token, {"models": ["openai/gpt-old"], "proxies": BOTH}, query)
 
     assert response.status_code == 422
-    assert response.json()["detail"] == [
-        _entry("local-us1", "openai/gpt-old", "created", "gpt-old", "openai/gpt-old",
-               ["the model name gpt-old is used by another model on this proxy"]),
-        _entry("local-eu1", "openai/gpt-old", "created", "gpt-old", "openai/gpt-old"),
-    ]
+    assert response.json()["problems"] == [{
+        "message": "the model name gpt-old is used by another model on this proxy",
+        "proxy": "local-us1", "model": "openai/gpt-old",
+    }]
     assert _state(registry_db) == before
 
 
@@ -115,9 +111,10 @@ def test_rollout_refuses_two_new_models_under_one_name(client, admin_token, regi
     response = _post(client, admin_token, body, "?force=true")
 
     assert response.status_code == 422
-    assert [entry["problems"] for entry in response.json()["detail"]] == [
-        [], ["the model name gpt-old is used by another model on this proxy"],
-    ]
+    assert response.json()["problems"] == [{
+        "message": "the model name gpt-old is used by another model on this proxy",
+        "proxy": "local-eu1", "model": "bedrock/gpt-old",
+    }]
 
 
 def test_rollout_updates_two_deployments_of_one_model_under_one_name(client, admin_token, registry_db, setup):
@@ -140,12 +137,7 @@ def test_rollout_is_all_or_nothing(client, admin_token, registry_db, setup):
 
     assert response.status_code == 422
     # gpt-4o is disabled on the EU proxy, whose LiteLLM version does not support it.
-    assert response.json()["detail"] == [
-        _entry("local-us1", "openai/gpt-old", "created", "gpt-old", "openai/gpt-old"),
-        _entry("local-eu1", "openai/gpt-old", "created", "gpt-old", "openai/gpt-old"),
-        _entry("local-us1", "openai/gpt-4o", "updated", "gpt-4o", "openai/gpt-4o"),
-        _entry("local-eu1", "openai/gpt-4o", "updated", "gpt-4o", "openai/gpt-4o", [UNSUPPORTED]),
-    ]
+    assert response.json()["problems"] == [{"message": UNSUPPORTED, "proxy": "local-eu1", "model": "openai/gpt-4o"}]
     assert _state(registry_db) == before
 
     assert len(ok(_post(client, admin_token, body, "?force=true"))) == 4
@@ -160,9 +152,9 @@ def test_rollout_refuses_a_model_name_that_is_an_alias(client, admin_token, regi
     response = _post(client, admin_token, {"models": ["openai/gpt-old"], "proxies": BOTH}, query)
 
     assert response.status_code == 422
-    assert [entry["problems"] for entry in response.json()["detail"]] == [
-        ["the model name gpt-old is an alias on this proxy"], [],
-    ]
+    assert response.json()["problems"] == [{
+        "message": "the model name gpt-old is an alias on this proxy", "proxy": "local-us1", "model": "openai/gpt-old",
+    }]
 
 
 @pytest.mark.parametrize(
@@ -186,6 +178,20 @@ def test_rollout_refuses_a_bad_body(client, admin_token, registry_db, setup, bar
 
     assert _post(client, admin_token, body).status_code == 422
     assert _state(registry_db) == before
+
+
+def test_rollout_lists_every_unknown_proxy_and_model(client, admin_token, setup, bare_region):
+    body = {"models": ["openai/nope", "openai/gpt-old", "nope"], "proxies": {"nope": None, "local-ap1": None, **BOTH}}
+
+    response = _post(client, admin_token, body)
+
+    assert response.status_code == 422
+    assert response.json()["problems"] == [
+        {"message": "Unknown proxy nope", "proxy": "nope", "model": None},
+        {"message": "Unknown proxy local-ap1", "proxy": "local-ap1", "model": None},
+        {"message": "Unknown model openai/nope", "proxy": None, "model": "openai/nope"},
+        {"message": "Unknown model nope", "proxy": None, "model": "nope"},
+    ]
 
 
 def test_rollout_dry_run_returns_the_entries_and_saves_nothing(client, admin_token, registry_db, setup):
@@ -242,11 +248,14 @@ def test_rollout_to_a_proxy_that_was_never_imported_gets_409(client, admin_token
     registry_db.commit()
     before = _state(registry_db)
 
-    for models in (["openai/gpt-old"], ["openai/gpt-old", "openai/nope"]):
-        response = _post(client, admin_token, {"models": models, "proxies": BOTH})
+    response = _post(client, admin_token, {"models": ["openai/gpt-old"], "proxies": BOTH})
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Import the proxy local-eu1 first"
 
-        assert response.status_code == 409
-        assert response.json()["detail"] == "Import the proxy first: local-eu1"
+    # An unknown model is listed too, and its 422 outweighs the 409.
+    response = _post(client, admin_token, {"models": ["openai/gpt-old", "openai/nope"], "proxies": BOTH})
+    assert response.status_code == 422
+    assert messages(response) == ["Import the proxy local-eu1 first", "Unknown model openai/nope"]
     assert _state(registry_db) == before
 
 
@@ -263,7 +272,7 @@ def test_rollout_that_turns_on_an_imported_global_backend_gets_422(client, admin
     response = _post(client, admin_token, {"models": ["bedrock/anthropic.new-v1:0"], "proxies": {"local-us1": None}}, query)
 
     assert response.status_code == 422
-    assert "the geo prefix global is not allowed on this proxy" in response.json()["detail"][0]["problems"]
+    assert "the geo prefix global is not allowed on this proxy" in messages(response)
     assert _state(registry_db) == before
 
 

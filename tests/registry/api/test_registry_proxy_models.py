@@ -18,6 +18,7 @@ from tests.registry.api.conftest import (
     UNKNOWN,
     UNSUPPORTED,
     auth,
+    messages,
     model,
     ok,
     support_row,
@@ -83,7 +84,7 @@ def test_put_with_no_body_creates_a_deployment_with_the_defaults(client, admin_t
         "proxy": "local-us1", "model_name": "gpt-old", "litellm_model": "openai/gpt-old",
         "litellm_deployment_id": None, "enabled": True,
         "input_cost_per_token": None, "output_cost_per_token": None, "prices": {}, "access_groups": [],
-        "price": None,
+        "credential": None, "price": None,
     }]
     row = _deployment(registry_db, setup["us"].id, "gpt-old")
     assert (row.litellm_deployment_id, row.litellm_params, row.model_info) == (None, {}, {})
@@ -181,7 +182,10 @@ def test_put_refuses_a_geo_prefix_the_proxy_does_not_allow(client, admin_token, 
     response = _put(client, admin_token, "local-us1", f"bedrock/{NEW}", {"litellm_model": f"bedrock/eu.{NEW}"}, query)
 
     assert response.status_code == 422
-    assert response.json()["detail"] == "the geo prefix eu is not allowed on this proxy"
+    # Without force, the enable check runs too, and us-east-1 offers the model through no geo profile.
+    assert messages(response) == ["the geo prefix eu is not allowed on this proxy"] + (
+        [] if query else ["the proxy's cloud region does not offer the model through a geo profile"]
+    )
 
 
 def test_put_refuses_a_backend_for_another_model(client, admin_token, setup):
@@ -210,7 +214,7 @@ def test_put_enable_check(client, admin_token, registry_db, setup, kwargs, probl
 
     response = _put(client, admin_token, "local-us1", f"bedrock/{NEW}")
     assert response.status_code == 422
-    assert response.json()["detail"] == [problem]
+    assert response.json()["detail"] == problem
 
     ok(_put(client, admin_token, "local-us1", f"bedrock/{NEW}", query="?force=true"), 201)
 
@@ -221,7 +225,7 @@ def test_put_refuses_an_in_region_id_that_needs_a_geo_profile(client, admin_toke
 
     response = _put(client, admin_token, "local-us1", f"bedrock/{NEW}", body)
     assert response.status_code == 422
-    assert response.json()["detail"] == [NEEDS_PROFILE]
+    assert response.json()["detail"] == NEEDS_PROFILE
 
     ok(_put(client, admin_token, "local-us1", f"bedrock/{NEW}", body, "?force=true"), 201)
 
@@ -230,9 +234,22 @@ def test_put_that_turns_a_deployment_on_runs_the_enable_check(client, admin_toke
     # gpt-4o is disabled on the EU proxy, whose LiteLLM version does not support it.
     response = _put(client, admin_token, "local-eu1", "openai/gpt-4o", {"enabled": True})
     assert response.status_code == 422
-    assert response.json()["detail"] == [UNSUPPORTED]
+    assert response.json()["detail"] == UNSUPPORTED
 
     assert ok(_put(client, admin_token, "local-eu1", "openai/gpt-4o", {"enabled": True}, "?force=true"))[0]["enabled"]
+
+
+def test_put_lists_an_unknown_group_with_the_enable_problems(client, admin_token, registry_db, setup):
+    before = _state(registry_db)
+
+    response = _put(client, admin_token, "local-eu1", "openai/gpt-4o", {"enabled": True, "groups": ["nope", "alpha"]})
+
+    assert response.status_code == 422
+    assert response.json()["problems"] == [
+        {"message": "Unknown access group nope", "proxy": None, "model": None},
+        {"message": UNSUPPORTED, "proxy": "local-eu1", "model": "openai/gpt-4o"},
+    ]
+    assert _state(registry_db) == before
 
 
 def test_put_that_changes_only_groups_or_credential_skips_the_enable_check(client, admin_token, setup):
@@ -259,7 +276,7 @@ def test_put_that_changes_the_backend_of_an_enabled_deployment_runs_the_enable_c
 
     response = _put(client, admin_token, "local-us1", f"bedrock/{NEW}", body)
     assert response.status_code == 422
-    assert response.json()["detail"] == [problem]
+    assert response.json()["detail"] == problem
 
     assert ok(_put(client, admin_token, "local-us1", f"bedrock/{NEW}", body, "?force=true"))[0]["litellm_model"] == (
         f"bedrock/{NEW}"
@@ -305,10 +322,20 @@ def test_put_renames_when_another_deployment_keeps_the_alias_target(client, admi
 
 
 def test_put_refuses_a_model_name_that_is_an_alias(client, admin_token, setup):
-    for key in ("openai/gpt-old", "openai/gpt-4o"):
-        response = _put(client, admin_token, "local-us1", key, {"model_name": "chat"})
-        assert response.status_code == 422
-        assert response.json()["detail"] == "the model name chat is an alias on this proxy"
+    response = _put(client, admin_token, "local-us1", "openai/gpt-old", {"model_name": "chat"})
+    assert response.status_code == 422
+    assert response.json()["detail"] == "the model name chat is an alias on this proxy"
+
+    # The rename also leaves the alias zeta with no target. A 422 among the problems outweighs the 409.
+    response = _put(client, admin_token, "local-us1", "openai/gpt-4o", {"model_name": "chat"})
+    assert response.status_code == 422
+    assert response.json()["problems"] == [
+        {"message": "the model name chat is an alias on this proxy", "proxy": "local-us1", "model": "openai/gpt-4o"},
+        {
+            "message": "Aliases on this proxy point to this model name: zeta. Move or remove them first",
+            "proxy": "local-us1", "model": "openai/gpt-4o",
+        },
+    ]
 
     # The alias lives only on the US proxy.
     ok(_put(client, admin_token, "local-eu1", "openai/gpt-old", {"model_name": "chat"}), 201)
@@ -481,7 +508,9 @@ def test_writes_on_a_proxy_that_was_never_imported_get_409(client, admin_token, 
         _delete(client, admin_token, "local-eu1", "openai/gpt-4o"),
     ):
         assert response.status_code == 409
-        assert response.json()["detail"] == "Import the proxy first: local-eu1"
+        assert response.json()["problems"] == [
+            {"message": "Import the proxy local-eu1 first", "proxy": "local-eu1", "model": None},
+        ]
     assert _state(registry_db) == before
 
 
@@ -498,7 +527,9 @@ def test_put_that_turns_on_an_imported_global_backend_gets_422(client, admin_tok
     response = _put(client, admin_token, "local-us1", f"bedrock/{NEW}", {"enabled": True}, query)
 
     assert response.status_code == 422
-    assert response.json()["detail"] == "the geo prefix global is not allowed on this proxy"
+    assert messages(response)[0] == "the geo prefix global is not allowed on this proxy"
+    # Without force, the enable check adds its own problem.
+    assert len(messages(response)) == (1 if query else 2)
     assert _state(registry_db) == before
 
 
@@ -508,7 +539,7 @@ def test_put_refuses_a_geo_backend_that_the_region_offers_only_provisioned(clien
 
     response = _put(client, admin_token, "local-us1", f"bedrock/{NEW}", body)
     assert response.status_code == 422
-    assert response.json()["detail"] == [PROVISIONED]
+    assert response.json()["detail"] == PROVISIONED
 
     ok(_put(client, admin_token, "local-us1", f"bedrock/{NEW}", body, "?force=true"), 201)
 
