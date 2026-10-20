@@ -4,8 +4,9 @@ import pytest
 
 from app.db.models import DBRegion
 from app.registry.config import BEDROCK_GEO_PREFIXES
-from app.registry.models import DBRegistryCloudAvailability, DBRegistryModel
+from app.registry.models import DBRegistryCloudAvailability, DBRegistryModel, DBRegistryModelPrice
 from app.registry.rules import (
+    NO_PRICE,
     _GEOS_BY_FAMILY,
     _GEOS_BY_REGION,
     backend_problem,
@@ -127,7 +128,8 @@ def test_default_backend(registry_db, provider, model_id, cloud_regions, call_ty
     "support, call_types, blocked, problems",
     [
         (support_row(), ["ON_DEMAND"], False, []),
-        (None, ["ON_DEMAND"], False, [UNKNOWN]),
+        # With no support row, the proxy's price is unknown too.
+        (None, ["ON_DEMAND"], False, [UNKNOWN, NO_PRICE]),
         (support_row(supported=None), ["ON_DEMAND"], False, [UNKNOWN]),
         (support_row(supported=False), ["ON_DEMAND"], False, [UNSUPPORTED]),
         (support_row(region_available=False), ["ON_DEMAND"], False, [UNAVAILABLE]),
@@ -144,7 +146,35 @@ def test_enable_problems(registry_db, support, call_types, blocked, problems):
     availability = _availability(registry_db, call_types)
     model = DBRegistryModel(model_id=CLAUDE, blocked=blocked)
 
-    assert enable_problems(model, "bedrock", support, availability, "us-east-1", f"bedrock/{CLAUDE}") == problems
+    assert enable_problems(model, "bedrock", support, availability, "us-east-1", f"bedrock/{CLAUDE}", []) == problems
+
+
+def _price(scope_kind="base", scope=""):
+    return DBRegistryModelPrice(
+        scope_kind=scope_kind, scope=scope, prices={"input_cost_per_token": 1e-06}, source="litellm"
+    )
+
+
+@pytest.mark.parametrize(
+    "priced, prices, own_prices, backend, problems",
+    [
+        (True, [], None, f"bedrock/{CLAUDE}", []),
+        (False, [_price()], None, f"bedrock/{CLAUDE}", []),
+        (False, [_price("cloud_region", "us-east-1")], None, f"bedrock/{CLAUDE}", []),
+        (False, [], {"input_cost_per_token": 1e-06}, f"bedrock/{CLAUDE}", []),
+        (False, [], None, f"bedrock/{CLAUDE}", [NO_PRICE]),
+        (False, [], {}, f"bedrock/{CLAUDE}", [NO_PRICE]),
+        # A geo id takes its geo price or the base price, never a cloud region price.
+        (False, [_price("cloud_region", "us-east-1")], None, f"bedrock/us.{CLAUDE}", [NO_PRICE]),
+        (False, [_price("geo", "us")], None, f"bedrock/us.{CLAUDE}", []),
+    ],
+)
+def test_enable_problems_price(registry_db, priced, prices, own_prices, backend, problems):
+    availability = _availability(registry_db, ["ON_DEMAND", "INFERENCE_PROFILE"])
+    model = DBRegistryModel(model_id=CLAUDE, blocked=False)
+    support = support_row(priced=priced)
+
+    assert enable_problems(model, "bedrock", support, availability, "us-east-1", backend, prices, own_prices) == problems
 
 
 def test_support_rows_reads_only_the_given_models_and_proxies(registry_db, proxy_region):
@@ -181,7 +211,7 @@ def test_needs_profile_with_no_geo_prefix_gives_no_hint(registry_db):
     availability = _availability(registry_db, ["INFERENCE_PROFILE"], "me-central-1")
     model = DBRegistryModel(model_id=CLAUDE, blocked=False)
 
-    problems = enable_problems(model, "bedrock", support_row(), availability, "me-central-1", f"bedrock/{CLAUDE}")
+    problems = enable_problems(model, "bedrock", support_row(), availability, "me-central-1", f"bedrock/{CLAUDE}", [])
 
     assert problems == ["the proxy's cloud region offers the model only through a geo profile"]
 
@@ -201,7 +231,7 @@ def test_enable_problems_of_a_geo_backend(registry_db, call_types, region, probl
     availability = _availability(registry_db, call_types, region)
     model = DBRegistryModel(model_id=CLAUDE, blocked=False)
 
-    assert enable_problems(model, "bedrock", support_row(), availability, "us-east-1", f"bedrock/us.{CLAUDE}") == problems
+    assert enable_problems(model, "bedrock", support_row(), availability, "us-east-1", f"bedrock/us.{CLAUDE}", []) == problems
 
 
 @pytest.mark.parametrize(

@@ -23,6 +23,7 @@ from tests.registry.api.conftest import (
     ok,
     support_row,
 )
+from app.registry.rules import NO_PRICE
 from tests.registry.api.conftest import deployment_state as _state
 from tests.registry.conftest import add_model
 
@@ -212,17 +213,19 @@ def test_put_refuses_a_backend_for_another_model(client, admin_token, setup):
 
 
 @pytest.mark.parametrize(
-    "kwargs, problem",
+    "kwargs, problems",
     [
-        ({"support": False}, UNKNOWN),
-        ({"supported": None}, UNKNOWN),
-        ({"supported": False}, UNSUPPORTED),
-        ({"region_available": False}, UNAVAILABLE),
-        ({"call_types": ["PROVISIONED"]}, PROVISIONED),
-        ({"blocked": True}, BLOCKED),
+        # With no support row, the proxy's price is unknown too.
+        ({"support": False}, [UNKNOWN, NO_PRICE]),
+        ({"supported": None}, [UNKNOWN]),
+        ({"supported": False}, [UNSUPPORTED]),
+        ({"region_available": False}, [UNAVAILABLE]),
+        ({"call_types": ["PROVISIONED"]}, [PROVISIONED]),
+        ({"blocked": True}, [BLOCKED]),
+        ({"priced": False}, [NO_PRICE]),
     ],
 )
-def test_put_enable_check(client, admin_token, registry_db, setup, kwargs, problem):
+def test_put_enable_check(client, admin_token, registry_db, setup, kwargs, problems):
     blocked = kwargs.pop("blocked", False)
     row = _new_bedrock_model(registry_db, setup["us"].id, **kwargs)
     row.blocked = blocked
@@ -230,9 +233,19 @@ def test_put_enable_check(client, admin_token, registry_db, setup, kwargs, probl
 
     response = _put(client, admin_token, "local-us1", f"bedrock/{NEW}")
     assert response.status_code == 422
-    assert response.json()["detail"] == problem
+    assert messages(response) == problems
 
     ok(_put(client, admin_token, "local-us1", f"bedrock/{NEW}", query="?force=true"), 201)
+
+
+def test_put_enables_a_model_with_no_proxy_price_after_a_manual_price(client, admin_token, registry_db, setup):
+    _new_bedrock_model(registry_db, setup["us"].id, priced=False)
+    assert messages(_put(client, admin_token, "local-us1", f"bedrock/{NEW}", query="?dry_run=true")) == [NO_PRICE]
+
+    prices = {"base": {"input_cost_per_token": 1e-06, "output_cost_per_token": 2e-06}}
+    ok(client.patch(f"/registry/models/bedrock/{NEW}", json={"prices": prices}, headers=auth(admin_token)))
+
+    ok(_put(client, admin_token, "local-us1", f"bedrock/{NEW}"), 201)
 
 
 def test_put_refuses_an_in_region_id_that_needs_a_geo_profile(client, admin_token, registry_db, setup):

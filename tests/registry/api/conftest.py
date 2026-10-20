@@ -145,9 +145,9 @@ def deployed(registry_db, models, proxy_region):
     return {"us": proxy_region, "eu": eu}
 
 
-def support_row(model_id=None, region_id=None, supported=True, region_available=True):
+def support_row(model_id=None, region_id=None, supported=True, region_available=True, priced=True):
     return DBRegistryModelSupport(
-        model_id=model_id, region_id=region_id, priced=True, supported=supported,
+        model_id=model_id, region_id=region_id, priced=priced, supported=supported,
         region_available=region_available, checked_at=CHECKED_AT,
     )
 

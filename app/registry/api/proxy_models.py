@@ -188,12 +188,17 @@ def set_proxy_model(
     def add(message: str, status: int = 422) -> None:
         problems.append(RegistryProblem(message=message, proxy=region.name, model=key, status=status))
 
-    def check_enable(availability: Availability, backends: list[str]) -> None:
+    prices = db.query(DBRegistryModelPrice).filter_by(model_id=model.id).all()
+
+    def check_enable(availability: Availability, targets: list[tuple[str, dict]]) -> None:
+        """Rule 4 for each (backend, prices stored on the deployment) that will be on."""
         if force:
             return
         support = support_rows(db, [model.id], [region.id]).get((model.id, region.id))
-        for backend in backends:
-            for problem in enable_problems(model, provider, support, availability, cloud_regions.get(provider), backend):
+        for backend, own_prices in targets:
+            for problem in enable_problems(
+                model, provider, support, availability, cloud_regions.get(provider), backend, prices, own_prices
+            ):
                 add(problem)
 
     # Every check runs before the first change, so a 4xx changes nothing.
@@ -209,7 +214,7 @@ def set_proxy_model(
             add(problem)
         enabled = changes.get("enabled", True)
         if enabled:
-            check_enable(availability, [backend])
+            check_enable(availability, [(backend, {})])
         refuse(problems)
         deployments = [_add_deployment(db, model, region.id, name, backend, changes.get("credential"), enabled)]
         db.flush()
@@ -242,14 +247,14 @@ def set_proxy_model(
         # A new backend string on a deployment that is on after the PUT can be one the region cannot run.
         # A change of only groups, credential or model_name keeps the backend, so it skips rules 4 and 5.
         checked = [
-            changes.get("litellm_model", d.litellm_model)
+            (changes.get("litellm_model", d.litellm_model), d.prices)
             for d in deployments
             if changes.get("enabled", d.enabled)
             and (not d.enabled or changes.get("litellm_model", d.litellm_model) != d.litellm_model)
         ]
         # A stored backend gets the region part of rule 5; a new one had the full check above. Force skips neither.
         if "litellm_model" not in changes:
-            for backend in checked:
+            for backend, _ in checked:
                 if problem := geo_problem(backend, provider, cloud_regions):
                     add(problem)
         if checked:
@@ -275,7 +280,6 @@ def set_proxy_model(
         )
     db.flush()
     # The model's deployments on the proxy, in the shape of the model detail.
-    prices = db.query(DBRegistryModelPrice).filter_by(model_id=model.id).all()
     result = _deployment_responses(
         db, prices, provider, [(d, region.name) for d in _deployments(db, model, region.id)]
     )
@@ -358,6 +362,9 @@ def roll_out(
         )
     )
     supports = support_rows(db, model_ids, region_ids)
+    prices: dict[int, list[DBRegistryModelPrice]] = defaultdict(list)
+    for price in db.query(DBRegistryModelPrice).filter(DBRegistryModelPrice.model_id.in_(model_ids)):
+        prices[price.model_id].append(price)
     availability = Availability(db)
     aliases = _alias_names(db, region_ids)
     owners = _name_owners(db, region_ids, [model.model_id for model, _ in models.values()])
@@ -383,7 +390,7 @@ def roll_out(
                     if not force:
                         found += enable_problems(
                             model, provider, support, availability, cloud_regions.get(provider),
-                            deployment.litellm_model,
+                            deployment.litellm_model, prices[model.id], deployment.prices,
                         )
             else:
                 action, model_name = "created", model.model_id
@@ -398,7 +405,7 @@ def roll_out(
                     found.append(problem)
                 if not force:
                     found += enable_problems(
-                        model, provider, support, availability, cloud_regions.get(provider), backend
+                        model, provider, support, availability, cloud_regions.get(provider), backend, prices[model.id]
                     )
             problems += [RegistryProblem(message=problem, proxy=name, model=key) for problem in found]
             entries.append(RegistryRolloutEntry(

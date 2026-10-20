@@ -9,6 +9,7 @@ from app.registry.models import (
     DBRegistryModelSupport,
     DBRegistryProxy,
 )
+from app.registry.rules import NO_PRICE
 from tests.registry.api.conftest import UNSUPPORTED, auth, messages, model, ok, support_row
 from tests.registry.api.conftest import deployment_state as _state
 from tests.registry.conftest import add_model
@@ -193,6 +194,19 @@ def test_rollout_lists_an_unknown_group_with_the_rule_problems(client, admin_tok
         {"message": UNSUPPORTED, "proxy": "local-eu1", "model": "openai/gpt-4o"},
     ]
     assert _state(registry_db) == before
+
+
+def test_rollout_refuses_a_model_with_no_price_anywhere(client, admin_token, registry_db, setup):
+    row = add_model(registry_db, "openai", "gpt-free")
+    registry_db.add(support_row(row.id, setup["us"].id, priced=False))
+    registry_db.commit()
+    body = {"models": ["openai/gpt-free"], "proxies": {"local-us1": None}}
+
+    response = _post(client, admin_token, body)
+
+    assert response.status_code == 422
+    assert response.json()["problems"] == [{"message": NO_PRICE, "proxy": "local-us1", "model": "openai/gpt-free"}]
+    assert len(ok(_post(client, admin_token, body, "?force=true"))) == 1
 
 
 def test_rollout_lists_every_unknown_proxy_and_model(client, admin_token, setup, bare_region):

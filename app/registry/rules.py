@@ -8,7 +8,8 @@ from datetime import date
 from sqlalchemy.orm import Session
 
 from app.registry.litellm import normalize_provider, parse_key
-from app.registry.models import DBRegistryModel, DBRegistryModelSupport
+from app.registry.models import DBRegistryModel, DBRegistryModelPrice, DBRegistryModelSupport
+from app.registry.prices import pick_price
 from app.registry.support import Availability
 
 _GEOS_BY_REGION = {
@@ -27,6 +28,7 @@ _GEOS_BY_FAMILY = (
     ("il-", ("il",)),
     ("mx-", ("mx",)),
 )
+NO_PRICE = "the model has no price on the proxy or in the registry; set one with PATCH /registry/models/{key}"
 
 
 def geo_prefixes(cloud_region: str | None) -> tuple[str, ...]:
@@ -125,8 +127,13 @@ def enable_problems(
     availability: Availability,
     cloud_region: str | None,
     backend: str,
+    prices: list[DBRegistryModelPrice],
+    own_prices: dict | None = None,
 ) -> list[str]:
-    """Rule 4: why the model cannot be turned on with this backend on the proxy. Reads only the given data."""
+    """Rule 4: why the model cannot be turned on with this backend on the proxy. Reads only the given data.
+
+    `prices` are the model's registry price rows, `own_prices` the prices stored on the deployment.
+    """
     problems = []
     if support is None or support.supported is None:
         problems.append("support is unknown: the support check has no result for this proxy")
@@ -138,6 +145,11 @@ def enable_problems(
         problems.append(problem)
     if model.blocked:
         problems.append("the model is blocked")
+    # With no price anywhere, LiteLLM logs the spend as $0, so budgets miss it.
+    # ponytail: `priced` is per model, not per scope, so a proxy price for another geo passes; the daily
+    # `deployed_unpriced` stat still lists it. Store the proxy's scopes if that gap matters.
+    if not own_prices and not (support and support.priced) and pick_price(prices, provider, backend, cloud_region) is None:
+        problems.append(NO_PRICE)
     return problems
 
 
