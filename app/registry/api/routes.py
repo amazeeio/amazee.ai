@@ -3,7 +3,8 @@
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
@@ -37,10 +38,12 @@ from app.registry.schemas import (
     RegistryModelProxyResponse,
     RegistryModelResponse,
     RegistryModelUpdate,
+    RegistryProblem,
     RegistryProviderResponse,
     RegistryProxyDetailResponse,
     RegistryProxyModelResponse,
     RegistryProxyResponse,
+    RegistryRefusal,
     RegistryRunResponse,
 )
 
@@ -50,6 +53,26 @@ STALE_AFTER = timedelta(hours=48)
 router = APIRouter(
     prefix="/registry", tags=["registry"], dependencies=[Depends(get_role_min_system_admin)]
 )
+
+
+class Refused(Exception):
+    """A write that the checks refuse. It carries every problem they found, so the admin fixes them in one go."""
+
+    def __init__(self, problems: list[RegistryProblem]):
+        super().__init__()
+        self.problems = list(dict.fromkeys(problems))
+
+
+def refuse(problems: list[RegistryProblem]) -> None:
+    if problems:
+        raise Refused(problems)
+
+
+def refusal_response(_request: Request, exc: Refused) -> JSONResponse:
+    # A request that can never pass outweighs a conflict that the admin can clear.
+    status = 422 if any(problem.status == 422 for problem in exc.problems) else 409
+    body = RegistryRefusal(detail="; ".join(problem.message for problem in exc.problems), problems=exc.problems)
+    return JSONResponse(status_code=status, content=body.model_dump())
 
 
 def _model_query(db: Session):

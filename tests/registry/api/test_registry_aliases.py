@@ -115,6 +115,19 @@ def test_put_rejects_a_bad_alias_or_body(client, admin_token, registry_db, alias
     assert _state(registry_db) == before
 
 
+def test_put_lists_both_name_problems(client, admin_token, registry_db, aliases):
+    before = _state(registry_db)
+
+    response = _put(client, admin_token, "local-us1/gpt-4o", {"target": "nope"})
+
+    assert response.status_code == 422, response.text
+    assert response.json()["problems"] == [
+        {"message": "The alias is the name of a deployment on this proxy", "proxy": "local-us1", "model": None},
+        {"message": "The target is not a deployment on this proxy", "proxy": "local-us1", "model": None},
+    ]
+    assert _state(registry_db) == before
+
+
 def test_put_takes_a_name_of_128_allowed_characters(client, admin_token, deployed):
     name = "Az09._:-" * 16
 

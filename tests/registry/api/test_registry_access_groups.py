@@ -71,6 +71,10 @@ def test_post_with_a_known_slug_is_409(client, admin_token, registry_db, groups)
     response = client.post(GROUPS, json={"slug": "beta", "label": "Other"}, headers=auth(admin_token))
 
     assert response.status_code == 409
+    assert response.json() == {
+        "detail": "Access group already exists",
+        "problems": [{"message": "Access group already exists", "proxy": None, "model": None}],
+    }
     assert _groups_state(registry_db) == before
 
 
@@ -203,6 +207,27 @@ def test_put_rejects_a_bad_entry_and_changes_nothing(client, admin_token, regist
     assert _links_state(registry_db) == before
 
 
+def test_put_lists_every_bad_entry_in_one_refusal(client, admin_token, groups):
+    entries = [
+        US_GPT,
+        {"proxy": "nope", "model": "openai/gpt-4o"},
+        {"proxy": "local-us1", "model": "openai/nope"},
+        {"proxy": "nope", "model": "openai/gpt-4o"},
+    ]
+
+    response = _put(client, admin_token, "beta", entries)
+
+    assert response.status_code == 422, response.text
+    # The repeated entry gives one problem.
+    assert response.json() == {
+        "detail": "openai/gpt-4o has no deployment on nope; openai/nope has no deployment on local-us1",
+        "problems": [
+            {"message": "openai/gpt-4o has no deployment on nope", "proxy": "nope", "model": "openai/gpt-4o"},
+            {"message": "openai/nope has no deployment on local-us1", "proxy": "local-us1", "model": "openai/nope"},
+        ],
+    }
+
+
 def test_put_without_the_models_field_is_422(client, admin_token, groups):
     response = client.put(f"{GROUPS}/beta/models", json={}, headers=auth(admin_token))
 
@@ -273,6 +298,19 @@ def test_delete_is_409_while_a_deployment_carries_the_group(client, admin_token,
 
     assert _delete(client, admin_token, "beta").status_code == 204
     assert _slugs(registry_db) == ["alpha"]
+
+
+def test_delete_lists_both_conflicts(client, admin_token, registry_db, groups):
+    registry_db.add(DBModelAccessGroup(slug="beta", label="Beta"))
+    registry_db.commit()
+
+    response = _delete(client, admin_token, "beta")
+
+    assert response.status_code == 409, response.text
+    assert [problem["message"] for problem in response.json()["problems"]] == [
+        "The old catalog still has this access group", "Deployments still carry this access group",
+    ]
+    assert "beta" in _slugs(registry_db)
 
 
 def test_delete_unknown_slug_is_404(client, admin_token, groups):

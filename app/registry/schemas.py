@@ -2,7 +2,7 @@
 
 import json
 from datetime import date, datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import (
     BaseModel,
@@ -272,3 +272,25 @@ class RegistryAliasUpdate(_Strict):
     target: str = Field(min_length=1)
     # StrictBool with no `| None`: an explicit null gets a 422.
     hidden: StrictBool = False
+
+
+class RegistryProblem(BaseModel):
+    """One reason why the registry refuses a write."""
+
+    # Frozen, so a refusal can drop a problem that two checks both found.
+    model_config = ConfigDict(frozen=True)
+
+    message: str
+    # The proxy and the model key that the problem is about, when it is about one.
+    proxy: str | None = None
+    model: str | None = None
+    # 409 for a conflict with the stored state, 422 for a request that can never pass. Not in the body.
+    status: Literal[409, 422] = Field(422, exclude=True)
+
+
+class RegistryRefusal(BaseModel):
+    """The body of every 409 and 422 that a registry check gives. Body validation keeps FastAPI's shape."""
+
+    # Every message in one line, for a client that reads only `detail`.
+    detail: str
+    problems: list[RegistryProblem]

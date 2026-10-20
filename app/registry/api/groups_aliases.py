@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 # The registry's only read of an old catalog table, for the group slugs. It goes when the old catalog goes.
 from app.db.models import DBModelAccessGroup, DBRegion
-from app.registry.api.routes import _find_proxy, _save, router
+from app.registry.api.routes import Refused, _find_proxy, _save, refuse, router
 from app.registry.models import (
     DBRegistryAccessGroup,
     DBRegistryAlias,
@@ -28,6 +28,7 @@ from app.registry.schemas import (
     RegistryAccessGroupUpdate,
     RegistryAliasResponse,
     RegistryAliasUpdate,
+    RegistryProblem,
 )
 
 
@@ -105,7 +106,7 @@ def create_access_group(
         db.flush()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail="Access group already exists") from None
+        raise Refused([RegistryProblem(message="Access group already exists", status=409)]) from None
     result = _group_responses(db, [group.id])[0]
     _save(db, dry_run)
     return result
@@ -128,7 +129,7 @@ def update_access_group(
 
 
 def _deployment_ids(db: Session, refs: list[tuple[str, str]]) -> set[int]:
-    """Every deployment of each (proxy, model key), in one query; a 422 names the first bad entry."""
+    """Every deployment of each (proxy, model key), in one query; a 422 names every bad entry."""
     # Only the first slash splits: model ids can hold slashes (deepinfra/BAAI/bge-m3).
     idents = {(proxy, *key.partition("/")[::2]) for proxy, key in refs}
     deployments: dict[tuple[str, str], set[int]] = defaultdict(set)
@@ -143,12 +144,12 @@ def _deployment_ids(db: Session, refs: list[tuple[str, str]]) -> set[int]:
     ):
         deployments[(proxy, f"{provider}/{model_id}")].add(row_id)
 
-    wanted = set()
-    for proxy, key in refs:
-        if (proxy, key) not in deployments:
-            raise HTTPException(status_code=422, detail=f"{key} has no deployment on {proxy}")
-        wanted |= deployments[(proxy, key)]
-    return wanted
+    refuse([
+        RegistryProblem(message=f"{key} has no deployment on {proxy}", proxy=proxy, model=key)
+        for proxy, key in refs
+        if (proxy, key) not in deployments
+    ])
+    return set().union(*deployments.values())
 
 
 @router.put("/access-groups/{slug}/models", response_model=RegistryAccessGroupResponse)
@@ -176,11 +177,13 @@ def set_access_group_models(
 def delete_access_group(slug: str, dry_run: bool = Query(False), db: Session = Depends(get_db)):
     # The lock stops a PUT from linking the group between the check below and the delete.
     group = _find_group(db, slug, lock=True)
+    problems = []
     # Teams still point at the old catalog's group until the registry pushes groups itself.
     if db.query(DBModelAccessGroup.id).filter(DBModelAccessGroup.slug == slug).first():
-        raise HTTPException(status_code=409, detail="The old catalog still has this access group")
+        problems.append(RegistryProblem(message="The old catalog still has this access group", status=409))
     if db.query(DBRegistryModelRegionGroup).filter(DBRegistryModelRegionGroup.access_group_id == group.id).first():
-        raise HTTPException(status_code=409, detail="Deployments still carry this access group")
+        problems.append(RegistryProblem(message="Deployments still carry this access group", status=409))
+    refuse(problems)
     db.delete(group)
     _save(db, dry_run)
     return Response(status_code=204)
@@ -214,11 +217,13 @@ def set_alias(
         name
         for (name,) in db.query(DBRegistryModelRegion.model_name).filter(DBRegistryModelRegion.region_id == region.id)
     }
+    problems = []
     # LiteLLM would send the calls for a real model name to another model.
     if alias in names:
-        raise HTTPException(status_code=422, detail="The alias is the name of a deployment on this proxy")
+        problems.append(RegistryProblem(message="The alias is the name of a deployment on this proxy", proxy=proxy))
     if body.target not in names:
-        raise HTTPException(status_code=422, detail="The target is not a deployment on this proxy")
+        problems.append(RegistryProblem(message="The target is not a deployment on this proxy", proxy=proxy))
+    refuse(problems)
 
     lookup = db.query(DBRegistryAlias).filter_by(region_id=region.id, alias=alias)
     row = lookup.one_or_none()
