@@ -612,7 +612,7 @@ def test_put_runs_the_call_type_check_on_a_cloud_region_backend(
     response = _put(client, admin_token, "local-us1", f"bedrock/{NEW}", body)
     if problems:
         assert response.status_code == 422
-        assert response.json()["detail"] == problems
+        assert messages(response) == problems
         response = _put(client, admin_token, "local-us1", f"bedrock/{NEW}", body, "?force=true")
     assert ok(response, 201)[0]["litellm_model"] == f"bedrock/us-east-1/{NEW}"
 
