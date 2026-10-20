@@ -180,6 +180,21 @@ def test_rollout_refuses_a_bad_body(client, admin_token, registry_db, setup, bar
     assert _state(registry_db) == before
 
 
+def test_rollout_lists_an_unknown_group_with_the_rule_problems(client, admin_token, registry_db, setup):
+    before = _state(registry_db)
+    body = {"models": ["openai/gpt-4o"], "proxies": {"local-eu1": None}, "groups": ["nope"]}
+
+    response = _post(client, admin_token, body)
+
+    # gpt-4o is disabled on the EU proxy, whose LiteLLM version does not support it.
+    assert response.status_code == 422
+    assert response.json()["problems"] == [
+        {"message": "Unknown access group nope", "proxy": None, "model": None},
+        {"message": UNSUPPORTED, "proxy": "local-eu1", "model": "openai/gpt-4o"},
+    ]
+    assert _state(registry_db) == before
+
+
 def test_rollout_lists_every_unknown_proxy_and_model(client, admin_token, setup, bare_region):
     body = {"models": ["openai/nope", "openai/gpt-old", "nope"], "proxies": {"nope": None, "local-ap1": None, **BOTH}}
 

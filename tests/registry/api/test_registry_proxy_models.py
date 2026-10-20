@@ -155,6 +155,22 @@ def test_put_changes_every_deployment_of_the_model(client, admin_token, registry
         assert _put(client, admin_token, "local-us1", "openai/gpt-4o", {field: value}).status_code == 422
 
 
+def test_put_rename_of_several_deployments_gives_only_that_problem(client, admin_token, registry_db, setup):
+    # The first deployment, gpt-4o, is the target of the alias zeta. The rename checks must not run on it.
+    gpt = model(registry_db, "openai", "gpt-4o")
+    registry_db.add(DBRegistryModelRegion(
+        model_id=gpt.id, region_id=setup["us"].id, model_name="gpt-4o-b", litellm_model="openai/gpt-4o",
+    ))
+    registry_db.commit()
+
+    response = _put(client, admin_token, "local-us1", "openai/gpt-4o", {"model_name": "x"})
+
+    assert response.status_code == 422
+    assert messages(response) == [
+        "The model has several deployments on this proxy, so the change cannot pick one model_name or litellm_model"
+    ]
+
+
 @pytest.mark.parametrize(
     "proxy, key", [("nope", "openai/gpt-4o"), ("local-ap1", "openai/gpt-4o"), ("local-us1", "openai/nope")]
 )
@@ -475,6 +491,27 @@ def test_delete_refuses_to_leave_an_alias_with_no_target(client, admin_token, re
 
     assert response.status_code == 409
     assert "zeta" in response.json()["detail"]
+    assert _state(registry_db) == before
+
+
+def test_delete_lists_the_alias_and_the_eol_problem(client, admin_token, registry_db, setup):
+    model(registry_db, "openai", "gpt-4o").eol_date = FUTURE
+    registry_db.commit()
+    before = _state(registry_db)
+
+    response = _delete(client, admin_token, "local-us1", "openai/gpt-4o")
+
+    assert response.status_code == 409
+    assert response.json()["problems"] == [
+        {
+            "message": "Aliases on this proxy point to this model name: zeta. Move or remove them first",
+            "proxy": "local-us1", "model": "openai/gpt-4o",
+        },
+        {
+            "message": f"the model reaches its EOL date on {FUTURE}; use force to remove it before that date",
+            "proxy": "local-us1", "model": "openai/gpt-4o",
+        },
+    ]
     assert _state(registry_db) == before
 
 
