@@ -609,8 +609,7 @@ def list_events(
     if since:
         query = query.filter(DBRegistryEvent.created_at >= since)
     if model:
-        # Only the first slash splits: model ids can hold slashes (deepinfra/BAAI/bge-m3).
-        provider, _, model_id = model.partition("/")
+        provider, model_id = _split_key(model)
         query = query.filter(DBRegistryProvider.name == provider, DBRegistryModel.model_id == model_id)
     if proxy:
         # A model event with no proxy, such as an EOL date, does not match.
