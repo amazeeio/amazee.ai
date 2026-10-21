@@ -157,6 +157,24 @@ def test_a_fill_plugin_steps_aside_for_a_manual_price(registry_db):
     assert model.prices == MANUAL
 
 
+def test_a_fill_plugin_keeps_its_base_price_next_to_a_manual_geo_price(registry_db):
+    model = add_model(registry_db, "deepinfra", "m")
+    registry_db.commit()
+    _plugin_run(registry_db, "fill", TODAY)
+    set_manual_prices(registry_db, model, {"geo:us": MANUAL_GEO}, TODAY)
+    registry_db.commit()
+
+    _plugin_run(registry_db, "fill", date(2026, 10, 2))
+
+    assert _rows(registry_db, model) == {
+        ("base", ""): ("test_src", {"input_cost_per_token": 2e-06}),
+        ("geo", "us"): ("manual", MANUAL_GEO),
+        ("cloud_region", "us-east-1"): ("test_src", {"input_cost_per_token": 2.4e-06}),
+    }
+    registry_db.refresh(model)
+    assert model.prices == {"input_cost_per_token": 2e-06}
+
+
 def test_the_list_prices_the_model_again_after_its_manual_base_is_removed(registry_db):
     model = _listed_model(registry_db)
     set_manual_prices(registry_db, model, {"base": MANUAL}, TODAY)

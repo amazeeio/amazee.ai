@@ -105,9 +105,12 @@ def _delete_price(db, model, key, row):
 
 def _apply_prices(db, model, own, source, role, prices, today, stats, fill_modes=None):
     mine = {(p.scope_kind, p.scope): p for p in own if p.source == source}
-    others = [p for p in own if p.source != source]
+    # A manual geo or region price is an admin's edit of one scope, so it must not drop the fill's base price.
+    # A manual base price does make a fill step aside.
+    others = [p for p in own if p.source not in (source, MANUAL)]
+    manual_base = any(p.source == MANUAL and (p.scope_kind, p.scope) == ("base", "") for p in own)
     wrong_mode = fill_modes is not None and model.mode is not None and model.mode not in fill_modes
-    if role == "fill" and (others or (not own and model.prices) or wrong_mode):
+    if role == "fill" and (others or manual_base or (not own and model.prices) or wrong_mode):
         # Another source prices the model, so a fill source steps aside.
         for key, row in mine.items():
             _delete_price(db, model, key, row)
