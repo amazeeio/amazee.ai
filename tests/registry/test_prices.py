@@ -1,7 +1,8 @@
 from datetime import date
 
-from app.registry.models import DBRegistryModel, DBRegistryModelPrice, DBRegistryProvider
+from app.registry.models import DBRegistryModelPrice
 from app.registry.prices import apply_prices, parse_prices, pick_price, price_fields
+from tests.registry.conftest import add_model
 
 LIST = {
     "anthropic.claude-x-v1:0": {"litellm_provider": "bedrock", "input_cost_per_token": 3e-06},
@@ -33,23 +34,8 @@ def test_parse_prices_keeps_every_scope():
     assert ("bedrock", "no-price") not in prices
 
 
-def _model(db, provider_name="bedrock", model_id="anthropic.claude-x-v1:0"):
-    provider = db.query(DBRegistryProvider).filter_by(name=provider_name).first()
-    if provider is None:
-        provider = DBRegistryProvider(name=provider_name)
-        db.add(provider)
-        db.flush()
-    row = DBRegistryModel(
-        provider_id=provider.id, model_id=model_id, supports=[], status="active", source="litellm",
-        first_seen=date(2026, 9, 1), last_seen=date(2026, 9, 1),
-    )
-    db.add(row)
-    db.flush()
-    return row
-
-
 def test_apply_prices_syncs_scopes(registry_db):
-    model = _model(registry_db)
+    model = add_model(registry_db)
     ident = ("bedrock", "anthropic.claude-x-v1:0")
     prices = parse_prices(LIST, {"bedrock"})
 
@@ -71,7 +57,7 @@ def test_apply_prices_syncs_scopes(registry_db):
 
 
 def test_removed_model_keeps_its_prices(registry_db):
-    model = _model(registry_db)
+    model = add_model(registry_db)
     ident = ("bedrock", "anthropic.claude-x-v1:0")
     apply_prices(registry_db, {ident}, parse_prices(LIST, {"bedrock"}), date(2026, 9, 27))
     registry_db.commit()
@@ -83,7 +69,7 @@ def test_removed_model_keeps_its_prices(registry_db):
 
 
 def test_pick_price_follows_litellm_order(registry_db):
-    model = _model(registry_db)
+    model = add_model(registry_db)
     apply_prices(registry_db, {("bedrock", "anthropic.claude-x-v1:0")}, parse_prices(LIST, {"bedrock"}), date(2026, 9, 27))
     registry_db.commit()
 
@@ -104,7 +90,7 @@ def test_pick_price_follows_litellm_order(registry_db):
 
 
 def test_proxy_price_is_kept_until_the_list_prices_the_model(registry_db):
-    model = _model(registry_db, model_id="amazon.new")
+    model = add_model(registry_db, model_id="amazon.new")
     registry_db.add(
         DBRegistryModelPrice(
             model_id=model.id, scope_kind="base", scope="", prices={"input_cost_per_token": 1e-06},

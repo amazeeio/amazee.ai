@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime
 from sqlalchemy.orm import Session
 
 from app.registry import config
-from app.registry.models import DBRegistryModelLifecycle, models_by_ident
+from app.registry.models import DBRegistryModel, DBRegistryModelLifecycle, models_by_ident
 from app.registry.plugins.loader import load_plugins
 from app.registry.runs import record_run
 
@@ -43,32 +43,51 @@ def strongest(rows, priority: dict[str, int]) -> dict:
     return best
 
 
+def _eol_rows(db: Session, priority: dict[str, int]):
+    """The lifecycle rows with a real date from a source in `priority`."""
+    return db.query(DBRegistryModelLifecycle).filter(
+        DBRegistryModelLifecycle.source.in_(priority),
+        DBRegistryModelLifecycle.eol_date.isnot(None),
+        DBRegistryModelLifecycle.eol_date < PLACEHOLDER_CUTOFF,
+    )
+
+
+def set_eol(model: DBRegistryModel, winner) -> bool:
+    """Set the model's EOL date from its override, else from the winning row. True when it changed."""
+    new = model.override_eol or getattr(winner, "eol_date", None)
+    if model.eol_date == new:
+        return False
+    model.eol_date = new
+    model.updated_at = datetime.now(UTC)
+    return True
+
+
 def apply_eol(db: Session) -> dict:
-    """Give each model the date of its source with the highest priority, or
-    None when no source has a real date. On a tie, the lowest source name wins."""
+    """Give each model its override, else the date of its source with the
+    highest priority, or None when no source has a real date. On a tie, the
+    lowest source name wins."""
     priority = priorities("eol_date")
     models = models_by_ident(db)
-    best = strongest(
-        db.query(DBRegistryModelLifecycle).filter(
-            DBRegistryModelLifecycle.source.in_(priority),
-            DBRegistryModelLifecycle.eol_date.isnot(None),
-            DBRegistryModelLifecycle.eol_date < PLACEHOLDER_CUTOFF,
-        ),
-        priority,
-    )
+    best = strongest(_eol_rows(db, priority), priority)
 
     changed = 0
     won: dict[str, int] = defaultdict(int)
     for ident, model in models.items():
         winner = best.get(ident)
-        new = winner.eol_date if winner else None
-        if winner:
+        if model.override_eol is not None:
+            won["override_eol"] += 1
+        elif winner:
             won[winner.source] += 1
-        if model.eol_date != new:
-            model.eol_date = new
-            model.updated_at = datetime.now(UTC)
-            changed += 1
+        changed += set_eol(model, winner)
     return {"models": len(models), "changed": changed, "won": dict(sorted(won.items()))}
+
+
+def refresh_eol(db: Session, model: DBRegistryModel, provider: str) -> bool:
+    """Choose one model's EOL date now. It gives the same result as the daily step for this model."""
+    priority = priorities("eol_date")
+    rows = _eol_rows(db, priority).filter_by(provider=provider, model_id=model.model_id)
+    winner = strongest(rows, priority).get((provider, model.model_id))
+    return set_eol(model, winner)
 
 
 def run_eol(db: Session) -> dict:

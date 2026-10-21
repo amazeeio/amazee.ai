@@ -13,9 +13,20 @@ from sqlalchemy.orm import Session
 
 from app.registry.litellm import our_entries, parse_key
 from app.registry.models import DBRegistryModel, DBRegistryModelPrice, models_by_ident, prices_by_model
-from app.registry.plugins.loader import override_sources
+from app.registry.plugins.loader import MANUAL, kept_sources
 
 SOURCE = "litellm"
+SCOPE_KINDS = {"geo": "geo", "region": "cloud_region"}
+
+
+def parse_scope(name) -> tuple[str, str]:
+    """`base`, `geo:<geo>` or `region:<cloud region>` as (scope_kind, scope)."""
+    if name == "base":
+        return "base", ""
+    kind, sep, value = str(name).partition(":")
+    if not sep or not value or kind not in SCOPE_KINDS:
+        raise ValueError(f"unknown price scope {name!r}")
+    return SCOPE_KINDS[kind], value
 
 
 def price_fields(entry: dict) -> dict:
@@ -57,8 +68,8 @@ def apply_prices(
         model_id: {(p.scope_kind, p.scope): p for p in rows} for model_id, rows in prices_by_model(db).items()
     }
 
-    # A first-party plugin's price beats the list's; leave those rows alone.
-    locked = override_sources()
+    # A manual price or a first-party plugin's price beats the list's; leave those rows alone.
+    locked = kept_sources()
     stats = {"price_scopes": 0, "price_changes": 0, "price_scopes_dropped": 0}
     for ident in listed_models:
         model = models.get(ident)
@@ -99,6 +110,28 @@ def upsert_scopes(
                 changes += 1
             row.last_seen = today
     return changes
+
+
+def set_manual_prices(db: Session, model: DBRegistryModel, prices: dict, today: date) -> None:
+    """An admin's price replaces the scope's row whatever its source; `None`
+    removes only a manual row. `prices` maps a scope key to fields or `None`."""
+    have = {(p.scope_kind, p.scope): p for p in db.query(DBRegistryModelPrice).filter_by(model_id=model.id)}
+    wanted = {}
+    changes = 0
+    for name, fields in prices.items():
+        key = parse_scope(name)
+        if fields is not None:
+            wanted[key] = fields
+        elif (row := have.get(key)) is not None and row.source == MANUAL:
+            db.delete(row)
+            changes += 1
+            if key == ("base", ""):
+                set_headline(model, {})
+    changes += upsert_scopes(db, model.id, have, wanted, MANUAL, today)
+    if changes:
+        model.updated_at = datetime.now(UTC)
+    if ("base", "") in wanted:
+        set_headline(model, wanted[("base", "")])
 
 
 def set_headline(model: DBRegistryModel, fields: dict) -> None:

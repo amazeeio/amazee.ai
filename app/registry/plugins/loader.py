@@ -11,8 +11,9 @@ from app.registry.plugins import parsers
 logger = logging.getLogger(__name__)
 
 PRICE_ROLES = ("override", "fill")
+MANUAL = "manual"
 # Other writers store rows under these names, so a plugin with one of them would mix its rows with theirs.
-RESERVED_SOURCES = frozenset({"litellm", "proxy", "manual"})
+RESERVED_SOURCES = frozenset({"litellm", "proxy", MANUAL})
 
 
 def load_plugins(include_disabled: bool = False) -> dict[str, ModuleType | Exception]:
@@ -56,10 +57,11 @@ def load_plugins(include_disabled: bool = False) -> dict[str, ModuleType | Excep
     )
 
 
-def override_sources() -> set[str]:
-    """Sources whose prices LiteLLM's list must not overwrite. A disabled
-    plugin counts too: switching one off keeps its rows as they are."""
-    return {
+def kept_sources() -> set[str]:
+    """Sources whose price rows LiteLLM's list keeps: `manual` and every
+    override plugin. A disabled plugin counts too: switching one off keeps
+    its rows as they are."""
+    return {MANUAL} | {
         source
         for source, module in load_plugins(include_disabled=True).items()
         if not isinstance(module, Exception) and module.PRICE_ROLE == "override"

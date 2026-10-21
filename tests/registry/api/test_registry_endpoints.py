@@ -78,6 +78,7 @@ def test_models_return_fields_and_price_scopes(client, admin_token, models):
     assert claude["price_scopes"] == []
     assert claude["family"] == "claudex" and claude["manufacturer"] == "anthropic"
     assert gpt["family"] is None and gpt["manufacturer"] is None
+    assert gpt["override_eol"] is None and gpt["blocked"] is False
 
 
 def test_models_filters(client, admin_token, models):
@@ -126,8 +127,10 @@ def test_registry_endpoints_are_admin_only_in_openapi():
     # path_format drops the converter, as the OpenAPI document does.
     assert "/registry/models/{key}" in paths
 
-    for path in paths:
-        assert _OPENAPI_TIERS[full["paths"][path]["get"]["operationId"]] == "admin"
+    for route in router.routes:
+        for method in route.methods:
+            operation = full["paths"][route.path_format][method.lower()]
+            assert _OPENAPI_TIERS[operation["operationId"]] == "admin"
     assert not set(paths) & set(_scope_schema(full, 1)["paths"])
     assert set(paths) <= set(_scope_schema(full, 2)["paths"])
 

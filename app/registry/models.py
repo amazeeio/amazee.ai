@@ -12,6 +12,7 @@ from sqlalchemy import (
     Numeric,
     String,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.sql import func
 
@@ -51,6 +52,10 @@ class DBRegistryModel(Base):
     # Names of the `supports_*` flags that are true, without the prefix.
     supports = Column(JSON, nullable=False, default=list)
     eol_date = Column(Date, nullable=True)
+    # Set by an admin. The EOL step copies it to eol_date before any source.
+    override_eol = Column(Date, nullable=True)
+    # A human override. No job changes it.
+    blocked = Column(Boolean, nullable=False, default=False, server_default=false())
     # `active`; `deprecated` when the strongest lifecycle source says the provider
     # retires the model; `removed` once the model left LiteLLM's list, and
     # `removed` beats `deprecated`. The row stays.
@@ -66,7 +71,7 @@ class DBRegistryModel(Base):
     source = Column(String, nullable=False)
     first_seen = Column(Date, nullable=False)
     last_seen = Column(Date, nullable=False)
-    # Moves only when a list field or the status changes, not on the daily last_seen.
+    # Moves only on a real change to the model or its prices, not on the daily last_seen.
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
