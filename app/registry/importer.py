@@ -1,6 +1,6 @@
 """One-time import of a proxy's live deployments into the registry.
 
-After the import the registry owns what runs on the proxy, so a second
+The API adds planned deployments to a proxy only after this import. A second
 import is refused: it would overwrite registry decisions with proxy state.
 """
 

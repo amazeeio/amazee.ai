@@ -121,6 +121,9 @@ def test_models_limit_and_offset(client, admin_token, models):
         ("GET", "/registry/aliases"),
         ("PUT", "/registry/aliases/local-us1/zeta"),
         ("DELETE", "/registry/aliases/local-us1/zeta"),
+        ("PUT", "/registry/proxies/local-us1/models/openai/gpt-4o"),
+        ("DELETE", "/registry/proxies/local-us1/models/openai/gpt-4o"),
+        ("POST", "/registry/rollouts"),
     ],
 )
 def test_registry_endpoints_need_a_system_admin(client, test_token, method, path):

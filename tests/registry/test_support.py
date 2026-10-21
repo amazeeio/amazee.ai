@@ -50,6 +50,7 @@ def _seed(db, region):
                 region_id=region.id,
                 model_name=name,
                 litellm_model=f"bedrock/{model_id}",
+                litellm_deployment_id=f"dep-{name}",
                 enabled=True,
             )
         )
@@ -217,7 +218,7 @@ def test_provisioned_only_and_mantle_are_not_profile_problems(registry_db, proxy
     registry_db.add(
         DBRegistryModelRegion(
             model_id=opus.id, region_id=proxy_region.id, model_name="opus",
-            litellm_model="bedrock_mantle/anthropic.opus", enabled=True,
+            litellm_model="bedrock_mantle/anthropic.opus", litellm_deployment_id="dep-opus", enabled=True,
         )
     )
     registry_db.add(
@@ -281,11 +282,12 @@ def test_deployed_unpriced_checks_the_scope_each_deployment_bills(registry_db, p
     registry_db.add_all([
         # A geo deployment matches the proxy's us. price.
         DBRegistryModelRegion(model_id=ids["anthropic.priced-v1:0"], region_id=proxy_region.id, model_name="priced-geo",
-                              litellm_model="bedrock/us.anthropic.priced-v1:0", enabled=True),
+                              litellm_model="bedrock/us.anthropic.priced-v1:0", litellm_deployment_id="dep-geo",
+                              enabled=True),
         # A deployment with its own price in litellm_params needs no list price.
         DBRegistryModelRegion(model_id=ids["anthropic.new-v1:0"], region_id=proxy_region.id, model_name="own-price",
-                              litellm_model="bedrock/anthropic.new-v1:0", enabled=True,
-                              prices={"input_cost_per_token": 1e-06}),
+                              litellm_model="bedrock/anthropic.new-v1:0", litellm_deployment_id="dep-own",
+                              enabled=True, prices={"input_cost_per_token": 1e-06}),
     ])
     registry_db.commit()
     with patch("app.registry.support.fetch_json", return_value=PROXY_LIST):
@@ -299,7 +301,8 @@ def test_deployed_unpriced_uses_the_price_of_the_proxys_cloud_region(registry_db
     registry_db.add_all([
         DBRegistryProxy(region_id=proxy_region.id, cloud_regions={"bedrock": "us-east-1"}),
         DBRegistryModelRegion(model_id=ids["anthropic.new-v1:0"], region_id=proxy_region.id, model_name="new",
-                              litellm_model="bedrock/anthropic.new-v1:0", enabled=True),
+                              litellm_model="bedrock/anthropic.new-v1:0", litellm_deployment_id="dep-new",
+                              enabled=True),
     ])
     registry_db.commit()
     proxy_list = {
@@ -309,6 +312,22 @@ def test_deployed_unpriced_uses_the_price_of_the_proxys_cloud_region(registry_db
         "bedrock/eu-west-1/anthropic.retired-v1:0": {"litellm_provider": "bedrock", "input_cost_per_token": 1e-06},
     }
     with patch("app.registry.support.fetch_json", return_value=proxy_list):
+        stats = run_support_check(registry_db)
+
+    assert stats["regions"]["local-us1"]["deployed_unpriced"] == ["priced", "retired"]
+
+
+def test_deployed_stats_skip_a_row_that_is_not_on_the_proxy(registry_db, proxy_region):
+    ids = _seed(registry_db, proxy_region)
+    # A row the API added has no LiteLLM deployment id until a push puts it on the proxy.
+    registry_db.add(
+        DBRegistryModelRegion(
+            model_id=ids["anthropic.new-v1:0"], region_id=proxy_region.id, model_name="planned",
+            litellm_model="bedrock/anthropic.new-v1:0", enabled=True,
+        )
+    )
+    registry_db.commit()
+    with patch("app.registry.support.fetch_json", return_value=PROXY_LIST):
         stats = run_support_check(registry_db)
 
     assert stats["regions"]["local-us1"]["deployed_unpriced"] == ["priced", "retired"]
