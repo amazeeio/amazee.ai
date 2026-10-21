@@ -6,6 +6,7 @@ charges this price whatever its own list says.
 """
 
 import math
+from collections.abc import Iterable
 from datetime import UTC, date, datetime
 
 from sqlalchemy.orm import Session
@@ -109,17 +110,15 @@ def set_headline(model: DBRegistryModel, fields: dict) -> None:
         model.updated_at = datetime.now(UTC)
 
 
-def pick_price(
-    db: Session, model_id: int, provider: str, deployed_model: str | None, cloud_region: str | None
-) -> DBRegistryModelPrice | None:
-    """The price a deployment of the model should carry.
+def pick_price(prices: Iterable, provider: str, deployed_model: str | None, cloud_region: str | None):
+    """The price a deployment should carry, from the model's price rows in `prices`.
 
     A geo id (`us.x`, `azure/eu/x`) is billed at its geo price. Otherwise the
     price of the proxy's cloud region wins when there is one. Base comes last.
     This follows LiteLLM, which looks up the region price with the model
     string as deployed, so a geo id never gets a region price.
     """
-    scopes = {(p.scope_kind, p.scope): p for p in db.query(DBRegistryModelPrice).filter_by(model_id=model_id)}
+    scopes = {(p.scope_kind, p.scope): p for p in prices}
     return next((scopes[key] for key in price_order(provider, deployed_model, cloud_region) if key in scopes), None)
 
 
