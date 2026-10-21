@@ -3,7 +3,8 @@
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
@@ -37,10 +38,12 @@ from app.registry.schemas import (
     RegistryModelProxyResponse,
     RegistryModelResponse,
     RegistryModelUpdate,
+    RegistryProblem,
     RegistryProviderResponse,
     RegistryProxyDetailResponse,
     RegistryProxyModelResponse,
     RegistryProxyResponse,
+    RegistryRefusal,
     RegistryRunResponse,
 )
 
@@ -52,6 +55,26 @@ router = APIRouter(
 )
 
 
+class Refused(Exception):
+    """A write that the checks refuse. It carries every problem they found, so the admin fixes them in one go."""
+
+    def __init__(self, problems: list[RegistryProblem]):
+        super().__init__()
+        self.problems = list(dict.fromkeys(problems))
+
+
+def refuse(problems: list[RegistryProblem]) -> None:
+    if problems:
+        raise Refused(problems)
+
+
+def refusal_response(_request: Request, exc: Refused) -> JSONResponse:
+    # A request that can never pass outweighs a conflict that the admin can clear.
+    status = 422 if any(problem.status == 422 for problem in exc.problems) else 409
+    body = RegistryRefusal(detail="; ".join(problem.message for problem in exc.problems), problems=exc.problems)
+    return JSONResponse(status_code=status, content=body.model_dump())
+
+
 def _model_query(db: Session):
     return db.query(DBRegistryModel, DBRegistryProvider.name).join(DBRegistryProvider)
 
@@ -60,6 +83,16 @@ def _paginate(query, response: Response, offset: int, limit: int) -> list:
     """The page of an ordered query, with the total before paging in X-Total-Count."""
     response.headers["X-Total-Count"] = str(query.count())
     return query.offset(offset).limit(limit).all()
+
+
+def _save(db: Session, dry_run: bool) -> None:
+    """A dry run makes the same changes, then rolls them back."""
+    # The flush runs the database checks, so a dry run fails where the write would.
+    db.flush()
+    if dry_run:
+        db.rollback()
+    else:
+        db.commit()
 
 
 def _proxy_results(
@@ -341,6 +374,19 @@ def _find_model(db: Session, key: str) -> tuple[DBRegistryModel, str]:
     return row
 
 
+def _find_proxy(db: Session, proxy: str) -> DBRegion:
+    """The region of a proxy name; only a region with a registry_proxies row is a proxy."""
+    region = (
+        db.query(DBRegion)
+        .join(DBRegistryProxy, DBRegistryProxy.region_id == DBRegion.id)
+        .filter(DBRegion.name == proxy)
+        .one_or_none()
+    )
+    if region is None:
+        raise HTTPException(status_code=404, detail="Proxy not found")
+    return region
+
+
 def _model_detail(db: Session, model: DBRegistryModel, provider: str) -> RegistryModelDetailResponse:
     base = _model_responses(db, [(model, provider)])[0]
 
@@ -424,11 +470,7 @@ def update_model(
         refresh_eol(db, model, provider)
     db.flush()
     detail = _model_detail(db, model, provider)
-    # A dry run makes the same changes, then rolls them back.
-    if dry_run:
-        db.rollback()
-    else:
-        db.commit()
+    _save(db, dry_run)
     return detail
 
 
@@ -470,10 +512,8 @@ def list_proxies(response: Response, db: Session = Depends(get_db)):
 
 @router.get("/proxies/{proxy}", response_model=RegistryProxyDetailResponse)
 def get_proxy(proxy: str, db: Session = Depends(get_db)):
-    region = db.query(DBRegion).filter(DBRegion.name == proxy).one_or_none()
-    found = _proxy_responses(db, region.id) if region else []
-    if not found:
-        raise HTTPException(status_code=404, detail="Proxy not found")
+    region = _find_proxy(db, proxy)
+    found = _proxy_responses(db, region.id)
 
     checked_at = (
         db.query(func.max(DBRegistryModelSupport.checked_at))
