@@ -17,6 +17,7 @@ from app.registry.litellm import fetch_json, parse_key
 from app.registry.models import (
     DBRegistryCloudAvailability,
     DBRegistryLitellmVersion,
+    DBRegistryModel,
     DBRegistryModelRegion,
     DBRegistryModelSupport,
     DBRegistryProvider,
@@ -68,20 +69,41 @@ class Availability:
         return (provider, model_id, region) in self.call_types
 
     def in_region_problem(self, provider: str, model_id: str, region: str | None, deployed_model: str) -> str | None:
-        """Why an in-region id cannot be called on demand, or None.
+        """Why an in-region id (`bedrock/x` or `bedrock/<aws-region>/x`) cannot be called on demand, or None.
 
         `needs_profile`: the region offers the model only through a geo
         profile (`us.x`). `provisioned_only`: only with bought throughput.
         """
         parsed = parse_key(deployed_model, provider)
+        if provider != "bedrock" or not parsed or parsed[1] not in ("base", "cloud_region"):
+            return None
+        # The cloud-region form calls the region it names, and a stored backend can name another region.
+        if parsed[1] == "cloud_region":
+            region = parsed[2]
         call_types = self.call_types.get((provider, model_id, region)) or []
-        if provider != "bedrock" or not parsed or parsed[1] != "base" or "ON_DEMAND" in call_types:
+        if "ON_DEMAND" in call_types:
             return None
         if "INFERENCE_PROFILE" in call_types:
             return "needs_profile"
         if "PROVISIONED" in call_types:
             return "provisioned_only"
         return None
+
+
+def refresh_region_available(db: Session, region_id: int, cloud_regions: dict, providers) -> None:
+    """Set `region_available` of the proxy's support rows of the given providers again, as the support check does.
+
+    Reads only the stored availability, so a cloud region change shows in rule 4 before the next daily run.
+    """
+    availability = Availability(db)
+    rows = (
+        db.query(DBRegistryModelSupport, DBRegistryProvider.name, DBRegistryModel.model_id)
+        .join(DBRegistryModel, DBRegistryModel.id == DBRegistryModelSupport.model_id)
+        .join(DBRegistryProvider, DBRegistryProvider.id == DBRegistryModel.provider_id)
+        .filter(DBRegistryModelSupport.region_id == region_id, DBRegistryProvider.name.in_(providers))
+    )
+    for support, provider, model_id in rows:
+        support.region_available = availability.available(provider, model_id, cloud_regions.get(provider))
 
 
 def apply_support(
@@ -182,7 +204,6 @@ def _check_support(db: Session) -> dict:
     stats: dict = {"regions": {}, "unreachable": {}}
     providers = {p.name for p in db.query(DBRegistryProvider)}
     models = {ident: model.id for ident, model in models_by_ident(db).items()}
-    proxies = {p.region_id: p for p in db.query(DBRegistryProxy)}
     availability = Availability(db)
     releases = {
         row.version: row.payload
@@ -190,6 +211,8 @@ def _check_support(db: Session) -> dict:
     }
     release_models: dict[str, set] = {}
     now = datetime.now(UTC)
+    # Fetch every list before the first lock, so a slow proxy does not hold up writes to a proxy already checked.
+    fetched = []
     for region in active_regions(db):
         url = region.litellm_api_url.rstrip("/") + PRICE_LIST_PATH
         try:
@@ -200,12 +223,21 @@ def _check_support(db: Session) -> dict:
             continue
         priced_list = priced_entries(price_list) if isinstance(price_list, dict) else {}
         proxy_models = set(parse_model_list(priced_list, providers)[0])
-        proxy_prices = parse_prices(priced_list, providers)
         if not proxy_models:
             # A broken or empty list must not mark every model unpriced.
             stats["unreachable"][region.name] = "price list has no priced models of our providers"
             continue
-        proxy = proxies.get(region.id)
+        fetched.append((region, proxy_models, parse_prices(priced_list, providers)))
+    for region, proxy_models, proxy_prices in fetched:
+        # Lock and read the proxy after the fetches. A cloud region PATCH that committed during them wins,
+        # and a later PATCH waits for this run, so its refresh is the last write. Region id order as in the API.
+        proxy = (
+            db.query(DBRegistryProxy)
+            .filter_by(region_id=region.id)
+            .populate_existing()
+            .with_for_update()
+            .one_or_none()
+        )
         version = proxy.litellm_version if proxy else None
         cloud_regions = proxy.cloud_regions if proxy else {}
         if version in releases and version not in release_models:

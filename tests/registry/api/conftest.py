@@ -1,5 +1,6 @@
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +16,8 @@ from app.registry.models import (
     DBRegistryProxy,
 )
 
+US_URL = "http://litellm:4000"
+EU_URL = "http://litellm-eu:4000"
 RUN_FIELDS = {"id", "step", "started_at", "finished_at", "status", "stats", "error", "stale"}
 MODEL_FIELDS = {
     "provider", "model_id", "mode", "max_input_tokens", "max_output_tokens",
@@ -72,6 +75,54 @@ def models(registry_db):
     registry_db.commit()
 
 
+class _FakeProxyClient:
+    """Answers like a proxy from `live_proxies.by_url`; a URL that is not there is an empty proxy."""
+
+    def __init__(self, proxies, url, key):
+        self._proxies, self._url = proxies, url
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        pass
+
+    def _answer(self):
+        return self._proxies.by_url.get(self._url, {})
+
+    def model_info(self):
+        self._proxies.calls.append(self._url)
+        answer = self._answer()
+        if isinstance(answer, Exception):
+            raise answer
+        return answer.get("model_info", [])
+
+    def alias_map(self):
+        return self._answer().get("aliases", {})
+
+    def credential_names(self):
+        return set(self._answer().get("credentials", ()))
+
+
+@pytest.fixture(autouse=True)
+def live_proxies(monkeypatch):
+    """No API test reaches the network: each dry-run read of a proxy goes to this fake and is put in `calls`."""
+    proxies = SimpleNamespace(by_url={}, calls=[])
+    monkeypatch.setattr(
+        "app.registry.api.dry_run.ProxyClient", lambda url, key: _FakeProxyClient(proxies, url, key)
+    )
+    return proxies
+
+
+def live_row(dep_id, name, model, credential=None, groups=(), **params):
+    """One row of a proxy's `/model/info`. Extra keyword arguments go into `litellm_params`."""
+    litellm_params = {"model": model, **params}
+    if credential:
+        litellm_params["litellm_credential_name"] = credential
+    info = {"id": dep_id, "access_groups": list(groups)}
+    return {"model_name": name, "litellm_params": litellm_params, "model_info": info}
+
+
 def auth(token):
     return {"Authorization": f"Bearer {token}"}
 
@@ -108,7 +159,7 @@ def model(db, provider, model_id):
 def deployed(registry_db, models, proxy_region):
     """Two proxies with deployments and support rows; `gpt-old` has none."""
     eu = DBRegion(
-        name="local-eu1", litellm_api_url="http://litellm-eu:4000", litellm_api_key="sk-test", is_active=True
+        name="local-eu1", litellm_api_url=EU_URL, litellm_api_key="sk-test", is_active=True
     )
     registry_db.add(eu)
     registry_db.flush()

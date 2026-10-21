@@ -202,6 +202,16 @@ class RegistryProxyResponse(BaseModel):
     models_enabled: int
 
 
+# A provider or a cloud region name in `registry_proxies.cloud_regions`.
+CloudName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9_-]{1,64}$")]
+
+
+class RegistryProxyUpdate(_Strict):
+    """Only the given providers change; a null region removes the provider."""
+
+    cloud_regions: dict[CloudName, CloudName | None] = Field(min_length=1)
+
+
 class RegistryProxyModelResponse(BaseModel):
     key: str
     status: str
@@ -332,3 +342,25 @@ class RegistryRolloutEntry(BaseModel):
     action: Literal["created", "updated"]
     model_name: str
     litellm_model: str
+
+
+class RegistryPlanStep(BaseModel):
+    """One step that the sync would take on a proxy. A dry run only shows it."""
+
+    proxy: str
+    action: Literal["create_model", "update_model", "delete_model", "write_alias_map", "read_proxy"]
+    model: str | None = None
+    model_name: str | None = None
+    # The LiteLLM deployment id.
+    deployment_id: str | None = None
+    # What the sync would send, for a create or the full alias map.
+    payload: dict | None = None
+    # Each changed field or alias as {"from": live, "to": wanted}.
+    changes: dict | None = None
+    problems: list[str] = []
+
+
+class RegistryDryRun[T](BaseModel):
+    # The body of the write, or null where the write answers 204.
+    result: T
+    steps: list[RegistryPlanStep]

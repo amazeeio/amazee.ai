@@ -202,6 +202,61 @@ def test_region_available_and_needs_profile(registry_db, proxy_region):
     assert stats["deployed_provisioned_only"] == []
 
 
+def test_support_check_uses_a_cloud_region_saved_during_the_fetch(registry_db, proxy_region):
+    from sqlalchemy import text
+
+    from app.registry.models import DBRegistryCloudAvailability
+
+    ids = _seed(registry_db, proxy_region)
+    registry_db.add(DBRegistryProxy(region_id=proxy_region.id, cloud_regions={"bedrock": "us-east-1"}))
+    registry_db.add(
+        DBRegistryCloudAvailability(
+            provider="bedrock", model_id="anthropic.retired-v1:0", cloud_region="us-west-2",
+            source="bedrock_community", call_types=["ON_DEMAND"], last_seen=date(2026, 9, 27),
+        )
+    )
+    registry_db.commit()
+
+    def fetch_while_patched(url):
+        # A PATCH /registry/proxies commit, behind the ORM's back, while the proxy list downloads.
+        registry_db.execute(
+            text("UPDATE registry_proxies SET cloud_regions = '{\"bedrock\": \"us-west-2\"}' WHERE region_id = :r"),
+            {"r": proxy_region.id},
+        )
+        return PROXY_LIST
+
+    with patch("app.registry.support.fetch_json", side_effect=fetch_while_patched):
+        run_support_check(registry_db)
+
+    support = registry_db.get(DBRegistryModelSupport, (ids["anthropic.retired-v1:0"], proxy_region.id))
+    assert support.region_available is True
+
+
+def test_support_check_locks_no_proxy_while_it_fetches(registry_db, proxy_region):
+    from sqlalchemy import text
+
+    _seed(registry_db, proxy_region)
+    second = DBRegion(name="local-eu1", litellm_api_url="http://litellm-eu:4000", litellm_api_key="sk-test", is_active=True)
+    registry_db.add(second)
+    registry_db.flush()
+    registry_db.add_all(
+        [DBRegistryProxy(region_id=proxy_region.id, cloud_regions={}), DBRegistryProxy(region_id=second.id, cloud_regions={})]
+    )
+    registry_db.commit()
+
+    def fetch_while_writing(url):
+        # An API write on another connection must not wait for a fetch. NOWAIT raises if a proxy is locked.
+        with registry_db.get_bind().connect() as other:
+            other.execute(text("SELECT 1 FROM registry_proxies FOR UPDATE NOWAIT"))
+            other.rollback()
+        return PROXY_LIST
+
+    with patch("app.registry.support.fetch_json", side_effect=fetch_while_writing):
+        stats = run_support_check(registry_db)
+
+    assert set(stats["regions"]) == {"local-us1", "local-eu1"}
+
+
 def test_provisioned_only_and_mantle_are_not_profile_problems(registry_db, proxy_region):
     from app.registry.models import DBRegistryCloudAvailability, DBRegistryModelRegion
 

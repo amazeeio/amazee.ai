@@ -1,6 +1,6 @@
 """The endpoints for models on proxies, on the registry router.
 
-Every write changes only the registry tables. Nothing calls a proxy.
+A write changes only the registry tables. Only a dry run reads the proxies that it touches.
 """
 
 from collections import defaultdict
@@ -12,13 +12,13 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.db.models import DBRegion
+from app.registry.api.dry_run import _save, deployment_plans
 from app.registry.api.routes import (
     _deployment_responses,
     _find_model,
     _find_proxy,
     _lock_proxies,
     _model_query,
-    _save,
     _split_key,
     refuse,
     router,
@@ -33,6 +33,7 @@ from app.registry.models import (
     DBRegistryProvider,
     DBRegistryProxy,
 )
+from app.registry.planner import DEPLOYMENT_FIELDS
 from app.registry.rules import (
     backend_problem,
     default_backend,
@@ -42,6 +43,7 @@ from app.registry.rules import (
     support_rows,
 )
 from app.registry.schemas import (
+    RegistryDryRun,
     RegistryModelDeploymentResponse,
     RegistryProblem,
     RegistryProxyModelUpdate,
@@ -165,7 +167,11 @@ def _add_deployment(
     return deployment
 
 
-@router.put("/proxies/{proxy}/models/{key:path}", response_model=list[RegistryModelDeploymentResponse])
+@router.put(
+    "/proxies/{proxy}/models/{key:path}",
+    response_model=list[RegistryModelDeploymentResponse] | RegistryDryRun[list[RegistryModelDeploymentResponse]],
+    responses={201: {"model": list[RegistryModelDeploymentResponse], "description": "The deployment is created"}},
+)
 def set_proxy_model(
     proxy: str,
     key: str,
@@ -283,11 +289,16 @@ def set_proxy_model(
     result = _deployment_responses(
         db, prices, provider, [(d, region.name) for d in _deployments(db, model, region.id)]
     )
-    _save(db, dry_run)
-    return result
+    return _save(
+        db, dry_run, result, response=response, plan=lambda: deployment_plans(db, deployments, DEPLOYMENT_FIELDS)
+    )
 
 
-@router.delete("/proxies/{proxy}/models/{key:path}", status_code=204)
+@router.delete(
+    "/proxies/{proxy}/models/{key:path}",
+    response_model=RegistryDryRun[None],
+    responses={204: {"description": "The model's deployments on the proxy are deleted"}},
+)
 def remove_proxy_model(
     proxy: str,
     key: str,
@@ -310,11 +321,16 @@ def remove_proxy_model(
     refuse([RegistryProblem(message=problem, proxy=region.name, model=key, status=409) for problem in found])
     # The foreign key of the group links cascades, so this also removes them.
     db.query(DBRegistryModelRegion).filter(DBRegistryModelRegion.id.in_(ids)).delete(synchronize_session=False)
-    _save(db, dry_run)
-    return Response(status_code=204)
+    # The rows were loaded before the delete, so the plan still reads their attributes.
+    return _save(
+        db, dry_run, Response(status_code=204),
+        plan=lambda: deployment_plans(db, deployments, DEPLOYMENT_FIELDS, removed=True),
+    )
 
 
-@router.post("/rollouts", response_model=list[RegistryRolloutEntry])
+@router.post(
+    "/rollouts", response_model=list[RegistryRolloutEntry] | RegistryDryRun[list[RegistryRolloutEntry]]
+)
 def roll_out(
     body: RegistryRollout,
     dry_run: bool = Query(False),
@@ -433,5 +449,4 @@ def roll_out(
         for group_id in group_ids.values()
         if (deployment.id, group_id) not in links
     )
-    _save(db, dry_run)
-    return entries
+    return _save(db, dry_run, entries, plan=lambda: deployment_plans(db, targets, DEPLOYMENT_FIELDS))

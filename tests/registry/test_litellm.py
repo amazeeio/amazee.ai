@@ -1,4 +1,5 @@
 import copy
+import inspect
 
 import httpx
 import pytest
@@ -10,6 +11,7 @@ from app.registry.litellm import (
     parse_key,
     registry_provider_and_model,
     split_model,
+    without_alias_copies,
     without_secrets,
 )
 
@@ -191,23 +193,6 @@ def _proxy(handler) -> ProxyClient:
     return client
 
 
-def test_model_aliases_returns_the_alias_names():
-    paths = []
-
-    def handler(request):
-        paths.append(request.url.path)
-        return httpx.Response(200, json={"fields": [
-            {"field_name": "routing_strategy", "field_value": "simple-shuffle"},
-            {"field_name": "model_group_alias", "field_value": {
-                "chat": "claude-x", "old": {"model": "claude-y", "hidden": True},
-            }},
-        ]})
-
-    with _proxy(handler) as client:
-        assert client.model_aliases() == {"chat", "old"}
-    assert paths == ["/router/settings"]
-
-
 @pytest.mark.parametrize(
     "fields",
     [
@@ -215,11 +200,88 @@ def test_model_aliases_returns_the_alias_names():
         [{"field_name": "model_group_alias", "field_value": "chat"}],
     ],
 )
-def test_model_aliases_without_an_alias_map_is_empty(fields):
+def test_alias_map_without_an_alias_map_is_empty(fields):
     with _proxy(lambda request: httpx.Response(200, json={"fields": fields})) as client:
-        assert client.model_aliases() == set()
+        assert client.alias_map() == {}
 
 
-def test_model_aliases_raises_on_an_error_answer():
+def test_alias_map_raises_on_an_error_answer():
+    # The import must fail here: with no alias names, it would store each alias copy as a deployment.
     with _proxy(lambda request: httpx.Response(500)) as client, pytest.raises(httpx.HTTPStatusError):
-        client.model_aliases()
+        client.alias_map()
+
+
+def test_alias_map_returns_the_raw_map():
+    aliases = {"chat": "claude-x", "old": {"model": "claude-y", "hidden": True}}
+    answer = {"fields": [
+        {"field_name": "routing_strategy", "field_value": "simple-shuffle"},
+        {"field_name": "model_group_alias", "field_value": aliases},
+    ]}
+    paths = []
+
+    def handler(request):
+        paths.append(request.url.path)
+        return httpx.Response(200, json=answer)
+
+    with _proxy(handler) as client:
+        assert client.alias_map() == aliases
+    assert paths == ["/router/settings"]
+
+
+def test_credential_names_skips_a_nameless_entry():
+    paths = []
+
+    def handler(request):
+        paths.append(request.url.path)
+        return httpx.Response(200, json={"credentials": [
+            {"credential_name": "c1", "credential_info": {}}, {"credential_info": {}}, {"credential_name": "c2"},
+        ]})
+
+    with _proxy(handler) as client:
+        assert client.credential_names() == {"c1", "c2"}
+    assert paths == ["/credentials"]
+
+
+def test_credential_names_raises_on_an_error_answer():
+    with _proxy(lambda request: httpx.Response(500)) as client, pytest.raises(httpx.HTTPStatusError):
+        client.credential_names()
+
+
+def test_proxy_client_sends_only_get_requests():
+    # The registry must never write to a proxy, so a new method that writes fails here.
+    methods = [name for name, _ in inspect.getmembers(ProxyClient, inspect.isfunction) if not name.startswith("_")]
+    assert "model_info" in methods
+    for name in methods:
+        sent = []
+
+        def handler(request):
+            assert request.method == "GET", f"{name} sent {request.method} {request.url.path}"
+            sent.append(request)
+            return httpx.Response(200, json={"data": [], "fields": [], "credentials": [], "info": {}})
+
+        with _proxy(handler) as client:
+            getattr(client, name)()
+        assert sent, f"{name} sent no request"
+
+
+def _row(name, dep_id):
+    return {"model_name": name, "model_info": {"id": dep_id}}
+
+
+def test_without_alias_copies_drops_the_copy_of_a_real_row():
+    real, copy_ = _row("claude-x", "1"), _row("chat", "1")
+
+    assert without_alias_copies([copy_, real], {"chat"}) == ([real], ["chat"])
+
+
+def test_without_alias_copies_keeps_a_real_row_whose_name_is_an_alias():
+    rows = [_row("gpt-4o", "1"), _row("old-name", "2")]
+
+    assert without_alias_copies(rows, {"old-name"}) == (rows, [])
+
+
+def test_without_alias_copies_drops_a_self_alias_copy():
+    # The alias has the name of its own target, so the first row is the real one.
+    first, second = _row("claude-x", "1"), _row("claude-x", "1")
+
+    assert without_alias_copies([first, second], {"claude-x"}) == ([first], ["claude-x"])
