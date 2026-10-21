@@ -84,8 +84,9 @@ def test_public_models_returns_aggregated_data(client, db):
         assert "pricing" in first_model
 
 
-def test_public_models_manufacturer_comes_from_catalog(client, db):
-    """A catalog manufacturer beats the model-id keyword rules."""
+def test_public_models_manufacturer_and_provider_come_from_catalog(client, db):
+    """A catalog manufacturer beats the model-id keyword rules, and the catalog
+    provider beats the litellm_provider guess (which knows only the clouds)."""
     _clear_public_models_cache()
     region = DBRegion(
         name="eu-central-1",
@@ -107,6 +108,14 @@ def test_public_models_manufacturer_comes_from_catalog(client, db):
             type="chat",
             manufacturer_name="Meta",
             manufacturer_website="https://ai.meta.com/llama",
+        )
+    )
+    db.add(
+        DBModel(
+            model_id="claude-3-5-sonnet-20241022",
+            display_name="claude-3-5-sonnet-20241022",
+            provider="bedrock",
+            type="chat",
         )
     )
     db.commit()
@@ -145,6 +154,10 @@ def test_public_models_manufacturer_comes_from_catalog(client, db):
         assert (
             models["claude-3-5-sonnet-20241022"]["manufacturer"]["name"] == "Anthropic"
         )
+        # Was "other": the guess only knows aws/azure/gcp.
+        assert models["Muse-Glimmer-30B"]["provider"] == "deepinfra"
+        # Cloud providers keep their established public names.
+        assert models["claude-3-5-sonnet-20241022"]["provider"] == "aws"
 
 
 def test_public_models_includes_unavailable_region(client, db):
