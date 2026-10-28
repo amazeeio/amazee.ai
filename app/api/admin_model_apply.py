@@ -637,7 +637,9 @@ async def apply_model_config(
                         )
                     )
                     syncs.add((model.id, assoc.region_id))
-        else:
+        elif model.is_active_globally:
+            # Already pruned (inactive, not deleted): nothing left to act on,
+            # so listing it would nag on every apply after a successful prune.
             unmanaged_models.append(model.model_id)
 
     # A deployment whose last sync failed never diffs again, so re-running the
