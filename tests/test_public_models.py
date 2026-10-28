@@ -118,12 +118,27 @@ def test_public_models_manufacturer_and_provider_come_from_catalog(client, db):
             type="chat",
         )
     )
+    # An alias may store a real provider that differs from its target's.
+    db.add(
+        DBModel(
+            model_id="house-chat",
+            display_name="house-chat",
+            provider="bedrock",
+            type="chat",
+            is_alias=True,
+        )
+    )
     db.commit()
     with patch("app.api.public.LiteLLMService") as mock_service_cls:
         mock_service = mock_service_cls.return_value
         mock_service.get_model_info = AsyncMock(
             return_value={
                 "data": [
+                    {
+                        "model_name": "house-chat",
+                        "litellm_params": {},
+                        "model_info": {"litellm_provider": "vertex_ai", "mode": "chat"},
+                    },
                     {
                         # Case differs from the catalog id on purpose.
                         "model_name": "Muse-Glimmer-30B",
@@ -158,6 +173,8 @@ def test_public_models_manufacturer_and_provider_come_from_catalog(client, db):
         assert models["Muse-Glimmer-30B"]["provider"] == "deepinfra"
         # Cloud providers keep their established public names.
         assert models["claude-3-5-sonnet-20241022"]["provider"] == "aws"
+        # Aliases skip the catalog and follow what LiteLLM serves.
+        assert models["house-chat"]["provider"] == "gcp"
 
 
 def test_public_models_includes_unavailable_region(client, db):

@@ -86,10 +86,10 @@ _PUBLIC_PROVIDER = {"bedrock": "aws", "vertex_ai": "gcp"}
 
 def _catalog_providers(db: Session) -> dict[str, str]:
     """``{model_id.lower(): public provider}`` for live catalog models. Aliases
-    are left out: their catalog provider is just "alias"."""
+    are left out: their stored provider need not match the target's."""
     rows = (
         db.query(DBModel.model_id, DBModel.provider)
-        .filter(DBModel.deleted_at.is_(None), DBModel.provider != "alias")
+        .filter(DBModel.deleted_at.is_(None), DBModel.is_alias.is_(False))
         .all()
     )
     return {
