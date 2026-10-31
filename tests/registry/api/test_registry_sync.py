@@ -606,3 +606,18 @@ def test_a_retry_deletes_the_old_deployment_that_a_replace_left(registry_db, us,
 
     assert live_proxies.writes[-1][1:] == ("delete_model", "us-gpt")
     assert "us-gpt" not in [r["model_info"]["id"] for r in live_proxies.by_url[US_URL]["model_info"]]
+
+
+def test_a_disable_of_a_deployment_with_inline_secrets_keeps_it(registry_db, us, live_proxies):
+    from app.registry.planner import INLINE_SECRETS
+
+    live_proxies.by_url[US_URL]["model_info"][0]["litellm_params"]["api_key"] = "sk-****"
+    gpt = _row(registry_db, "us-gpt")
+    gpt.enabled = False
+    registry_db.commit()
+
+    run, steps = _run(registry_db, us, deployments=[gpt.id])
+
+    assert steps == [("delete_model", "failed", INLINE_SECRETS)]
+    assert live_proxies.writes == []
+    assert _row(registry_db, "us-gpt").litellm_deployment_id == "us-gpt"

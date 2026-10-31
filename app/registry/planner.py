@@ -45,6 +45,10 @@ UNCLEARABLE_COSTS = (
     "the proxy has the cost fields {} that the registry price does not have, and LiteLLM cannot clear them "
     "with an update; remove them on the proxy by hand"
 )
+INLINE_SECRETS = (
+    "the deployment has inline credentials, and the registry keeps no secret values, so a disable would lose them; "
+    "move it to a named credential before you disable it"
+)
 RECREATE = "the deployment is gone from the proxy; the sync creates it again"
 CREDENTIAL_IN_USE = "a live deployment on the proxy uses the credential {}, so the sync does not delete it"
 NO_VALUES = "the registry has no values for the credential {}, so the sync cannot push it"
@@ -354,6 +358,10 @@ def plan(
         if not deployment.keep:
             if row is not None:
                 problems = [] if _managed(row) else [NOT_MANAGED]
+                # A disable keeps the row to enable it again, but a new create cannot bring back inline secrets.
+                # A deleted row (no row id) is gone for good, so its deployment goes.
+                if deployment.row_id is not None and _inline_secrets(row.get("litellm_params") or {}):
+                    problems.append(INLINE_SECRETS)
                 steps.append(_step(proxy, "delete_model", deployment, problems=problems))
         elif deployment.deployment_id is None or (row is None and deployment.recreate):
             steps.append(_create(proxy, deployment, live, rows, known_ids, credential_providers))
