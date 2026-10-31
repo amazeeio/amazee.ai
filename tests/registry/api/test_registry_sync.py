@@ -252,8 +252,23 @@ def test_an_empty_alias_map_never_deletes_live_aliases(registry_db, us, live_pro
 
     run, steps = _run(registry_db, us, aliases=True)
 
-    assert steps == [("write_alias_map", "failed", DELETES_EVERY_ALIAS)]
+    assert steps == [("read_proxy", "failed", DELETES_EVERY_ALIAS)]
     assert live_proxies.writes == []
+
+
+def test_a_retry_after_the_alias_guard_runs_the_whole_proxy_again(registry_db, us, live_proxies):
+    from app.registry.api.sync import retry_scope
+
+    live_proxies.by_url[US_URL]["aliases"] = {"chat": "gpt-4o"}
+    gpt = _row(registry_db, "us-gpt")
+    gpt.model_name = "gpt-renamed"
+    registry_db.commit()
+
+    run, _ = _run(registry_db, us, deployments=[gpt.id], aliases=True)
+    steps = registry_db.query(DBRegistrySyncStep).filter_by(run_id=run.id).all()
+
+    # The guard stopped the proxy before the rename, so the retry must take the rename too.
+    assert retry_scope(run, steps)[str(us.id)]["deployments"] == [gpt.id]
 
 
 def test_a_row_deleted_during_its_create_has_the_new_deployment_deleted(registry_db, us, live_proxies):

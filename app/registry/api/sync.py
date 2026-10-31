@@ -642,8 +642,9 @@ def _sync_locked(proxy: _Proxy) -> dict | None:
         db.commit()
         return None
     if plan.aliases is not None and not plan.aliases and live.aliases.keys() - {plan.removed_alias}:
-        # The registry never wipes live aliases that the adopt import has not read.
-        proxy.record("write_alias_map", "failed", planner.DELETES_EVERY_ALIAS)
+        # The registry never wipes live aliases that the adopt import has not read. Recorded as a read
+        # failure: no step ran, so a retry takes the whole proxy again.
+        proxy.record("read_proxy", "failed", planner.DELETES_EVERY_ALIAS)
         db.commit()
         return None
 
