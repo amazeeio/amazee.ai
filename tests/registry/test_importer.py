@@ -466,3 +466,23 @@ def test_a_second_adopt_import_changes_nothing_and_a_plain_import_is_still_refus
     assert _registry_state(registry_db) == before
     with pytest.raises(AlreadyImported):
         import_deployments(registry_db, proxy_region, DEPLOYMENTS, None, {})
+
+
+def test_an_adopt_import_gives_its_id_to_a_registry_row_that_has_none(registry_db, proxy_region):
+    from tests.registry.conftest import add_model
+
+    import_deployments(registry_db, proxy_region, DEPLOYMENTS[:1], None, {})
+    llama = add_model(registry_db, "deepinfra", "meta-llama/Llama-3")
+    # A create whose read-back failed: the proxy runs it, and the row has no LiteLLM id.
+    registry_db.add(DBRegistryModelRegion(
+        model_id=llama.id, region_id=proxy_region.id, model_name="llama", litellm_model="deepinfra/meta-llama/Llama-3",
+    ))
+    registry_db.commit()
+
+    stats = import_deployments(registry_db, proxy_region, DEPLOYMENTS, None, {}, adopt=True)
+    registry_db.commit()
+
+    assert stats["linked"] == 1
+    [row] = registry_db.query(DBRegistryModelRegion).filter_by(model_id=llama.id).all()
+    assert row.litellm_deployment_id == "dep-3"
+    assert row.model_info["id"] == "dep-3"

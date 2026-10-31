@@ -112,20 +112,26 @@ def import_deployments(
 
     kept, copies = without_alias_copies(deployments, aliases)
     stats = {"deployments": len(deployments), "imported": 0, "skipped": [], "aliases": copies}
-    known = set()
+    known, unbound = set(), {}
     if adopt:
-        stats["kept"] = 0
-        known = {
-            dep_id
-            for (dep_id,) in db.query(DBRegistryModelRegion.litellm_deployment_id).filter(
-                DBRegistryModelRegion.region_id == region.id, DBRegistryModelRegion.litellm_deployment_id.isnot(None)
-            )
-        }
+        stats["kept"] = stats["linked"] = 0
+        for row in db.query(DBRegistryModelRegion).filter(DBRegistryModelRegion.region_id == region.id):
+            if row.litellm_deployment_id is not None:
+                known.add(row.litellm_deployment_id)
+            else:
+                unbound.setdefault((row.model_name, row.litellm_model), row)
     for dep in kept:
         params = dep.get("litellm_params") or {}
         info = dep.get("model_info") or {}
         if info.get("id") in known:
             stats["kept"] += 1
+            continue
+        # A create whose read-back failed left its row with no id; the live deployment is that row.
+        row = unbound.pop((dep.get("model_name") or params.get("model") or "", params.get("model") or ""), None)
+        if row is not None and info.get("id"):
+            row.litellm_deployment_id = info["id"]
+            row.model_info = without_secrets(info)
+            stats["linked"] += 1
             continue
         litellm_model = params.get("model") or ""
         provider_name, source_model = registry_provider_and_model(params, info)
