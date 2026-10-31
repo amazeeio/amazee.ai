@@ -29,6 +29,7 @@ CANNOT_CLEAR_CREDENTIAL = (
     "LiteLLM keeps a credential name that an update leaves out, and the sync never creates a deployment again"
 )
 RECREATE = "the deployment is gone from the proxy; the sync creates it again"
+CREDENTIAL_IN_USE = "a live deployment on the proxy uses the credential {}, so the sync does not delete it"
 NO_VALUES = "the registry has no values for the credential {}, so the sync cannot push it"
 NO_CREDENTIAL = "the deployment names no credential, and the registry has no {} credential for this proxy"
 # model_info.managed_by of every deployment that the sync creates.
@@ -106,7 +107,7 @@ def _name_clash(name: str, litellm_model: str, rows: list[dict], known_ids: froz
     )
 
 
-def _credential_step(proxy: str, credential: Credential, live: frozenset) -> dict | None:
+def _credential_step(proxy: str, credential: Credential, live: frozenset, rows: list[dict]) -> dict | None:
     # The payload never holds values: the sync decrypts them when it sends the step.
     payload = {"credential_name": credential.name, "credential_info": credential.info}
     if not credential.keep:
@@ -118,6 +119,11 @@ def _credential_step(proxy: str, credential: Credential, live: frozenset) -> dic
     if action is None:
         return None
     problems = [NO_VALUES.format(credential.name)] if action != "delete_credential" and not credential.has_values else []
+    # A deployment that the registry does not know, or one added by hand, can still name the credential.
+    if action == "delete_credential" and any(
+        (row.get("litellm_params") or {}).get("litellm_credential_name") == credential.name for row in rows
+    ):
+        problems.append(CREDENTIAL_IN_USE.format(credential.name))
     step = _step(proxy, action, payload=None if action == "delete_credential" else payload, problems=problems)
     step["credential"] = credential.name
     return step
@@ -269,7 +275,7 @@ def plan(
     steps = []
     present = set(live.credentials)
     for credential in sorted(credentials, key=lambda credential: credential.name):
-        if step := _credential_step(proxy, credential, live.credentials):
+        if step := _credential_step(proxy, credential, live.credentials, rows):
             steps.append(step)
             if step["action"] == "create_credential" and not step["blocked"]:
                 present.add(credential.name)

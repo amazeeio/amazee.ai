@@ -5,6 +5,7 @@ import pytest
 from app.registry.planner import (
     ALREADY_RUNS,
     CANNOT_CLEAR_CREDENTIAL,
+    CREDENTIAL_IN_USE,
     DELETES_EVERY_ALIAS,
     LIVE_NAME_CLASH,
     MANAGED_BY,
@@ -365,6 +366,15 @@ def test_credential_steps_come_first_in_name_order():
     # The model create counts the credential that the plan creates as on the proxy.
     assert (steps[3]["action"], steps[3]["problems"]) == ("create_model", [])
     assert all("values" not in str(step["payload"]) for step in steps)
+
+
+def test_a_credential_that_a_live_deployment_uses_is_not_deleted():
+    live = LiveProxy(deployments=[_live_row(credential="AWS Keys")], credentials=frozenset({"AWS Keys"}))
+
+    [step] = plan(PROXY, live, credentials=[replace(AWS, keep=False)])
+
+    assert step["action"] == "delete_credential"
+    assert (step["problems"], step["blocked"]) == ([CREDENTIAL_IN_USE.format("AWS Keys")], True)
 
 
 def test_a_credential_with_no_values_is_never_pushed():
