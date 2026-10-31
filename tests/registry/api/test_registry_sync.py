@@ -281,3 +281,66 @@ def test_a_credential_with_no_values_is_never_pushed(registry_db, us, live_proxi
         "create_credential", "failed", "the registry has no values for the credential c1, so the sync cannot push it",
     )]
     assert live_proxies.writes == []
+
+
+def _rename_live(live_proxies, dep_id, name):
+    def hook():
+        for row in live_proxies.by_url[US_URL]["model_info"]:
+            if row["model_info"]["id"] == dep_id:
+                row["model_name"] = name
+
+    return hook
+
+
+@pytest.mark.parametrize("hand_edit, message", [
+    ("hand-edit", "the proxy changed after the plan; the next repair plans it again"),
+    ("claude-new", "the proxy already has this state"),
+])
+def test_each_later_step_is_checked_against_the_live_proxy(registry_db, us, live_proxies, hand_edit, message):
+    gpt, claude = _row(registry_db, "us-gpt"), _row(registry_db, "us-claude")
+    gpt.model_name, claude.model_name = "gpt-renamed", "claude-new"
+    registry_db.commit()
+    # Someone changes claude-x on the proxy while the gpt-4o step runs.
+    live_proxies.hooks["update_model"] = _rename_live(live_proxies, "us-claude", hand_edit)
+
+    run, steps = _run(registry_db, us, deployments=[gpt.id, claude.id])
+
+    assert steps == [("update_model", "ok", None), ("update_model", "skipped", message)]
+    assert [w[2] for w in live_proxies.writes] == ["us-gpt"]
+    # Only a step that is already done leaves the deployment in sync.
+    assert (_row(registry_db, "us-claude").synced_at is not None) is (hand_edit == "claude-new")
+
+
+def test_a_full_scope_reports_drift_and_unmanaged_deployments_and_deletes_none(registry_db, us, live_proxies):
+    live_proxies.by_url[US_URL]["model_info"].append(live_row("x9", "hand-made", "openai/gpt-4", db_model=None))
+    gpt = _row(registry_db, "us-gpt")
+    gpt.model_name = "gpt-renamed"
+    registry_db.commit()
+
+    run, steps = _run(registry_db, us, full=True)
+
+    proxy = run.stats["proxies"]["local-us1"]
+    assert {(d["action"], d["model_name"]) for d in proxy["drift"]} == {
+        ("create_credential", None), ("update_model", "gpt-renamed"),
+    }
+    [update] = [d for d in proxy["drift"] if d["action"] == "update_model"]
+    # The full scope also writes the picked price.
+    assert update["fields"] == ["model_name", "prices"]
+    assert proxy["unmanaged"] == [
+        {"model_name": "hand-made", "litellm_model": "openai/gpt-4", "deployment_id": "x9", "db_model": False}
+    ]
+    assert proxy["failed"] == []
+    assert "delete_model" not in _actions(live_proxies)
+    assert _row(registry_db, "us-claude").synced_at is not None
+
+
+def test_a_full_scope_with_skip_failed_leaves_out_and_lists_failed_deployments(registry_db, us, live_proxies):
+    claude = _row(registry_db, "us-claude")
+    claude.sync_error, claude.model_name = "HTTP 500: boom", "claude-new"
+    registry_db.commit()
+
+    run, steps = _run(registry_db, us, full=True, skip_failed=True)
+
+    assert run.stats["proxies"]["local-us1"]["failed"] == ["claude-new"]
+    assert all(w[2] != "us-claude" for w in live_proxies.writes if w[1] == "update_model")
+    assert _row(registry_db, "us-claude").sync_error == "HTTP 500: boom"

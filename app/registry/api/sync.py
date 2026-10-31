@@ -33,6 +33,7 @@ from app.registry.crypto import MissingKey, decrypt_values
 from app.registry.litellm import ProxyWriter, without_alias_copies, without_secrets
 from app.registry.models import (
     DBRegistryCredential,
+    DBRegistryCredentialRegion,
     DBRegistryModelRegion,
     DBRegistrySyncRun,
     DBRegistrySyncStep,
@@ -40,6 +41,8 @@ from app.registry.models import (
 
 logger = logging.getLogger(__name__)
 
+ALREADY_DONE = "the proxy already has this state"
+STALE = "the proxy changed after the plan; the next repair plans it again"
 LOCK_BUSY = "another sync run holds the proxy"
 LOCK_SKIPPED = "another sync run holds the proxy; the next run repairs it"
 NOT_MANAGED_BY_REGISTRY = "the registry does not manage the proxy"
@@ -83,15 +86,31 @@ def scope_of(plans: list[ProxyPlan]) -> dict:
     return scope
 
 
-def plans_for_scope(db: Session, region: DBRegion, entry: dict) -> ProxyPlan:
-    """The wanted state of one proxy for one scope entry, read from the database now."""
-    fields = frozenset(entry["fields"]) or planner.DEPLOYMENT_FIELDS
-    rows = (
-        db.query(DBRegistryModelRegion)
-        .filter(DBRegistryModelRegion.id.in_(entry["deployments"]), DBRegistryModelRegion.region_id == region.id)
-        .order_by(DBRegistryModelRegion.id)
-        .all()
-    )
+def plans_for_scope(db: Session, region: DBRegion, entry: dict) -> tuple[ProxyPlan, list[str]]:
+    """The wanted state of one proxy for one scope entry, read from the database now, and the model names of
+    the deployments that a full scope with `skip_failed` leaves out.
+
+    A full scope covers every deployment, the full alias map and every linked credential of the proxy.
+    """
+    query = db.query(DBRegistryModelRegion).filter(DBRegistryModelRegion.region_id == region.id)
+    left_out = []
+    if entry["full"]:
+        fields = planner.DEPLOYMENT_FIELDS | {"prices"}
+        rows = query.order_by(DBRegistryModelRegion.id).all()
+        if entry["skip_failed"]:
+            # A deployment whose last step failed waits for an admin; the repair only reports it.
+            left_out = sorted({row.model_name for row in rows if row.sync_error is not None})
+            rows = [row for row in rows if row.sync_error is None]
+        entry = {**entry, "aliases": True, "credentials": [
+            {"name": name, "rotate": False, "keep": True}
+            for (name,) in db.query(DBRegistryCredential.name)
+            .join(DBRegistryCredentialRegion, DBRegistryCredentialRegion.credential_id == DBRegistryCredential.id)
+            .filter(DBRegistryCredentialRegion.region_id == region.id)
+            .order_by(DBRegistryCredential.name)
+        ]}
+    else:
+        fields = frozenset(entry["fields"]) or planner.DEPLOYMENT_FIELDS
+        rows = query.filter(DBRegistryModelRegion.id.in_(entry["deployments"])).order_by(DBRegistryModelRegion.id).all()
     plan = next(iter(deployment_plans(db, rows, fields)), None) or _proxy_plan(region, fields=fields)
     deleted = [planner.Deployment(**item, keep=False) for item in entry["deleted"]]
     plan = replace(
@@ -107,7 +126,7 @@ def plans_for_scope(db: Session, region: DBRegion, entry: dict) -> ProxyPlan:
             credential_plans(db, item["name"], [region.id], item["rotate"], item["keep"])[0].credentials[0]
             for item in entry["credentials"]
         ))
-    return plan
+    return plan, left_out
 
 
 def create_run(db: Session, trigger: str, plans_or_scope) -> DBRegistrySyncRun:
@@ -365,6 +384,66 @@ def _send(proxy: _Proxy, writer: ProxyWriter, step: dict, known_ids: set, read_a
     return "ok", message
 
 
+def _subject_steps(plan: ProxyPlan, step: dict, live: planner.LiveProxy, known_ids: frozenset) -> list[dict]:
+    """The steps for the subject of one step only, planned again against the live state."""
+    if step["action"] in _MODEL_STEPS:
+        deployment = next(
+            d for d in plan.deployments if (d.row_id, d.deployment_id) == (step["row_id"], step["deployment_id"])
+        )
+        # Every credential step already ran, so the live credentials are the ones to check against.
+        return planner.plan(
+            plan.proxy, live, [deployment], plan.fields, known_ids=known_ids,
+            credential_providers=plan.credential_providers,
+        )
+    if step["action"] == "write_alias_map":
+        return planner.plan(plan.proxy, live, aliases=plan.aliases, removed_alias=plan.removed_alias)
+    credential = next(c for c in plan.credentials if c.name == step["credential"])
+    return planner.plan(plan.proxy, live, credentials=[credential])
+
+
+def _recheck(proxy: _Proxy, plan: ProxyPlan, step: dict, known_ids: set) -> tuple[dict | None, str | None]:
+    """(the step to send, or None with the reason to skip it). A step that is blocked now goes back to fail."""
+    live = read_live(proxy.url, proxy.key)
+    if isinstance(live, str):
+        return {**step, "blocked": True, "problems": [f"the proxy could not be read: {live}"]}, None
+    now = _subject_steps(plan, step, live, frozenset(known_ids))
+    if not now:
+        return None, ALREADY_DONE
+    current = now[0]
+    if current["blocked"]:
+        return current, None
+    if any(current[key] != step[key] for key in ("action", "payload", "changes")):
+        return None, STALE
+    return step, None
+
+
+def _drift(steps: list[dict]) -> list[dict]:
+    """The planned steps that would send something."""
+    return [
+        {
+            "action": step["action"], "model_name": step["model_name"], "deployment_id": step["deployment_id"],
+            "fields": sorted(step["changes"] or {}),
+        }
+        for step in steps
+        if not step["blocked"] and not (step["action"] == "update_model" and not step["changes"])
+    ]
+
+
+def _unmanaged(live: planner.LiveProxy, known_ids) -> list[dict]:
+    """The live deployments that no registry row holds. A repair only reports them."""
+    rows, _ = without_alias_copies(live.deployments, set(live.aliases))
+    return [
+        {
+            "model_name": row.get("model_name"),
+            "litellm_model": (row.get("litellm_params") or {}).get("model"),
+            "deployment_id": (row.get("model_info") or {}).get("id"),
+            "db_model": (row.get("model_info") or {}).get("db_model") is True,
+        }
+        for row in rows
+        if (row.get("model_info") or {}).get("id") not in known_ids
+    ]
+
+
 def _region_reason(region: DBRegion | None) -> str | None:
     if region is None:
         return "the proxy no longer exists"
@@ -378,32 +457,34 @@ def _region_reason(region: DBRegion | None) -> str | None:
     return None
 
 
-def _sync_region(db: Session, run_id: int, region_id: int, entry: dict, wait: bool) -> None:
+def _sync_region(db: Session, run_id: int, region_id: int, entry: dict, wait: bool) -> tuple[str, dict] | None:
+    """Sync one proxy. Returns (proxy name, stats) for a full scope."""
     region = db.get(DBRegion, region_id)
     if region is None:
         logger.warning("Sync run %s: region %s no longer exists", run_id, region_id)
-        return
+        return None
     proxy = _Proxy(db, run_id, region, entry)
     if reason := _region_reason(region):
         proxy.record("read_proxy", "failed", reason)
         db.commit()
-        return
+        return None
 
     lock = _Lock(region_id)
     if not lock.acquire(wait):
         proxy.record("lock_proxy", "failed" if wait else "skipped", LOCK_BUSY if wait else LOCK_SKIPPED)
         db.commit()
-        return
+        return None
     try:
-        _sync_locked(proxy)
+        stats = _sync_locked(proxy)
     finally:
         lock.release()
+    return (proxy.name, stats) if stats is not None else None
 
 
-def _sync_locked(proxy: _Proxy) -> None:
+def _sync_locked(proxy: _Proxy) -> dict | None:
     db = proxy.db
     read_at = _now()
-    plan = plans_for_scope(db, db.get(DBRegion, proxy.region_id), proxy.entry)
+    plan, left_out = plans_for_scope(db, db.get(DBRegion, proxy.region_id), proxy.entry)
     scoped_rows = {d.row_id for d in plan.deployments if d.row_id is not None}
     # No transaction stays open during HTTP.
     db.commit()
@@ -414,15 +495,18 @@ def _sync_locked(proxy: _Proxy) -> None:
         # Seed one deployment by hand, or read an empty proxy as empty if LiteLLM keeps that answer.
         proxy.record("read_proxy", "failed", f"the proxy could not be read: {live}")
         db.commit()
-        return
+        return None
     if plan.aliases is not None and not plan.aliases and live.aliases.keys() - {plan.removed_alias}:
-        # AC: the registry never wipes live aliases that the adopt import has not read.
+        # The registry never wipes live aliases that the adopt import has not read.
         proxy.record("write_alias_map", "failed", planner.DELETES_EVERY_ALIAS)
         db.commit()
-        return
+        return None
 
     known_ids = set(plan.known_ids)
     steps = plan_proxy(plan, live, frozenset(known_ids))
+    stats = None
+    if proxy.entry["full"]:
+        stats = {"drift": _drift(steps), "unmanaged": _unmanaged(live, known_ids), "failed": left_out}
     ids = [proxy.record(step["action"], "pending", step=step) for step in steps]
     stepped = {step["row_id"] for step in steps}
     # A deployment in the scope with no step is already in sync.
@@ -432,14 +516,23 @@ def _sync_locked(proxy: _Proxy) -> None:
 
     with ProxyWriter(proxy.url, proxy.key) as writer:
         # ponytail: one live read per step; batch the reads if a proxy gets slow.
-        for step_id, step in zip(ids, steps, strict=True):
-            status, message = _send(proxy, writer, step, known_ids, read_at)
+        for index, (step_id, step) in enumerate(zip(ids, steps, strict=True)):
+            sendable = not step["blocked"] and not (step["action"] == "update_model" and not step["changes"])
+            # The first step goes out on the read above; each later step checks the proxy again (AC 12).
+            current, reason = _recheck(proxy, plan, step, known_ids) if index and sendable else (step, None)
+            if current is None:
+                status, message = "skipped", reason
+            else:
+                status, message = _send(proxy, writer, current, known_ids, read_at)
             proxy.finish(step_id, step["action"], status, message)
+            # A step skipped as done, or an update with nothing to send, leaves the deployment in sync.
+            in_sync = status == "skipped" and (reason == ALREADY_DONE or (current is step and not step["blocked"]))
             if status == "failed":
                 _set_row(db, step["row_id"], sync_error=message)
-            elif status == "skipped" and step["action"] in _MODEL_STEPS and not step["blocked"]:
+            elif in_sync:
                 _set_row(db, step["row_id"], synced_at=read_at, sync_error=None)
             db.commit()
+    return stats
 
 
 def execute_run(run_id: int, wait: bool = True) -> None:
@@ -457,19 +550,20 @@ def execute_run(run_id: int, wait: bool = True) -> None:
         run = db.get(DBRegistrySyncRun, run_id)
         scope = dict(run.scope)
         db.commit()
-        error = None
+        error, proxies = None, {}
         try:
             for region_id in sorted(int(key) for key in scope):
-                _sync_region(db, run_id, region_id, scope[str(region_id)], wait)
+                if found := _sync_region(db, run_id, region_id, scope[str(region_id)], wait):
+                    proxies[found[0]] = found[1]
         except Exception as exc:
             db.rollback()
             logger.exception("Sync run %s stopped", run_id)
             error = type(exc).__name__
         failed = error is not None or db.query(DBRegistrySyncStep.id).filter_by(run_id=run_id, status="failed").first()
-        db.query(DBRegistrySyncRun).filter_by(id=run_id).update(
-            {"status": "failed" if failed else "ok", "finished_at": _now(), "error": error},
-            synchronize_session=False,
-        )
+        values = {"status": "failed" if failed else "ok", "finished_at": _now(), "error": error}
+        if proxies:
+            values["stats"] = {"proxies": proxies}
+        db.query(DBRegistrySyncRun).filter_by(id=run_id).update(values, synchronize_session=False)
         db.commit()
     finally:
         db.close()
