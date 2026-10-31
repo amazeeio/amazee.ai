@@ -8,7 +8,13 @@ from datetime import date
 from sqlalchemy.orm import Session
 
 from app.registry.litellm import normalize_provider, parse_key
-from app.registry.models import DBRegistryModel, DBRegistryModelPrice, DBRegistryModelSupport
+from app.registry.models import (
+    DBRegistryModel,
+    DBRegistryModelPrice,
+    DBRegistryModelRegion,
+    DBRegistryModelSupport,
+    DBRegistryProvider,
+)
 from app.registry.prices import pick_price
 from app.registry.support import Availability
 
@@ -35,6 +41,25 @@ CREDENTIAL_PROVIDERS = {"bedrock_mantle": "bedrock"}
 def credential_provider(provider: str) -> str:
     """The provider whose credentials `provider` uses. Rule 6 compares only these names."""
     return CREDENTIAL_PROVIDERS.get(provider, provider)
+
+
+def user_providers(db: Session, names) -> dict[str, set[str]]:
+    """The mapped providers of the deployments, on any proxy, that use each credential name.
+
+    A credential from the adopt import has no provider, so rule 6 takes these instead.
+    """
+    used_by = DBRegistryModelRegion.litellm_params["litellm_credential_name"].as_string()
+    found: dict[str, set[str]] = {}
+    if names:
+        for name, provider in (
+            db.query(used_by, DBRegistryProvider.name)
+            .join(DBRegistryModel, DBRegistryModel.id == DBRegistryModelRegion.model_id)
+            .join(DBRegistryProvider, DBRegistryProvider.id == DBRegistryModel.provider_id)
+            .filter(used_by.in_(list(names)))
+            .distinct()
+        ):
+            found.setdefault(name, set()).add(credential_provider(provider))
+    return found
 
 
 # `{proxy}` and `{key}` are the literal path text: the rule functions do not know the names.

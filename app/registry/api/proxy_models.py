@@ -45,6 +45,7 @@ from app.registry.rules import (
     backend_problem,
     credential_provider,
     default_backend,
+    user_providers,
     enable_problems,
     geo_problem,
     removal_problem,
@@ -156,17 +157,8 @@ def _credential_problems(db: Session, wanted: list[tuple[str, int, str, str, str
     )
     # A credential from the adopt import has no provider, so it gets the providers of its users, on any proxy.
     providers = {name: {credential_provider(row.provider)} for name, row in rows.items() if row.provider}
-    unset = [name for name, row in rows.items() if not row.provider]
-    if unset:
-        used_by = DBRegistryModelRegion.litellm_params["litellm_credential_name"].as_string()
-        for name, provider in (
-            db.query(used_by, DBRegistryProvider.name)
-            .join(DBRegistryModel, DBRegistryModel.id == DBRegistryModelRegion.model_id)
-            .join(DBRegistryProvider, DBRegistryProvider.id == DBRegistryModel.provider_id)
-            .filter(used_by.in_(unset))
-            .distinct()
-        ):
-            providers.setdefault(name, set()).add(credential_provider(provider))
+    for name, found in user_providers(db, [name for name, row in rows.items() if not row.provider]).items():
+        providers.setdefault(name, set()).update(found)
 
     problems = []
     for name, region_id, proxy, key, provider in wanted:

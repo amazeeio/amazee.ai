@@ -240,3 +240,11 @@ def test_credential_plans_and_providers(registry_db, deployed, live_proxies):
     assert (step["action"], step["credential"], step["payload"]) == (
         "create_credential", "AWS Keys", {"credential_name": "AWS Keys", "credential_info": {"aws_region_name": "us-east-1"}},
     )
+
+
+def test_a_credential_with_no_provider_counts_for_the_providers_of_its_users(registry_db, writable):
+    # AWS Bedrock came from the adopt import; the bedrock claude-x deployment on local-us1 uses it.
+    plans = {p.proxy: p for p in deployment_plans(registry_db, _rows(registry_db), DEPLOYMENT_FIELDS)}
+
+    assert plans["local-us1"].credential_providers == {"bedrock"}
+    assert plans["local-eu1"].credential_providers == {"bedrock"}

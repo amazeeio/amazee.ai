@@ -25,7 +25,7 @@ from app.registry.models import (
     DBRegistryProxy,
 )
 from app.registry.prices import pick_price
-from app.registry.rules import credential_provider
+from app.registry.rules import credential_provider, user_providers
 from app.registry.support import Availability
 
 
@@ -147,14 +147,18 @@ def deployment_plans(
 
 
 def credential_providers(db: Session, region_ids) -> dict[int, frozenset]:
-    """The mapped providers of the registry credentials on each proxy. A credential with no provider counts for none."""
-    found = defaultdict(set)
-    for region_id, provider in (
-        db.query(DBRegistryCredentialRegion.region_id, DBRegistryCredential.provider)
+    """The mapped providers of the registry credentials on each proxy. A credential with no provider counts for
+    the providers of the deployments that use it, as in rule 6."""
+    links = (
+        db.query(DBRegistryCredentialRegion.region_id, DBRegistryCredential.name, DBRegistryCredential.provider)
         .join(DBRegistryCredential, DBRegistryCredential.id == DBRegistryCredentialRegion.credential_id)
-        .filter(DBRegistryCredentialRegion.region_id.in_(region_ids), DBRegistryCredential.provider.isnot(None))
-    ):
-        found[region_id].add(credential_provider(provider))
+        .filter(DBRegistryCredentialRegion.region_id.in_(region_ids))
+        .all()
+    )
+    users = user_providers(db, {name for _, name, provider in links if not provider})
+    found = defaultdict(set)
+    for region_id, name, provider in links:
+        found[region_id] |= {credential_provider(provider)} if provider else users.get(name, set())
     return {region_id: frozenset(providers) for region_id, providers in found.items()}
 
 
