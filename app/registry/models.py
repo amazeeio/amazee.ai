@@ -15,6 +15,7 @@ from sqlalchemy import (
     UniqueConstraint,
     false,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
 from app.db.models import Base
@@ -200,11 +201,12 @@ class DBRegistrySyncRun(Base):
     trigger = Column(String, nullable=False)
     # pending, running, ok or failed.
     status = Column(String, nullable=False, default="pending")
-    region_ids = Column(JSON, nullable=False, default=list)
+    # JSONB, so a filter can ask whether a run covers one region.
+    region_ids = Column(JSONB, nullable=False, default=list)
     # What to push per region id. The run reads the wanted state again from
     # the database when it starts, so the scope holds ids, not payloads.
     scope = Column(JSON, nullable=False, default=dict)
-    stats = Column(JSON, nullable=True)
+    stats = Column(JSONB, nullable=True)
     error = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     started_at = Column(DateTime(timezone=True), nullable=True)

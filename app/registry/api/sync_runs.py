@@ -3,8 +3,6 @@
 from collections import defaultdict
 
 from fastapi import BackgroundTasks, Depends, HTTPException, Query, Response
-from sqlalchemy import cast
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -83,7 +81,7 @@ def list_sync_runs(
     query = db.query(DBRegistrySyncRun)
     if proxy:
         region_id = db.query(DBRegion.id).filter(DBRegion.name == proxy).scalar()
-        query = query.filter(cast(DBRegistrySyncRun.region_ids, JSONB).contains([region_id]))
+        query = query.filter(DBRegistrySyncRun.region_ids.contains([region_id]))
     if status:
         query = query.filter(DBRegistrySyncRun.status == status)
     runs = _paginate(query.order_by(DBRegistrySyncRun.id.desc()), response, offset, limit)

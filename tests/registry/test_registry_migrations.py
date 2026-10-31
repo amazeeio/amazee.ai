@@ -68,6 +68,8 @@ def test_sync_migration_drops_and_adds_its_tables_and_columns(db):
             migration.upgrade()
             inspector = inspect(connection)
             assert tables <= set(inspector.get_table_names())
+            runs = _columns(connection, "registry_sync_runs")
+            assert (str(runs["region_ids"]["type"]), str(runs["stats"]["type"])) == ("JSONB", "JSONB")
             deployment = _columns(connection, "registry_model_regions")
             assert all(deployment[c]["nullable"] for c in sync_columns)
             assert _columns(connection, "registry_proxies")["adopted_at"]["nullable"] is True

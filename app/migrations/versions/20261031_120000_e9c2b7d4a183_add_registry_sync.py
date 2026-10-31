@@ -7,6 +7,7 @@ Create Date: 2026-10-31 12:00:00.000000
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 
 # revision identifiers, used by Alembic.
@@ -49,9 +50,9 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("trigger", sa.String(), nullable=False),
         sa.Column("status", sa.String(), nullable=False),
-        sa.Column("region_ids", sa.JSON(), nullable=False),
+        sa.Column("region_ids", postgresql.JSONB(), nullable=False),
         sa.Column("scope", sa.JSON(), nullable=False),
-        sa.Column("stats", sa.JSON(), nullable=True),
+        sa.Column("stats", postgresql.JSONB(), nullable=True),
         sa.Column("error", sa.String(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),

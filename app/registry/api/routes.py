@@ -8,8 +8,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from sqlalchemy import and_, cast, func, or_, select
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import catalog_manages
@@ -597,8 +596,8 @@ def get_proxy(proxy: str, db: Session = Depends(get_db)):
         .filter(
             DBRegistrySyncRun.trigger.in_(("daily", "repair")),
             DBRegistrySyncRun.finished_at.isnot(None),
-            cast(DBRegistrySyncRun.region_ids, JSONB).contains([region.id]),
-            cast(DBRegistrySyncRun.stats, JSONB)["proxies"].has_key(region.name),
+            DBRegistrySyncRun.region_ids.contains([region.id]),
+            DBRegistrySyncRun.stats["proxies"].has_key(region.name),
         )
         .order_by(DBRegistrySyncRun.finished_at.desc(), DBRegistrySyncRun.id.desc())
         .first()
