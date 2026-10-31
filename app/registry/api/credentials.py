@@ -86,6 +86,26 @@ def _encrypted(values: dict, problems: list[RegistryProblem]) -> str | None:
         return None
 
 
+def _taken(db: Session, name: str, region_ids: dict[str, int]) -> RegistryProblem:
+    """The 409 of a create whose name the registry has. An adopted credential needs a PATCH, not a create."""
+    # The name is taken: the row is there, so this lookup after the conflict finds it.
+    existing = db.query(DBRegistryCredential).filter_by(name=name).one()
+    if existing.values_encrypted:
+        return RegistryProblem(message="Credential already exists", status=409)
+    linked = {
+        region_id
+        for (region_id,) in db.query(DBRegistryCredentialRegion.region_id).filter_by(credential_id=existing.id)
+    }
+    missing = sorted(proxy for proxy, region_id in region_ids.items() if region_id not in linked)
+    message = (
+        f"The credential {name} exists with no stored values; send the values with PATCH and replace_all: true. "
+        "Its provider and info stay as the adopt import set them"
+    )
+    if missing:
+        message += f". It is not on {', '.join(missing)}; add it with a PATCH of the proxy list"
+    return RegistryProblem(message=message, status=409)
+
+
 def _uses(db: Session, name: str):
     """The deployments that name the credential."""
     return db.query(DBRegistryModelRegion).filter(
@@ -138,13 +158,7 @@ def create_credential(
         db.flush()
     except IntegrityError:
         db.rollback()
-        # The name is taken: the row is there, so this lookup after the conflict finds it.
-        stored = db.query(DBRegistryCredential.values_encrypted).filter_by(name=body.name).scalar()
-        message = (
-            "Credential already exists" if stored else
-            f"The credential {body.name} exists with no stored values; send the values with PATCH and replace_all: true"
-        )
-        raise Refused([RegistryProblem(message=message, status=409)]) from None
+        raise Refused([_taken(db, body.name, region_ids)]) from None
     db.add_all(DBRegistryCredentialRegion(credential_id=row.id, region_id=rid) for rid in region_ids.values())
     db.flush()
     return _save(

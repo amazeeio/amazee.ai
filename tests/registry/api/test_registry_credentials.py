@@ -260,6 +260,24 @@ def test_a_create_of_an_adopted_name_points_to_replace_all(client, admin_token, 
 
     assert response.status_code == 409
     assert messages(response) == [
-        "The credential c1 exists with no stored values; send the values with PATCH and replace_all: true"
+        "The credential c1 exists with no stored values; send the values with PATCH and replace_all: true. "
+        "Its provider and info stay as the adopt import set them"
     ]
     assert _state(registry_db) == before
+
+
+def test_a_create_of_an_adopted_name_lists_the_proxies_it_lacks(client, admin_token, registry_db, writable):
+    from tests.registry.api.conftest import credential
+
+    credential(registry_db, "adopted-us", proxies=[writable["us"]])
+    registry_db.commit()
+
+    response = client.post(
+        CREDENTIALS, json=_body(name="adopted-us", proxies=["local-eu1", "local-us1"]), headers=auth(admin_token)
+    )
+
+    assert response.status_code == 409
+    assert messages(response)[0].endswith(
+        "Its provider and info stay as the adopt import set them. It is not on local-eu1; add it with a PATCH of "
+        "the proxy list"
+    )
