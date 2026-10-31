@@ -253,6 +253,15 @@ class ProxyClient:
         credentials = self._get("/credentials").get("credentials") or []
         return {cred["credential_name"] for cred in credentials if cred.get("credential_name")}
 
+    def credential_infos(self) -> dict[str, dict]:
+        """Map credential name to its credential_info without secrets, with no fallback on error."""
+        credentials = self._get("/credentials").get("credentials") or []
+        return {
+            cred["credential_name"]: without_secrets(cred.get("credential_info") or {})
+            for cred in credentials
+            if cred.get("credential_name")
+        }
+
     def credential_regions(self) -> dict[str, str]:
         """Map credential name to its `aws_region_name`. Reads nothing else."""
         try:

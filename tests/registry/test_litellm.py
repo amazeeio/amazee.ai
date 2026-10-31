@@ -342,3 +342,16 @@ def test_proxy_writer_returns_none_for_an_empty_answer():
 def test_proxy_writer_raises_on_an_error_answer():
     with _writer(lambda request: httpx.Response(500, json={"error": "x"})) as writer, pytest.raises(httpx.HTTPStatusError):
         writer.create_model({"model_name": "m"})
+
+
+def test_credential_infos_returns_no_values():
+    answer = {"credentials": [
+        {"credential_name": "AWS Bedrock", "credential_info": {"aws_region_name": "us-east-1", "api_key": "sk-x"},
+         "credential_values": {"aws_secret_access_key": "secret"}},
+        {"credential_info": {}},
+    ]}
+
+    with _proxy(lambda request: httpx.Response(200, json=answer)) as client:
+        assert client.credential_infos() == {"AWS Bedrock": {"aws_region_name": "us-east-1"}}
+    with _proxy(lambda request: httpx.Response(500)) as client, pytest.raises(httpx.HTTPStatusError):
+        client.credential_infos()

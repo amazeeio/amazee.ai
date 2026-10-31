@@ -3,9 +3,12 @@ from decimal import Decimal
 
 import pytest
 
-from app.registry.importer import AlreadyImported, import_deployments
+from app.registry.importer import AlreadyImported, adopt_aliases, adopt_credentials, import_deployments
 from app.registry.models import (
     DBRegistryAccessGroup,
+    DBRegistryAlias,
+    DBRegistryCredential,
+    DBRegistryCredentialRegion,
     DBRegistryModel,
     DBRegistryModelPrice,
     DBRegistryModelRegion,
@@ -376,3 +379,88 @@ def test_mantle_cloud_region_comes_last(registry_db, proxy_region, params, crede
     registry_db.commit()
 
     assert registry_db.get(DBRegistryProxy, proxy_region.id).cloud_regions == {"bedrock_mantle": expected}
+
+
+def _registry_state(db):
+    db.expire_all()
+    return (
+        sorted((r.litellm_deployment_id, r.model_name) for r in db.query(DBRegistryModelRegion)),
+        sorted((a.alias, a.target, a.hidden) for a in db.query(DBRegistryAlias)),
+        sorted((c.name, c.provider, c.values_encrypted, str(c.credential_info)) for c in db.query(DBRegistryCredential)),
+        sorted((link.credential_id, link.region_id) for link in db.query(DBRegistryCredentialRegion)),
+        db.get(DBRegistryProxy, db.query(DBRegistryProxy.region_id).scalar()).cloud_regions,
+    )
+
+
+def test_an_adopt_import_adds_only_new_deployments_and_keeps_the_rows(registry_db, proxy_region):
+    import_deployments(registry_db, proxy_region, DEPLOYMENTS[:1], None, {})
+    registry_db.commit()
+    first = registry_db.query(DBRegistryModelRegion).one()
+    first.model_name = "renamed-by-admin"
+    imported_at = registry_db.get(DBRegistryProxy, proxy_region.id).imported_at
+    registry_db.commit()
+
+    stats = import_deployments(registry_db, proxy_region, DEPLOYMENTS, None, {}, adopt=True)
+    registry_db.commit()
+
+    assert (stats["kept"], stats["imported"], stats["skipped"]) == (1, 2, ["no-prefix"])
+    assert sorted(r.litellm_deployment_id for r in registry_db.query(DBRegistryModelRegion)) == ["dep-1", "dep-2", "dep-3"]
+    assert registry_db.query(DBRegistryModelRegion).filter_by(litellm_deployment_id="dep-1").one().model_name == (
+        "renamed-by-admin"
+    )
+    assert registry_db.get(DBRegistryProxy, proxy_region.id).imported_at == imported_at
+
+
+def test_an_adopt_import_merges_cloud_regions_and_keeps_an_admin_value(registry_db, proxy_region):
+    registry_db.add(DBRegistryProxy(region_id=proxy_region.id, cloud_regions={"bedrock": "eu-west-1"}))
+    registry_db.commit()
+    vertex = {
+        "model_name": "gemini", "litellm_params": {"model": "vertex_ai/gemini-x", "vertex_location": "us-central1"},
+        "model_info": {"id": "dep-9"},
+    }
+
+    import_deployments(registry_db, proxy_region, [DEPLOYMENTS[0], vertex], None, {"AWS Bedrock": "us-east-1"}, adopt=True)
+
+    assert registry_db.get(DBRegistryProxy, proxy_region.id).cloud_regions == {
+        "bedrock": "eu-west-1", "vertex_ai": "us-central1",
+    }
+
+
+def test_adopt_fills_aliases_and_credentials_and_keeps_existing_rows(registry_db, proxy_region):
+    import_deployments(registry_db, proxy_region, DEPLOYMENTS[:1], None, {})
+    registry_db.add(DBRegistryAlias(region_id=proxy_region.id, alias="chat", target="claude-x", hidden=False))
+    registry_db.commit()
+
+    added = adopt_aliases(registry_db, proxy_region, {
+        "chat": "llama", "fast": {"model": "claude-x", "hidden": True}, "plain": "claude-x", "bad": None,
+    })
+    created = adopt_credentials(registry_db, proxy_region, {"AWS Bedrock": {"aws_region_name": "us-east-1"}})
+    registry_db.commit()
+
+    assert (added, created) == (2, 1)
+    assert sorted((a.alias, a.target, a.hidden) for a in registry_db.query(DBRegistryAlias)) == [
+        ("chat", "claude-x", False), ("fast", "claude-x", True), ("plain", "claude-x", False),
+    ]
+    [credential] = registry_db.query(DBRegistryCredential).all()
+    assert (credential.name, credential.provider, credential.values_encrypted, credential.credential_info) == (
+        "AWS Bedrock", None, None, {"aws_region_name": "us-east-1"},
+    )
+    assert [(link.credential_id, link.region_id) for link in registry_db.query(DBRegistryCredentialRegion)] == [
+        (credential.id, proxy_region.id)
+    ]
+
+
+def test_a_second_adopt_import_changes_nothing_and_a_plain_import_is_still_refused(registry_db, proxy_region):
+    def adopt():
+        import_deployments(registry_db, proxy_region, DEPLOYMENTS, None, {"AWS Bedrock": "us-east-1"}, adopt=True)
+        adopt_aliases(registry_db, proxy_region, {"chat": "claude-x"})
+        adopt_credentials(registry_db, proxy_region, {"AWS Bedrock": {}})
+        registry_db.commit()
+
+    adopt()
+    before = _registry_state(registry_db)
+    adopt()
+
+    assert _registry_state(registry_db) == before
+    with pytest.raises(AlreadyImported):
+        import_deployments(registry_db, proxy_region, DEPLOYMENTS, None, {})

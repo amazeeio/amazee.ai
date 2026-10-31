@@ -209,7 +209,7 @@ def _managed(row: dict) -> bool:
     return (row.get("model_info") or {}).get("db_model") is True
 
 
-def _alias(value) -> tuple | None:
+def alias_entry(value) -> tuple | None:
     """(target, hidden) of an alias map value, in either LiteLLM form."""
     if isinstance(value, dict):
         return value.get("model"), bool(value.get("hidden"))
@@ -220,7 +220,7 @@ def _alias_step(proxy: str, live: dict, wanted: dict, removed_alias: str | None)
     changes = {
         name: {"from": live.get(name), "to": wanted.get(name)}
         for name in sorted(live.keys() | wanted.keys())
-        if _alias(live.get(name)) != _alias(wanted.get(name))
+        if alias_entry(live.get(name)) != alias_entry(wanted.get(name))
     }
     if not changes:
         return None
