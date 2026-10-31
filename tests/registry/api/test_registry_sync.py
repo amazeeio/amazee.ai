@@ -20,7 +20,7 @@ from app.registry.models import (
     DBRegistrySyncStep,
 )
 from app.registry.planner import DELETES_EVERY_ALIAS, LIVE_NAME_CLASH, MANAGED_BY, NOT_ADOPTED, NOT_MANAGED
-from tests.registry.api.conftest import US_URL, credential, live_row, model
+from tests.registry.api.conftest import US_URL, auth, credential, live_row, model
 
 MASTER_KEY = "sk-master-key-0123"
 SECRET = "SECRET-aws-value-0123"
@@ -540,3 +540,19 @@ def test_an_adopted_deployment_with_an_unclearable_cost_field_is_not_replaced(re
 
     assert not [s for s in steps if s[0] in ("replace_model", "update_model")]
     assert not [w for w in live_proxies.writes if w[1].endswith("_model")]
+
+
+def test_the_deployment_shows_the_cost_fields_that_still_bill(client, admin_token, registry_db, us, live_proxies):
+    _registry_made_gpt(registry_db, live_proxies)
+    # Adopted: no replace, so the field stays on the proxy.
+    del live_proxies.by_url[US_URL]["model_info"][0]["model_info"]["managed_by"]
+    run = create_run(registry_db, "repair", {str(us.id): _entry(full=True)})
+    registry_db.commit()
+    execute_run(run.id)
+    # The request shares this session, which still holds the run as it was before it ran.
+    registry_db.expire_all()
+
+    detail = client.get("/registry/models/openai/gpt-4o", headers=auth(admin_token)).json()
+
+    stale = {d["proxy"]: d["stale_cost_fields"] for d in detail["deployments"]}
+    assert stale == {"local-us1": ["output_cost_per_image"], "local-eu1": None}

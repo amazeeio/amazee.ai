@@ -710,11 +710,16 @@ def _sync_locked(proxy: _Proxy) -> dict | None:
     # An empty wanted alias map with live aliases is blocked in the planner (DELETES_EVERY_ALIAS), so only the
     # alias step fails and the other steps of the proxy still run.
     known_ids = set(plan.known_ids)
+    planned = plan_proxy(plan, live)
     # An update with only notes sends nothing, so the run records no step for it; a dry run still shows it.
-    steps = [step for step in plan_proxy(plan, live) if _sendable(step) or step["blocked"]]
+    steps = [step for step in planned if _sendable(step) or step["blocked"]]
     stats = None
     if proxy.entry["full"]:
-        stats = {"drift": _drift(steps), "unmanaged": _unmanaged(live, known_ids), "failed": left_out}
+        stats = {
+            "drift": _drift(steps), "unmanaged": _unmanaged(live, known_ids), "failed": left_out,
+            # Cost fields that LiteLLM keeps and the sync cannot replace, per deployment row id.
+            "stale_costs": {str(s["row_id"]): s["stale_cost_fields"] for s in planned if s.get("stale_cost_fields")},
+        }
     ids = [proxy.record(step["action"], "pending", step=step) for step in steps]
     stepped = {step["row_id"] for step in steps}
     # A deployment in the scope with no step is already in sync.

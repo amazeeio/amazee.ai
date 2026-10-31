@@ -216,7 +216,7 @@ def _update(
         for name in sorted(fields & live.keys())
         if live[name] != wanted[name]
     }
-    problems, notes = [], []
+    problems, notes, stale = [], [], []
     # Only a step that changes the credential names it, so a price step does not repeat an old problem.
     if "credential" in changes and deployment.credential and deployment.credential not in credentials:
         problems.append(CREDENTIAL_NOT_ON_PROXY.format(deployment.credential))
@@ -255,11 +255,16 @@ def _update(
             )
         if kept:
             notes.append(UNCLEARABLE_COSTS.format(", ".join(kept)))
+            stale = kept
     if not changes and not problems and not notes:
         return None
     if changes and not _managed(row):
         problems.insert(0, NOT_MANAGED)
-    return _step(proxy, "update_model", deployment, changes=changes, problems=problems, notes=notes)
+    step = _step(proxy, "update_model", deployment, changes=changes, problems=problems, notes=notes)
+    # The live cost fields that still bill after this step, for the deployment response.
+    if stale:
+        step["stale_cost_fields"] = stale
+    return step
 
 
 def _inline_secrets(params: dict) -> bool:

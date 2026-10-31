@@ -109,7 +109,7 @@ def test_proxy_detail(client, admin_token, deployed, registry_db):
         "litellm_deployment_id": "us-gpt", "enabled": True,
         "input_cost_per_token": None, "output_cost_per_token": None, "prices": {}, "access_groups": ["team-a"],
         "credential": None,
-        "synced_at": None, "changed_at": None, "sync_error": None,
+        "synced_at": None, "changed_at": None, "sync_error": None, "stale_cost_fields": None,
     }]
     assert claude["support"]["supported"] is None
     assert [d["model_name"] for d in claude["deployments"]] == ["claude-x"]

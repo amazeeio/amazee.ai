@@ -170,6 +170,9 @@ class RegistryDeploymentResponse(BaseModel):
     changed_at: datetime | None
     # The message of the last sync step that failed, or null.
     sync_error: str | None
+    # Live cost fields that the registry price does not have and that LiteLLM cannot clear, from the newest
+    # repair of the proxy; they still bill. Null when that repair found none.
+    stale_cost_fields: list[str] | None = None
 
 
 class RegistryModelDeploymentResponse(RegistryDeploymentResponse):

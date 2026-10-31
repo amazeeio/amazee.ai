@@ -184,7 +184,33 @@ def _model_responses(db: Session, rows: list) -> list[RegistryModelResponse]:
     ]
 
 
-def _deployment_fields(deployment: DBRegistryModelRegion, proxy: str, groups: dict[int, list[str]]) -> dict:
+def _last_repair(db: Session, region_id: int, name: str) -> DBRegistrySyncRun | None:
+    """The newest finished daily or repair run with stats for the proxy, so a GET never reads the proxy."""
+    return (
+        db.query(DBRegistrySyncRun)
+        .filter(
+            DBRegistrySyncRun.trigger.in_(("daily", "repair")),
+            DBRegistrySyncRun.finished_at.isnot(None),
+            DBRegistrySyncRun.region_ids.contains([region_id]),
+            DBRegistrySyncRun.stats["proxies"].has_key(name),
+        )
+        .order_by(DBRegistrySyncRun.finished_at.desc(), DBRegistrySyncRun.id.desc())
+        .first()
+    )
+
+
+def _stale_costs(db: Session, regions: dict[int, str]) -> dict[int, list[str]]:
+    """The stale cost fields of each deployment row id, from the newest repair of each proxy."""
+    found = {}
+    for region_id, name in regions.items():
+        if run := _last_repair(db, region_id, name):
+            found |= {int(k): v for k, v in (run.stats["proxies"][name].get("stale_costs") or {}).items()}
+    return found
+
+
+def _deployment_fields(
+    deployment: DBRegistryModelRegion, proxy: str, groups: dict[int, list[str]], stale: dict[int, list[str]]
+) -> dict:
     return {
         "proxy": proxy,
         "model_name": deployment.model_name,
@@ -199,6 +225,7 @@ def _deployment_fields(deployment: DBRegistryModelRegion, proxy: str, groups: di
         "synced_at": deployment.synced_at,
         "changed_at": deployment.changed_at,
         "sync_error": deployment.sync_error,
+        "stale_cost_fields": stale.get(deployment.id),
     }
 
 
@@ -412,6 +439,7 @@ def _deployment_responses(
         )
     )
     groups = _access_groups(db, [deployment.id for deployment, _ in deployments])
+    stale = _stale_costs(db, {deployment.region_id: proxy for deployment, proxy in deployments})
     availability = Availability(db)
 
     def price(deployment):
@@ -423,7 +451,7 @@ def _deployment_responses(
         return pick_price(price_scopes, provider, deployment.litellm_model, cloud_region)
 
     return [
-        RegistryModelDeploymentResponse(**_deployment_fields(deployment, proxy, groups), price=price(deployment))
+        RegistryModelDeploymentResponse(**_deployment_fields(deployment, proxy, groups, stale), price=price(deployment))
         for deployment, proxy in deployments
     ]
 
@@ -590,24 +618,14 @@ def get_proxy(proxy: str, db: Session = Depends(get_db)):
         .all()
     )
     groups = _access_groups(db, [deployment.id for deployment in deployments])
+    stale = _stale_costs(db, {region.id: region.name})
     by_model: dict[int, list[RegistryDeploymentResponse]] = defaultdict(list)
     for deployment in deployments:
         by_model[deployment.model_id].append(
-            RegistryDeploymentResponse(**_deployment_fields(deployment, region.name, groups))
+            RegistryDeploymentResponse(**_deployment_fields(deployment, region.name, groups, stale))
         )
 
-    # The stats of a full scope, so a GET never reads the proxy.
-    repair = (
-        db.query(DBRegistrySyncRun)
-        .filter(
-            DBRegistrySyncRun.trigger.in_(("daily", "repair")),
-            DBRegistrySyncRun.finished_at.isnot(None),
-            DBRegistrySyncRun.region_ids.contains([region.id]),
-            DBRegistrySyncRun.stats["proxies"].has_key(region.name),
-        )
-        .order_by(DBRegistrySyncRun.finished_at.desc(), DBRegistrySyncRun.id.desc())
-        .first()
-    )
+    repair = _last_repair(db, region.id, region.name)
     found_drift = repair.stats["proxies"][region.name] if repair else {}
 
     return RegistryProxyDetailResponse(

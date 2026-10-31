@@ -123,7 +123,8 @@ class DBRegistryModelRegion(Base):
     # The price set on this proxy. Empty when the proxy uses LiteLLM's own price.
     input_cost_per_token = Column(Numeric, nullable=True)
     output_cost_per_token = Column(Numeric, nullable=True)
-    # Every price field set in the deployment's litellm_params.
+    # The price in the deployment's litellm_params on the proxy: as the import read it, then as the sync last
+    # compared or pushed it.
     prices = Column(JSON, nullable=False, default=dict)
     # Secret values removed; os.environ/ references and credential names kept.
     litellm_params = Column(JSON, nullable=False, default=dict)
