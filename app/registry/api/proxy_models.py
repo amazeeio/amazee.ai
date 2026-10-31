@@ -418,9 +418,11 @@ def set_proxy_model(
         )
     db.flush()
     # The model's deployments on the proxy, in the shape of the model detail.
-    result = _deployment_responses(
-        db, prices, provider, [(d, region.name) for d in _deployments(db, model, region.id)]
-    )
+    def result():
+        return _deployment_responses(
+            db, prices, provider, [(d, region.name) for d in _deployments(db, model, region.id)]
+        )
+
     return _save(
         db, dry_run, result, response=response, background=background,
         plan=lambda: deployment_plans(db, deployments, DEPLOYMENT_FIELDS),

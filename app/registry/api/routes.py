@@ -514,7 +514,6 @@ def update_model(
     if "override_eol" in changes:
         refresh_eol(db, model, provider)
     db.flush()
-    detail = _model_detail(db, model, provider)
 
     def plan():
         rows = db.query(DBRegistryModelRegion).filter_by(model_id=model.id).all()
@@ -522,7 +521,8 @@ def update_model(
 
     # Only a price is synced into the deployments; family, override_eol and blocked stay in the registry.
     return _save(
-        db, dry_run, detail, response=response, background=background, plan=plan if "prices" in changes else None
+        db, dry_run, lambda: _model_detail(db, model, provider), response=response, background=background,
+        plan=plan if "prices" in changes else None,
     )
 
 

@@ -84,6 +84,7 @@ def _save(
 ):
     """Commit the write and return `result`, or in a dry run, roll it back and return it with the planned steps.
 
+    `result` can be a function that builds the body, so the body shows the changed_at that this sets.
     A write that is not a dry run reads only the database: it marks the planned deployments as changed, and for
     a registry-managed proxy it saves a pending sync run in the same commit and answers 202.
     """
@@ -93,9 +94,11 @@ def _save(
         plans = plan() if plan else []
         row_ids = [d.row_id for p in plans for d in p.deployments if d.row_id is not None]
         if row_ids:
+            # "fetch" also sets the value on the rows in the session, which the body reads.
             db.query(DBRegistryModelRegion).filter(DBRegistryModelRegion.id.in_(row_ids)).update(
-                {"changed_at": _now()}, synchronize_session=False
+                {"changed_at": _now()}, synchronize_session="fetch"
             )
+        result = _body(result)
         managed = [p for p in plans if registry_manages(p.proxy)]
         run = create_run(db, "write", managed) if background is not None and managed else None
         # One commit, so the write and its pending run are saved together.
@@ -107,11 +110,17 @@ def _save(
             response.status_code = 202
         return RegistrySyncStarted(sync_run_id=run.id, result=None if isinstance(result, Response) else result)
     plans = plan() if plan else []
+    result = _body(result)
     # End the transaction before the proxy reads, so no row lock is held during HTTP.
     db.rollback()
     if response is not None:
         response.status_code = 200
     return RegistryDryRun(result=None if isinstance(result, Response) else result, steps=plan_steps(plans))
+
+
+def _body(result):
+    # A Response is callable too, but it is a finished body.
+    return result() if callable(result) and not isinstance(result, Response) else result
 
 
 def scope_of(plans: list[ProxyPlan]) -> dict:

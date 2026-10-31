@@ -188,3 +188,20 @@ def test_clearing_the_credential_of_a_live_deployment_on_a_managed_proxy_is_refu
     assert response.json()["problems"][0]["message"].startswith("LiteLLM keeps a credential name")
     assert _row(registry_db, us["us"].id, "claude-x").litellm_params == before
     assert _runs(registry_db) == [] and live_proxies.writes == []
+
+
+@pytest.mark.parametrize("managed", [True, False])
+def test_the_write_body_shows_the_saved_changed_at(client, admin_token, registry_db, us, managed_proxies, managed):
+    if not managed:
+        managed_proxies.clear()
+
+    body = ok(_put(client, admin_token, "local-us1", "openai/gpt-4o", {"groups": ["alpha"]}), 202 if managed else 200)
+    detail = ok(client.patch(
+        "/registry/models/openai/gpt-4o", json={"prices": {"base": {"input_cost_per_token": 3e-06}}},
+        headers=auth(admin_token),
+    ), 202 if managed else 200)
+
+    [deployment] = body["result"] if managed else body
+    assert deployment["changed_at"] is not None
+    model = detail["result"] if managed else detail
+    assert all(d["changed_at"] for d in model["deployments"] if d["proxy"] == "local-us1")

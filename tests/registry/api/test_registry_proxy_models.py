@@ -88,11 +88,13 @@ def _link(db, region_id, model_name, slug):
 def test_put_with_no_body_creates_a_deployment_with_the_defaults(client, admin_token, registry_db, setup):
     body = ok(_put(client, admin_token, "local-us1", "openai/gpt-old"), 201)
 
+    # The body shows the changed_at that the write saved.
+    assert body[0].pop("changed_at") is not None
     assert body == [{
         "proxy": "local-us1", "model_name": "gpt-old", "litellm_model": "openai/gpt-old",
         "litellm_deployment_id": None, "enabled": True,
         "input_cost_per_token": None, "output_cost_per_token": None, "prices": {}, "access_groups": [],
-        "credential": None, "price": None, "synced_at": None, "changed_at": None, "sync_error": None,
+        "credential": None, "price": None, "synced_at": None, "sync_error": None,
     }]
     row = _deployment(registry_db, setup["us"].id, "gpt-old")
     assert (row.litellm_deployment_id, row.litellm_params, row.model_info) == (None, {}, {})
@@ -435,8 +437,12 @@ def test_put_dry_run_returns_the_write_and_saves_nothing(client, admin_token, re
     dry_change = ok(_put(client, admin_token, "local-us1", "openai/gpt-4o", change, "?dry_run=true"))
     assert _state(registry_db) == before
 
-    assert ok(_put(client, admin_token, "local-us1", "openai/gpt-old", create), 201) == dry_create["result"]
-    assert ok(_put(client, admin_token, "local-us1", "openai/gpt-4o", change)) == dry_change["result"]
+    def unstamped(deployments):
+        # Only the write saves a changed_at; a dry run saves nothing.
+        return [{**d, "changed_at": None} for d in deployments]
+
+    assert unstamped(ok(_put(client, admin_token, "local-us1", "openai/gpt-old", create), 201)) == dry_create["result"]
+    assert unstamped(ok(_put(client, admin_token, "local-us1", "openai/gpt-4o", change))) == dry_change["result"]
 
 
 def test_put_reaches_a_model_id_with_a_slash(client, admin_token, registry_db, setup):
