@@ -3,12 +3,13 @@
 from collections import defaultdict
 
 from cryptography.fernet import InvalidToken
-from fastapi import Depends, HTTPException, Query, Response
+from fastapi import BackgroundTasks, Depends, HTTPException, Query, Response
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.db.models import DBRegion
+from app.registry.api.dry_run import credential_plans
 from app.registry.api.sync import _save
 from app.registry.api.routes import Refused, refuse, router
 from app.registry.crypto import MissingKey, decrypt_values, encrypt_values
@@ -26,6 +27,7 @@ from app.registry.schemas import (
     RegistryCredentialUpdate,
     RegistryDryRun,
     RegistryProblem,
+    RegistrySyncStarted,
 )
 
 
@@ -96,12 +98,18 @@ def list_credentials(response: Response, db: Session = Depends(get_db)):
 @router.post(
     "/credentials",
     status_code=201,
-    response_model=RegistryCredentialResponse | RegistryDryRun[RegistryCredentialResponse],
-    responses={200: {"model": RegistryDryRun[RegistryCredentialResponse], "description": "The dry run"}},
+    response_model=RegistryCredentialResponse
+    | RegistryDryRun[RegistryCredentialResponse]
+    | RegistrySyncStarted[RegistryCredentialResponse],
+    responses={
+        200: {"model": RegistryDryRun[RegistryCredentialResponse], "description": "The dry run"},
+        202: {"model": RegistrySyncStarted[RegistryCredentialResponse], "description": "A sync run started"},
+    },
 )
 def create_credential(
     body: RegistryCredentialCreate,
     response: Response,
+    background: BackgroundTasks,
     dry_run: bool = Query(False),
     db: Session = Depends(get_db),
 ):
@@ -126,16 +134,24 @@ def create_credential(
         raise Refused([RegistryProblem(message="Credential already exists", status=409)]) from None
     db.add_all(DBRegistryCredentialRegion(credential_id=row.id, region_id=rid) for rid in region_ids.values())
     db.flush()
-    return _save(db, dry_run, _credential_responses(db, [row.id])[0], response=response)
+    return _save(
+        db, dry_run, _credential_responses(db, [row.id])[0], response=response, background=background,
+        plan=lambda: credential_plans(db, body.name, list(region_ids.values())),
+    )
 
 
 @router.patch(
     "/credentials/{name}",
-    response_model=RegistryCredentialResponse | RegistryDryRun[RegistryCredentialResponse],
+    response_model=RegistryCredentialResponse
+    | RegistryDryRun[RegistryCredentialResponse]
+    | RegistrySyncStarted[RegistryCredentialResponse],
+    responses={202: {"model": RegistrySyncStarted[RegistryCredentialResponse], "description": "A sync run started"}},
 )
 def update_credential(
     name: str,
     body: RegistryCredentialUpdate,
+    response: Response,
+    background: BackgroundTasks,
     dry_run: bool = Query(False),
     db: Session = Depends(get_db),
 ):
@@ -153,13 +169,14 @@ def update_credential(
             ))
         if stored is not None:
             token = _encrypted({**stored, **body.values}, problems)
+    current = {
+        region_id for (region_id,) in db.query(DBRegistryCredentialRegion.region_id).filter_by(credential_id=row.id)
+    }
+    kept = current
     if body.proxies is not None:
         wanted = _proxy_ids(db, body.proxies, problems)
-        current = {
-            region_id
-            for (region_id,) in db.query(DBRegistryCredentialRegion.region_id).filter_by(credential_id=row.id)
-        }
-        removed = current - set(wanted.values())
+        kept = set(wanted.values())
+        removed = current - kept
         in_use = {
             proxy
             for (proxy,) in _uses(db, name)
@@ -176,19 +193,46 @@ def update_credential(
     row.values_encrypted = token
     if body.proxies is not None:
         db.query(DBRegistryCredentialRegion).filter_by(credential_id=row.id).delete()
-        db.add_all(DBRegistryCredentialRegion(credential_id=row.id, region_id=rid) for rid in set(wanted.values()))
+        db.add_all(DBRegistryCredentialRegion(credential_id=row.id, region_id=rid) for rid in kept)
     db.flush()
-    return _save(db, dry_run, _credential_responses(db, [row.id])[0])
+
+    def plan():
+        # New values go to every proxy that keeps the credential; a removed proxy loses it.
+        rotate = body.values is not None
+        return [
+            *credential_plans(db, name, kept, rotate=rotate),
+            *credential_plans(db, name, current - kept, keep=False),
+        ]
+
+    return _save(
+        db, dry_run, _credential_responses(db, [row.id])[0], response=response, background=background, plan=plan
+    )
 
 
 @router.delete(
     "/credentials/{name}",
-    response_model=RegistryDryRun[None],
-    responses={204: {"description": "The credential is deleted"}},
+    response_model=RegistryDryRun[None] | RegistrySyncStarted[None],
+    responses={
+        204: {"description": "The credential is deleted"},
+        202: {"model": RegistrySyncStarted[None], "description": "A sync run started"},
+    },
 )
-def delete_credential(name: str, dry_run: bool = Query(False), db: Session = Depends(get_db)):
+def delete_credential(
+    name: str,
+    response: Response,
+    background: BackgroundTasks,
+    dry_run: bool = Query(False),
+    db: Session = Depends(get_db),
+):
     row = _find_credential(db, name)
     if _uses(db, name).first():
         refuse([RegistryProblem(message="Deployments still use the credential", status=409)])
+    # Read before the delete: the links go with the row.
+    linked = [
+        region_id for (region_id,) in db.query(DBRegistryCredentialRegion.region_id).filter_by(credential_id=row.id)
+    ]
     db.delete(row)
-    return _save(db, dry_run, Response(status_code=204))
+    return _save(
+        db, dry_run, Response(status_code=204), response=response, background=background,
+        plan=lambda: credential_plans(db, name, linked, keep=False),
+    )

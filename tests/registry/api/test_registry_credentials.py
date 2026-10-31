@@ -148,7 +148,10 @@ def test_a_dry_run_saves_nothing(client, admin_token, registry_db, before):
 
     body = ok(response)
     assert body["result"]["name"] == "AWS Main"
-    assert body["steps"] == []
+    # The plan shows the push to the proxy, never the values.
+    assert [(s["proxy"], s["action"], s["credential"]) for s in body["steps"]] == [
+        ("local-us1", "create_credential", "AWS Main"),
+    ]
     assert SECRET not in response.text
     assert _state(registry_db) == before
 

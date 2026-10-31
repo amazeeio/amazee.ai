@@ -1,6 +1,10 @@
-import pytest
+import json
 
-from app.registry.models import DBRegistryModelRegion, DBRegistrySyncRun
+import pytest
+from cryptography.fernet import Fernet
+
+from app.registry.config import CREDENTIAL_KEYS_ENV
+from app.registry.models import DBRegistryModelRegion, DBRegistrySyncRun, DBRegistrySyncStep
 from tests.registry.api.conftest import EU_URL, US_URL, auth, live_row, ok
 
 PROXIES = "/registry/proxies"
@@ -108,4 +112,66 @@ def test_a_dry_run_sends_nothing_and_saves_no_run(client, admin_token, registry_
 
     assert [s["action"] for s in body["steps"]] == ["create_model"]
     assert _runs(registry_db) == []
+    assert live_proxies.writes == []
+
+
+SECRET = "SECRET-api-key-0123"
+
+
+def test_a_group_put_updates_the_live_access_groups(client, admin_token, us, live_proxies):
+    body = {"models": [{"proxy": "local-us1", "model": "openai/gpt-4o"}]}
+    ok(client.put("/registry/access-groups/alpha/models", json=body, headers=auth(admin_token)), 202)
+
+    assert live_proxies.writes == [(US_URL, "update_model", "us-gpt", {"model_info": {"access_groups": ["alpha"]}})]
+
+
+def test_an_alias_put_sends_the_full_map(client, admin_token, us, live_proxies):
+    ok(client.put("/registry/aliases/local-us1/chat", json={"target": "gpt-4o"}, headers=auth(admin_token)), 202)
+
+    assert live_proxies.writes == [(US_URL, "set_alias_map", {"chat": "gpt-4o"})]
+
+
+@pytest.fixture
+def credential_key(monkeypatch):
+    monkeypatch.setenv(CREDENTIAL_KEYS_ENV, Fernet.generate_key().decode())
+
+
+def _create(client, token):
+    return client.post(
+        "/registry/credentials",
+        json={"name": "Open AI", "provider": "openai", "values": {"api_key": SECRET}, "proxies": ["local-us1"]},
+        headers=auth(token),
+    )
+
+
+def test_credential_writes_push_the_values_only_to_the_proxy(
+    client, admin_token, registry_db, us, live_proxies, credential_key
+):
+    created = _create(client, admin_token)
+    patched = client.patch(
+        "/registry/credentials/Open AI", json={"values": {"api_key": SECRET + "-new"}}, headers=auth(admin_token)
+    )
+    deleted = client.delete("/registry/credentials/Open AI", headers=auth(admin_token))
+
+    assert [ok(r, 202)["sync_run_id"] for r in (created, patched, deleted)] == [1, 2, 3]
+    assert [w[1:] for w in live_proxies.writes] == [
+        ("create_credential", "Open AI", {"api_key": SECRET}, {}),
+        ("update_credential", "Open AI", {"api_key": SECRET + "-new"}, {}),
+        ("delete_credential", "Open AI"),
+    ]
+    assert "Open AI" not in live_proxies.by_url[US_URL]["credentials"]
+    stored = [
+        (step.payload, step.changes, step.message)
+        for step in registry_db.query(DBRegistrySyncStep)
+    ] + [(run.scope, run.stats, run.error) for run in _runs(registry_db)]
+    assert SECRET not in json.dumps(stored) + created.text + patched.text + deleted.text
+
+
+def test_credential_writes_on_an_unmanaged_proxy_keep_their_status(
+    client, admin_token, us, live_proxies, managed_proxies, credential_key
+):
+    managed_proxies.clear()
+
+    ok(_create(client, admin_token), 201)
+    assert client.delete("/registry/credentials/Open AI", headers=auth(admin_token)).status_code == 204
     assert live_proxies.writes == []
