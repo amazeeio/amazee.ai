@@ -9,16 +9,20 @@ from app.registry.litellm import without_alias_copies
 from app.registry.rules import credential_provider
 
 DEPLOYMENT_FIELDS = frozenset({"model_name", "litellm_model", "credential", "access_groups"})
-ALREADY_RUNS = "the proxy already runs this deployment; the phase 3 import adopts it"
+# `{proxy}` is the literal path text: the planner keeps the proxy name out of the shared message.
+ADOPT_IMPORT = "the adopt import (POST /registry/proxies/{proxy}/import)"
+ALREADY_RUNS = f"the proxy already runs this deployment; {ADOPT_IMPORT} adds it"
 NOT_ON_PROXY = "the deployment is not on the proxy"
 PROVISIONED_ONLY = "the deployment is a provisioned-only Bedrock variant; the sync writes no per-token price into it"
-DELETES_EVERY_ALIAS = "this would delete every live alias; the phase 3 import must read them first"
+DELETES_EVERY_ALIAS = f"this would delete every live alias; {ADOPT_IMPORT} must read them first"
 NOT_ADOPTED = (
     "the adopt import has not read the live aliases of the proxy, so the full map could delete them; "
     "run POST /registry/proxies/{proxy}/import"
 )
+# Doubled braces: the alias name goes in with format(), and {proxy} stays literal.
 REMOVES_LIVE_ALIAS = (
-    "the live alias {} is not in the registry, so the sync would remove it; the phase 3 import must read it first"
+    "the live alias {} is not in the registry, so the sync would remove it; "
+    "the adopt import (POST /registry/proxies/{{proxy}}/import) must read it first"
 )
 CREDENTIAL_NOT_ON_PROXY = "the credential {} is not on the proxy"
 NOT_MANAGED = "the deployment comes from the proxy config file; the sync does not change or delete it"

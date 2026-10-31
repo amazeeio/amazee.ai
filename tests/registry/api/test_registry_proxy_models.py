@@ -706,7 +706,7 @@ def test_put_create_dry_run_shows_the_credential_and_the_running_deployment(clie
     [step] = ok(response)["steps"]
     assert step["problems"] == [
         "the credential c1 is not on the proxy",
-        "the proxy already runs this deployment; the phase 3 import adopts it",
+        "the proxy already runs this deployment; the adopt import (POST /registry/proxies/{proxy}/import) adds it",
     ]
     # The client sees that the sync will not send this step.
     assert step["blocked"] is True
