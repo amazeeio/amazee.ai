@@ -375,3 +375,15 @@ def test_no_alias_map_goes_to_a_proxy_that_the_adopt_import_never_read(registry_
     assert (action, status) == ("write_alias_map", "failed")
     assert NOT_ADOPTED in message
     assert live_proxies.writes == []
+
+
+def test_a_disabled_deployment_that_is_already_gone_loses_its_id(registry_db, us, live_proxies):
+    claude = _row(registry_db, "us-claude")
+    claude.enabled = False
+    registry_db.commit()
+    live_proxies.by_url[US_URL]["model_info"].pop(1)
+
+    run, steps = _run(registry_db, us, deployments=[claude.id])
+
+    assert steps == []
+    assert _row(registry_db, name="claude-x").litellm_deployment_id is None

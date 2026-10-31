@@ -349,11 +349,13 @@ def _set_row(db: Session, row_id: int | None, **values) -> int:
     return db.query(DBRegistryModelRegion).filter_by(id=row_id).update(values, synchronize_session=False)
 
 
-def _mark_in_sync(db: Session, row_id: int | None, read_at: datetime) -> None:
+def _mark_in_sync(db: Session, row_id: int | None, read_at: datetime, removed: frozenset = frozenset()) -> None:
     """Record that a deployment matches the proxy, only when it did not before, so a run that finds no drift
-    changes nothing."""
+    changes nothing. A removed deployment that the proxy no longer runs also loses its LiteLLM id."""
     if row_id is None:
         return
+    if row_id in removed:
+        _set_row(db, row_id, litellm_deployment_id=None)
     db.query(DBRegistryModelRegion).filter(
         DBRegistryModelRegion.id == row_id,
         or_(
@@ -653,8 +655,9 @@ def _sync_locked(proxy: _Proxy) -> dict | None:
     ids = [proxy.record(step["action"], "pending", step=step) for step in steps]
     stepped = {step["row_id"] for step in steps}
     # A deployment in the scope with no step is already in sync.
+    removed = frozenset(d.row_id for d in plan.deployments if d.row_id is not None and not d.keep)
     for row_id in scoped_rows - stepped:
-        _mark_in_sync(db, row_id, read_at)
+        _mark_in_sync(db, row_id, read_at, removed)
     repair = proxy.trigger in ("daily", "repair")
     if repair:
         # Drift that no write pushed is a change too, so changed_at is never later than synced_at after a success.
@@ -678,7 +681,7 @@ def _sync_locked(proxy: _Proxy) -> dict | None:
             if status == "failed":
                 _set_row(db, step["row_id"], sync_error=message)
             elif in_sync:
-                _mark_in_sync(db, step["row_id"], read_at)
+                _mark_in_sync(db, step["row_id"], read_at, removed)
             elif status == "ok" and repair and step["action"] in _MODEL_STEPS:
                 _record_repair(proxy, step)
             db.commit()
