@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 # The registry's only read of an old catalog table, for the group slugs. It goes when the old catalog goes.
 from app.db.models import DBModelAccessGroup, DBRegion
-from app.registry.api.dry_run import _save, alias_plans, deployment_plans
+from app.registry.api.dry_run import alias_plans, deployment_plans
+from app.registry.api.sync import _save
 from app.registry.api.routes import Refused, _find_proxy, _lock_proxies, _split_key, refuse, router
 from app.registry.models import (
     DBRegistryAccessGroup,

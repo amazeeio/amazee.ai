@@ -5,11 +5,13 @@ import cycle. A run saves only ids in its scope and reads the wanted state again
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 
 import httpx
 from cryptography.fernet import InvalidToken
+from fastapi import Response
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -26,6 +28,7 @@ from app.registry.api.dry_run import (
     credential_providers,
     deployment_plans,
     plan_proxy,
+    plan_steps,
     read_live,
 )
 from app.registry.config import registry_manages
@@ -38,6 +41,7 @@ from app.registry.models import (
     DBRegistrySyncRun,
     DBRegistrySyncStep,
 )
+from app.registry.schemas import RegistryDryRun
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +64,31 @@ def _entry() -> dict:
         "deployments": [], "deleted": [], "fields": [], "aliases": False, "removed_alias": None,
         "credentials": [], "full": False, "skip_failed": False,
     }
+
+
+def _save(
+    db: Session,
+    dry_run: bool,
+    result,
+    *,
+    response: Response | None = None,
+    plan: Callable[[], list[ProxyPlan]] | None = None,
+):
+    """Commit the write and return `result`, or in a dry run, roll it back and return it with the planned steps.
+
+    `plan` runs only in a dry run, after the flush, so a write that is not a dry run never reads a proxy.
+    """
+    # The flush runs the database checks, so a dry run fails where the write would.
+    db.flush()
+    if not dry_run:
+        db.commit()
+        return result
+    plans = plan() if plan else []
+    # End the transaction before the proxy reads, so no row lock is held during HTTP.
+    db.rollback()
+    if response is not None:
+        response.status_code = 200
+    return RegistryDryRun(result=None if isinstance(result, Response) else result, steps=plan_steps(plans))
 
 
 def scope_of(plans: list[ProxyPlan]) -> dict:

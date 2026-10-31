@@ -1,14 +1,12 @@
-"""The end of every registry write: save it, or in a dry run, roll it back and plan the proxy steps.
+"""The planning helpers of the dry run and the sync: the wanted state of each proxy, and its planned steps.
 
-Not imported from routes.py, so the route modules can import it with no cycle.
+The sync module imports this one, and the route modules import both, so no import goes the other way.
 """
 
 from collections import defaultdict
-from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import httpx
-from fastapi import Response
 from sqlalchemy.orm import Session
 
 from app.db.models import DBRegion
@@ -28,7 +26,6 @@ from app.registry.models import (
 )
 from app.registry.prices import pick_price
 from app.registry.rules import credential_provider
-from app.registry.schemas import RegistryDryRun
 from app.registry.support import Availability
 
 
@@ -66,31 +63,6 @@ def _access_groups(db: Session, deployment_ids: list[int]) -> dict[int, list[str
         for deployment_id, slug in rows:
             groups[deployment_id].append(slug)
     return groups
-
-
-def _save(
-    db: Session,
-    dry_run: bool,
-    result,
-    *,
-    response: Response | None = None,
-    plan: Callable[[], list[ProxyPlan]] | None = None,
-):
-    """Commit the write and return `result`, or in a dry run, roll it back and return it with the planned steps.
-
-    `plan` runs only in a dry run, after the flush, so a write that is not a dry run never reads a proxy.
-    """
-    # The flush runs the database checks, so a dry run fails where the write would.
-    db.flush()
-    if not dry_run:
-        db.commit()
-        return result
-    plans = plan() if plan else []
-    # End the transaction before the proxy reads, so no row lock is held during HTTP.
-    db.rollback()
-    if response is not None:
-        response.status_code = 200
-    return RegistryDryRun(result=None if isinstance(result, Response) else result, steps=plan_steps(plans))
 
 
 def _proxy_plan(region: DBRegion, **wanted) -> ProxyPlan:

@@ -12,7 +12,8 @@ from app.core.config import catalog_manages
 from app.core.security import get_role_min_system_admin
 from app.db.database import get_db
 from app.db.models import DBRegion
-from app.registry.api.dry_run import _access_groups, _save, deployment_plans
+from app.registry.api.dry_run import _access_groups, deployment_plans
+from app.registry.api.sync import _save
 from app.registry.importer import STEP as IMPORT_STEP
 from app.registry.models import (
     DBRegistryCloudAvailability,

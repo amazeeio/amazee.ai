@@ -12,7 +12,8 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.db.models import DBRegion
-from app.registry.api.dry_run import _save, deployment_plans
+from app.registry.api.dry_run import deployment_plans
+from app.registry.api.sync import _save
 from app.registry.api.routes import (
     _deployment_responses,
     _find_model,

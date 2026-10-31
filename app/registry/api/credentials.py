@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.db.models import DBRegion
-from app.registry.api.dry_run import _save
+from app.registry.api.sync import _save
 from app.registry.api.routes import Refused, refuse, router
 from app.registry.crypto import MissingKey, decrypt_values, encrypt_values
 from app.registry.litellm import without_secrets
