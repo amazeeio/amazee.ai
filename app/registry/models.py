@@ -11,6 +11,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    Text,
     UniqueConstraint,
     false,
 )
@@ -127,6 +128,11 @@ class DBRegistryModelRegion(Base):
     model_info = Column(JSON, nullable=False, default=dict)
     enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # On amazee.ai's clock. changed_at later than synced_at means a change waits for the sync.
+    synced_at = Column(DateTime(timezone=True), nullable=True)
+    changed_at = Column(DateTime(timezone=True), nullable=True)
+    # The message of the last sync step that failed, scrubbed; empty after a success.
+    sync_error = Column(String, nullable=True)
 
 
 class DBRegistryModelRegionGroup(Base):
@@ -153,6 +159,78 @@ class DBRegistryAlias(Base):
     hidden = Column(Boolean, nullable=False, default=False, server_default=false())
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class DBRegistryCredential(Base):
+    """A named LiteLLM credential. The values never leave the registry in a response."""
+
+    __tablename__ = "registry_credentials"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False, unique=True)
+    # Empty for a credential that the adopt import read from a proxy.
+    provider = Column(String, nullable=True)
+    # Fernet token of the values JSON. Empty when the registry has no values,
+    # and then the sync never pushes the credential.
+    values_encrypted = Column(Text, nullable=True)
+    credential_info = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class DBRegistryCredentialRegion(Base):
+    __tablename__ = "registry_credential_regions"
+
+    credential_id = Column(
+        Integer, ForeignKey("registry_credentials.id", ondelete="CASCADE"), primary_key=True
+    )
+    region_id = Column(Integer, ForeignKey("regions.id", ondelete="CASCADE"), primary_key=True)
+
+
+class DBRegistrySyncRun(Base):
+    """One push of registry state to one or more proxies."""
+
+    __tablename__ = "registry_sync_runs"
+
+    id = Column(Integer, primary_key=True)
+    # write, retry, repair or daily.
+    trigger = Column(String, nullable=False)
+    # pending, running, ok or failed.
+    status = Column(String, nullable=False, default="pending")
+    region_ids = Column(JSON, nullable=False, default=list)
+    # What to push per region id. The run reads the wanted state again from
+    # the database when it starts, so the scope holds ids, not payloads.
+    scope = Column(JSON, nullable=False, default=dict)
+    stats = Column(JSON, nullable=True)
+    error = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class DBRegistrySyncStep(Base):
+    __tablename__ = "registry_sync_steps"
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(
+        Integer, ForeignKey("registry_sync_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    region_id = Column(Integer, ForeignKey("regions.id", ondelete="CASCADE"), nullable=False)
+    position = Column(Integer, nullable=False)
+    action = Column(String, nullable=False)
+    model = Column(String, nullable=True)
+    model_name = Column(String, nullable=True)
+    deployment_id = Column(String, nullable=True)
+    model_region_id = Column(
+        Integer, ForeignKey("registry_model_regions.id", ondelete="SET NULL"), nullable=True
+    )
+    credential = Column(String, nullable=True)
+    payload = Column(JSON, nullable=True)
+    changes = Column(JSON, nullable=True)
+    # pending, ok, failed or skipped.
+    status = Column(String, nullable=False, default="pending")
+    message = Column(String, nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class DBRegistryRun(Base):

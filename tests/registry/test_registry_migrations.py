@@ -51,3 +51,35 @@ def test_aliases_migration_drops_and_adds_its_table(db):
             assert foreign_key["options"]["ondelete"] == "CASCADE"
     finally:
         db.rollback()
+
+
+def test_sync_migration_drops_and_adds_its_tables_and_columns(db):
+    migration = importlib.import_module("app.migrations.versions.20261031_120000_e9c2b7d4a183_add_registry_sync")
+    tables = {"registry_credentials", "registry_credential_regions", "registry_sync_runs", "registry_sync_steps"}
+    sync_columns = {"synced_at", "changed_at", "sync_error"}
+    connection = db.connection()
+    try:
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.downgrade()
+            assert not tables & set(inspect(connection).get_table_names())
+            assert not sync_columns & set(_columns(connection, "registry_model_regions"))
+
+            migration.upgrade()
+            inspector = inspect(connection)
+            assert tables <= set(inspector.get_table_names())
+            deployment = _columns(connection, "registry_model_regions")
+            assert all(deployment[c]["nullable"] for c in sync_columns)
+            assert ["name"] in [c["column_names"] for c in inspector.get_unique_constraints("registry_credentials")]
+            assert _columns(connection, "registry_credentials")["values_encrypted"]["nullable"] is True
+
+            def cascades(table):
+                return {fk["referred_table"]: fk["options"].get("ondelete") for fk in inspector.get_foreign_keys(table)}
+
+            assert cascades("registry_credential_regions") == {"registry_credentials": "CASCADE", "regions": "CASCADE"}
+            assert cascades("registry_sync_steps") == {
+                "registry_sync_runs": "CASCADE",
+                "regions": "CASCADE",
+                "registry_model_regions": "SET NULL",
+            }
+    finally:
+        db.rollback()
