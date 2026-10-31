@@ -2,11 +2,15 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from app.db.models import DBRegion
+from app.registry.planner import LITELLM_CLEARABLE_COSTS
 from app.registry.models import (
     DBRegistryAccessGroup,
+    DBRegistryCredential,
+    DBRegistryCredentialRegion,
     DBRegistryModel,
     DBRegistryModelPrice,
     DBRegistryModelRegion,
@@ -75,6 +79,20 @@ def models(registry_db):
     registry_db.commit()
 
 
+# The keys that LiteLLM's remove_sensitive_info_from_deployment pops from /model/info (v1.102.1).
+_STRIPPED = {
+    "api_key", "client_secret", "vertex_credentials", "vertex_ai_credentials", "aws_access_key_id",
+    "aws_secret_access_key",
+}
+
+
+def _as_litellm_shows(row):
+    """A copy of a live row as /model/info answers it: without the secret keys."""
+    if not isinstance(row, dict) or not isinstance(row.get("litellm_params"), dict):
+        return row
+    return {**row, "litellm_params": {k: v for k, v in row["litellm_params"].items() if k not in _STRIPPED}}
+
+
 class _FakeProxyClient:
     """Answers like a proxy from `live_proxies.by_url`; a URL that is not there is an empty proxy."""
 
@@ -95,7 +113,9 @@ class _FakeProxyClient:
         answer = self._answer()
         if isinstance(answer, Exception):
             raise answer
-        return answer.get("model_info", [])
+        rows = answer.get("model_info", [])
+        # A test can give a malformed answer on purpose; only a list of rows is stripped.
+        return [_as_litellm_shows(row) for row in rows] if isinstance(rows, list) else rows
 
     def alias_map(self):
         return self._answer().get("aliases", {})
@@ -103,23 +123,143 @@ class _FakeProxyClient:
     def credential_names(self):
         return set(self._answer().get("credentials", ()))
 
+    def version(self):
+        return self._answer().get("version")
+
+    def credential_regions(self):
+        return {}
+
+    def credential_infos(self):
+        return {name: {} for name in self._answer().get("credentials", ())}
+
+
+class _FakeProxyWriter:
+    """Changes `live_proxies.by_url[url]` the way a proxy would, and puts each call in `live_proxies.writes`.
+
+    `live_proxies.fail[(url, action)] = (status, body, saved)` makes a call fail; with `saved`, the change is
+    made before the error, as LiteLLM can do.
+    """
+
+    def __init__(self, proxies, url, key):
+        self._proxies, self._url = proxies, url
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        pass
+
+    def _state(self):
+        state = self._proxies.by_url.setdefault(self._url, {})
+        for name, empty in (("model_info", list), ("aliases", dict), ("credentials", list)):
+            state.setdefault(name, empty())
+        return state
+
+    def _call(self, action, change, *args):
+        self._proxies.writes.append((self._url, action, *args))
+        if hook := self._proxies.hooks.get(action):
+            hook()
+        failure = self._proxies.fail.get((self._url, action))
+        if failure is None or failure[2]:
+            change(self._state())
+        if failure is not None:
+            status, body, _ = failure
+            request = httpx.Request("POST", f"{self._url}/{action}")
+            response = httpx.Response(status, text=body, request=request)
+            raise httpx.HTTPStatusError(body, request=request, response=response)
+        return {}
+
+    def create_model(self, payload):
+        self._proxies.created += 1
+        dep_id = f"new-{self._proxies.created}"
+
+        def change(state):
+            state["model_info"].append({
+                "model_name": payload["model_name"],
+                "litellm_params": dict(payload["litellm_params"]),
+                "model_info": {**payload["model_info"], "id": dep_id, "db_model": True},
+            })
+
+        return self._call("create_model", change, payload)
+
+    def update_model(self, dep_id, body):
+        def change(state):
+            for row in state["model_info"]:
+                if row["model_info"].get("id") == dep_id:
+                    if "model_name" in body:
+                        row["model_name"] = body["model_name"]
+                    for k, v in body.get("litellm_params", {}).items():
+                        # LiteLLM removes a mirrored cost field on a null, and drops any other null.
+                        if v is not None:
+                            row["litellm_params"][k] = v
+                        elif k in LITELLM_CLEARABLE_COSTS:
+                            row["litellm_params"].pop(k, None)
+                    row["model_info"] = {**row["model_info"], **body.get("model_info", {})}
+
+        return self._call("update_model", change, dep_id, body)
+
+    def delete_model(self, dep_id):
+        def change(state):
+            state["model_info"] = [row for row in state["model_info"] if row["model_info"].get("id") != dep_id]
+
+        return self._call("delete_model", change, dep_id)
+
+    def set_alias_map(self, full_map):
+        def change(state):
+            state["aliases"] = dict(full_map)
+
+        return self._call("set_alias_map", change, full_map)
+
+    def create_credential(self, name, values, info):
+        def change(state):
+            state["credentials"] = sorted({*state["credentials"], name})
+
+        return self._call("create_credential", change, name, values, info)
+
+    def update_credential(self, name, values, info):
+        return self._call("update_credential", lambda state: None, name, values, info)
+
+    def delete_credential(self, name):
+        def change(state):
+            state["credentials"] = [c for c in state["credentials"] if c != name]
+
+        return self._call("delete_credential", change, name)
+
 
 @pytest.fixture(autouse=True)
 def live_proxies(monkeypatch):
-    """No API test reaches the network: each dry-run read of a proxy goes to this fake and is put in `calls`."""
-    proxies = SimpleNamespace(by_url={}, calls=[])
+    """No API test reaches the network: each read of a proxy goes to this fake and is put in `calls`, and each
+    sync write goes to the fake writer and is put in `writes`."""
+    proxies = SimpleNamespace(by_url={}, calls=[], writes=[], fail={}, hooks={}, created=0)
+    for module in ("app.registry.api.dry_run", "app.registry.importer"):
+        monkeypatch.setattr(f"{module}.ProxyClient", lambda url, key: _FakeProxyClient(proxies, url, key))
+    def no_network(url):
+        raise httpx.ConnectError("no network in tests")
+
+    # The support check of a new proxy reads its price list and a release list; a test that needs them sets them.
+    for module in ("app.registry.support", "app.registry.versions"):
+        monkeypatch.setattr(f"{module}.fetch_json", no_network)
     monkeypatch.setattr(
-        "app.registry.api.dry_run.ProxyClient", lambda url, key: _FakeProxyClient(proxies, url, key)
+        "app.registry.api.sync.ProxyWriter", lambda url, key: _FakeProxyWriter(proxies, url, key)
     )
     return proxies
 
 
-def live_row(dep_id, name, model, credential=None, groups=(), **params):
+@pytest.fixture(autouse=True)
+def managed_proxies(monkeypatch):
+    """The proxy names that the registry sync may write to. Empty, so a write keeps its plain answer."""
+    managed = set()
+    for module in ("sync", "sync_runs", "routes", "proxy_models"):
+        monkeypatch.setattr(f"app.registry.api.{module}.registry_manages", lambda name: name in managed)
+    return managed
+
+
+def live_row(dep_id, name, model, credential=None, groups=(), db_model=True, **params):
     """One row of a proxy's `/model/info`. Extra keyword arguments go into `litellm_params`."""
     litellm_params = {"model": model, **params}
     if credential:
         litellm_params["litellm_credential_name"] = credential
-    info = {"id": dep_id, "access_groups": list(groups)}
+    info = {"id": dep_id, "access_groups": list(groups), "db_model": db_model}
     return {"model_name": name, "litellm_params": litellm_params, "model_info": info}
 
 
@@ -215,6 +355,16 @@ def deployment_state(db):
     return deployments, links
 
 
+def credential(db, name, provider=None, proxies=()):
+    """A registry credential with no values, linked to the given regions."""
+    row = DBRegistryCredential(name=name, provider=provider, credential_info={})
+    db.add(row)
+    db.flush()
+    db.add_all(DBRegistryCredentialRegion(credential_id=row.id, region_id=region.id) for region in proxies)
+    db.flush()
+    return row
+
+
 @pytest.fixture
 def writable(registry_db, deployed):
     """The `deployed` proxies, imported, with the access groups alpha and beta and support rows for gpt-old."""
@@ -226,6 +376,8 @@ def writable(registry_db, deployed):
         support_row(old.id, deployed["eu"].id),
     ])
     for proxy in registry_db.query(DBRegistryProxy):
-        proxy.imported_at = CHECKED_AT
+        proxy.imported_at = proxy.adopted_at = CHECKED_AT
+    for name in ("c1", "c2", "AWS Bedrock"):
+        credential(registry_db, name, proxies=deployed.values())
     registry_db.commit()
     return deployed

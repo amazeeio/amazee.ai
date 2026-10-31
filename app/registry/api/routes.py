@@ -3,7 +3,10 @@
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
@@ -12,7 +15,9 @@ from app.core.config import catalog_manages
 from app.core.security import get_role_min_system_admin
 from app.db.database import get_db
 from app.db.models import DBRegion
-from app.registry.api.dry_run import _access_groups, _save, deployment_plans
+from app.registry.api.dry_run import _access_groups, deployment_plans, proxy_credentials
+from app.registry.api.sync import _save
+from app.registry.config import registry_manages
 from app.registry.importer import STEP as IMPORT_STEP
 from app.registry.models import (
     DBRegistryCloudAvailability,
@@ -26,6 +31,7 @@ from app.registry.models import (
     DBRegistryProvider,
     DBRegistryProxy,
     DBRegistryRun,
+    DBRegistrySyncRun,
 )
 from app.registry.eol import refresh_eol
 from app.registry.prices import pick_price, set_manual_prices
@@ -46,8 +52,10 @@ from app.registry.schemas import (
     RegistryProxyUpdate,
     RegistryRefusal,
     RegistryRunResponse,
+    RegistrySyncStarted,
 )
-from app.registry.support import refresh_region_available
+from app.registry.support import PROXY_STEP as PROXY_SUPPORT_STEP
+from app.registry.support import Availability, refresh_region_available
 
 # The job runs daily, so two days with no `ok` run means a run was missed.
 STALE_AFTER = timedelta(hours=48)
@@ -75,6 +83,18 @@ def refusal_response(_request: Request, exc: Refused) -> JSONResponse:
     status = 422 if any(problem.status == 422 for problem in exc.problems) else 409
     body = RegistryRefusal(detail="; ".join(problem.message for problem in exc.problems), problems=exc.problems)
     return JSONResponse(status_code=status, content=body.model_dump())
+
+
+# A 422 on these routes must not echo the body: it holds credential values.
+_SECRET_BODY_PATHS = ("/registry/credentials",)
+
+
+async def validation_response(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """FastAPI's 422, without the request input on routes whose body holds secrets."""
+    if not request.url.path.startswith(_SECRET_BODY_PATHS):
+        return await request_validation_exception_handler(request, exc)
+    errors = [{k: v for k, v in error.items() if k not in ("input", "ctx")} for error in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
 
 
 def _model_query(db: Session):
@@ -164,7 +184,33 @@ def _model_responses(db: Session, rows: list) -> list[RegistryModelResponse]:
     ]
 
 
-def _deployment_fields(deployment: DBRegistryModelRegion, proxy: str, groups: dict[int, list[str]]) -> dict:
+def _last_repair(db: Session, region_id: int, name: str) -> DBRegistrySyncRun | None:
+    """The newest finished daily or repair run with stats for the proxy, so a GET never reads the proxy."""
+    return (
+        db.query(DBRegistrySyncRun)
+        .filter(
+            DBRegistrySyncRun.trigger.in_(("daily", "repair")),
+            DBRegistrySyncRun.finished_at.isnot(None),
+            DBRegistrySyncRun.region_ids.contains([region_id]),
+            DBRegistrySyncRun.stats["proxies"].has_key(name),
+        )
+        .order_by(DBRegistrySyncRun.finished_at.desc(), DBRegistrySyncRun.id.desc())
+        .first()
+    )
+
+
+def _stale_costs(db: Session, regions: dict[int, str]) -> dict[int, list[str]]:
+    """The stale cost fields of each deployment row id, from the newest repair of each proxy."""
+    found = {}
+    for region_id, name in regions.items():
+        if run := _last_repair(db, region_id, name):
+            found |= {int(k): v for k, v in (run.stats["proxies"][name].get("stale_costs") or {}).items()}
+    return found
+
+
+def _deployment_fields(
+    deployment: DBRegistryModelRegion, proxy: str, groups: dict[int, list[str]], stale: dict[int, list[str]]
+) -> dict:
     return {
         "proxy": proxy,
         "model_name": deployment.model_name,
@@ -176,7 +222,17 @@ def _deployment_fields(deployment: DBRegistryModelRegion, proxy: str, groups: di
         "prices": deployment.prices,
         "access_groups": groups.get(deployment.id, []),
         "credential": (deployment.litellm_params or {}).get("litellm_credential_name"),
+        "synced_at": deployment.synced_at,
+        "changed_at": deployment.changed_at,
+        "sync_error": deployment.sync_error,
+        "stale_cost_fields": stale.get(deployment.id),
     }
+
+
+def _owner(name: str) -> str:
+    if registry_manages(name):
+        return "registry"
+    return "catalog" if catalog_manages(name) else "none"
 
 
 def _proxy_responses(db: Session, region_id: int | None = None) -> list[RegistryProxyResponse]:
@@ -213,8 +269,9 @@ def _proxy_responses(db: Session, region_id: int | None = None) -> list[Registry
             litellm_version=proxy.litellm_version,
             cloud_regions=proxy.cloud_regions,
             imported_at=proxy.imported_at,
+            adopted_at=proxy.adopted_at,
             providers=provider_names[region.id],
-            owner="catalog" if catalog_manages(region.name) else "none",
+            owner=_owner(region.name),
             models_supported=supported_counts.get(region.id, 0),
             models_enabled=enabled_counts.get(region.id, 0),
         )
@@ -238,8 +295,9 @@ def list_runs(
         .filter(DBRegistryRun.status == "ok", DBRegistryRun.started_at >= datetime.now(UTC) - STALE_AFTER)
         .distinct()
     }
-    # The import runs one time per proxy, not daily, so an old import is never a missed run.
-    fresh.add(IMPORT_STEP)
+    # The import and the one-proxy support check run only when a proxy needs them, not daily, so an old one is
+    # never a missed run.
+    fresh |= {IMPORT_STEP, PROXY_SUPPORT_STEP}
     # A run row is inserted when its step starts, so the id order is the start order.
     return [
         RegistryRunResponse.model_validate(run).model_copy(update={"stale": run.step not in fresh})
@@ -372,7 +430,7 @@ def _find_proxy(db: Session, proxy: str) -> DBRegion:
 
 
 def _deployment_responses(
-    db: Session, price_scopes: list, provider: str, deployments: list[tuple[DBRegistryModelRegion, str]]
+    db: Session, price_scopes: list, provider: str, model_id: str, deployments: list[tuple[DBRegistryModelRegion, str]]
 ) -> list[RegistryModelDeploymentResponse]:
     """The response of each (deployment, proxy name) of one model, with the price the registry writes."""
     cloud_regions = dict(
@@ -381,15 +439,19 @@ def _deployment_responses(
         )
     )
     groups = _access_groups(db, [deployment.id for deployment, _ in deployments])
-    # pick_price gets the deployed model string, so a geo id gets its geo price.
+    stale = _stale_costs(db, {deployment.region_id: proxy for deployment, proxy in deployments})
+    availability = Availability(db)
+
+    def price(deployment):
+        cloud_region = (cloud_regions.get(deployment.region_id) or {}).get(provider)
+        # A provisioned-only variant gets no per-token price from the sync, so the body shows none.
+        if availability.in_region_problem(provider, model_id, cloud_region, deployment.litellm_model) == "provisioned_only":
+            return None
+        # pick_price gets the deployed model string, so a geo id gets its geo price.
+        return pick_price(price_scopes, provider, deployment.litellm_model, cloud_region)
+
     return [
-        RegistryModelDeploymentResponse(
-            **_deployment_fields(deployment, proxy, groups),
-            price=pick_price(
-                price_scopes, provider, deployment.litellm_model,
-                (cloud_regions.get(deployment.region_id) or {}).get(provider),
-            ),
-        )
+        RegistryModelDeploymentResponse(**_deployment_fields(deployment, proxy, groups, stale), price=price(deployment))
         for deployment, proxy in deployments
     ]
 
@@ -443,7 +505,7 @@ def _model_detail(db: Session, model: DBRegistryModel, provider: str) -> Registr
         supports=model.supports,
         lifecycle=lifecycle,
         availability=availability,
-        deployments=_deployment_responses(db, base.price_scopes, provider, deployments),
+        deployments=_deployment_responses(db, base.price_scopes, provider, model.model_id, deployments),
         history=history,
     )
 
@@ -457,11 +519,16 @@ def get_model(key: str, db: Session = Depends(get_db)):
 
 @router.patch(
     "/models/{key:path}",
-    response_model=RegistryModelDetailResponse | RegistryDryRun[RegistryModelDetailResponse],
+    response_model=RegistryModelDetailResponse
+    | RegistryDryRun[RegistryModelDetailResponse]
+    | RegistrySyncStarted[RegistryModelDetailResponse],
+    responses={202: {"model": RegistrySyncStarted[RegistryModelDetailResponse], "description": "A sync run started"}},
 )
 def update_model(
     key: str,
     body: RegistryModelUpdate,
+    response: Response,
+    background: BackgroundTasks,
     dry_run: bool = Query(False),
     db: Session = Depends(get_db),
 ):
@@ -478,14 +545,16 @@ def update_model(
     if "override_eol" in changes:
         refresh_eol(db, model, provider)
     db.flush()
-    detail = _model_detail(db, model, provider)
 
     def plan():
         rows = db.query(DBRegistryModelRegion).filter_by(model_id=model.id).all()
         return deployment_plans(db, rows, frozenset({"prices"}), live_only=True)
 
     # Only a price is synced into the deployments; family, override_eol and blocked stay in the registry.
-    return _save(db, dry_run, detail, plan=plan if "prices" in changes else None)
+    return _save(
+        db, dry_run, lambda: _model_detail(db, model, provider), response=response, background=background,
+        plan=plan if "prices" in changes else None,
+    )
 
 
 @router.get("/providers", response_model=list[RegistryProviderResponse])
@@ -549,15 +618,24 @@ def get_proxy(proxy: str, db: Session = Depends(get_db)):
         .all()
     )
     groups = _access_groups(db, [deployment.id for deployment in deployments])
+    stale = _stale_costs(db, {region.id: region.name})
     by_model: dict[int, list[RegistryDeploymentResponse]] = defaultdict(list)
     for deployment in deployments:
         by_model[deployment.model_id].append(
-            RegistryDeploymentResponse(**_deployment_fields(deployment, region.name, groups))
+            RegistryDeploymentResponse(**_deployment_fields(deployment, region.name, groups, stale))
         )
+
+    repair = _last_repair(db, region.id, region.name)
+    found_drift = repair.stats["proxies"][region.name] if repair else {}
 
     return RegistryProxyDetailResponse(
         **found[0].model_dump(),
         checked_at=checked_at,
+        credentials=proxy_credentials(db, region.id),
+        drift=found_drift.get("drift"),
+        unmanaged=found_drift.get("unmanaged"),
+        failed=found_drift.get("failed"),
+        drift_checked_at=repair.finished_at if repair else None,
         models=[
             RegistryProxyModelResponse(
                 key=f"{provider}/{model.model_id}",
@@ -589,7 +667,8 @@ def update_proxy(
     if changed:
         refresh_region_available(db, region.id, cloud_regions, changed)
     db.flush()
-    # The cloud regions stay in the registry, so this write plans no proxy step.
+    # A cloud region can change the picked price, but this write plans no proxy step: the daily repair
+    # pushes the new price.
     return _save(db, dry_run, _proxy_responses(db, region.id)[0])
 
 

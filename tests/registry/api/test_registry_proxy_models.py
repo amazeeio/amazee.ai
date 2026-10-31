@@ -1,5 +1,6 @@
 from datetime import date
 
+import httpx
 import pytest
 
 from app.registry.models import (
@@ -8,6 +9,7 @@ from app.registry.models import (
     DBRegistryCloudAvailability,
     DBRegistryModelRegion,
     DBRegistryModelRegionGroup,
+    DBRegistryModelSupport,
     DBRegistryProxy,
 )
 from tests.registry.api.conftest import (
@@ -20,6 +22,7 @@ from tests.registry.api.conftest import (
     UNSUPPORTED,
     US_URL,
     auth,
+    credential,
     live_row,
     messages,
     model,
@@ -43,6 +46,8 @@ def setup(registry_db, writable):
         DBRegistryAlias(region_id=writable["us"].id, alias="zeta", target="gpt-4o"),
         DBRegistryAlias(region_id=writable["us"].id, alias="chat", target="claude-x"),
     ])
+    for name in ("openai-main", "Open AI"):
+        credential(registry_db, name, proxies=writable.values())
     registry_db.commit()
     return writable
 
@@ -84,11 +89,13 @@ def _link(db, region_id, model_name, slug):
 def test_put_with_no_body_creates_a_deployment_with_the_defaults(client, admin_token, registry_db, setup):
     body = ok(_put(client, admin_token, "local-us1", "openai/gpt-old"), 201)
 
+    # The body shows the changed_at that the write saved.
+    assert body[0].pop("changed_at") is not None
     assert body == [{
         "proxy": "local-us1", "model_name": "gpt-old", "litellm_model": "openai/gpt-old",
         "litellm_deployment_id": None, "enabled": True,
         "input_cost_per_token": None, "output_cost_per_token": None, "prices": {}, "access_groups": [],
-        "credential": None, "price": None,
+        "credential": None, "price": None, "synced_at": None, "sync_error": None, "stale_cost_fields": None,
     }]
     row = _deployment(registry_db, setup["us"].id, "gpt-old")
     assert (row.litellm_deployment_id, row.litellm_params, row.model_info) == (None, {}, {})
@@ -138,9 +145,10 @@ def test_put_changes_one_deployment(client, admin_token, registry_db, setup):
 
 
 def test_put_accepts_a_credential_name_with_a_space(client, admin_token, registry_db, setup):
-    ok(_put(client, admin_token, "local-us1", "openai/gpt-4o", {"credential": "AWS Bedrock"}))
+    # A name that no deployment uses: rule 6 would refuse AWS Bedrock, which a Bedrock deployment uses.
+    ok(_put(client, admin_token, "local-us1", "openai/gpt-4o", {"credential": "Open AI"}))
 
-    assert _deployment(registry_db, setup["us"].id, "gpt-4o").litellm_params == {"litellm_credential_name": "AWS Bedrock"}
+    assert _deployment(registry_db, setup["us"].id, "gpt-4o").litellm_params == {"litellm_credential_name": "Open AI"}
 
 
 def test_put_changes_every_deployment_of_the_model(client, admin_token, registry_db, setup):
@@ -430,8 +438,12 @@ def test_put_dry_run_returns_the_write_and_saves_nothing(client, admin_token, re
     dry_change = ok(_put(client, admin_token, "local-us1", "openai/gpt-4o", change, "?dry_run=true"))
     assert _state(registry_db) == before
 
-    assert ok(_put(client, admin_token, "local-us1", "openai/gpt-old", create), 201) == dry_create["result"]
-    assert ok(_put(client, admin_token, "local-us1", "openai/gpt-4o", change)) == dry_change["result"]
+    def unstamped(deployments):
+        # Only the write saves a changed_at; a dry run saves nothing.
+        return [{**d, "changed_at": None} for d in deployments]
+
+    assert unstamped(ok(_put(client, admin_token, "local-us1", "openai/gpt-old", create), 201)) == dry_create["result"]
+    assert unstamped(ok(_put(client, admin_token, "local-us1", "openai/gpt-4o", change))) == dry_change["result"]
 
 
 def test_put_reaches_a_model_id_with_a_slash(client, admin_token, registry_db, setup):
@@ -552,21 +564,57 @@ def test_delete_dry_run_keeps_the_rows(client, admin_token, registry_db, setup):
     assert _state(registry_db) == before
 
 
-def test_writes_on_a_proxy_that_was_never_imported_get_409(client, admin_token, registry_db, setup):
-    registry_db.get(DBRegistryProxy, setup["eu"].id).imported_at = None
+def test_a_dry_run_on_a_proxy_that_was_never_imported_gets_409(client, admin_token, registry_db, setup, live_proxies):
+    eu_proxy = registry_db.get(DBRegistryProxy, setup["eu"].id)
+    eu_proxy.imported_at = eu_proxy.adopted_at = None
     registry_db.commit()
     before = _state(registry_db)
 
+    # A dry run saves nothing, so it cannot import the proxy first.
     for response in (
-        _put(client, admin_token, "local-eu1", "openai/gpt-old"),
-        _put(client, admin_token, "local-eu1", "openai/gpt-4o", {"groups": ["alpha"]}),
-        _delete(client, admin_token, "local-eu1", "openai/gpt-4o"),
+        _put(client, admin_token, "local-eu1", "openai/gpt-old", query="?dry_run=true"),
+        _put(client, admin_token, "local-eu1", "openai/gpt-4o", {"groups": ["alpha"]}, "?dry_run=true"),
+        _delete(client, admin_token, "local-eu1", "openai/gpt-4o", "?dry_run=true"),
     ):
         assert response.status_code == 409
         assert response.json()["problems"] == [
-            {"message": "Import the proxy local-eu1 first", "proxy": "local-eu1", "model": None},
+            {"message": "Import the proxy local-eu1 first with POST /registry/proxies/local-eu1/import", "proxy": "local-eu1", "model": None},
         ]
     assert _state(registry_db) == before
+    assert live_proxies.calls == []
+
+
+def test_a_write_on_a_proxy_that_was_never_imported_imports_it_first(client, admin_token, registry_db, setup, live_proxies):
+    eu_proxy = registry_db.get(DBRegistryProxy, setup["eu"].id)
+    eu_proxy.imported_at = eu_proxy.adopted_at = None
+    registry_db.commit()
+    live_proxies.by_url[EU_URL] = {"model_info": [
+        live_row("eu-gpt", "gpt-4o", "openai/gpt-4o"), live_row("eu-new", "gpt-old", "openai/gpt-old"),
+    ]}
+
+    body = ok(_put(client, admin_token, "local-eu1", "openai/gpt-4o", {"groups": ["alpha"]}))
+
+    assert [d["litellm_deployment_id"] for d in body] == ["eu-gpt"]
+    registry_db.expire_all()
+    assert registry_db.get(DBRegistryProxy, setup["eu"].id).imported_at is not None
+    # The import adopted the live deployment that the registry did not have.
+    assert _deployment(registry_db, setup["eu"].id, "gpt-old").litellm_deployment_id == "eu-new"
+
+
+def test_a_failed_automatic_import_gives_409_and_changes_nothing(client, admin_token, registry_db, setup, live_proxies):
+    eu_proxy = registry_db.get(DBRegistryProxy, setup["eu"].id)
+    eu_proxy.imported_at = eu_proxy.adopted_at = None
+    registry_db.commit()
+    before = _state(registry_db)
+    live_proxies.by_url[EU_URL] = httpx.ConnectError("down")
+
+    response = _put(client, admin_token, "local-eu1", "openai/gpt-4o", {"groups": ["alpha"]})
+
+    assert response.status_code == 409
+    assert messages(response) == ["The automatic import of local-eu1 failed: ConnectError"]
+    assert _state(registry_db) == before
+    registry_db.expire_all()
+    assert registry_db.get(DBRegistryProxy, setup["eu"].id).imported_at is None
 
 
 @pytest.mark.parametrize("query", ["", "?force=true"])
@@ -642,11 +690,11 @@ def test_put_create_dry_run_plans_the_create(client, admin_token, setup, live_pr
 
     assert steps == [{
         "proxy": "local-us1", "action": "create_model", "model": "openai/gpt-old", "model_name": "gpt-old",
-        "deployment_id": None, "changes": None, "problems": [],
+        "deployment_id": None, "credential": None, "changes": None, "problems": [], "blocked": False,
         "payload": {
             "model_name": "gpt-old",
             "litellm_params": {"model": "openai/gpt-old", "litellm_credential_name": "c1"},
-            "model_info": {"access_groups": ["alpha"]},
+            "model_info": {"access_groups": ["alpha"], "managed_by": "amazee-registry"},
         },
     }]
 
@@ -659,8 +707,10 @@ def test_put_create_dry_run_shows_the_credential_and_the_running_deployment(clie
     [step] = ok(response)["steps"]
     assert step["problems"] == [
         "the credential c1 is not on the proxy",
-        "the proxy already runs this deployment; the phase 3 import adopts it",
+        "the proxy already runs this deployment; the adopt import (POST /registry/proxies/{proxy}/import) adds it",
     ]
+    # The client sees that the sync will not send this step.
+    assert step["blocked"] is True
 
 
 def test_put_change_dry_run_plans_the_update(client, admin_token, setup, live_proxies):
@@ -691,3 +741,152 @@ def test_writes_read_no_proxy(client, admin_token, setup, live_proxies):
     assert _delete(client, admin_token, "local-eu1", "openai/gpt-4o").status_code == 204
 
     assert live_proxies.calls == []
+
+
+def _bedrock_credential(db, setup, name="AWS Keys"):
+    credential(db, name, provider="bedrock", proxies=setup.values())
+    db.commit()
+
+
+def test_put_refuses_an_unknown_credential(client, admin_token, registry_db, setup):
+    before = _state(registry_db)
+    response = _put(client, admin_token, "local-us1", "openai/gpt-4o", {"credential": "nope"})
+
+    assert response.status_code == 422
+    assert messages(response) == ["Unknown credential nope"]
+    assert _state(registry_db) == before
+
+
+def test_put_refuses_a_credential_that_is_not_on_the_proxy(client, admin_token, registry_db, setup):
+    credential(registry_db, "eu-only", proxies=[setup["eu"]])
+    registry_db.commit()
+
+    response = _put(client, admin_token, "local-us1", "openai/gpt-old", {"credential": "eu-only"})
+
+    assert response.status_code == 409
+    assert messages(response) == ["The credential eu-only is not on the proxy local-us1"]
+
+
+def test_put_takes_a_bedrock_credential_for_a_bedrock_mantle_model(client, admin_token, registry_db, setup):
+    add_model(registry_db, "bedrock_mantle", "openai.gpt-5.4")
+    _bedrock_credential(registry_db, setup)
+
+    ok(_put(client, admin_token, "local-us1", "bedrock_mantle/openai.gpt-5.4", {"credential": "AWS Keys"}, "?force=true"), 201)
+
+
+@pytest.mark.parametrize("query", ["", "?force=true"])
+def test_put_refuses_a_credential_of_another_provider(client, admin_token, registry_db, setup, query):
+    add_model(registry_db, "vertex_ai", "gemini-x")
+    _bedrock_credential(registry_db, setup)
+    before = _state(registry_db)
+
+    response = _put(client, admin_token, "local-us1", "vertex_ai/gemini-x", {"credential": "AWS Keys"}, query)
+
+    assert response.status_code == 422
+    assert "the credential AWS Keys is for bedrock, not vertex_ai" in messages(response)
+    assert _state(registry_db) == before
+
+
+def test_a_credential_with_no_provider_gets_the_providers_of_its_users(client, admin_token, registry_db, setup):
+    # AWS Bedrock has no provider. A bedrock and a bedrock_mantle deployment use it: both map to bedrock.
+    mantle = add_model(registry_db, "bedrock_mantle", "openai.gpt-5.4")
+    registry_db.add(DBRegistryModelRegion(
+        model_id=mantle.id, region_id=setup["us"].id, model_name="gpt-5.4", litellm_model="openai/openai.gpt-5.4",
+        litellm_params={"litellm_credential_name": "AWS Bedrock"},
+    ))
+    add_model(registry_db, "bedrock_mantle", "moonshotai.kimi-k2.5")
+    add_model(registry_db, "vertex_ai", "gemini-x")
+    registry_db.commit()
+
+    ok(_put(
+        client, admin_token, "local-us1", "bedrock_mantle/moonshotai.kimi-k2.5", {"credential": "AWS Bedrock"},
+        "?force=true",
+    ), 201)
+    response = _put(client, admin_token, "local-us1", "vertex_ai/gemini-x", {"credential": "AWS Bedrock"}, "?force=true")
+    assert messages(response) == ["the credential AWS Bedrock is for bedrock, not vertex_ai"]
+
+
+def test_credential_problems_join_the_other_problems(client, admin_token, registry_db, setup):
+    response = _put(
+        client, admin_token, "local-us1", "openai/gpt-old", {"credential": "nope", "model_name": "zeta"}, "?force=true"
+    )
+
+    assert response.status_code == 422
+    assert messages(response) == ["the model name zeta is an alias on this proxy", "Unknown credential nope"]
+
+
+def test_a_write_on_a_proxy_that_only_a_plain_import_read_adopts_it_first(
+    client, admin_token, registry_db, setup, live_proxies, managed_proxies
+):
+    # Only a proxy that the sync writes to needs the live aliases, so only a managed proxy is adopted here.
+    managed_proxies.add("local-eu1")
+    registry_db.get(DBRegistryProxy, setup["eu"].id).adopted_at = None
+    registry_db.commit()
+    live_proxies.by_url[EU_URL] = {
+        "model_info": [live_row("eu-gpt", "gpt-4o", "openai/gpt-4o")], "aliases": {"old": "gpt-4o"},
+    }
+
+    ok(_put(client, admin_token, "local-eu1", "openai/gpt-4o", {"groups": ["alpha"]}), 202)
+
+    registry_db.expire_all()
+    assert registry_db.get(DBRegistryProxy, setup["eu"].id).adopted_at is not None
+    assert [(a.alias, a.target) for a in registry_db.query(DBRegistryAlias).filter_by(region_id=setup["eu"].id)] == [
+        ("old", "gpt-4o")
+    ]
+
+
+def test_a_write_can_name_a_credential_that_only_the_adopt_import_reads(
+    client, admin_token, registry_db, setup, live_proxies, managed_proxies
+):
+    # The adopt import creates the credential from the live proxy, so the name is unknown only before it.
+    managed_proxies.add("local-eu1")
+    registry_db.get(DBRegistryProxy, setup["eu"].id).adopted_at = None
+    registry_db.commit()
+    live_proxies.by_url[EU_URL] = {
+        "model_info": [live_row("eu-gpt", "gpt-4o", "openai/gpt-4o")], "credentials": ["live-only"],
+    }
+
+    ok(_put(client, admin_token, "local-eu1", "openai/gpt-4o", {"credential": "live-only"}), 202)
+
+    assert _deployment(registry_db, setup["eu"].id, "gpt-4o").litellm_params == {"litellm_credential_name": "live-only"}
+
+
+@pytest.mark.parametrize("managed, active", [(True, False), (False, True)])
+def test_a_write_skips_the_adopt_import_of_a_plain_imported_proxy_that_the_sync_does_not_write(
+    client, admin_token, registry_db, setup, live_proxies, managed_proxies, managed, active
+):
+    eu = registry_db.get(DBRegistryProxy, setup["eu"].id)
+    eu.adopted_at = None
+    setup["eu"].is_active = active
+    registry_db.commit()
+    if managed:
+        managed_proxies.add("local-eu1")
+    live_proxies.by_url[EU_URL] = httpx.ConnectError("down")
+
+    # A managed proxy still gets its sync run; the run itself does not read an inactive proxy.
+    ok(_put(client, admin_token, "local-eu1", "openai/gpt-4o", {"groups": ["alpha"]}), 202 if managed else 200)
+
+    assert live_proxies.calls == []
+    registry_db.expire_all()
+    assert registry_db.get(DBRegistryProxy, setup["eu"].id).adopted_at is None
+
+
+def test_a_create_on_a_proxy_that_was_just_imported_gets_its_support_check(
+    client, admin_token, registry_db, setup, live_proxies, monkeypatch
+):
+    eu = registry_db.get(DBRegistryProxy, setup["eu"].id)
+    eu.imported_at = eu.adopted_at = None
+    registry_db.query(DBRegistryModelSupport).filter_by(region_id=setup["eu"].id).delete()
+    registry_db.commit()
+    live_proxies.by_url[EU_URL] = {"model_info": [live_row("eu-gpt", "gpt-4o", "openai/gpt-4o")], "version": "1.80.0"}
+    model_list = {"gpt-old": {"litellm_provider": "openai", "mode": "chat", "input_cost_per_token": 1e-06}}
+    monkeypatch.setattr("app.registry.support.fetch_json", lambda url: model_list)
+    monkeypatch.setattr("app.registry.versions.fetch_json", lambda url: model_list)
+
+    # Without the check in the same request, the create would wait a day for "support is unknown" to clear.
+    ok(_put(client, admin_token, "local-eu1", "openai/gpt-old"), 201)
+
+    registry_db.expire_all()
+    old = model(registry_db, "openai", "gpt-old")
+    support = registry_db.query(DBRegistryModelSupport).filter_by(model_id=old.id, region_id=setup["eu"].id).one()
+    assert (support.priced, support.supported) == (True, True)

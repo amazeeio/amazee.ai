@@ -1,8 +1,11 @@
-"""Read-only access to LiteLLM: a proxy's admin API and the public model list."""
+"""Access to LiteLLM: a proxy's admin API and the public model list.
+
+ProxyClient only reads. Only the sync writes, through ProxyWriter.
+"""
 
 import re
 from collections.abc import Set as AbstractSet
-from urllib.parse import unquote_plus, urlsplit, urlunsplit
+from urllib.parse import quote, unquote_plus, urlsplit, urlunsplit
 
 import httpx
 
@@ -250,6 +253,15 @@ class ProxyClient:
         credentials = self._get("/credentials").get("credentials") or []
         return {cred["credential_name"] for cred in credentials if cred.get("credential_name")}
 
+    def credential_infos(self) -> dict[str, dict]:
+        """Map credential name to its credential_info without secrets, with no fallback on error."""
+        credentials = self._get("/credentials").get("credentials") or []
+        return {
+            cred["credential_name"]: without_secrets(cred.get("credential_info") or {})
+            for cred in credentials
+            if cred.get("credential_name")
+        }
+
     def credential_regions(self) -> dict[str, str]:
         """Map credential name to its `aws_region_name`. Reads nothing else."""
         try:
@@ -262,3 +274,47 @@ class ProxyClient:
             if cred.get("credential_name") and region:
                 regions[cred["credential_name"]] = region
         return regions
+
+
+class ProxyWriter(ProxyClient):
+    """The write calls of a proxy's admin API. Only the registry sync uses it."""
+
+    def _send(self, method: str, path: str, body: dict | None = None):
+        response = self._client.request(method, path, json=body)
+        response.raise_for_status()
+        return response.json() if response.content else None
+
+    @staticmethod
+    def _credential_path(name: str) -> str:
+        # LiteLLM takes the name as a path; a space or a slash must survive the trip.
+        return f"/credentials/{quote(name, safe='')}"
+
+    def create_model(self, payload: dict):
+        return self._send("POST", "/model/new", payload)
+
+    def update_model(self, deployment_id: str, body: dict):
+        # LiteLLM merges litellm_params and model_info, so the body holds only what changes.
+        return self._send("PATCH", f"/model/{quote(deployment_id, safe='')}/update", body)
+
+    def delete_model(self, deployment_id: str):
+        return self._send("POST", "/model/delete", {"id": deployment_id})
+
+    def set_alias_map(self, full_map: dict):
+        # One router-wide map: always the full map, never a delta.
+        return self._send("POST", "/config/update", {"router_settings": {"model_group_alias": full_map}})
+
+    def create_credential(self, name: str, values: dict, info: dict):
+        return self._send(
+            "POST", "/credentials", {"credential_name": name, "credential_values": values, "credential_info": info}
+        )
+
+    def update_credential(self, name: str, values: dict, info: dict):
+        # The body is LiteLLM's CredentialItem, so all three fields are required.
+        return self._send(
+            "PATCH",
+            self._credential_path(name),
+            {"credential_name": name, "credential_values": values, "credential_info": info},
+        )
+
+    def delete_credential(self, name: str):
+        return self._send("DELETE", self._credential_path(name))

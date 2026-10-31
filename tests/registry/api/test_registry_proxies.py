@@ -12,6 +12,7 @@ from app.registry.models import (
     DBRegistryModelSupport,
     DBRegistryProvider,
     DBRegistryProxy,
+    DBRegistrySyncRun,
 )
 from tests.registry.api.conftest import CHECKED_AT, TODAY, auth, model, ok
 
@@ -44,13 +45,13 @@ def test_proxies_list(client, admin_token, deployed, registry_db):
     assert response.json() == [
         {
             "proxy": "local-eu1", "region_id": deployed["eu"].id, "litellm_version": None, "cloud_regions": {},
-            "imported_at": None, "providers": ["openai"], "owner": "catalog",
+            "imported_at": None, "adopted_at": None, "providers": ["openai"], "owner": "catalog",
             # gpt-4o is not supported there, and its deployment is disabled.
             "models_supported": 0, "models_enabled": 0,
         },
         {
             "proxy": "local-us1", "region_id": deployed["us"].id, "litellm_version": "1.80.0",
-            "cloud_regions": {"bedrock": "us-east-1"}, "imported_at": "2026-01-02T03:04:05Z",
+            "cloud_regions": {"bedrock": "us-east-1"}, "imported_at": "2026-01-02T03:04:05Z", "adopted_at": None,
             "providers": ["bedrock", "openai"], "owner": "catalog",
             # A null support result is not counted as supported.
             "models_supported": 1, "models_enabled": 2,
@@ -108,6 +109,7 @@ def test_proxy_detail(client, admin_token, deployed, registry_db):
         "litellm_deployment_id": "us-gpt", "enabled": True,
         "input_cost_per_token": None, "output_cost_per_token": None, "prices": {}, "access_groups": ["team-a"],
         "credential": None,
+        "synced_at": None, "changed_at": None, "sync_error": None, "stale_cost_fields": None,
     }]
     assert claude["support"]["supported"] is None
     assert [d["model_name"] for d in claude["deployments"]] == ["claude-x"]
@@ -211,3 +213,44 @@ def test_proxy_patch_sets_region_available_again(client, admin_token, deployed, 
 
     ok(_patch(client, admin_token, "local-us1", {"cloud_regions": {"bedrock": "eu-west-1"}}, "?dry_run=true"))
     assert available(claude.id) is None
+
+
+def test_proxy_owner_is_registry_for_a_managed_proxy(client, admin_token, deployed, managed_proxies):
+    managed_proxies.add("local-us1")
+
+    body = client.get("/registry/proxies", headers=auth(admin_token)).json()
+
+    assert [(p["proxy"], p["owner"]) for p in body] == [("local-eu1", "catalog"), ("local-us1", "registry")]
+
+
+def test_proxy_detail_shows_credentials_and_no_drift_with_no_repair(client, admin_token, writable):
+    body = client.get("/registry/proxies/local-us1", headers=auth(admin_token)).json()
+
+    assert body["credentials"] == ["AWS Bedrock", "c1", "c2"]
+    assert (body["drift"], body["unmanaged"], body["failed"], body["drift_checked_at"]) == (None, None, None, None)
+
+
+def test_proxy_detail_shows_the_drift_of_the_newest_repair(client, admin_token, registry_db, deployed):
+    us_id = deployed["us"].id
+    old = DBRegistrySyncRun(
+        trigger="repair", status="ok", region_ids=[us_id], scope={}, finished_at=CHECKED_AT,
+        stats={"proxies": {"local-us1": {"drift": [{"action": "old"}], "unmanaged": [], "failed": []}}},
+    )
+    new = DBRegistrySyncRun(
+        trigger="daily", status="failed", region_ids=[us_id], scope={}, finished_at=CHECKED_AT + timedelta(days=1),
+        stats={"proxies": {"local-us1": {"drift": [], "unmanaged": [{"deployment_id": "x9"}], "failed": ["claude-x"]}}},
+    )
+    # A write run and an unfinished repair do not count.
+    write = DBRegistrySyncRun(
+        trigger="write", status="ok", region_ids=[us_id], scope={}, finished_at=CHECKED_AT + timedelta(days=2),
+        stats={"proxies": {"local-us1": {"drift": [{"action": "write"}], "unmanaged": []}}},
+    )
+    running = DBRegistrySyncRun(trigger="repair", status="running", region_ids=[us_id], scope={})
+    registry_db.add_all([old, new, write, running])
+    registry_db.commit()
+
+    body = client.get("/registry/proxies/local-us1", headers=auth(admin_token)).json()
+
+    assert (body["drift"], body["unmanaged"], body["failed"]) == ([], [{"deployment_id": "x9"}], ["claude-x"])
+    assert body["drift_checked_at"] == "2026-01-03T03:04:05Z"
+    assert client.get("/registry/proxies/local-eu1", headers=auth(admin_token)).json()["drift"] is None

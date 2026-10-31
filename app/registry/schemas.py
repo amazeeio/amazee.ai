@@ -165,6 +165,14 @@ class RegistryDeploymentResponse(BaseModel):
     access_groups: list[str]
     # The name of the LiteLLM credential, or null when the credential is inline. Never its values.
     credential: str | None
+    # On amazee.ai's clock. changed_at later than synced_at means a change waits for the sync.
+    synced_at: datetime | None
+    changed_at: datetime | None
+    # The message of the last sync step that failed, or null.
+    sync_error: str | None
+    # Live cost fields that the registry price does not have and that LiteLLM cannot clear, from the newest
+    # repair of the proxy; they still bill. Null when that repair found none.
+    stale_cost_fields: list[str] | None = None
 
 
 class RegistryModelDeploymentResponse(RegistryDeploymentResponse):
@@ -194,9 +202,11 @@ class RegistryProxyResponse(BaseModel):
     litellm_version: str | None
     cloud_regions: dict
     imported_at: datetime | None
+    # Set when the adopt import read the live aliases and credentials; until then no alias map is sent.
+    adopted_at: datetime | None
     # The providers with a deployment on this proxy.
     providers: list[str]
-    # Who may change what runs on the proxy: `catalog` or `none`.
+    # Who may change what runs on the proxy: `registry`, `catalog` or `none`.
     owner: str
     models_supported: int
     models_enabled: int
@@ -223,6 +233,14 @@ class RegistryProxyModelResponse(BaseModel):
 class RegistryProxyDetailResponse(RegistryProxyResponse):
     checked_at: datetime | None
     models: list[RegistryProxyModelResponse]
+    # The names of the registry credentials on the proxy. Never their values.
+    credentials: list[str]
+    # From the newest finished daily or repair run of the proxy, with no live read; null with no such run.
+    drift: list[dict] | None
+    unmanaged: list[dict] | None
+    # The model names of the deployments that the repair left out, because their last sync step failed.
+    failed: list[str] | None
+    drift_checked_at: datetime | None
 
 
 class RegistryEventResponse(BaseModel):
@@ -315,6 +333,42 @@ Credential = Annotated[
 ]
 
 
+# The secret fields of a credential. They go only into the encrypted column and to the proxy.
+CredentialValues = Annotated[dict[str, str], Field(min_length=1)]
+
+
+class RegistryCredentialCreate(_Strict):
+    name: Credential
+    provider: str = Field(min_length=1)
+    values: CredentialValues
+    # Non-secret fields, such as aws_region_name. A secret-like key gets a 422.
+    info: dict = Field(default_factory=dict)
+    proxies: list[str] = Field(default_factory=list)
+
+
+class RegistryCredentialUpdate(_Update):
+    """`values` merges into the stored values; `proxies` is the full new list.
+
+    With `replace_all`, `values` replaces every stored value. LiteLLM replaces every live value of a
+    credential, so new values for a credential whose values the registry does not know need it.
+    """
+
+    # No `| None`: an explicit null gets a 422.
+    values: CredentialValues = None
+    proxies: list[str] = None
+    replace_all: StrictBool = False
+
+
+class RegistryCredentialResponse(BaseModel):
+    """Never the values."""
+
+    name: str
+    # Null for a credential that the adopt import read from a proxy.
+    provider: str | None
+    info: dict
+    proxies: list[str]
+
+
 class RegistryProxyModelUpdate(_Strict):
     """Creates the model's deployment on the proxy, or changes every deployment it has there.
 
@@ -348,19 +402,71 @@ class RegistryPlanStep(BaseModel):
     """One step that the sync would take on a proxy. A dry run only shows it."""
 
     proxy: str
-    action: Literal["create_model", "update_model", "delete_model", "write_alias_map", "read_proxy"]
+    action: Literal[
+        "create_credential", "update_credential", "delete_credential",
+        "create_model", "update_model", "replace_model", "delete_model", "write_alias_map", "read_proxy",
+    ]
     model: str | None = None
     model_name: str | None = None
     # The LiteLLM deployment id.
     deployment_id: str | None = None
+    # The credential name of a credential step. Never its values.
+    credential: str | None = None
     # What the sync would send, for a create or the full alias map.
     payload: dict | None = None
     # Each changed field or alias as {"from": live, "to": wanted}.
     changes: dict | None = None
     problems: list[str] = []
+    # True when a problem stops the sync from sending the step; the other problems only inform.
+    blocked: bool = False
 
 
 class RegistryDryRun[T](BaseModel):
     # The body of the write, or null where the write answers 204.
     result: T
     steps: list[RegistryPlanStep]
+
+
+class RegistrySyncStarted[T](BaseModel):
+    """The answer of a write that started a sync run on a registry-managed proxy (HTTP 202)."""
+
+    sync_run_id: int
+    # The body of the write, or null where the write answers 204.
+    result: T
+
+
+class RegistrySyncRunResponse(BaseModel):
+    id: int
+    # write, retry, repair or daily.
+    trigger: str
+    # pending, running, ok or failed.
+    status: str
+    proxies: list[str]
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    error: str | None
+    stats: dict | None
+
+
+class RegistrySyncStepResponse(BaseModel):
+    proxy: str
+    position: int
+    action: str
+    model: str | None
+    model_name: str | None
+    deployment_id: str | None
+    # The credential name of a credential step. Never its values.
+    credential: str | None
+    payload: dict | None
+    changes: dict | None
+    # pending, ok, failed or skipped.
+    status: str
+    message: str | None
+    finished_at: datetime | None
+
+
+class RegistrySyncRunDetailResponse(RegistrySyncRunResponse):
+    steps: list[RegistrySyncStepResponse]
+    # Per proxy: pending, ok or failed.
+    results: dict[str, str]

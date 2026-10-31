@@ -2,7 +2,7 @@
 
 from collections import defaultdict
 
-from fastapi import Depends, HTTPException, Path, Query, Response
+from fastapi import BackgroundTasks, Depends, HTTPException, Path, Query, Response
 from sqlalchemy import tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -10,7 +10,9 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 # The registry's only read of an old catalog table, for the group slugs. It goes when the old catalog goes.
 from app.db.models import DBModelAccessGroup, DBRegion
-from app.registry.api.dry_run import _save, alias_plans, deployment_plans
+from app.registry.api.dry_run import alias_plans, deployment_plans
+from app.registry.api.proxy_models import _import_first
+from app.registry.api.sync import _save
 from app.registry.api.routes import Refused, _find_proxy, _lock_proxies, _split_key, refuse, router
 from app.registry.models import (
     DBRegistryAccessGroup,
@@ -31,6 +33,7 @@ from app.registry.schemas import (
     RegistryAliasUpdate,
     RegistryDryRun,
     RegistryProblem,
+    RegistrySyncStarted,
 )
 
 
@@ -166,11 +169,16 @@ def _deployment_ids(db: Session, refs: list[tuple[str, str]]) -> set[int]:
 
 @router.put(
     "/access-groups/{slug}/models",
-    response_model=RegistryAccessGroupResponse | RegistryDryRun[RegistryAccessGroupResponse],
+    response_model=RegistryAccessGroupResponse
+    | RegistryDryRun[RegistryAccessGroupResponse]
+    | RegistrySyncStarted[RegistryAccessGroupResponse],
+    responses={202: {"model": RegistrySyncStarted[RegistryAccessGroupResponse], "description": "A sync run started"}},
 )
 def set_access_group_models(
     slug: str,
     body: RegistryAccessGroupModels,
+    response: Response,
+    background: BackgroundTasks,
     dry_run: bool = Query(False),
     db: Session = Depends(get_db),
 ):
@@ -198,7 +206,9 @@ def set_access_group_models(
         )
         return deployment_plans(db, rows, frozenset({"access_groups"}), live_only=True)
 
-    return _save(db, dry_run, _group_responses(db, [group.id])[0], plan=plan)
+    return _save(
+        db, dry_run, _group_responses(db, [group.id])[0], response=response, background=background, plan=plan
+    )
 
 
 @router.delete(
@@ -237,18 +247,26 @@ def list_aliases(response: Response, proxy: str | None = Query(None), db: Sessio
 # `{alias:path}`: a name with a `/` then reaches the pattern and gets a 422, not a 404.
 @router.put(
     "/aliases/{proxy}/{alias:path}",
-    response_model=RegistryAliasResponse | RegistryDryRun[RegistryAliasResponse],
-    responses={201: {"model": RegistryAliasResponse, "description": "The alias is created"}},
+    response_model=RegistryAliasResponse | RegistryDryRun[RegistryAliasResponse] | RegistrySyncStarted[RegistryAliasResponse],
+    responses={
+        201: {"model": RegistryAliasResponse, "description": "The alias is created"},
+        202: {"model": RegistrySyncStarted[RegistryAliasResponse], "description": "A sync run started"},
+    },
 )
 def set_alias(
     proxy: str,
     body: RegistryAliasUpdate,
     response: Response,
+    background: BackgroundTasks,
     alias: str = Path(pattern=ALIAS_PATTERN),
     dry_run: bool = Query(False),
     db: Session = Depends(get_db),
 ):
     region = _find_proxy(db, proxy)
+    # The write adopt-imports a proxy that was never imported, or a managed proxy that it can read, so the full
+    # alias map keeps the live aliases. Every check below needs the imported deployments, so none runs before it.
+    if not dry_run:
+        _import_first(db, [region], [])
     # The alias guard of a rename or a delete reads the aliases under the same lock. The lock also makes
     # alias creates on one proxy run one after the other, so two creates of one alias cannot both insert.
     _lock_proxies(db, [region.id])
@@ -272,18 +290,37 @@ def set_alias(
         row.target = body.target
         row.hidden = body.hidden
     result = RegistryAliasResponse(proxy=region.name, alias=alias, target=body.target, hidden=body.hidden)
-    return _save(db, dry_run, result, response=response, plan=lambda: alias_plans(db, region))
+    return _save(
+        db, dry_run, result, response=response, background=background, plan=lambda: alias_plans(db, region)
+    )
 
 
 @router.delete(
     "/aliases/{proxy}/{alias:path}",
-    response_model=RegistryDryRun[None],
-    responses={204: {"description": "The alias is deleted"}},
+    response_model=RegistryDryRun[None] | RegistrySyncStarted[None],
+    responses={
+        204: {"description": "The alias is deleted"},
+        202: {"model": RegistrySyncStarted[None], "description": "A sync run started"},
+    },
 )
-def delete_alias(proxy: str, alias: str, dry_run: bool = Query(False), db: Session = Depends(get_db)):
+def delete_alias(
+    proxy: str,
+    alias: str,
+    response: Response,
+    background: BackgroundTasks,
+    dry_run: bool = Query(False),
+    db: Session = Depends(get_db),
+):
     region = _find_proxy(db, proxy)
+    # The adopt import, of a proxy that was never imported or a managed proxy that it can read, reads the live
+    # aliases, so it comes before the lookup: the alias can exist only on the proxy.
+    if not dry_run:
+        _import_first(db, [region], [])
     row = db.query(DBRegistryAlias).filter_by(region_id=region.id, alias=alias).one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="Alias not found")
     db.delete(row)
-    return _save(db, dry_run, Response(status_code=204), plan=lambda: alias_plans(db, region, alias))
+    return _save(
+        db, dry_run, Response(status_code=204), response=response, background=background,
+        plan=lambda: alias_plans(db, region, alias),
+    )

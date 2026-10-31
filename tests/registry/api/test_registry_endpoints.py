@@ -1,6 +1,8 @@
 import json
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
+import httpx
 import pytest
 
 from app.main import _OPENAPI_TIERS, _scope_schema, app
@@ -309,12 +311,20 @@ DEPLOYMENTS = {"type": "array", "items": _ref("RegistryModelDeploymentResponse")
             "200": _ref("RegistryDryRun_RegistryAccessGroupResponse_"),
         }),
         ("/registry/proxies/{proxy}/models/{key}", "put", {
-            "200": {"anyOf": [DEPLOYMENTS, _ref("RegistryDryRun_list_RegistryModelDeploymentResponse__")]},
+            "200": {"anyOf": [
+                DEPLOYMENTS, _ref("RegistryDryRun_list_RegistryModelDeploymentResponse__"),
+                _ref("RegistrySyncStarted_list_RegistryModelDeploymentResponse__"),
+            ]},
             "201": DEPLOYMENTS,
+            "202": _ref("RegistrySyncStarted_list_RegistryModelDeploymentResponse__"),
         }),
         ("/registry/aliases/{proxy}/{alias}", "put", {
-            "200": {"anyOf": [_ref("RegistryAliasResponse"), _ref("RegistryDryRun_RegistryAliasResponse_")]},
+            "200": {"anyOf": [
+                _ref("RegistryAliasResponse"), _ref("RegistryDryRun_RegistryAliasResponse_"),
+                _ref("RegistrySyncStarted_RegistryAliasResponse_"),
+            ]},
             "201": _ref("RegistryAliasResponse"),
+            "202": _ref("RegistrySyncStarted_RegistryAliasResponse_"),
         }),
     ],
 )
@@ -338,3 +348,19 @@ def test_registry_writes_show_the_dry_run_body_in_openapi():
         success = full["paths"][route.path_format][method.lower()]["responses"][str(route.status_code or 200)]
         schema = success["content"]["application/json"]
         assert "RegistryDryRun" in json.dumps(schema), (method, route.path_format)
+
+
+def test_a_one_proxy_support_check_neither_hides_nor_shows_a_missed_daily_check(client, admin_token, registry_db, proxy_region):
+    from app.registry.support import PROXY_STEP, STEP, check_proxy_support
+
+    old = datetime.now(UTC) - timedelta(days=30)
+    registry_db.add(DBRegistryRun(step=STEP, status="ok", started_at=old))
+    registry_db.commit()
+    with patch("app.registry.support.fetch_json", side_effect=httpx.ConnectError("down")), pytest.raises(Exception):
+        check_proxy_support(registry_db, proxy_region)
+
+    body = client.get("/registry/runs", headers=auth(admin_token)).json()
+
+    # The proxy check has its own step and its own failure; the daily check is still stale.
+    assert [(r["step"], r["status"], r["stale"]) for r in body] == [(PROXY_STEP, "failed", False), (STEP, "ok", True)]
+    assert "could not be read" in body[0]["error"]
