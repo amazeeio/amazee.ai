@@ -159,9 +159,19 @@ def update_credential(
     row = _find_credential(db, name)
     problems = []
     token = row.values_encrypted
-    if body.values is not None:
+    if body.values is not None and body.replace_all:
+        token = _encrypted(body.values, problems)
+    elif body.values is not None and not row.values_encrypted:
+        problems.append(RegistryProblem(
+            message=(
+                f"The registry has no values for the credential {name}, so its live values are unknown and the "
+                "new values will replace all of them; send replace_all: true"
+            ),
+            status=409,
+        ))
+    elif body.values is not None:
         try:
-            stored = decrypt_values(row.values_encrypted) if row.values_encrypted else {}
+            stored = decrypt_values(row.values_encrypted)
         except (MissingKey, InvalidToken):
             stored = None
             problems.append(RegistryProblem(

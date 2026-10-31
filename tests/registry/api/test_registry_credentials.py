@@ -179,3 +179,30 @@ def test_other_routes_keep_the_input_in_a_422(client, admin_token, writable):
 
     assert response.status_code == 422
     assert response.json()["detail"][0]["input"] == 7
+
+
+def test_new_values_for_a_credential_with_unknown_values_need_replace_all(client, admin_token, registry_db, before):
+    # c1 came from the adopt import: the registry does not know its live values.
+    response = client.patch(f"{CREDENTIALS}/c1", json={"values": {"api_key": SECRET}}, headers=auth(admin_token))
+
+    assert response.status_code == 409
+    assert "live values are unknown" in messages(response)[0]
+    assert _state(registry_db) == before
+
+    ok(client.patch(
+        f"{CREDENTIALS}/c1", json={"values": {"api_key": SECRET}, "replace_all": True}, headers=auth(admin_token)
+    ))
+    registry_db.expire_all()
+    stored = registry_db.query(DBRegistryCredential).filter_by(name="c1").one().values_encrypted
+    assert decrypt_values(stored) == {"api_key": SECRET}
+
+
+def test_replace_all_replaces_the_stored_values(client, admin_token, registry_db, writable):
+    ok(client.post(CREDENTIALS, json=_body(), headers=auth(admin_token)), 201)
+
+    ok(client.patch(
+        f"{CREDENTIALS}/AWS Main", json={"values": {"aws_region_name": "eu-west-1"}, "replace_all": True},
+        headers=auth(admin_token),
+    ))
+
+    assert decrypt_values(_main(registry_db).values_encrypted) == {"aws_region_name": "eu-west-1"}

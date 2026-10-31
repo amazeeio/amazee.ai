@@ -340,11 +340,16 @@ class RegistryCredentialCreate(_Strict):
 
 
 class RegistryCredentialUpdate(_Update):
-    """`values` merges into the stored values; `proxies` is the full new list."""
+    """`values` merges into the stored values; `proxies` is the full new list.
+
+    With `replace_all`, `values` replaces every stored value. LiteLLM replaces every live value of a
+    credential, so new values for a credential whose values the registry does not know need it.
+    """
 
     # No `| None`: an explicit null gets a 422.
     values: CredentialValues = None
     proxies: list[str] = None
+    replace_all: StrictBool = False
 
 
 class RegistryCredentialResponse(BaseModel):
