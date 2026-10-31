@@ -16,6 +16,7 @@ from app.registry.models import (
     DBRegistryProvider,
     DBRegistryProxy,
 )
+from app.registry.planner import MANAGED_BY
 
 DEPLOYMENTS = [
     {
@@ -479,10 +480,39 @@ def test_an_adopt_import_gives_its_id_to_a_registry_row_that_has_none(registry_d
     ))
     registry_db.commit()
 
-    stats = import_deployments(registry_db, proxy_region, DEPLOYMENTS, None, {}, adopt=True)
+    created = [*DEPLOYMENTS[:2], _created(DEPLOYMENTS[2])]
+    stats = import_deployments(registry_db, proxy_region, created, None, {}, adopt=True)
     registry_db.commit()
 
     assert stats["linked"] == 1
     [row] = registry_db.query(DBRegistryModelRegion).filter_by(model_id=llama.id).all()
     assert row.litellm_deployment_id == "dep-3"
     assert row.model_info["id"] == "dep-3"
+
+
+def _created(dep):
+    """A live deployment that the sync created: it carries the registry marker."""
+    return {**dep, "model_info": {**dep["model_info"], "managed_by": MANAGED_BY}}
+
+
+@pytest.mark.parametrize("enabled, marked", [(False, True), (True, False)])
+def test_an_adopt_import_links_only_an_enabled_row_to_a_deployment_the_sync_made(
+    registry_db, proxy_region, enabled, marked
+):
+    from tests.registry.conftest import add_model
+
+    llama = add_model(registry_db, "deepinfra", "meta-llama/Llama-3")
+    registry_db.add(DBRegistryModelRegion(
+        model_id=llama.id, region_id=proxy_region.id, model_name="llama", litellm_model="deepinfra/meta-llama/Llama-3",
+        enabled=enabled,
+    ))
+    registry_db.commit()
+    live = _created(DEPLOYMENTS[2]) if marked else DEPLOYMENTS[2]
+
+    stats = import_deployments(registry_db, proxy_region, [live], None, {}, adopt=True)
+    registry_db.commit()
+
+    # A disabled row or a hand-made deployment is no pair: a link would let the next repair delete it.
+    assert stats["linked"] == 0
+    rows = registry_db.query(DBRegistryModelRegion).filter_by(model_id=llama.id).order_by(DBRegistryModelRegion.id).all()
+    assert [r.litellm_deployment_id for r in rows] == [None, "dep-3"]

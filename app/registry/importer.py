@@ -35,7 +35,7 @@ from app.registry.models import (
     DBRegistryProvider,
     DBRegistryProxy,
 )
-from app.registry.planner import alias_entry
+from app.registry.planner import MANAGED_BY, alias_entry
 from app.registry.runs import record_run
 
 logger = logging.getLogger(__name__)
@@ -115,10 +115,13 @@ def import_deployments(
     known, unbound = set(), {}
     if adopt:
         stats["kept"] = stats["linked"] = 0
-        for row in db.query(DBRegistryModelRegion).filter(DBRegistryModelRegion.region_id == region.id):
+        for row in db.query(DBRegistryModelRegion).filter(DBRegistryModelRegion.region_id == region.id).order_by(
+            DBRegistryModelRegion.id
+        ):
             if row.litellm_deployment_id is not None:
                 known.add(row.litellm_deployment_id)
-            else:
+            elif row.enabled:
+                # A disabled row has no live deployment: a link would make the next repair delete it.
                 unbound.setdefault((row.model_name, row.litellm_model), row)
     for dep in kept:
         params = dep.get("litellm_params") or {}
@@ -126,8 +129,11 @@ def import_deployments(
         if info.get("id") in known:
             stats["kept"] += 1
             continue
-        # A create whose read-back failed left its row with no id; the live deployment is that row.
-        row = unbound.pop((dep.get("model_name") or params.get("model") or "", params.get("model") or ""), None)
+        # A create whose read-back failed left its row with no id; the live deployment is that row. Only a
+        # deployment with the sync's marker can be it, as in the sync's own read-back.
+        row = None
+        if info.get("managed_by") == MANAGED_BY:
+            row = unbound.pop((dep.get("model_name") or params.get("model") or "", params.get("model") or ""), None)
         if row is not None and info.get("id"):
             row.litellm_deployment_id = info["id"]
             row.model_info = without_secrets(info)
