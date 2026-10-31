@@ -6,6 +6,8 @@ With no names it imports every active region that is not imported yet.
 A region that was imported before is refused.
 With --adopt it adds only what the registry does not have, and it keeps every row;
 with no names it then reads every active region.
+A plain import reads no aliases and no credentials and sets no adopted_at, so the first
+write or the daily registry-sync step adopt-imports the proxy again.
 """
 
 import argparse
