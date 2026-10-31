@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.db.models import DBRegion
 from app.registry.api.dry_run import credential_plans
+from app.registry.api.proxy_models import _import_first
 from app.registry.api.sync import _save
 from app.registry.api.routes import Refused, refuse, router
 from app.registry.crypto import MissingKey, decrypt_values, encrypt_values
@@ -73,6 +74,10 @@ def _proxy_ids(db: Session, names: list[str], problems: list[RegistryProblem]) -
     return found
 
 
+def _regions(db: Session, region_ids) -> list[DBRegion]:
+    return db.query(DBRegion).filter(DBRegion.id.in_(list(region_ids))).all()
+
+
 def _encrypted(values: dict, problems: list[RegistryProblem]) -> str | None:
     try:
         return encrypt_values(values)
@@ -120,6 +125,8 @@ def create_credential(
         problems.append(RegistryProblem(message="info holds a secret; put secrets in values"))
     region_ids = _proxy_ids(db, body.proxies, problems)
     token = _encrypted(body.values, problems)
+    if not dry_run:
+        _import_first(db, _regions(db, region_ids.values()), problems)
     refuse(problems)
 
     row = DBRegistryCredential(
@@ -155,6 +162,20 @@ def update_credential(
     dry_run: bool = Query(False),
     db: Session = Depends(get_db),
 ):
+    # The import commits, so it runs before the lock, for the proxies that will hold the credential.
+    # A dry run saves nothing, so it imports nothing.
+    early: list[RegistryProblem] = []
+    if body.proxies is not None:
+        targets = _proxy_ids(db, body.proxies, early).values()
+    else:
+        targets = [
+            region_id
+            for (region_id,) in db.query(DBRegistryCredentialRegion.region_id)
+            .join(DBRegistryCredential, DBRegistryCredential.id == DBRegistryCredentialRegion.credential_id)
+            .filter(DBRegistryCredential.name == name)
+        ]
+    if not dry_run:
+        _import_first(db, _regions(db, targets), early)
     # The lock makes a model write that names the credential wait, so a removed proxy stays unused.
     row = _find_credential(db, name)
     problems = []

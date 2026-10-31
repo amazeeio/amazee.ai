@@ -3,7 +3,7 @@ from cryptography.fernet import Fernet
 
 from app.registry.config import CREDENTIAL_KEYS_ENV
 from app.registry.crypto import decrypt_values
-from app.registry.models import DBRegistryCredential, DBRegistryCredentialRegion, DBRegistryModelRegion
+from app.registry.models import DBRegistryCredential, DBRegistryCredentialRegion, DBRegistryModelRegion, DBRegistryProxy
 from tests.registry.api.conftest import auth, messages, ok
 
 CREDENTIALS = "/registry/credentials"
@@ -206,3 +206,49 @@ def test_replace_all_replaces_the_stored_values(client, admin_token, registry_db
     ))
 
     assert decrypt_values(_main(registry_db).values_encrypted) == {"aws_region_name": "eu-west-1"}
+
+
+def _forget_eu(db, writable):
+    eu = db.get(DBRegistryProxy, writable["eu"].id)
+    eu.imported_at = eu.adopted_at = None
+    db.commit()
+
+
+def test_a_credential_create_imports_a_new_proxy_first(client, admin_token, registry_db, writable):
+    _forget_eu(registry_db, writable)
+
+    ok(client.post(CREDENTIALS, json=_body(proxies=["local-eu1"]), headers=auth(admin_token)), 201)
+
+    registry_db.expire_all()
+    assert registry_db.get(DBRegistryProxy, writable["eu"].id).adopted_at is not None
+
+
+def test_a_credential_patch_imports_a_new_proxy_first(client, admin_token, registry_db, writable):
+    ok(client.post(CREDENTIALS, json=_body(), headers=auth(admin_token)), 201)
+    _forget_eu(registry_db, writable)
+
+    patched = ok(client.patch(
+        f"{CREDENTIALS}/AWS Main", json={"proxies": ["local-us1", "local-eu1"]}, headers=auth(admin_token)
+    ))
+
+    assert patched["proxies"] == ["local-eu1", "local-us1"]
+    registry_db.expire_all()
+    assert registry_db.get(DBRegistryProxy, writable["eu"].id).adopted_at is not None
+
+
+def test_a_refused_credential_create_imports_nothing(client, admin_token, registry_db, writable, live_proxies):
+    _forget_eu(registry_db, writable)
+
+    response = client.post(CREDENTIALS, json=_body(provider="nope", proxies=["local-eu1"]), headers=auth(admin_token))
+
+    assert response.status_code == 422
+    assert live_proxies.calls == []
+
+
+def test_a_credential_dry_run_imports_nothing(client, admin_token, registry_db, writable):
+    _forget_eu(registry_db, writable)
+
+    ok(client.post(f"{CREDENTIALS}?dry_run=true", json=_body(proxies=["local-eu1"]), headers=auth(admin_token)))
+
+    registry_db.expire_all()
+    assert registry_db.get(DBRegistryProxy, writable["eu"].id).adopted_at is None
