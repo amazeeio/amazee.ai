@@ -476,3 +476,16 @@ def test_a_disabled_deployment_gets_no_stored_price(registry_db, us, live_proxie
 
     # Nothing runs on the proxy for it, so no price is there.
     assert _row(registry_db, name="claude-x").prices == {}
+
+
+def test_an_ok_step_stores_the_compared_price_whatever_it_changed(registry_db, us, live_proxies):
+    live_proxies.by_url[US_URL]["model_info"][0]["litellm_params"]["input_cost_per_token"] = 2.5e-06
+    gpt = _row(registry_db, "us-gpt")
+    gpt.model_name = "gpt-renamed"
+    registry_db.commit()
+
+    run, steps = _run(registry_db, us, full=True)
+
+    assert ("update_model", "ok", None) in steps
+    # The step changed only the name, and the proxy has the compared price.
+    assert _row(registry_db, "us-gpt").prices == {"input_cost_per_token": 2.5e-06}

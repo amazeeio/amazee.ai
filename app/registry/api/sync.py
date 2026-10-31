@@ -738,8 +738,11 @@ def _sync_locked(proxy: _Proxy) -> dict | None:
             elif in_sync:
                 _mark_in_sync(db, step["row_id"], read_at, removed, compared_price(step["row_id"]))
             elif status == "ok" and step["action"] in _MODEL_STEPS:
-                pushed = step["action"] == "create_model" or "prices" in (step["changes"] or {})
-                if pushed and (price := compared_price(step["row_id"]) or _sent_price(step)) is not None:
+                # The same price as _mark_in_sync stores; a write run that compared no price keeps what a create sent.
+                price = compared_price(step["row_id"])
+                if price is None:
+                    price = _sent_price(step)
+                if price is not None:
                     _set_row(db, step["row_id"], **_price_columns(price))
                 if repair and _hand_edit(before.get(step["row_id"]), by_row.get(step["row_id"]), step):
                     _record_repair(proxy, step)
