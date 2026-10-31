@@ -309,8 +309,12 @@ DEPLOYMENTS = {"type": "array", "items": _ref("RegistryModelDeploymentResponse")
             "200": _ref("RegistryDryRun_RegistryAccessGroupResponse_"),
         }),
         ("/registry/proxies/{proxy}/models/{key}", "put", {
-            "200": {"anyOf": [DEPLOYMENTS, _ref("RegistryDryRun_list_RegistryModelDeploymentResponse__")]},
+            "200": {"anyOf": [
+                DEPLOYMENTS, _ref("RegistryDryRun_list_RegistryModelDeploymentResponse__"),
+                _ref("RegistrySyncStarted_list_RegistryModelDeploymentResponse__"),
+            ]},
             "201": DEPLOYMENTS,
+            "202": _ref("RegistrySyncStarted_list_RegistryModelDeploymentResponse__"),
         }),
         ("/registry/aliases/{proxy}/{alias}", "put", {
             "200": {"anyOf": [_ref("RegistryAliasResponse"), _ref("RegistryDryRun_RegistryAliasResponse_")]},

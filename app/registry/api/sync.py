@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 
 import httpx
 from cryptography.fernet import InvalidToken
-from fastapi import Response
+from fastapi import BackgroundTasks, Response
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -41,7 +41,7 @@ from app.registry.models import (
     DBRegistrySyncRun,
     DBRegistrySyncStep,
 )
-from app.registry.schemas import RegistryDryRun
+from app.registry.schemas import RegistryDryRun, RegistrySyncStarted
 
 logger = logging.getLogger(__name__)
 
@@ -73,16 +73,32 @@ def _save(
     *,
     response: Response | None = None,
     plan: Callable[[], list[ProxyPlan]] | None = None,
+    background: BackgroundTasks | None = None,
 ):
     """Commit the write and return `result`, or in a dry run, roll it back and return it with the planned steps.
 
-    `plan` runs only in a dry run, after the flush, so a write that is not a dry run never reads a proxy.
+    A write that is not a dry run reads only the database: it marks the planned deployments as changed, and for
+    a registry-managed proxy it saves a pending sync run in the same commit and answers 202.
     """
     # The flush runs the database checks, so a dry run fails where the write would.
     db.flush()
     if not dry_run:
+        plans = plan() if plan else []
+        row_ids = [d.row_id for p in plans for d in p.deployments if d.row_id is not None]
+        if row_ids:
+            db.query(DBRegistryModelRegion).filter(DBRegistryModelRegion.id.in_(row_ids)).update(
+                {"changed_at": _now()}, synchronize_session=False
+            )
+        managed = [p for p in plans if registry_manages(p.proxy)]
+        run = create_run(db, "write", managed) if background is not None and managed else None
+        # One commit, so the write and its pending run are saved together.
         db.commit()
-        return result
+        if run is None:
+            return result
+        background.add_task(execute_run, run.id)
+        if response is not None:
+            response.status_code = 202
+        return RegistrySyncStarted(sync_run_id=run.id, result=None if isinstance(result, Response) else result)
     plans = plan() if plan else []
     # End the transaction before the proxy reads, so no row lock is held during HTTP.
     db.rollback()

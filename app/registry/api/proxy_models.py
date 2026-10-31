@@ -6,7 +6,7 @@ A write changes only the registry tables. Only a dry run reads the proxies that 
 from collections import defaultdict
 from datetime import date
 
-from fastapi import Depends, HTTPException, Query, Response
+from fastapi import BackgroundTasks, Depends, HTTPException, Query, Response
 from sqlalchemy import tuple_
 from sqlalchemy.orm import Session
 
@@ -53,6 +53,7 @@ from app.registry.schemas import (
     RegistryProxyModelUpdate,
     RegistryRollout,
     RegistryRolloutEntry,
+    RegistrySyncStarted,
 )
 from app.registry.support import Availability
 
@@ -229,13 +230,19 @@ def _add_deployment(
 
 @router.put(
     "/proxies/{proxy}/models/{key:path}",
-    response_model=list[RegistryModelDeploymentResponse] | RegistryDryRun[list[RegistryModelDeploymentResponse]],
-    responses={201: {"model": list[RegistryModelDeploymentResponse], "description": "The deployment is created"}},
+    response_model=list[RegistryModelDeploymentResponse]
+    | RegistryDryRun[list[RegistryModelDeploymentResponse]]
+    | RegistrySyncStarted[list[RegistryModelDeploymentResponse]],
+    responses={
+        201: {"model": list[RegistryModelDeploymentResponse], "description": "The deployment is created"},
+        202: {"model": RegistrySyncStarted[list[RegistryModelDeploymentResponse]], "description": "A sync run started"},
+    },
 )
 def set_proxy_model(
     proxy: str,
     key: str,
     response: Response,
+    background: BackgroundTasks,
     body: RegistryProxyModelUpdate | None = None,
     dry_run: bool = Query(False),
     force: bool = Query(False),
@@ -354,18 +361,24 @@ def set_proxy_model(
         db, prices, provider, [(d, region.name) for d in _deployments(db, model, region.id)]
     )
     return _save(
-        db, dry_run, result, response=response, plan=lambda: deployment_plans(db, deployments, DEPLOYMENT_FIELDS)
+        db, dry_run, result, response=response, background=background,
+        plan=lambda: deployment_plans(db, deployments, DEPLOYMENT_FIELDS),
     )
 
 
 @router.delete(
     "/proxies/{proxy}/models/{key:path}",
-    response_model=RegistryDryRun[None],
-    responses={204: {"description": "The model's deployments on the proxy are deleted"}},
+    response_model=RegistryDryRun[None] | RegistrySyncStarted[None],
+    responses={
+        204: {"description": "The model's deployments on the proxy are deleted"},
+        202: {"model": RegistrySyncStarted[None], "description": "A sync run started"},
+    },
 )
 def remove_proxy_model(
     proxy: str,
     key: str,
+    response: Response,
+    background: BackgroundTasks,
     dry_run: bool = Query(False),
     force: bool = Query(False),
     db: Session = Depends(get_db),
@@ -387,16 +400,22 @@ def remove_proxy_model(
     db.query(DBRegistryModelRegion).filter(DBRegistryModelRegion.id.in_(ids)).delete(synchronize_session=False)
     # The rows were loaded before the delete, so the plan still reads their attributes.
     return _save(
-        db, dry_run, Response(status_code=204),
+        db, dry_run, Response(status_code=204), response=response, background=background,
         plan=lambda: deployment_plans(db, deployments, DEPLOYMENT_FIELDS, removed=True),
     )
 
 
 @router.post(
-    "/rollouts", response_model=list[RegistryRolloutEntry] | RegistryDryRun[list[RegistryRolloutEntry]]
+    "/rollouts",
+    response_model=list[RegistryRolloutEntry]
+    | RegistryDryRun[list[RegistryRolloutEntry]]
+    | RegistrySyncStarted[list[RegistryRolloutEntry]],
+    responses={202: {"model": RegistrySyncStarted[list[RegistryRolloutEntry]], "description": "A sync run started"}},
 )
 def roll_out(
     body: RegistryRollout,
+    response: Response,
+    background: BackgroundTasks,
     dry_run: bool = Query(False),
     force: bool = Query(False),
     db: Session = Depends(get_db),
@@ -517,4 +536,7 @@ def roll_out(
         for group_id in group_ids.values()
         if (deployment.id, group_id) not in links
     )
-    return _save(db, dry_run, entries, plan=lambda: deployment_plans(db, targets, DEPLOYMENT_FIELDS))
+    return _save(
+        db, dry_run, entries, response=response, background=background,
+        plan=lambda: deployment_plans(db, targets, DEPLOYMENT_FIELDS),
+    )

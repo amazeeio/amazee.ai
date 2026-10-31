@@ -3,7 +3,7 @@
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
@@ -47,6 +47,7 @@ from app.registry.schemas import (
     RegistryProxyUpdate,
     RegistryRefusal,
     RegistryRunResponse,
+    RegistrySyncStarted,
 )
 from app.registry.support import refresh_region_available
 
@@ -458,11 +459,16 @@ def get_model(key: str, db: Session = Depends(get_db)):
 
 @router.patch(
     "/models/{key:path}",
-    response_model=RegistryModelDetailResponse | RegistryDryRun[RegistryModelDetailResponse],
+    response_model=RegistryModelDetailResponse
+    | RegistryDryRun[RegistryModelDetailResponse]
+    | RegistrySyncStarted[RegistryModelDetailResponse],
+    responses={202: {"model": RegistrySyncStarted[RegistryModelDetailResponse], "description": "A sync run started"}},
 )
 def update_model(
     key: str,
     body: RegistryModelUpdate,
+    response: Response,
+    background: BackgroundTasks,
     dry_run: bool = Query(False),
     db: Session = Depends(get_db),
 ):
@@ -486,7 +492,9 @@ def update_model(
         return deployment_plans(db, rows, frozenset({"prices"}), live_only=True)
 
     # Only a price is synced into the deployments; family, override_eol and blocked stay in the registry.
-    return _save(db, dry_run, detail, plan=plan if "prices" in changes else None)
+    return _save(
+        db, dry_run, detail, response=response, background=background, plan=plan if "prices" in changes else None
+    )
 
 
 @router.get("/providers", response_model=list[RegistryProviderResponse])

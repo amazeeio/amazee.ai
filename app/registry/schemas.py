@@ -400,3 +400,11 @@ class RegistryDryRun[T](BaseModel):
     # The body of the write, or null where the write answers 204.
     result: T
     steps: list[RegistryPlanStep]
+
+
+class RegistrySyncStarted[T](BaseModel):
+    """The answer of a write that started a sync run on a registry-managed proxy (HTTP 202)."""
+
+    sync_run_id: int
+    # The body of the write, or null where the write answers 204.
+    result: T
