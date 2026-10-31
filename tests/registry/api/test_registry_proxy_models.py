@@ -689,7 +689,7 @@ def test_put_create_dry_run_plans_the_create(client, admin_token, setup, live_pr
 
     assert steps == [{
         "proxy": "local-us1", "action": "create_model", "model": "openai/gpt-old", "model_name": "gpt-old",
-        "deployment_id": None, "credential": None, "changes": None, "problems": [],
+        "deployment_id": None, "credential": None, "changes": None, "problems": [], "blocked": False,
         "payload": {
             "model_name": "gpt-old",
             "litellm_params": {"model": "openai/gpt-old", "litellm_credential_name": "c1"},
@@ -708,6 +708,8 @@ def test_put_create_dry_run_shows_the_credential_and_the_running_deployment(clie
         "the credential c1 is not on the proxy",
         "the proxy already runs this deployment; the phase 3 import adopts it",
     ]
+    # The client sees that the sync will not send this step.
+    assert step["blocked"] is True
 
 
 def test_put_change_dry_run_plans_the_update(client, admin_token, setup, live_proxies):

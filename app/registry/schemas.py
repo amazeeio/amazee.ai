@@ -410,6 +410,8 @@ class RegistryPlanStep(BaseModel):
     # Each changed field or alias as {"from": live, "to": wanted}.
     changes: dict | None = None
     problems: list[str] = []
+    # True when a problem stops the sync from sending the step; the other problems only inform.
+    blocked: bool = False
 
 
 class RegistryDryRun[T](BaseModel):

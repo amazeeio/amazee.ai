@@ -256,7 +256,10 @@ def plan_steps(plans: list[ProxyPlan]) -> list[dict]:
             live = read_live(plan.url, plan.key)
         if isinstance(live, str):
             steps.append(
-                {"proxy": plan.proxy, "action": "read_proxy", "problems": [f"the proxy could not be read: {live}"]}
+                {
+                    "proxy": plan.proxy, "action": "read_proxy", "problems": [f"the proxy could not be read: {live}"],
+                    "blocked": True,
+                }
             )
         else:
             steps += plan_proxy(plan, live)

@@ -111,6 +111,7 @@ def test_plan_steps_gives_a_read_step_for_a_proxy_that_fails(live_proxies):
 
     assert steps[0] == {
         "proxy": "local-eu1", "action": "read_proxy", "problems": ["the proxy could not be read: ConnectError"],
+        "blocked": True,
     }
     assert [(s["proxy"], s["action"]) for s in steps[1:]] == [("local-us1", "create_model")]
     assert "sk-test" not in repr(plans)
@@ -124,7 +125,10 @@ def test_plan_steps_does_not_read_a_proxy_with_no_url_or_an_inactive_one(live_pr
     steps = plan_steps([ProxyPlan("local-us1", url, "sk-test", active=active)])
 
     assert steps == [
-        {"proxy": "local-us1", "action": "read_proxy", "problems": [f"the proxy could not be read: {reason}"]}
+        {
+            "proxy": "local-us1", "action": "read_proxy", "problems": [f"the proxy could not be read: {reason}"],
+            "blocked": True,
+        }
     ]
     assert live_proxies.calls == []
 
