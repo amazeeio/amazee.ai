@@ -269,7 +269,7 @@ def list_runs(
         .filter(DBRegistryRun.status == "ok", DBRegistryRun.started_at >= datetime.now(UTC) - STALE_AFTER)
         .distinct()
     }
-    # The import runs one time per proxy, not daily, so an old import is never a missed run.
+    # The import runs only when a proxy needs it, not daily, so an old import is never a missed run.
     fresh.add(IMPORT_STEP)
     # A run row is inserted when its step starts, so the id order is the start order.
     return [
@@ -652,7 +652,8 @@ def update_proxy(
     if changed:
         refresh_region_available(db, region.id, cloud_regions, changed)
     db.flush()
-    # The cloud regions stay in the registry, so this write plans no proxy step.
+    # A cloud region can change the picked price, but this write plans no proxy step: the daily repair
+    # pushes the new price.
     return _save(db, dry_run, _proxy_responses(db, region.id)[0])
 
 
