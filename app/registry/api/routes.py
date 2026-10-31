@@ -54,7 +54,7 @@ from app.registry.schemas import (
     RegistryRunResponse,
     RegistrySyncStarted,
 )
-from app.registry.support import refresh_region_available
+from app.registry.support import Availability, refresh_region_available
 
 # The job runs daily, so two days with no `ok` run means a run was missed.
 STALE_AFTER = timedelta(hours=48)
@@ -401,7 +401,7 @@ def _find_proxy(db: Session, proxy: str) -> DBRegion:
 
 
 def _deployment_responses(
-    db: Session, price_scopes: list, provider: str, deployments: list[tuple[DBRegistryModelRegion, str]]
+    db: Session, price_scopes: list, provider: str, model_id: str, deployments: list[tuple[DBRegistryModelRegion, str]]
 ) -> list[RegistryModelDeploymentResponse]:
     """The response of each (deployment, proxy name) of one model, with the price the registry writes."""
     cloud_regions = dict(
@@ -410,15 +410,18 @@ def _deployment_responses(
         )
     )
     groups = _access_groups(db, [deployment.id for deployment, _ in deployments])
-    # pick_price gets the deployed model string, so a geo id gets its geo price.
+    availability = Availability(db)
+
+    def price(deployment):
+        cloud_region = (cloud_regions.get(deployment.region_id) or {}).get(provider)
+        # A provisioned-only variant gets no per-token price from the sync, so the body shows none.
+        if availability.in_region_problem(provider, model_id, cloud_region, deployment.litellm_model) == "provisioned_only":
+            return None
+        # pick_price gets the deployed model string, so a geo id gets its geo price.
+        return pick_price(price_scopes, provider, deployment.litellm_model, cloud_region)
+
     return [
-        RegistryModelDeploymentResponse(
-            **_deployment_fields(deployment, proxy, groups),
-            price=pick_price(
-                price_scopes, provider, deployment.litellm_model,
-                (cloud_regions.get(deployment.region_id) or {}).get(provider),
-            ),
-        )
+        RegistryModelDeploymentResponse(**_deployment_fields(deployment, proxy, groups), price=price(deployment))
         for deployment, proxy in deployments
     ]
 
@@ -472,7 +475,7 @@ def _model_detail(db: Session, model: DBRegistryModel, provider: str) -> Registr
         supports=model.supports,
         lifecycle=lifecycle,
         availability=availability,
-        deployments=_deployment_responses(db, base.price_scopes, provider, deployments),
+        deployments=_deployment_responses(db, base.price_scopes, provider, model.model_id, deployments),
         history=history,
     )
 

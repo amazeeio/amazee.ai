@@ -410,7 +410,7 @@ def set_proxy_model(
     # The model's deployments on the proxy, in the shape of the model detail.
     def result():
         return _deployment_responses(
-            db, prices, provider, [(d, region.name) for d in _deployments(db, model, region.id)]
+            db, prices, provider, model.model_id, [(d, region.name) for d in _deployments(db, model, region.id)]
         )
 
     return _save(

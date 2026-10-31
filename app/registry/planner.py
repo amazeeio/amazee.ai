@@ -165,6 +165,8 @@ def _create(
         problems.append(LIVE_NAME_CLASH.format(deployment.model_name))
     if deployment.deployment_id is not None:
         notes.append(RECREATE)
+    if deployment.provisioned_only:
+        notes.append(PROVISIONED_ONLY)
     provider = credential_provider(deployment.model.partition("/")[0])
     if not deployment.credential and provider not in credential_providers:
         notes.append(NO_CREDENTIAL.format(provider))

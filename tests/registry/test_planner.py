@@ -279,6 +279,8 @@ def test_create_of_a_provisioned_only_variant_writes_no_price():
     [step] = plan(PROXY, LiveProxy(credentials=frozenset({"c1"})), [_new(price=PRICE, provisioned_only=True)])
 
     assert step["payload"]["litellm_params"] == {"model": "openai/gpt-4o", "litellm_credential_name": "c1"}
+    # The step says why it sends no price, and the note does not stop it.
+    assert (step["problems"], step["blocked"]) == ([PROVISIONED_ONLY], False)
 
 
 def test_a_config_file_deployment_is_not_changed_or_deleted():
