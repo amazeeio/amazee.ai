@@ -252,3 +252,14 @@ def test_a_credential_dry_run_imports_nothing(client, admin_token, registry_db, 
 
     registry_db.expire_all()
     assert registry_db.get(DBRegistryProxy, writable["eu"].id).adopted_at is None
+
+
+def test_a_create_of_an_adopted_name_points_to_replace_all(client, admin_token, registry_db, before):
+    # c1 came from the adopt import, with no stored values.
+    response = client.post(CREDENTIALS, json=_body(name="c1"), headers=auth(admin_token))
+
+    assert response.status_code == 409
+    assert messages(response) == [
+        "The credential c1 exists with no stored values; send the values with PATCH and replace_all: true"
+    ]
+    assert _state(registry_db) == before

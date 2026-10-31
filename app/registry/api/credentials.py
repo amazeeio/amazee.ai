@@ -138,7 +138,13 @@ def create_credential(
         db.flush()
     except IntegrityError:
         db.rollback()
-        raise Refused([RegistryProblem(message="Credential already exists", status=409)]) from None
+        # The name is taken: the row is there, so this lookup after the conflict finds it.
+        stored = db.query(DBRegistryCredential.values_encrypted).filter_by(name=body.name).scalar()
+        message = (
+            "Credential already exists" if stored else
+            f"The credential {body.name} exists with no stored values; send the values with PATCH and replace_all: true"
+        )
+        raise Refused([RegistryProblem(message=message, status=409)]) from None
     db.add_all(DBRegistryCredentialRegion(credential_id=row.id, region_id=rid) for rid in region_ids.values())
     db.flush()
     return _save(
