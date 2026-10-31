@@ -373,3 +373,16 @@ def test_rollout_checks_rule_6_only_where_it_writes_the_credential(client, admin
 
     assert messages(response) == ["the credential AWS Keys is for bedrock, not openai"]
     assert response.json()["problems"][0]["model"] == "openai/gpt-old"
+
+
+def test_a_refused_rollout_does_not_import_the_proxy_first(client, admin_token, registry_db, setup, live_proxies):
+    eu_proxy = registry_db.get(DBRegistryProxy, setup["eu"].id)
+    eu_proxy.imported_at = eu_proxy.adopted_at = None
+    registry_db.commit()
+
+    response = _post(client, admin_token, {"models": ["openai/nope"], "proxies": {"local-eu1": None}})
+
+    assert messages(response) == ["Unknown model openai/nope"]
+    assert live_proxies.calls == []
+    registry_db.expire_all()
+    assert registry_db.get(DBRegistryProxy, setup["eu"].id).imported_at is None

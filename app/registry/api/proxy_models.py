@@ -80,10 +80,30 @@ def _import_failed(proxy: str, exc: Exception) -> RegistryProblem:
     )
 
 
-def _import_first(db: Session, regions) -> None:
+def _unknown_names(db: Session, slugs, credentials: dict[str, str]) -> list[RegistryProblem]:
+    """Unknown access groups and credential names, per proxy name for a credential. They need no proxy read, so
+    they run before the automatic import, and a write that they refuse changes nothing."""
+    found_groups = {slug for (slug,) in db.query(DBRegistryAccessGroup.slug).filter(DBRegistryAccessGroup.slug.in_(slugs))}
+    names = set(credentials.values())
+    found_credentials = {
+        name for (name,) in db.query(DBRegistryCredential.name).filter(DBRegistryCredential.name.in_(names))
+    }
+    return [
+        *(RegistryProblem(message=f"Unknown access group {slug}") for slug in sorted(set(slugs) - found_groups)),
+        *(
+            RegistryProblem(message=f"Unknown credential {name}", proxy=proxy)
+            for proxy, name in credentials.items()
+            if name not in found_credentials
+        ),
+    ]
+
+
+def _import_first(db: Session, regions, early: list[RegistryProblem]) -> None:
     """Adopt-import each proxy that the adopt import never read, before the write locks it.
 
-    Each import commits the request session. The import reads the proxy, so it runs before any lock.
+    Each import commits the request session, so the `early` problems, which need no import, refuse the write
+    first. With no import to run, they join the full refusal later. The import reads the proxy, so it runs
+    before any lock.
     """
     regions = {region.id: region for region in regions}
     waiting = [
@@ -92,6 +112,8 @@ def _import_first(db: Session, regions) -> None:
         .filter(DBRegistryProxy.region_id.in_(regions), DBRegistryProxy.adopted_at.is_(None))
         .order_by(DBRegistryProxy.region_id)
     ]
+    if waiting:
+        refuse(early)
     for region_id in waiting:
         region = regions[region_id]
         name = region.name
@@ -281,12 +303,13 @@ def set_proxy_model(
 ):
     region = _find_proxy(db, proxy)
     model, provider = _find_model(db, key)
+    changes = (body or RegistryProxyModelUpdate()).model_dump(exclude_unset=True)
     if not dry_run:
-        _import_first(db, [region])
+        credential = {region.name: changes["credential"]} if changes.get("credential") else {}
+        _import_first(db, [region], _unknown_names(db, changes.get("groups") or [], credential))
     proxy_row = _lock_proxies(db, [region.id])[region.id]
     refuse(_import_problems([proxy_row], {region.id: region.name}))
     cloud_regions = proxy_row.cloud_regions or {}
-    changes = (body or RegistryProxyModelUpdate()).model_dump(exclude_unset=True)
     problems: list[RegistryProblem] = []
     group_ids = _group_ids(db, changes["groups"], problems) if "groups" in changes else None
     deployments = _deployments(db, model, region.id)
@@ -424,7 +447,7 @@ def remove_proxy_model(
     region = _find_proxy(db, proxy)
     model, _ = _find_model(db, key)
     if not dry_run:
-        _import_first(db, [region])
+        _import_first(db, [region], [])
     refuse(_import_problems(_lock_proxies(db, [region.id]).values(), {region.id: region.name}))
     deployments = _deployments(db, model, region.id)
     if not deployments:
@@ -471,11 +494,6 @@ def roll_out(
         RegistryProblem(message=f"Unknown proxy {name}", proxy=name) for name in body.proxies if name not in regions
     ]
     region_ids = [region.id for region in regions.values()]
-    if not dry_run:
-        _import_first(db, regions.values())
-    proxies = _lock_proxies(db, region_ids)
-    # One proxy that is not imported refuses the whole call: the admin imports it, then runs the rollout again.
-    problems += _import_problems(proxies.values(), {region.id: region.name for region in regions.values()})
     keys = list(dict.fromkeys(body.models))
     idents = {_split_key(key) for key in keys}
     models = {
@@ -484,7 +502,14 @@ def roll_out(
             tuple_(DBRegistryProvider.name, DBRegistryModel.model_id).in_(idents)
         )
     }
-    problems += [RegistryProblem(message=f"Unknown model {key}", model=key) for key in keys if key not in models]
+    unknown_models = [RegistryProblem(message=f"Unknown model {key}", model=key) for key in keys if key not in models]
+    if not dry_run:
+        credentials = {name: credential for name, credential in body.proxies.items() if credential}
+        _import_first(db, regions.values(), [*problems, *unknown_models, *_unknown_names(db, body.groups, credentials)])
+    proxies = _lock_proxies(db, region_ids)
+    # One proxy that is not imported refuses the whole call: the admin imports it, then runs the rollout again.
+    problems += _import_problems(proxies.values(), {region.id: region.name for region in regions.values()})
+    problems += unknown_models
     # The rules below need a known model on a known, imported proxy for each pair.
     refuse(problems)
     group_ids = _group_ids(db, body.groups, problems)

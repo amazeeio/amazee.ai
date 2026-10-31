@@ -820,3 +820,18 @@ def test_a_write_on_a_proxy_that_only_a_plain_import_read_adopts_it_first(client
     assert [(a.alias, a.target) for a in registry_db.query(DBRegistryAlias).filter_by(region_id=setup["eu"].id)] == [
         ("old", "gpt-4o")
     ]
+
+
+@pytest.mark.parametrize("body", [{"groups": ["nope"]}, {"credential": "nope"}])
+def test_a_refused_write_does_not_import_the_proxy_first(client, admin_token, registry_db, setup, live_proxies, body):
+    eu_proxy = registry_db.get(DBRegistryProxy, setup["eu"].id)
+    eu_proxy.imported_at = eu_proxy.adopted_at = None
+    registry_db.commit()
+    live_proxies.by_url[EU_URL] = {"model_info": [live_row("eu-new", "gpt-old", "openai/gpt-old")]}
+
+    response = _put(client, admin_token, "local-eu1", "openai/gpt-4o", body)
+
+    assert response.status_code == 422
+    assert live_proxies.calls == []
+    registry_db.expire_all()
+    assert registry_db.get(DBRegistryProxy, setup["eu"].id).imported_at is None
