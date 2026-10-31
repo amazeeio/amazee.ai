@@ -26,7 +26,7 @@ from app.registry.models import (
 )
 from app.registry.prices import parse_prices, price_order
 from app.registry.runs import record_run
-from app.registry.versions import active_regions
+from app.registry.versions import active_regions, fetch_release_lists
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +200,24 @@ def run_support_check(db: Session) -> dict:
     return record_run(db, STEP, lambda: _check_support(db))
 
 
-def _check_support(db: Session) -> dict:
+def check_proxy_support(db: Session, region: DBRegion) -> dict:
+    """The support check of one proxy, with the release list of its LiteLLM version.
+
+    For a proxy that an adopt import just read: until the daily check, every create on it would get
+    "support is unknown". The fetches run before the check's own lock, as in the daily check.
+    """
+
+    def work():
+        version = db.query(DBRegistryProxy.litellm_version).filter_by(region_id=region.id).scalar()
+        if version:
+            fetch_release_lists(db, {version}, datetime.now(UTC))
+            db.commit()
+        return _check_support(db, [region])
+
+    return record_run(db, STEP, work, extra={"region": region.name})
+
+
+def _check_support(db: Session, regions: list[DBRegion] | None = None) -> dict:
     stats: dict = {"regions": {}, "unreachable": {}}
     providers = {p.name for p in db.query(DBRegistryProvider)}
     models = {ident: model.id for ident, model in models_by_ident(db).items()}
@@ -213,7 +230,7 @@ def _check_support(db: Session) -> dict:
     now = datetime.now(UTC)
     # Fetch every list before the first lock, so a slow proxy does not hold up writes to a proxy already checked.
     fetched = []
-    for region in active_regions(db):
+    for region in active_regions(db) if regions is None else regions:
         url = region.litellm_api_url.rstrip("/") + PRICE_LIST_PATH
         try:
             price_list = fetch_json(url)

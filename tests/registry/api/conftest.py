@@ -217,6 +217,12 @@ def live_proxies(monkeypatch):
     proxies = SimpleNamespace(by_url={}, calls=[], writes=[], fail={}, hooks={}, created=0)
     for module in ("app.registry.api.dry_run", "app.registry.importer"):
         monkeypatch.setattr(f"{module}.ProxyClient", lambda url, key: _FakeProxyClient(proxies, url, key))
+    def no_network(url):
+        raise httpx.ConnectError("no network in tests")
+
+    # The support check of a new proxy reads its price list and a release list; a test that needs them sets them.
+    for module in ("app.registry.support", "app.registry.versions"):
+        monkeypatch.setattr(f"{module}.fetch_json", no_network)
     monkeypatch.setattr(
         "app.registry.api.sync.ProxyWriter", lambda url, key: _FakeProxyWriter(proxies, url, key)
     )

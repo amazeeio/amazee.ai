@@ -4,6 +4,7 @@ A write changes the registry tables, and it reads a proxy only to import it the 
 the proxies that it touches. The sync module pushes a write to a registry-managed proxy.
 """
 
+import logging
 from collections import defaultdict
 from datetime import date
 
@@ -36,6 +37,7 @@ from app.registry.models import (
     DBRegistryModelPrice,
     DBRegistryModelRegion,
     DBRegistryModelRegionGroup,
+    DBRegistryModelSupport,
     DBRegistryProvider,
     DBRegistryProxy,
 )
@@ -60,7 +62,10 @@ from app.registry.schemas import (
     RegistryRolloutEntry,
     RegistrySyncStarted,
 )
-from app.registry.support import Availability
+from app.registry.support import Availability, check_proxy_support
+
+
+logger = logging.getLogger(__name__)
 
 
 def _import_problems(proxies, names: dict[int, str]) -> list[RegistryProblem]:
@@ -113,6 +118,19 @@ def _import_first(db: Session, regions, early: list[RegistryProblem]) -> None:
             import_proxy(db, region, adopt=True)
         except Exception as exc:
             raise Refused([_import_failed(name, exc)]) from None
+        _check_new_proxy(db, region)
+
+
+def _check_new_proxy(db: Session, region: DBRegion) -> None:
+    """Run the support check of a proxy that has no support result yet, so its first create can pass rule 4."""
+    if db.query(DBRegistryModelSupport.model_id).filter_by(region_id=region.id).first():
+        return
+    name = region.name
+    try:
+        check_proxy_support(db, region)
+    except Exception:
+        # The write then gets "support is unknown", as before; the daily check runs again.
+        logger.exception("The support check of %s failed", name)
 
 
 def _group_ids(db: Session, slugs: list[str], problems: list[RegistryProblem]) -> dict[str, int]:
@@ -602,7 +620,9 @@ def import_proxy_now(proxy: str, dry_run: bool = Query(False), db: Session = Dep
             stats = _import(db, region, adopt=True)
             db.rollback()
             return RegistryDryRun(result=stats, steps=[])
-        return import_proxy(db, region, adopt=True)
+        stats = import_proxy(db, region, adopt=True)
     except Exception as exc:
         db.rollback()
         raise Refused([_import_failed(name, exc)]) from None
+    _check_new_proxy(db, region)
+    return stats

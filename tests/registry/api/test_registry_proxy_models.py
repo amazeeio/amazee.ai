@@ -9,6 +9,7 @@ from app.registry.models import (
     DBRegistryCloudAvailability,
     DBRegistryModelRegion,
     DBRegistryModelRegionGroup,
+    DBRegistryModelSupport,
     DBRegistryProxy,
 )
 from tests.registry.api.conftest import (
@@ -868,3 +869,24 @@ def test_a_write_skips_the_adopt_import_of_a_plain_imported_proxy_that_the_sync_
     assert live_proxies.calls == []
     registry_db.expire_all()
     assert registry_db.get(DBRegistryProxy, setup["eu"].id).adopted_at is None
+
+
+def test_a_create_on_a_proxy_that_was_just_imported_gets_its_support_check(
+    client, admin_token, registry_db, setup, live_proxies, monkeypatch
+):
+    eu = registry_db.get(DBRegistryProxy, setup["eu"].id)
+    eu.imported_at = eu.adopted_at = None
+    registry_db.query(DBRegistryModelSupport).filter_by(region_id=setup["eu"].id).delete()
+    registry_db.commit()
+    live_proxies.by_url[EU_URL] = {"model_info": [live_row("eu-gpt", "gpt-4o", "openai/gpt-4o")], "version": "1.80.0"}
+    model_list = {"gpt-old": {"litellm_provider": "openai", "mode": "chat", "input_cost_per_token": 1e-06}}
+    monkeypatch.setattr("app.registry.support.fetch_json", lambda url: model_list)
+    monkeypatch.setattr("app.registry.versions.fetch_json", lambda url: model_list)
+
+    # Without the check in the same request, the create would wait a day for "support is unknown" to clear.
+    ok(_put(client, admin_token, "local-eu1", "openai/gpt-old"), 201)
+
+    registry_db.expire_all()
+    old = model(registry_db, "openai", "gpt-old")
+    support = registry_db.query(DBRegistryModelSupport).filter_by(model_id=old.id, region_id=setup["eu"].id).one()
+    assert (support.priced, support.supported) == (True, True)
