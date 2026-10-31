@@ -210,6 +210,18 @@ def _readable_row(row: dict) -> dict | None:
     return row
 
 
+def short_reason(exc: Exception) -> str:
+    """Why a proxy read failed, in a few words. It never holds the URL or the key."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}"
+    # InvalidURL is not an HTTPError: a malformed litellm_api_url raises it before any request.
+    if isinstance(exc, httpx.HTTPError | httpx.InvalidURL):
+        return type(exc).__name__
+    if isinstance(exc, ValueError | AttributeError | TypeError):
+        return "bad JSON"
+    return type(exc).__name__
+
+
 def read_live(url: str, key: str) -> planner.LiveProxy | str:
     """The live state of a proxy, or a short reason why it could not be read. The reason never holds the URL or key."""
     try:
@@ -217,13 +229,8 @@ def read_live(url: str, key: str) -> planner.LiveProxy | str:
             rows = client.model_info()
             aliases = client.alias_map()
             credentials = client.credential_names()
-    except httpx.HTTPStatusError as exc:
-        return f"HTTP {exc.response.status_code}"
-    # InvalidURL is not an HTTPError: a malformed litellm_api_url raises it before any request.
-    except (httpx.HTTPError, httpx.InvalidURL) as exc:
-        return type(exc).__name__
-    except (ValueError, AttributeError, TypeError):
-        return "bad JSON"
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError, AttributeError, TypeError) as exc:
+        return short_reason(exc)
     if not isinstance(rows, list):
         return "bad JSON"
     rows = [_readable_row(row) for row in rows if isinstance(row, dict)]

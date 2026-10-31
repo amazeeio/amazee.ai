@@ -106,6 +106,15 @@ class _FakeProxyClient:
     def credential_names(self):
         return set(self._answer().get("credentials", ()))
 
+    def version(self):
+        return self._answer().get("version")
+
+    def credential_regions(self):
+        return {}
+
+    def credential_infos(self):
+        return {name: {} for name in self._answer().get("credentials", ())}
+
 
 class _FakeProxyWriter:
     """Changes `live_proxies.by_url[url]` the way a proxy would, and puts each call in `live_proxies.writes`.
@@ -200,9 +209,8 @@ def live_proxies(monkeypatch):
     """No API test reaches the network: each read of a proxy goes to this fake and is put in `calls`, and each
     sync write goes to the fake writer and is put in `writes`."""
     proxies = SimpleNamespace(by_url={}, calls=[], writes=[], fail={}, hooks={}, created=0)
-    monkeypatch.setattr(
-        "app.registry.api.dry_run.ProxyClient", lambda url, key: _FakeProxyClient(proxies, url, key)
-    )
+    for module in ("app.registry.api.dry_run", "app.registry.importer"):
+        monkeypatch.setattr(f"{module}.ProxyClient", lambda url, key: _FakeProxyClient(proxies, url, key))
     monkeypatch.setattr(
         "app.registry.api.sync.ProxyWriter", lambda url, key: _FakeProxyWriter(proxies, url, key)
     )

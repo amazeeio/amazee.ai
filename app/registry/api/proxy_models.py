@@ -1,6 +1,7 @@
-"""The endpoints for models on proxies, on the registry router.
+"""The endpoints for models on proxies, and the proxy import, on the registry router.
 
-A write changes only the registry tables. Only a dry run reads the proxies that it touches.
+A write changes the registry tables, and it reads a proxy only to import it the first time. A dry run reads
+the proxies that it touches. The sync module pushes a write to a registry-managed proxy.
 """
 
 from collections import defaultdict
@@ -12,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.db.models import DBRegion
-from app.registry.api.dry_run import deployment_plans
+from app.registry.api.dry_run import deployment_plans, short_reason
 from app.registry.api.sync import _save
 from app.registry.api.routes import (
     _deployment_responses,
@@ -21,9 +22,11 @@ from app.registry.api.routes import (
     _lock_proxies,
     _model_query,
     _split_key,
+    Refused,
     refuse,
     router,
 )
+from app.registry.importer import _import, import_proxy
 from app.registry.models import (
     DBRegistryAccessGroup,
     DBRegistryAlias,
@@ -68,6 +71,33 @@ def _import_problems(proxies, names: dict[int, str]) -> list[RegistryProblem]:
         RegistryProblem(message=f"Import the proxy {name} first", proxy=name, status=409)
         for name in sorted(names[proxy.region_id] for proxy in proxies if proxy.imported_at is None)
     ]
+
+
+def _import_failed(proxy: str, exc: Exception) -> RegistryProblem:
+    return RegistryProblem(
+        message=f"The automatic import of {proxy} failed: {short_reason(exc)}", proxy=proxy, status=409
+    )
+
+
+def _import_first(db: Session, regions) -> None:
+    """Adopt-import each proxy that was never imported, before the write locks it.
+
+    Each import commits the request session. The import reads the proxy, so it runs before any lock.
+    """
+    regions = {region.id: region for region in regions}
+    waiting = [
+        region_id
+        for (region_id,) in db.query(DBRegistryProxy.region_id)
+        .filter(DBRegistryProxy.region_id.in_(regions), DBRegistryProxy.imported_at.is_(None))
+        .order_by(DBRegistryProxy.region_id)
+    ]
+    for region_id in waiting:
+        region = regions[region_id]
+        name = region.name
+        try:
+            import_proxy(db, region, adopt=True)
+        except Exception as exc:
+            raise Refused([_import_failed(name, exc)]) from None
 
 
 def _group_ids(db: Session, slugs: list[str], problems: list[RegistryProblem]) -> dict[str, int]:
@@ -250,6 +280,8 @@ def set_proxy_model(
 ):
     region = _find_proxy(db, proxy)
     model, provider = _find_model(db, key)
+    if not dry_run:
+        _import_first(db, [region])
     proxy_row = _lock_proxies(db, [region.id])[region.id]
     refuse(_import_problems([proxy_row], {region.id: region.name}))
     cloud_regions = proxy_row.cloud_regions or {}
@@ -385,6 +417,8 @@ def remove_proxy_model(
 ):
     region = _find_proxy(db, proxy)
     model, _ = _find_model(db, key)
+    if not dry_run:
+        _import_first(db, [region])
     refuse(_import_problems(_lock_proxies(db, [region.id]).values(), {region.id: region.name}))
     deployments = _deployments(db, model, region.id)
     if not deployments:
@@ -431,6 +465,8 @@ def roll_out(
         RegistryProblem(message=f"Unknown proxy {name}", proxy=name) for name in body.proxies if name not in regions
     ]
     region_ids = [region.id for region in regions.values()]
+    if not dry_run:
+        _import_first(db, regions.values())
     proxies = _lock_proxies(db, region_ids)
     # One proxy that is not imported refuses the whole call: the admin imports it, then runs the rollout again.
     problems += _import_problems(proxies.values(), {region.id: region.name for region in regions.values()})
@@ -540,3 +576,19 @@ def roll_out(
         db, dry_run, entries, response=response, background=background,
         plan=lambda: deployment_plans(db, targets, DEPLOYMENT_FIELDS),
     )
+
+
+@router.post("/proxies/{proxy}/import", response_model=dict | RegistryDryRun[dict])
+def import_proxy_now(proxy: str, dry_run: bool = Query(False), db: Session = Depends(get_db)):
+    """Adopt-import the proxy: add what the registry does not have and keep every row."""
+    region = _find_proxy(db, proxy)
+    name = region.name
+    try:
+        if dry_run:
+            stats = _import(db, region, adopt=True)
+            db.rollback()
+            return RegistryDryRun(result=stats, steps=[])
+        return import_proxy(db, region, adopt=True)
+    except Exception as exc:
+        db.rollback()
+        raise Refused([_import_failed(name, exc)]) from None

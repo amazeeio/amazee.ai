@@ -1,5 +1,6 @@
 from datetime import date
 
+import httpx
 import pytest
 
 from app.registry.models import (
@@ -556,21 +557,54 @@ def test_delete_dry_run_keeps_the_rows(client, admin_token, registry_db, setup):
     assert _state(registry_db) == before
 
 
-def test_writes_on_a_proxy_that_was_never_imported_get_409(client, admin_token, registry_db, setup):
+def test_a_dry_run_on_a_proxy_that_was_never_imported_gets_409(client, admin_token, registry_db, setup, live_proxies):
     registry_db.get(DBRegistryProxy, setup["eu"].id).imported_at = None
     registry_db.commit()
     before = _state(registry_db)
 
+    # A dry run saves nothing, so it cannot import the proxy first.
     for response in (
-        _put(client, admin_token, "local-eu1", "openai/gpt-old"),
-        _put(client, admin_token, "local-eu1", "openai/gpt-4o", {"groups": ["alpha"]}),
-        _delete(client, admin_token, "local-eu1", "openai/gpt-4o"),
+        _put(client, admin_token, "local-eu1", "openai/gpt-old", query="?dry_run=true"),
+        _put(client, admin_token, "local-eu1", "openai/gpt-4o", {"groups": ["alpha"]}, "?dry_run=true"),
+        _delete(client, admin_token, "local-eu1", "openai/gpt-4o", "?dry_run=true"),
     ):
         assert response.status_code == 409
         assert response.json()["problems"] == [
             {"message": "Import the proxy local-eu1 first", "proxy": "local-eu1", "model": None},
         ]
     assert _state(registry_db) == before
+    assert live_proxies.calls == []
+
+
+def test_a_write_on_a_proxy_that_was_never_imported_imports_it_first(client, admin_token, registry_db, setup, live_proxies):
+    registry_db.get(DBRegistryProxy, setup["eu"].id).imported_at = None
+    registry_db.commit()
+    live_proxies.by_url[EU_URL] = {"model_info": [
+        live_row("eu-gpt", "gpt-4o", "openai/gpt-4o"), live_row("eu-new", "gpt-old", "openai/gpt-old"),
+    ]}
+
+    body = ok(_put(client, admin_token, "local-eu1", "openai/gpt-4o", {"groups": ["alpha"]}))
+
+    assert [d["litellm_deployment_id"] for d in body] == ["eu-gpt"]
+    registry_db.expire_all()
+    assert registry_db.get(DBRegistryProxy, setup["eu"].id).imported_at is not None
+    # The import adopted the live deployment that the registry did not have.
+    assert _deployment(registry_db, setup["eu"].id, "gpt-old").litellm_deployment_id == "eu-new"
+
+
+def test_a_failed_automatic_import_gives_409_and_changes_nothing(client, admin_token, registry_db, setup, live_proxies):
+    registry_db.get(DBRegistryProxy, setup["eu"].id).imported_at = None
+    registry_db.commit()
+    before = _state(registry_db)
+    live_proxies.by_url[EU_URL] = httpx.ConnectError("down")
+
+    response = _put(client, admin_token, "local-eu1", "openai/gpt-4o", {"groups": ["alpha"]})
+
+    assert response.status_code == 409
+    assert messages(response) == ["The automatic import of local-eu1 failed: ConnectError"]
+    assert _state(registry_db) == before
+    registry_db.expire_all()
+    assert registry_db.get(DBRegistryProxy, setup["eu"].id).imported_at is None
 
 
 @pytest.mark.parametrize("query", ["", "?force=true"])
