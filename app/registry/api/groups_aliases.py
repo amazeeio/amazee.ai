@@ -263,8 +263,8 @@ def set_alias(
     db: Session = Depends(get_db),
 ):
     region = _find_proxy(db, proxy)
-    # The first registry write to a proxy adopt-imports it, so the full alias map keeps the live aliases.
-    # Every check below needs the imported deployments, so none runs before it.
+    # The write adopt-imports a proxy that was never imported, or a managed proxy that it can read, so the full
+    # alias map keeps the live aliases. Every check below needs the imported deployments, so none runs before it.
     if not dry_run:
         _import_first(db, [region], [])
     # The alias guard of a rename or a delete reads the aliases under the same lock. The lock also makes
@@ -312,7 +312,8 @@ def delete_alias(
     db: Session = Depends(get_db),
 ):
     region = _find_proxy(db, proxy)
-    # The import reads the live aliases, so it comes before the lookup: the alias can exist only on the proxy.
+    # The adopt import, of a proxy that was never imported or a managed proxy that it can read, reads the live
+    # aliases, so it comes before the lookup: the alias can exist only on the proxy.
     if not dry_run:
         _import_first(db, [region], [])
     row = db.query(DBRegistryAlias).filter_by(region_id=region.id, alias=alias).one_or_none()

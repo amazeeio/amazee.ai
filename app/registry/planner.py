@@ -17,8 +17,8 @@ PROVISIONED_ONLY = "the deployment is a provisioned-only Bedrock variant; the sy
 DELETES_EVERY_ALIAS = f"this would delete every live alias; {ADOPT_IMPORT} must read them first"
 NOT_ADOPTED = (
     "the adopt import has not read the live aliases of the proxy, so the full map could delete them; "
-    "a write that is not a dry run imports the proxy first, and a dry run shows this step as blocked until "
-    f"then, or run {ADOPT_IMPORT}"
+    "a write to a registry-managed proxy that it can read imports the proxy first, and a dry run shows this "
+    f"step as blocked until then; otherwise run {ADOPT_IMPORT}"
 )
 # Doubled braces: the alias name goes in with format(), and {proxy} stays literal.
 REMOVES_LIVE_ALIAS = (
