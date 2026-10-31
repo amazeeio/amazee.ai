@@ -19,7 +19,14 @@ from app.registry.models import (
     DBRegistrySyncRun,
     DBRegistrySyncStep,
 )
-from app.registry.planner import DELETES_EVERY_ALIAS, LIVE_NAME_CLASH, MANAGED_BY, NOT_ADOPTED, NOT_MANAGED
+from app.registry.planner import (
+    DELETES_EVERY_ALIAS,
+    LIVE_NAME_CLASH,
+    MANAGED_BY,
+    NO_CREDENTIAL,
+    NOT_ADOPTED,
+    NOT_MANAGED,
+)
 from tests.registry.api.conftest import US_URL, auth, credential, live_row, model
 
 MASTER_KEY = "sk-master-key-0123"
@@ -121,7 +128,8 @@ def test_a_create_stores_the_id_and_sends_the_marker_and_the_price(registry_db, 
     assert row.litellm_deployment_id == "new-1"
     assert row.model_info["managed_by"] == MANAGED_BY
     assert row.synced_at is not None and row.sync_error is None
-    assert steps == [("create_model", "ok", None)]
+    # The step keeps its note: gpt-old names no credential.
+    assert steps == [("create_model", "ok", NO_CREDENTIAL.format("openai"))]
 
 
 def test_an_error_answer_after_a_saved_create_still_stores_the_id(registry_db, us, live_proxies):
@@ -131,7 +139,10 @@ def test_an_error_answer_after_a_saved_create_still_stores_the_id(registry_db, u
     run, steps = _run(registry_db, us, deployments=[new.id])
 
     assert _row(registry_db, name="gpt-old").litellm_deployment_id == "new-1"
-    assert steps == [("create_model", "ok", "LiteLLM answered HTTP 500, but the deployment exists")]
+    assert steps == [(
+        "create_model", "ok",
+        f"LiteLLM answered HTTP 500, but the deployment exists; {NO_CREDENTIAL.format('openai')}",
+    )]
     assert run.status == "ok"
 
 
@@ -556,3 +567,22 @@ def test_the_deployment_shows_the_cost_fields_that_still_bill(client, admin_toke
 
     stale = {d["proxy"]: d["stale_cost_fields"] for d in detail["deployments"]}
     assert stale == {"local-us1": ["output_cost_per_image"], "local-eu1": None}
+
+
+def test_an_ok_step_keeps_its_notes_as_its_message(registry_db, us, live_proxies):
+    from app.registry.models import DBRegistryCloudAvailability
+    from app.registry.planner import PROVISIONED_ONLY
+
+    new = _new_row(registry_db, us, name="claude-new", litellm_params={"litellm_credential_name": "AWS Bedrock"})
+    claude = model(registry_db, "bedrock", "anthropic.claude-x-v1:0")
+    new.model_id, new.litellm_model = claude.id, "bedrock/anthropic.claude-x-v1:0"
+    registry_db.add(DBRegistryCloudAvailability(
+        provider="bedrock", model_id="anthropic.claude-x-v1:0", cloud_region="us-east-1",
+        source="bedrock_community", call_types=["PROVISIONED"], last_seen=date(2026, 1, 1),
+    ))
+    registry_db.commit()
+
+    run, [(action, status, message)] = _run(registry_db, us, deployments=[new.id])
+
+    # The run detail shows why the create sent no price, as the dry run does.
+    assert (action, status, message) == ("create_model", "ok", PROVISIONED_ONLY)

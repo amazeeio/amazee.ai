@@ -743,6 +743,9 @@ def _sync_locked(proxy: _Proxy) -> dict | None:
                 status, message = "skipped", reason
             else:
                 status, message = _send(proxy, writer, current, known_ids, read_at)
+            if status == "ok" and current["problems"]:
+                # The problems of a step that was sent are notes; the run detail shows them as a dry run does.
+                message = "; ".join(filter(None, [message, *current["problems"]]))
             proxy.finish(step_id, step["action"], status, message)
             # A step skipped as done, or an update with nothing to send, leaves the deployment in sync.
             in_sync = status == "skipped" and (reason == ALREADY_DONE or (current is step and not step["blocked"]))
