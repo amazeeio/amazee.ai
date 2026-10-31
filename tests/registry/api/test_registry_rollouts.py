@@ -285,14 +285,14 @@ def test_rollout_dry_run_to_a_proxy_that_was_never_imported_gets_409(client, adm
     # A write imports the proxy first; a dry run saves nothing, so it cannot.
     response = _post(client, admin_token, {"models": ["openai/gpt-old"], "proxies": BOTH}, "?dry_run=true")
     assert response.status_code == 409
-    assert response.json()["detail"] == "Import the proxy local-eu1 first"
+    assert response.json()["detail"] == "Import the proxy local-eu1 first with POST /registry/proxies/local-eu1/import"
 
     # An unknown model is listed too, and its 422 outweighs the 409.
     response = _post(
         client, admin_token, {"models": ["openai/gpt-old", "openai/nope"], "proxies": BOTH}, "?dry_run=true"
     )
     assert response.status_code == 422
-    assert messages(response) == ["Import the proxy local-eu1 first", "Unknown model openai/nope"]
+    assert messages(response) == ["Import the proxy local-eu1 first with POST /registry/proxies/local-eu1/import", "Unknown model openai/nope"]
     assert _state(registry_db) == before
 
 

@@ -577,7 +577,7 @@ def test_a_dry_run_on_a_proxy_that_was_never_imported_gets_409(client, admin_tok
     ):
         assert response.status_code == 409
         assert response.json()["problems"] == [
-            {"message": "Import the proxy local-eu1 first", "proxy": "local-eu1", "model": None},
+            {"message": "Import the proxy local-eu1 first with POST /registry/proxies/local-eu1/import", "proxy": "local-eu1", "model": None},
         ]
     assert _state(registry_db) == before
     assert live_proxies.calls == []

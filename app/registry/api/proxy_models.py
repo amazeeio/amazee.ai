@@ -69,7 +69,9 @@ def _import_problems(proxies, names: dict[int, str]) -> list[RegistryProblem]:
     The other checks would also read the deployments as they are before the import.
     """
     return [
-        RegistryProblem(message=f"Import the proxy {name} first", proxy=name, status=409)
+        RegistryProblem(
+            message=f"Import the proxy {name} first with POST /registry/proxies/{name}/import", proxy=name, status=409
+        )
         for name in sorted(names[proxy.region_id] for proxy in proxies if proxy.imported_at is None)
     ]
 
