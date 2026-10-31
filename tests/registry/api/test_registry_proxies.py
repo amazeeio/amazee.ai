@@ -45,13 +45,13 @@ def test_proxies_list(client, admin_token, deployed, registry_db):
     assert response.json() == [
         {
             "proxy": "local-eu1", "region_id": deployed["eu"].id, "litellm_version": None, "cloud_regions": {},
-            "imported_at": None, "providers": ["openai"], "owner": "catalog",
+            "imported_at": None, "adopted_at": None, "providers": ["openai"], "owner": "catalog",
             # gpt-4o is not supported there, and its deployment is disabled.
             "models_supported": 0, "models_enabled": 0,
         },
         {
             "proxy": "local-us1", "region_id": deployed["us"].id, "litellm_version": "1.80.0",
-            "cloud_regions": {"bedrock": "us-east-1"}, "imported_at": "2026-01-02T03:04:05Z",
+            "cloud_regions": {"bedrock": "us-east-1"}, "imported_at": "2026-01-02T03:04:05Z", "adopted_at": None,
             "providers": ["bedrock", "openai"], "owner": "catalog",
             # A null support result is not counted as supported.
             "models_supported": 1, "models_enabled": 2,

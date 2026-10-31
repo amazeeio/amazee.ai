@@ -241,6 +241,7 @@ def _proxy_responses(db: Session, region_id: int | None = None) -> list[Registry
             litellm_version=proxy.litellm_version,
             cloud_regions=proxy.cloud_regions,
             imported_at=proxy.imported_at,
+            adopted_at=proxy.adopted_at,
             providers=provider_names[region.id],
             owner=_owner(region.name),
             models_supported=supported_counts.get(region.id, 0),

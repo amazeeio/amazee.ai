@@ -199,6 +199,8 @@ class RegistryProxyResponse(BaseModel):
     litellm_version: str | None
     cloud_regions: dict
     imported_at: datetime | None
+    # Set when the adopt import read the live aliases and credentials; until then no alias map is sent.
+    adopted_at: datetime | None
     # The providers with a deployment on this proxy.
     providers: list[str]
     # Who may change what runs on the proxy: `registry`, `catalog` or `none`.
