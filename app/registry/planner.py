@@ -149,9 +149,13 @@ def _create(
     proxy: str, deployment: Deployment, live: LiveProxy, rows: list[dict], known_ids: frozenset,
     credential_providers: frozenset,
 ) -> dict:
-    # The stored params first, so the price, the model and the credential that the registry sets win.
+    # The stored params first, so the price, the model and the credential that the registry sets win. A stored
+    # cost field is left out: the create sends the wanted price only, or the next repair would clear it.
+    stored_costs = price_fields(deployment.params).keys()
     params = {
-        key: value for key, value in deployment.params.items() if key not in ("model", "litellm_credential_name")
+        key: value
+        for key, value in deployment.params.items()
+        if key not in ("model", "litellm_credential_name") and key not in stored_costs
     }
     if deployment.price and not deployment.provisioned_only:
         params.update(deployment.price)

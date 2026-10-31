@@ -430,3 +430,13 @@ def test_a_price_with_no_extra_live_cost_field_needs_no_step():
     row = _live_row(input_cost_per_token=2e-06, output_cost_per_token=8e-06)
 
     assert plan(PROXY, LiveProxy(deployments=[row]), [replace(GPT, price=PRICE)], frozenset({"prices"})) == []
+
+
+def test_a_create_sends_only_the_wanted_price_and_no_stored_cost_field():
+    params = {"rpm": 10, "input_cost_per_token": 9e-06, "cache_read_input_token_cost": 1e-08}
+
+    [step] = plan(PROXY, LiveProxy(credentials=frozenset({"c1"})), [_new(price={"input_cost_per_token": 2e-06}, params=params)])
+
+    assert step["payload"]["litellm_params"] == {
+        "rpm": 10, "input_cost_per_token": 2e-06, "model": "openai/gpt-4o", "litellm_credential_name": "c1",
+    }
