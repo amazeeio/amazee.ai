@@ -63,3 +63,8 @@ def registry_manages(region_name: str) -> bool:
     if settings.ENV_SUFFIX == "local":
         return True
     return region_name in region_names(settings.REGISTRY_MANAGED_REGIONS)
+
+# The env var that holds the Fernet keys for credential values, comma
+# separated. The first key encrypts; every key decrypts, so a rotation can
+# put a new key first and keep the old one until each value is written again.
+CREDENTIAL_KEYS_ENV = "REGISTRY_CREDENTIAL_KEYS"
