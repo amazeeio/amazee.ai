@@ -586,3 +586,23 @@ def test_an_ok_step_keeps_its_notes_as_its_message(registry_db, us, live_proxies
 
     # The run detail shows why the create sent no price, as the dry run does.
     assert (action, status, message) == ("create_model", "ok", PROVISIONED_ONLY)
+
+
+def test_a_retry_deletes_the_old_deployment_that_a_replace_left(registry_db, us, live_proxies):
+    from app.registry.api.sync import retry_scope
+
+    _registry_made_gpt(registry_db, live_proxies)
+    live_proxies.fail[(US_URL, "delete_model")] = (500, "boom", False)
+
+    run, steps = _run(registry_db, us, full=True)
+
+    assert ("replace_model", "ok") in [(a, s) for a, s, _ in steps]
+    assert ("delete_model", "failed") in [(a, s) for a, s, _ in steps]
+    live_proxies.fail.clear()
+    rows = registry_db.query(DBRegistrySyncStep).filter_by(run_id=run.id).all()
+    retry = create_run(registry_db, "retry", retry_scope(run, rows))
+    registry_db.commit()
+    execute_run(retry.id)
+
+    assert live_proxies.writes[-1][1:] == ("delete_model", "us-gpt")
+    assert "us-gpt" not in [r["model_info"]["id"] for r in live_proxies.by_url[US_URL]["model_info"]]

@@ -162,12 +162,19 @@ def retry_scope(run: DBRegistrySyncRun, steps: list[DBRegistrySyncStep]) -> dict
             continue
         fields = planner.DEPLOYMENT_FIELDS | {"prices"} if original["full"] else original["fields"]
         failed_ids = {step.deployment_id for step in failed if step.action == "delete_model"}
+        # A delete with no row is the old deployment of a replace; the scope has no entry for it yet.
+        listed = {item["deployment_id"] for item in original["deleted"]}
+        left = [
+            {"deployment_id": step.deployment_id, "model": step.model, "model_name": step.model_name, "litellm_model": ""}
+            for step in failed
+            if step.action == "delete_model" and step.model_region_id is None and step.deployment_id not in listed
+        ]
         names = {step.credential for step in failed if step.credential}
         known = {item["name"]: item for item in original["credentials"]}
         scope[str(region_id)] = {
             **_entry(),
             "deployments": sorted({step.model_region_id for step in failed if step.model_region_id is not None}),
-            "deleted": [item for item in original["deleted"] if item["deployment_id"] in failed_ids],
+            "deleted": [item for item in original["deleted"] if item["deployment_id"] in failed_ids] + left,
             "fields": sorted(fields),
             "aliases": any(step.action == "write_alias_map" for step in failed),
             "removed_alias": original["removed_alias"],
@@ -564,7 +571,13 @@ def _send(proxy: _Proxy, writer: ProxyWriter, step: dict, known_ids: set, read_a
                 try:
                     writer.delete_model(step["deployment_id"])
                 except (httpx.HTTPError, httpx.InvalidURL) as exc:
-                    error = (exc, "the new deployment runs, but the delete of the old one failed: " + _error(exc, secrets))
+                    # The row now holds the new id, so the old one gets a failed delete step of its own, which a
+                    # retry takes; until then the old deployment still serves.
+                    proxy.record(
+                        "delete_model", "failed", _error(exc, secrets),
+                        step={k: step[k] for k in ("model", "model_name", "deployment_id")},
+                    )
+                    message = "the new deployment runs, but the delete of the old one failed; a retry deletes it"
         elif error is None:
             error = (None, "LiteLLM answered, but the proxy shows no new deployment")
 
