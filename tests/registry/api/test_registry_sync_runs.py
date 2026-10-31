@@ -158,3 +158,20 @@ def test_a_repair_of_a_never_imported_proxy_imports_it_first(client, admin_token
 
     registry_db.expire_all()
     assert registry_db.get(DBRegistryProxy, us["us"].id).adopted_at is not None
+
+
+def test_a_retry_adopts_the_proxy_so_the_alias_step_can_pass(client, admin_token, registry_db, us, live_proxies):
+    from app.registry.models import DBRegistryAlias, DBRegistryProxy
+
+    registry_db.get(DBRegistryProxy, us["us"].id).adopted_at = None
+    registry_db.add(DBRegistryAlias(region_id=us["us"].id, alias="chat", target="gpt-4o"))
+    registry_db.commit()
+    run = _run(registry_db, {str(us["us"].id): _entry(aliases=True)})
+    assert run.status == "failed"
+
+    body = ok(client.post(f"{RUNS}/{run.id}/retry", headers=auth(admin_token)), 202)
+
+    retry = registry_db.get(DBRegistrySyncRun, body["sync_run_id"])
+    registry_db.refresh(retry)
+    assert retry.status == "ok"
+    assert live_proxies.writes == [(US_URL, "set_alias_map", {"chat": "gpt-4o"})]

@@ -139,7 +139,11 @@ def retry_sync_run(
         refuse([RegistryProblem(message="The sync run has not finished", status=409)])
     if not any(step.status == "failed" for step in steps):
         refuse([RegistryProblem(message="The sync run has no failed step", status=409)])
-    return _start(db, "retry", retry_scope(run, steps), dry_run, response, background)
+    scope = retry_scope(run, steps)
+    if not dry_run:
+        # As the repair: a proxy that became readable gets its adopt import, so a blocked alias step can pass.
+        _import_first(db, db.query(DBRegion).filter(DBRegion.id.in_([int(key) for key in scope])).all(), [])
+    return _start(db, "retry", scope, dry_run, response, background)
 
 
 @router.post(
