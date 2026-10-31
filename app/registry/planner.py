@@ -6,6 +6,7 @@ Pure, with no database and no HTTP, so a dry run and the sync can share it.
 from dataclasses import dataclass, field
 
 from app.registry.litellm import without_alias_copies
+from app.registry.prices import price_fields
 from app.registry.rules import credential_provider
 
 DEPLOYMENT_FIELDS = frozenset({"model_name", "litellm_model", "credential", "access_groups"})
@@ -32,6 +33,16 @@ LIVE_NAME_CLASH = (
 )
 CANNOT_CLEAR_CREDENTIAL = (
     "LiteLLM keeps a credential name that an update leaves out, and the sync never creates a deployment again"
+)
+# The cost fields that LiteLLM removes on a null in a model PATCH: its mirrored pricing params (v1.102.1). It
+# drops a null for any other field and keeps the old value, so the sync cannot clear those.
+LITELLM_CLEARABLE_COSTS = frozenset({
+    "input_cost_per_token", "output_cost_per_token", "input_cost_per_character", "output_cost_per_character",
+    "cache_read_input_token_cost", "cache_creation_input_token_cost",
+})
+UNCLEARABLE_COSTS = (
+    "the proxy has the cost fields {} that the registry price does not have, and LiteLLM cannot clear them "
+    "with an update; remove them on the proxy by hand"
 )
 RECREATE = "the deployment is gone from the proxy; the sync creates it again"
 CREDENTIAL_IN_USE = "a live deployment on the proxy uses the credential {}, so the sync does not delete it"
@@ -207,13 +218,18 @@ def _update(
     ):
         problems.append(LIVE_NAME_CLASH.format(deployment.model_name))
     if "prices" in fields and deployment.price is not None:
-        # A price lives in litellm_params on the proxy; compare only the fields the registry sets.
-        live_price = {name: params.get(name) for name in deployment.price}
-        if live_price != deployment.price:
+        # A price lives in litellm_params on the proxy. Every live cost field counts: one that the wanted price
+        # does not have would still price the calls, so the update clears it with a null.
+        extra = price_fields(params).keys() - deployment.price.keys()
+        wanted_price = {**deployment.price, **{name: None for name in extra & LITELLM_CLEARABLE_COSTS}}
+        live_price = {name: params.get(name) for name in wanted_price}
+        if live_price != wanted_price:
             if deployment.provisioned_only:
                 notes.append(PROVISIONED_ONLY)
             else:
-                changes["prices"] = {"from": live_price, "to": deployment.price}
+                changes["prices"] = {"from": live_price, "to": wanted_price}
+        if not deployment.provisioned_only and (kept := sorted(extra - LITELLM_CLEARABLE_COSTS)):
+            notes.append(UNCLEARABLE_COSTS.format(", ".join(kept)))
     if not changes and not problems and not notes:
         return None
     if changes and not _managed(row):

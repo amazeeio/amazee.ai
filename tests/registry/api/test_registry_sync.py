@@ -429,3 +429,29 @@ def test_a_full_sync_records_no_step_that_has_only_a_note(registry_db, us, live_
         ("update_model", "ok", None)
     ]
     assert _row(registry_db, "us-claude").synced_at is not None
+
+
+def test_a_two_field_price_leaves_only_those_fields_that_litellm_can_clear(registry_db, us, live_proxies):
+    gpt_model = model(registry_db, "openai", "gpt-4o")
+    registry_db.query(DBRegistryModelPrice).filter_by(model_id=gpt_model.id).delete()
+    registry_db.add(DBRegistryModelPrice(
+        model_id=gpt_model.id, scope_kind="base", scope="",
+        prices={"input_cost_per_token": 2e-06, "output_cost_per_token": 8e-06}, source="manual", last_seen=date(2026, 1, 1),
+    ))
+    registry_db.commit()
+    live_params = live_proxies.by_url[US_URL]["model_info"][0]["litellm_params"]
+    live_params.update({
+        "input_cost_per_token": 1e-06, "output_cost_per_token": 4e-06, "input_cost_per_character": 1e-07,
+        "output_cost_per_character": 2e-07, "cache_read_input_token_cost": 1e-08,
+        "cache_creation_input_token_cost": 2e-08, "input_cost_per_second": 0.1, "output_cost_per_image": 0.2,
+    })
+
+    run, steps = _run(registry_db, us, deployments=[_row(registry_db, "us-gpt").id], fields=["prices"])
+
+    costs = {k: v for k, v in live_params.items() if "cost" in k}
+    assert costs == {
+        "input_cost_per_token": 2e-06, "output_cost_per_token": 8e-06,
+        # LiteLLM keeps a null for these, so they stay until someone removes them by hand.
+        "input_cost_per_second": 0.1, "output_cost_per_image": 0.2,
+    }
+    assert [s[1] for s in steps] == ["ok"]

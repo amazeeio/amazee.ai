@@ -16,6 +16,7 @@ from app.registry.planner import (
     PROVISIONED_ONLY,
     RECREATE,
     REMOVES_LIVE_ALIAS,
+    UNCLEARABLE_COSTS,
     Credential,
     Deployment,
     LiveProxy,
@@ -151,7 +152,7 @@ def test_update_of_a_deployment_that_is_not_on_the_proxy():
     ]
 
 
-def test_price_change_compares_only_the_given_keys():
+def test_price_change_also_clears_a_live_cost_field_that_the_price_does_not_have():
     row = _live_row(input_cost_per_token=1e-06, output_cost_per_token=4e-06, cache_read_input_token_cost=1e-07)
     price = {"input_cost_per_token": 2e-06, "output_cost_per_token": 4e-06}
 
@@ -159,7 +160,8 @@ def test_price_change_compares_only_the_given_keys():
                  frozenset({"prices"}))
 
     assert [s["changes"] for s in steps] == [{"prices": {
-        "from": {"input_cost_per_token": 1e-06, "output_cost_per_token": 4e-06}, "to": price,
+        "from": {"input_cost_per_token": 1e-06, "output_cost_per_token": 4e-06, "cache_read_input_token_cost": 1e-07},
+        "to": {**price, "cache_read_input_token_cost": None},
     }}]
 
 
@@ -403,3 +405,28 @@ def test_deleting_the_last_alias_on_purpose_is_no_problem():
     [step] = plan(PROXY, LiveProxy(aliases={"chat": "gpt-4o"}), aliases={}, removed_alias="chat")
 
     assert (step["payload"], step["problems"], step["blocked"]) == ({}, [], False)
+
+
+def test_a_price_update_clears_the_live_cost_fields_that_the_wanted_price_does_not_have():
+    live_costs = {
+        "input_cost_per_token": 1e-06, "output_cost_per_token": 4e-06, "input_cost_per_character": 1e-07,
+        "output_cost_per_character": 2e-07, "cache_read_input_token_cost": 1e-08,
+        "cache_creation_input_token_cost": 2e-08, "input_cost_per_second": 0.1, "output_cost_per_image": 0.2,
+    }
+    price = {"input_cost_per_token": 2e-06, "output_cost_per_token": 8e-06}
+
+    [step] = plan(PROXY, LiveProxy(deployments=[_live_row(**live_costs)]), [replace(GPT, price=price)], frozenset({"prices"}))
+
+    assert step["changes"]["prices"]["to"] == {
+        **price, "input_cost_per_character": None, "output_cost_per_character": None,
+        "cache_read_input_token_cost": None, "cache_creation_input_token_cost": None,
+    }
+    # LiteLLM keeps these two on a null, so the step names them and does not send them.
+    assert step["problems"] == [UNCLEARABLE_COSTS.format("input_cost_per_second, output_cost_per_image")]
+    assert step["blocked"] is False
+
+
+def test_a_price_with_no_extra_live_cost_field_needs_no_step():
+    row = _live_row(input_cost_per_token=2e-06, output_cost_per_token=8e-06)
+
+    assert plan(PROXY, LiveProxy(deployments=[row]), [replace(GPT, price=PRICE)], frozenset({"prices"})) == []

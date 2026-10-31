@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from app.db.models import DBRegion
+from app.registry.planner import LITELLM_CLEARABLE_COSTS
 from app.registry.models import (
     DBRegistryAccessGroup,
     DBRegistryCredential,
@@ -171,7 +172,12 @@ class _FakeProxyWriter:
                 if row["model_info"].get("id") == dep_id:
                     if "model_name" in body:
                         row["model_name"] = body["model_name"]
-                    row["litellm_params"] = {**row["litellm_params"], **body.get("litellm_params", {})}
+                    for k, v in body.get("litellm_params", {}).items():
+                        # LiteLLM removes a mirrored cost field on a null, and drops any other null.
+                        if v is not None:
+                            row["litellm_params"][k] = v
+                        elif k in LITELLM_CLEARABLE_COSTS:
+                            row["litellm_params"].pop(k, None)
                     row["model_info"] = {**row["model_info"], **body.get("model_info", {})}
 
         return self._call("update_model", change, dep_id, body)
