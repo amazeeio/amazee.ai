@@ -197,3 +197,5 @@ def test_alias_dry_run_on_a_proxy_that_was_never_adopted_is_blocked(client, admi
 
     [step] = body["steps"]
     assert step["problems"][0].startswith("the adopt import has not read the live aliases")
+    assert "a write that is not a dry run imports the proxy" in step["problems"][0]
+    assert step["blocked"] is True
