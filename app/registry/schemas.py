@@ -315,6 +315,37 @@ Credential = Annotated[
 ]
 
 
+# The secret fields of a credential. They go only into the encrypted column and to the proxy.
+CredentialValues = Annotated[dict[str, str], Field(min_length=1)]
+
+
+class RegistryCredentialCreate(_Strict):
+    name: Credential
+    provider: str = Field(min_length=1)
+    values: CredentialValues
+    # Non-secret fields, such as aws_region_name. A secret-like key gets a 422.
+    info: dict = Field(default_factory=dict)
+    proxies: list[str] = Field(default_factory=list)
+
+
+class RegistryCredentialUpdate(_Update):
+    """`values` merges into the stored values; `proxies` is the full new list."""
+
+    # No `| None`: an explicit null gets a 422.
+    values: CredentialValues = None
+    proxies: list[str] = None
+
+
+class RegistryCredentialResponse(BaseModel):
+    """Never the values."""
+
+    name: str
+    # Null for a credential that the adopt import read from a proxy.
+    provider: str | None
+    info: dict
+    proxies: list[str]
+
+
 class RegistryProxyModelUpdate(_Strict):
     """Creates the model's deployment on the proxy, or changes every deployment it has there.
 
