@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.db.models import DBRegion
-from app.registry.api.dry_run import deployment_plans, short_reason
+from app.registry.api.dry_run import deployment_plans, short_reason, unreadable
 from app.registry.api.sync import _save
 from app.registry.api.routes import (
     _deployment_responses,
@@ -101,6 +101,10 @@ def _unknown_names(db: Session, slugs, credentials: dict[str, str]) -> list[Regi
 def _import_first(db: Session, regions, early: list[RegistryProblem]) -> None:
     """Adopt-import each proxy that the adopt import never read, before the write locks it.
 
+    A proxy that was never imported is always imported, because the write needs its deployments. A plain-imported
+    proxy is adopted only when the sync writes to it and can read it; otherwise its writes go on as before, and
+    the blocked alias step is the guard.
+
     Each import commits the request session, so the `early` problems, which need no import, refuse the write
     first. With no import to run, they join the full refusal later. The import reads the proxy, so it runs
     before any lock.
@@ -108,9 +112,14 @@ def _import_first(db: Session, regions, early: list[RegistryProblem]) -> None:
     regions = {region.id: region for region in regions}
     waiting = [
         region_id
-        for (region_id,) in db.query(DBRegistryProxy.region_id)
+        for region_id, imported_at in db.query(DBRegistryProxy.region_id, DBRegistryProxy.imported_at)
         .filter(DBRegistryProxy.region_id.in_(regions), DBRegistryProxy.adopted_at.is_(None))
         .order_by(DBRegistryProxy.region_id)
+        if imported_at is None
+        or (
+            registry_manages(regions[region_id].name)
+            and unreadable(regions[region_id].litellm_api_url, regions[region_id].is_active is True) is None
+        )
     ]
     if waiting:
         refuse(early)

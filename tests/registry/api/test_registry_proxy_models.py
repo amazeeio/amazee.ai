@@ -814,14 +814,18 @@ def test_credential_problems_join_the_other_problems(client, admin_token, regist
     assert messages(response) == ["the model name zeta is an alias on this proxy", "Unknown credential nope"]
 
 
-def test_a_write_on_a_proxy_that_only_a_plain_import_read_adopts_it_first(client, admin_token, registry_db, setup, live_proxies):
+def test_a_write_on_a_proxy_that_only_a_plain_import_read_adopts_it_first(
+    client, admin_token, registry_db, setup, live_proxies, managed_proxies
+):
+    # Only a proxy that the sync writes to needs the live aliases, so only a managed proxy is adopted here.
+    managed_proxies.add("local-eu1")
     registry_db.get(DBRegistryProxy, setup["eu"].id).adopted_at = None
     registry_db.commit()
     live_proxies.by_url[EU_URL] = {
         "model_info": [live_row("eu-gpt", "gpt-4o", "openai/gpt-4o")], "aliases": {"old": "gpt-4o"},
     }
 
-    ok(_put(client, admin_token, "local-eu1", "openai/gpt-4o", {"groups": ["alpha"]}))
+    ok(_put(client, admin_token, "local-eu1", "openai/gpt-4o", {"groups": ["alpha"]}), 202)
 
     registry_db.expire_all()
     assert registry_db.get(DBRegistryProxy, setup["eu"].id).adopted_at is not None
@@ -843,3 +847,23 @@ def test_a_refused_write_does_not_import_the_proxy_first(client, admin_token, re
     assert live_proxies.calls == []
     registry_db.expire_all()
     assert registry_db.get(DBRegistryProxy, setup["eu"].id).imported_at is None
+
+
+@pytest.mark.parametrize("managed, active", [(True, False), (False, True)])
+def test_a_write_skips_the_adopt_import_of_a_plain_imported_proxy_that_the_sync_does_not_write(
+    client, admin_token, registry_db, setup, live_proxies, managed_proxies, managed, active
+):
+    eu = registry_db.get(DBRegistryProxy, setup["eu"].id)
+    eu.adopted_at = None
+    setup["eu"].is_active = active
+    registry_db.commit()
+    if managed:
+        managed_proxies.add("local-eu1")
+    live_proxies.by_url[EU_URL] = httpx.ConnectError("down")
+
+    # A managed proxy still gets its sync run; the run itself does not read an inactive proxy.
+    ok(_put(client, admin_token, "local-eu1", "openai/gpt-4o", {"groups": ["alpha"]}), 202 if managed else 200)
+
+    assert live_proxies.calls == []
+    registry_db.expire_all()
+    assert registry_db.get(DBRegistryProxy, setup["eu"].id).adopted_at is None
