@@ -393,7 +393,9 @@ def _hand_edit(before: tuple | None, deployment: planner.Deployment | None, step
     synced_at, changed_at, sync_error, prices = before
     if synced_at is None or sync_error is not None or (changed_at is not None and changed_at > synced_at):
         return False
-    return "prices" not in (step["changes"] or {}) or (prices or {}) == (deployment.price or {})
+    # A replace comes from the price as well: the wanted price must be the one pushed last time.
+    price_step = "prices" in (step["changes"] or {}) or step["action"] == "replace_model"
+    return not price_step or (prices or {}) == (deployment.price or {})
 
 
 def _record_repair(proxy: _Proxy, step: dict) -> None:
@@ -760,9 +762,7 @@ def _sync_locked(proxy: _Proxy) -> dict | None:
                     price = _sent_price(step)
                 if price is not None:
                     _set_row(db, step["row_id"], **_price_columns(price))
-                # A replace fixes what LiteLLM cannot clear; it is no hand edit.
-                hand_edit = _hand_edit(before.get(step["row_id"]), by_row.get(step["row_id"]), step)
-                if repair and step["action"] != "replace_model" and hand_edit:
+                if repair and _hand_edit(before.get(step["row_id"]), by_row.get(step["row_id"]), step):
                     _record_repair(proxy, step)
             db.commit()
     return stats

@@ -15,6 +15,7 @@ from app.registry.models import (
     DBRegistrySyncRun,
     DBRegistrySyncStep,
 )
+from app.registry.planner import MANAGED_BY
 from tests.registry.api.conftest import EU_URL, US_URL, live_row
 
 
@@ -205,3 +206,41 @@ def test_a_hand_edit_of_the_live_price_records_one_drift(registry_db, us, live_p
 
     [event] = registry_db.query(DBRegistryEvent).all()
     assert event.data["fields"] == ["prices"]
+
+
+def _registry_made_gpt(db, live_proxies):
+    """us-gpt was created by the sync with credential c1, and the proxy runs it with the registry price."""
+    gpt = _gpt(db)
+    gpt.litellm_params = {"litellm_credential_name": "c1"}
+    gpt.model_info = {"id": "us-gpt", "managed_by": MANAGED_BY}
+    db.commit()
+    live = live_proxies.by_url[US_URL]["model_info"][0]
+    live["litellm_params"]["litellm_credential_name"] = "c1"
+    live["model_info"]["managed_by"] = MANAGED_BY
+    return live
+
+
+def test_a_replace_after_a_hand_edit_records_one_drift(registry_db, us, live_proxies):
+    live = _registry_made_gpt(registry_db, live_proxies)
+    _daily(registry_db)
+    # Someone adds a cost field by hand that LiteLLM cannot clear.
+    live["litellm_params"]["output_cost_per_image"] = 0.2
+
+    _daily(registry_db)
+
+    [event] = registry_db.query(DBRegistryEvent).all()
+    assert (event.data["action"], event.data["fields"]) == ("replace_model", ["unclearable_costs"])
+
+
+def test_a_replace_after_a_registry_price_change_records_no_drift(registry_db, us, live_proxies):
+    live = _registry_made_gpt(registry_db, live_proxies)
+    _daily(registry_db)
+    price = registry_db.query(DBRegistryModelPrice).filter_by(model_id=_gpt(registry_db).model_id, scope_kind="base").one()
+    price.prices = {"input_cost_per_token": 3e-06}
+    registry_db.commit()
+    live["litellm_params"]["output_cost_per_image"] = 0.2
+
+    _daily(registry_db)
+
+    assert "create_model" in [w[1] for w in live_proxies.writes]
+    assert registry_db.query(DBRegistryEvent).count() == 0
