@@ -1,5 +1,7 @@
 import os
 
+from app.core.config import region_names, settings
+
 # The same list our proxies download from `main` when they start, so the
 # registry knows a model as soon as a restarted proxy can price it.
 LITELLM_LIST_URL = os.getenv(
@@ -50,3 +52,14 @@ MIN_KEPT_RATIO = 0.5
 # LiteLLM's list as a source of EOL dates. A plugin with a higher `eol_date`
 # priority beats it.
 LITELLM_EOL_PRIORITY = 50
+
+
+def registry_manages(region_name: str) -> bool:
+    """True if the registry sync may write to this region's LiteLLM proxy.
+
+    Read at call time, so a test or an env-var change takes effect at once.
+    The rule is the same as catalog_manages(): local manages every region.
+    """
+    if settings.ENV_SUFFIX == "local":
+        return True
+    return region_name in region_names(settings.REGISTRY_MANAGED_REGIONS)
