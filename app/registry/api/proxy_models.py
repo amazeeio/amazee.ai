@@ -39,7 +39,8 @@ from app.registry.models import (
     DBRegistryProvider,
     DBRegistryProxy,
 )
-from app.registry.planner import DEPLOYMENT_FIELDS
+from app.registry.config import registry_manages
+from app.registry.planner import CANNOT_CLEAR_CREDENTIAL, DEPLOYMENT_FIELDS
 from app.registry.rules import (
     backend_problem,
     credential_provider,
@@ -366,6 +367,11 @@ def set_proxy_model(
                     add(problem)
         if checked:
             check_enable(Availability(db), checked)
+        # The sync never creates a live deployment again, and a PATCH keeps the old credential name.
+        if "credential" in changes and changes["credential"] is None and registry_manages(region.name) and any(
+            d.litellm_deployment_id and (d.litellm_params or {}).get("litellm_credential_name") for d in deployments
+        ):
+            add(CANNOT_CLEAR_CREDENTIAL, 409)
         if changes.get("credential"):
             problems += _credential_problems(db, [(changes["credential"], region.id, region.name, key, provider)])
         refuse(problems)

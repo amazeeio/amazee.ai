@@ -175,3 +175,16 @@ def test_credential_writes_on_an_unmanaged_proxy_keep_their_status(
     ok(_create(client, admin_token), 201)
     assert client.delete("/registry/credentials/Open AI", headers=auth(admin_token)).status_code == 204
     assert live_proxies.writes == []
+
+
+def test_clearing_the_credential_of_a_live_deployment_on_a_managed_proxy_is_refused(
+    client, admin_token, registry_db, us, live_proxies
+):
+    before = registry_db.query(DBRegistryModelRegion).filter_by(litellm_deployment_id="us-claude").one().litellm_params
+
+    response = _put(client, admin_token, "local-us1", "bedrock/anthropic.claude-x-v1:0", {"credential": None})
+
+    assert response.status_code == 409
+    assert response.json()["problems"][0]["message"].startswith("LiteLLM keeps a credential name")
+    assert _row(registry_db, us["us"].id, "claude-x").litellm_params == before
+    assert _runs(registry_db) == [] and live_proxies.writes == []
