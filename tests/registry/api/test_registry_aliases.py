@@ -157,6 +157,7 @@ def test_put_dry_run_plans_the_full_alias_map(client, admin_token, aliases, live
 
     assert body["steps"] == [{
         "proxy": "local-us1", "action": "write_alias_map", "model": None, "model_name": None, "deployment_id": None,
+        "credential": None,
         "payload": {"zeta": "gpt-4o", "chat": {"model": "claude-x", "hidden": True}, "new": "gpt-4o"},
         "changes": {
             "chat": {"from": None, "to": {"model": "claude-x", "hidden": True}},

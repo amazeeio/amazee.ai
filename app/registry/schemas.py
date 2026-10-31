@@ -379,11 +379,16 @@ class RegistryPlanStep(BaseModel):
     """One step that the sync would take on a proxy. A dry run only shows it."""
 
     proxy: str
-    action: Literal["create_model", "update_model", "delete_model", "write_alias_map", "read_proxy"]
+    action: Literal[
+        "create_credential", "update_credential", "delete_credential",
+        "create_model", "update_model", "delete_model", "write_alias_map", "read_proxy",
+    ]
     model: str | None = None
     model_name: str | None = None
     # The LiteLLM deployment id.
     deployment_id: str | None = None
+    # The credential name of a credential step. Never its values.
+    credential: str | None = None
     # What the sync would send, for a create or the full alias map.
     payload: dict | None = None
     # Each changed field or alias as {"from": live, "to": wanted}.

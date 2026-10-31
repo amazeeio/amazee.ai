@@ -646,7 +646,7 @@ def test_put_create_dry_run_plans_the_create(client, admin_token, setup, live_pr
 
     assert steps == [{
         "proxy": "local-us1", "action": "create_model", "model": "openai/gpt-old", "model_name": "gpt-old",
-        "deployment_id": None, "changes": None, "problems": [],
+        "deployment_id": None, "credential": None, "changes": None, "problems": [],
         "payload": {
             "model_name": "gpt-old",
             "litellm_params": {"model": "openai/gpt-old", "litellm_credential_name": "c1"},

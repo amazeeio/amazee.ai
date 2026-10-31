@@ -17,6 +17,8 @@ from app.registry.litellm import ProxyClient
 from app.registry.models import (
     DBRegistryAccessGroup,
     DBRegistryAlias,
+    DBRegistryCredential,
+    DBRegistryCredentialRegion,
     DBRegistryModel,
     DBRegistryModelPrice,
     DBRegistryModelRegion,
@@ -25,6 +27,7 @@ from app.registry.models import (
     DBRegistryProxy,
 )
 from app.registry.prices import pick_price
+from app.registry.rules import credential_provider
 from app.registry.schemas import RegistryDryRun
 from app.registry.support import Availability
 
@@ -44,6 +47,9 @@ class ProxyPlan:
     active: bool = True
     # The LiteLLM deployment ids that the registry holds on the proxy.
     known_ids: frozenset = frozenset()
+    credentials: tuple = ()
+    # The providers of the registry credentials on the proxy, mapped for rule 6.
+    credential_providers: frozenset = frozenset()
 
 
 def _access_groups(db: Session, deployment_ids: list[int]) -> dict[int, list[str]]:
@@ -126,6 +132,7 @@ def deployment_plans(
     )
     availability = Availability(db)
     known_ids = _known_ids(db, region_ids)
+    providers = credential_providers(db, region_ids)
 
     by_region: dict[int, list[planner.Deployment]] = defaultdict(list)
     for row in rows:
@@ -156,10 +163,37 @@ def deployment_plans(
         ))
     return [
         _proxy_plan(
-            regions[region_id], deployments=deployments, fields=fields, known_ids=known_ids.get(region_id, frozenset())
+            regions[region_id], deployments=deployments, fields=fields,
+            known_ids=known_ids.get(region_id, frozenset()), credential_providers=providers.get(region_id, frozenset()),
         )
         for region_id, deployments in by_region.items()
     ]
+
+
+def credential_providers(db: Session, region_ids) -> dict[int, frozenset]:
+    """The mapped providers of the registry credentials on each proxy. A credential with no provider counts for none."""
+    found = defaultdict(set)
+    for region_id, provider in (
+        db.query(DBRegistryCredentialRegion.region_id, DBRegistryCredential.provider)
+        .join(DBRegistryCredential, DBRegistryCredential.id == DBRegistryCredentialRegion.credential_id)
+        .filter(DBRegistryCredentialRegion.region_id.in_(region_ids), DBRegistryCredential.provider.isnot(None))
+    ):
+        found[region_id].add(credential_provider(provider))
+    return {region_id: frozenset(providers) for region_id, providers in found.items()}
+
+
+def credential_plans(db: Session, name: str, region_ids, rotate: bool = False, keep: bool = True) -> list[ProxyPlan]:
+    """One plan per proxy for one credential. A deleted credential plans only its delete, so it needs no row."""
+    row = db.query(DBRegistryCredential).filter_by(name=name).one_or_none()
+    credential = planner.Credential(
+        name=name,
+        info=dict(row.credential_info or {}) if row else {},
+        has_values=bool(row and row.values_encrypted),
+        rotate=rotate,
+        keep=keep,
+    )
+    regions = db.query(DBRegion).filter(DBRegion.id.in_(region_ids)).order_by(DBRegion.id)
+    return [_proxy_plan(region, credentials=(credential,)) for region in regions]
 
 
 def _known_ids(db: Session, region_ids) -> dict[int, frozenset]:
@@ -242,6 +276,7 @@ def plan_steps(plans: list[ProxyPlan]) -> list[dict]:
             )
         else:
             steps += planner.plan(
-                plan.proxy, live, plan.deployments, plan.fields, plan.aliases, plan.removed_alias, plan.known_ids
+                plan.proxy, live, plan.deployments, plan.fields, plan.aliases, plan.removed_alias, plan.known_ids,
+                plan.credentials, plan.credential_providers,
             )
     return steps

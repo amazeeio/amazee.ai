@@ -6,6 +6,7 @@ Pure, with no database and no HTTP, so a dry run and the sync can share it.
 from dataclasses import dataclass, field
 
 from app.registry.litellm import without_alias_copies
+from app.registry.rules import credential_provider
 
 DEPLOYMENT_FIELDS = frozenset({"model_name", "litellm_model", "credential", "access_groups"})
 ALREADY_RUNS = "the proxy already runs this deployment; the phase 3 import adopts it"
@@ -24,6 +25,8 @@ CANNOT_CLEAR_CREDENTIAL = (
     "LiteLLM keeps a credential name that an update leaves out, and the sync never creates a deployment again"
 )
 RECREATE = "the deployment is gone from the proxy; the sync creates it again"
+NO_VALUES = "the registry has no values for the credential {}, so the sync cannot push it"
+NO_CREDENTIAL = "the deployment names no credential, and the registry has no {} credential for this proxy"
 # model_info.managed_by of every deployment that the sync creates.
 MANAGED_BY = "amazee-registry"
 
@@ -49,6 +52,20 @@ class Deployment:
     recreate: bool = False
     # The stored litellm_params, which hold no secrets.
     params: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Credential:
+    """The registry state of one credential on one proxy after the write. Never its values."""
+
+    name: str
+    info: dict
+    # False for a credential that the adopt import read: the sync never pushes it.
+    has_values: bool
+    # True when the write changed the values, so the sync sends them again.
+    rotate: bool = False
+    # False when the write removed the credential from the proxy.
+    keep: bool = True
 
 
 @dataclass(frozen=True)
@@ -85,7 +102,27 @@ def _name_clash(name: str, litellm_model: str, rows: list[dict], known_ids: froz
     )
 
 
-def _create(proxy: str, deployment: Deployment, live: LiveProxy, rows: list[dict], known_ids: frozenset) -> dict:
+def _credential_step(proxy: str, credential: Credential, live: frozenset) -> dict | None:
+    # The payload never holds values: the sync decrypts them when it sends the step.
+    payload = {"credential_name": credential.name, "credential_info": credential.info}
+    if not credential.keep:
+        action = "delete_credential" if credential.name in live else None
+    elif credential.name not in live:
+        action = "create_credential"
+    else:
+        action = "update_credential" if credential.rotate else None
+    if action is None:
+        return None
+    problems = [NO_VALUES.format(credential.name)] if action != "delete_credential" and not credential.has_values else []
+    step = _step(proxy, action, payload=None if action == "delete_credential" else payload, problems=problems)
+    step["credential"] = credential.name
+    return step
+
+
+def _create(
+    proxy: str, deployment: Deployment, live: LiveProxy, rows: list[dict], known_ids: frozenset,
+    credential_providers: frozenset,
+) -> dict:
     # The stored params first, so the price, the model and the credential that the registry sets win.
     params = {
         key: value for key, value in deployment.params.items() if key not in ("model", "litellm_credential_name")
@@ -113,6 +150,9 @@ def _create(proxy: str, deployment: Deployment, live: LiveProxy, rows: list[dict
         problems.append(LIVE_NAME_CLASH.format(deployment.model_name))
     if deployment.deployment_id is not None:
         notes.append(RECREATE)
+    provider = credential_provider(deployment.model.partition("/")[0])
+    if not deployment.credential and provider not in credential_providers:
+        notes.append(NO_CREDENTIAL.format(provider))
     return _step(proxy, "create_model", deployment, payload=payload, problems=problems, notes=notes)
 
 
@@ -184,7 +224,8 @@ def _alias_step(proxy: str, live: dict, wanted: dict, removed_alias: str | None)
     }
     if not changes:
         return None
-    problems = [DELETES_EVERY_ALIAS] if live and not wanted else []
+    # Deleting the last alias on purpose leaves an empty map, and that is no problem.
+    problems = [DELETES_EVERY_ALIAS] if not wanted and live.keys() - {removed_alias} else []
     # The full map drops every live alias that the registry does not have, not only the one a DELETE names.
     # The registry owns the map, so this only informs.
     notes = [
@@ -202,18 +243,29 @@ def plan(
     aliases: dict | None = None,
     removed_alias: str | None = None,
     known_ids: frozenset = frozenset(),
+    credentials=(),
+    credential_providers: frozenset = frozenset(),
 ) -> list[dict]:
     """The steps that bring the proxy to the wanted state. Only the names in `fields` are compared.
 
     `aliases` is the wanted full alias map in the LiteLLM form, or None when the write changes no alias.
     `removed_alias` is the alias that the write deletes on purpose, so its removal is no problem.
     `known_ids` are the LiteLLM deployment ids that the registry holds on the proxy.
+    `credentials` come first, so a deployment can use a credential that the same plan creates.
+    `credential_providers` are the providers of the registry credentials on the proxy, mapped for rule 6.
     A step with `blocked` set is never sent.
     """
     rows, _ = without_alias_copies(live.deployments, set(live.aliases))
     by_id = {(row.get("model_info") or {}).get("id"): row for row in rows}
     by_id.pop(None, None)
     steps = []
+    present = set(live.credentials)
+    for credential in sorted(credentials, key=lambda credential: credential.name):
+        if step := _credential_step(proxy, credential, live.credentials):
+            steps.append(step)
+            if step["action"] == "create_credential" and not step["blocked"]:
+                present.add(credential.name)
+    live = LiveProxy(live.deployments, live.aliases, frozenset(present))
     for deployment in deployments:
         row = by_id.get(deployment.deployment_id)
         if not deployment.keep:
@@ -221,7 +273,7 @@ def plan(
                 problems = [] if _managed(row) else [NOT_MANAGED]
                 steps.append(_step(proxy, "delete_model", deployment, problems=problems))
         elif deployment.deployment_id is None or (row is None and deployment.recreate):
-            steps.append(_create(proxy, deployment, live, rows, known_ids))
+            steps.append(_create(proxy, deployment, live, rows, known_ids, credential_providers))
         elif row is None:
             steps.append(_step(proxy, "update_model", deployment, changes={}, problems=[NOT_ON_PROXY]))
         elif step := _update(proxy, deployment, row, fields, live.credentials, rows, known_ids):

@@ -3,11 +3,11 @@ from datetime import date
 import httpx
 import pytest
 
-from app.registry.api.dry_run import ProxyPlan, deployment_plans, plan_steps, read_live
+from app.registry.api.dry_run import ProxyPlan, credential_plans, deployment_plans, plan_steps, read_live
 from app.registry.litellm import ProxyClient
 from app.registry.models import DBRegistryCloudAvailability, DBRegistryModelRegion
-from app.registry.planner import DEPLOYMENT_FIELDS, MANAGED_BY, Deployment, LiveProxy
-from tests.registry.api.conftest import EU_URL, US_URL, live_row
+from app.registry.planner import DEPLOYMENT_FIELDS, MANAGED_BY, NO_CREDENTIAL, Deployment, LiveProxy
+from tests.registry.api.conftest import EU_URL, US_URL, credential, live_row
 
 _REQUEST = httpx.Request("GET", f"{US_URL}/model/info")
 
@@ -66,7 +66,7 @@ def test_read_live_reads_a_bad_params_or_info_value_as_empty(live_proxies):
 
     # The alias copy is still removed, the id still matches, and the bad row is not the same deployment as `odd`.
     assert [(s["action"], s["deployment_id"], s["problems"]) for s in steps] == [
-        ("delete_model", "us-gpt", []), ("create_model", None, []),
+        ("delete_model", "us-gpt", []), ("create_model", None, [NO_CREDENTIAL.format("openai")]),
     ]
 
 
@@ -214,3 +214,25 @@ def test_deployment_plans_find_a_provisioned_only_bedrock_variant(registry_db, d
     [plan] = deployment_plans(registry_db, [claude], frozenset({"prices"}))
 
     assert plan.deployments[0].provisioned_only is True
+
+
+def test_credential_plans_and_providers(registry_db, deployed, live_proxies):
+    row = credential(registry_db, "AWS Keys", provider="bedrock_mantle", proxies=[deployed["us"]])
+    row.values_encrypted = "token"
+    row.credential_info = {"aws_region_name": "us-east-1"}
+    credential(registry_db, "adopted", proxies=deployed.values())
+    registry_db.commit()
+
+    [plan] = credential_plans(registry_db, "AWS Keys", [deployed["us"].id])
+    plans = {p.proxy: p for p in deployment_plans(registry_db, _rows(registry_db), DEPLOYMENT_FIELDS)}
+    [gone] = credential_plans(registry_db, "nope", [deployed["eu"].id], keep=False)
+    live_proxies.by_url[US_URL] = {"credentials": []}
+
+    assert plan.credentials[0].has_values and plan.credentials[0].info == {"aws_region_name": "us-east-1"}
+    # A credential with no provider counts for none; bedrock_mantle maps to bedrock.
+    assert (plans["local-us1"].credential_providers, plans["local-eu1"].credential_providers) == ({"bedrock"}, set())
+    assert (gone.proxy, gone.credentials[0].keep, gone.credentials[0].has_values) == ("local-eu1", False, False)
+    [step] = plan_steps([plan])
+    assert (step["action"], step["credential"], step["payload"]) == (
+        "create_credential", "AWS Keys", {"credential_name": "AWS Keys", "credential_info": {"aws_region_name": "us-east-1"}},
+    )

@@ -138,7 +138,7 @@ def test_price_dry_run_plans_the_price_of_each_live_deployment(client, admin_tok
     assert body["result"]["prices"] == PRICE
     assert body["steps"] == [{
         "proxy": "local-us1", "action": "update_model", "model": "openai/gpt-4o", "model_name": "gpt-4o",
-        "deployment_id": "us-gpt", "payload": None,
+        "deployment_id": "us-gpt", "credential": None, "payload": None,
         "changes": {"prices": {"from": {"input_cost_per_token": 5e-06, "output_cost_per_token": None}, "to": PRICE}},
         "problems": [],
     }]
@@ -167,6 +167,7 @@ def test_price_dry_run_with_a_proxy_that_cannot_be_read(client, admin_token, dep
 
     assert body["steps"] == [{
         "proxy": "local-us1", "action": "read_proxy", "model": None, "model_name": None, "deployment_id": None,
+        "credential": None,
         "payload": None, "changes": None, "problems": ["the proxy could not be read: ConnectError"],
     }]
 

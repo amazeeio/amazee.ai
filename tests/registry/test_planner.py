@@ -8,11 +8,14 @@ from app.registry.planner import (
     DELETES_EVERY_ALIAS,
     LIVE_NAME_CLASH,
     MANAGED_BY,
+    NO_CREDENTIAL,
+    NO_VALUES,
     NOT_MANAGED,
     NOT_ON_PROXY,
     PROVISIONED_ONLY,
     RECREATE,
     REMOVES_LIVE_ALIAS,
+    Credential,
     Deployment,
     LiveProxy,
     plan,
@@ -67,7 +70,7 @@ def test_create_with_no_credential_sends_no_credential_name():
 
     assert step["payload"]["litellm_params"] == {"model": "openai/gpt-4o"}
     assert step["payload"]["model_info"] == {"access_groups": [], "managed_by": MANAGED_BY}
-    assert step["problems"] == []
+    assert (step["problems"], step["blocked"]) == ([NO_CREDENTIAL.format("openai")], False)
 
 
 def test_create_with_a_missing_credential_has_a_problem():
@@ -331,3 +334,60 @@ def test_an_update_that_clears_the_credential_is_blocked():
 
     assert step["changes"] == {"credential": {"from": "c1", "to": None}}
     assert (step["problems"], step["blocked"]) == ([CANNOT_CLEAR_CREDENTIAL], True)
+
+
+AWS = Credential(name="AWS Keys", info={"aws_region_name": "us-east-1"}, has_values=True)
+
+
+def _credential_step(action, name="AWS Keys", payload=None, problems=()):
+    step = _step(action, payload=payload, problems=problems)
+    return {**step, "credential": name}
+
+
+def test_credential_steps_come_first_in_name_order():
+    live = LiveProxy(credentials=frozenset({"old", "rotated", "same"}))
+    credentials = [
+        replace(AWS, name="same"),
+        replace(AWS, name="rotated", rotate=True),
+        replace(AWS, name="old", keep=False),
+        AWS,
+        replace(AWS, name="gone", keep=False),
+    ]
+    payload = {"credential_name": "AWS Keys", "credential_info": {"aws_region_name": "us-east-1"}}
+
+    steps = plan(PROXY, live, [_new(credential="AWS Keys")], credentials=credentials)
+
+    assert steps[:3] == [
+        _credential_step("create_credential", payload=payload),
+        _credential_step("delete_credential", "old"),
+        _credential_step("update_credential", "rotated", {**payload, "credential_name": "rotated"}),
+    ]
+    # The model create counts the credential that the plan creates as on the proxy.
+    assert (steps[3]["action"], steps[3]["problems"]) == ("create_model", [])
+    assert all("values" not in str(step["payload"]) for step in steps)
+
+
+def test_a_credential_with_no_values_is_never_pushed():
+    [step, create] = plan(
+        PROXY, LiveProxy(), [_new(credential="AWS Keys")], credentials=[replace(AWS, has_values=False)]
+    )
+
+    assert step["action"] == "create_credential"
+    assert (step["problems"], step["blocked"]) == ([NO_VALUES.format("AWS Keys")], True)
+    assert create["problems"] == ["the credential AWS Keys is not on the proxy"]
+
+
+def test_a_create_with_no_credential_has_no_note_when_the_proxy_has_a_credential_of_the_provider():
+    mantle = Deployment(model="bedrock_mantle/openai.gpt-5.4", model_name="gpt-5.4", litellm_model="bedrock_mantle/openai.gpt-5.4")
+
+    [step] = plan(PROXY, LiveProxy(), [mantle], credential_providers=frozenset({"bedrock"}))
+    [other] = plan(PROXY, LiveProxy(), [mantle], credential_providers=frozenset({"openai"}))
+
+    assert step["problems"] == []
+    assert other["problems"] == [NO_CREDENTIAL.format("bedrock")]
+
+
+def test_deleting_the_last_alias_on_purpose_is_no_problem():
+    [step] = plan(PROXY, LiveProxy(aliases={"chat": "gpt-4o"}), aliases={}, removed_alias="chat")
+
+    assert (step["payload"], step["problems"], step["blocked"]) == ({}, [], False)
