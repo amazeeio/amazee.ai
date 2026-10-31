@@ -235,6 +235,8 @@ class RegistryProxyDetailResponse(RegistryProxyResponse):
     # From the newest finished daily or repair run of the proxy, with no live read; null with no such run.
     drift: list[dict] | None
     unmanaged: list[dict] | None
+    # The model names of the deployments that the repair left out, because their last sync step failed.
+    failed: list[str] | None
     drift_checked_at: datetime | None
 
 

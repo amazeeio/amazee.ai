@@ -227,7 +227,7 @@ def test_proxy_detail_shows_credentials_and_no_drift_with_no_repair(client, admi
     body = client.get("/registry/proxies/local-us1", headers=auth(admin_token)).json()
 
     assert body["credentials"] == ["AWS Bedrock", "c1", "c2"]
-    assert (body["drift"], body["unmanaged"], body["drift_checked_at"]) == (None, None, None)
+    assert (body["drift"], body["unmanaged"], body["failed"], body["drift_checked_at"]) == (None, None, None, None)
 
 
 def test_proxy_detail_shows_the_drift_of_the_newest_repair(client, admin_token, registry_db, deployed):
@@ -238,7 +238,7 @@ def test_proxy_detail_shows_the_drift_of_the_newest_repair(client, admin_token, 
     )
     new = DBRegistrySyncRun(
         trigger="daily", status="failed", region_ids=[us_id], scope={}, finished_at=CHECKED_AT + timedelta(days=1),
-        stats={"proxies": {"local-us1": {"drift": [], "unmanaged": [{"deployment_id": "x9"}], "failed": []}}},
+        stats={"proxies": {"local-us1": {"drift": [], "unmanaged": [{"deployment_id": "x9"}], "failed": ["claude-x"]}}},
     )
     # A write run and an unfinished repair do not count.
     write = DBRegistrySyncRun(
@@ -251,6 +251,6 @@ def test_proxy_detail_shows_the_drift_of_the_newest_repair(client, admin_token, 
 
     body = client.get("/registry/proxies/local-us1", headers=auth(admin_token)).json()
 
-    assert (body["drift"], body["unmanaged"]) == ([], [{"deployment_id": "x9"}])
+    assert (body["drift"], body["unmanaged"], body["failed"]) == ([], [{"deployment_id": "x9"}], ["claude-x"])
     assert body["drift_checked_at"] == "2026-01-03T03:04:05Z"
     assert client.get("/registry/proxies/local-eu1", headers=auth(admin_token)).json()["drift"] is None

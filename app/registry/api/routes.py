@@ -614,6 +614,7 @@ def get_proxy(proxy: str, db: Session = Depends(get_db)):
         credentials=proxy_credentials(db, region.id),
         drift=found_drift.get("drift"),
         unmanaged=found_drift.get("unmanaged"),
+        failed=found_drift.get("failed"),
         drift_checked_at=repair.finished_at if repair else None,
         models=[
             RegistryProxyModelResponse(
