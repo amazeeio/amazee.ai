@@ -159,3 +159,23 @@ def test_a_dry_run_saves_nothing(client, admin_token, registry_db, before):
 def test_unknown_credential_gives_404(client, admin_token, writable):
     assert client.patch(f"{CREDENTIALS}/nope", json={"proxies": []}, headers=auth(admin_token)).status_code == 404
     assert client.delete(f"{CREDENTIALS}/nope", headers=auth(admin_token)).status_code == 404
+
+
+@pytest.mark.parametrize("body", [
+    {"name": "AWS Main", "values": {"aws_access_key_id": SECRET}},
+    {"name": "AWS Main", "provider": "bedrock", "values": {"aws_access_key_id": SECRET}, "extra": SECRET},
+    {"name": "AWS Main", "provider": "bedrock", "values": {"aws_access_key_id": [SECRET]}},
+])
+def test_a_malformed_body_does_not_echo_the_values(client, admin_token, writable, body):
+    response = client.post(CREDENTIALS, json=body, headers=auth(admin_token))
+
+    assert response.status_code == 422
+    assert SECRET not in response.text
+    assert response.json()["detail"][0]["loc"][0] == "body"
+
+
+def test_other_routes_keep_the_input_in_a_422(client, admin_token, writable):
+    response = client.put("/registry/aliases/local-us1/chat", json={"target": 7}, headers=auth(admin_token))
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["input"] == 7

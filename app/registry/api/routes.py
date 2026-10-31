@@ -4,6 +4,9 @@ from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy import and_, cast, func, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
@@ -82,6 +85,18 @@ def refusal_response(_request: Request, exc: Refused) -> JSONResponse:
     status = 422 if any(problem.status == 422 for problem in exc.problems) else 409
     body = RegistryRefusal(detail="; ".join(problem.message for problem in exc.problems), problems=exc.problems)
     return JSONResponse(status_code=status, content=body.model_dump())
+
+
+# A 422 on these routes must not echo the body: it holds credential values.
+_SECRET_BODY_PATHS = ("/registry/credentials",)
+
+
+async def validation_response(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """FastAPI's 422, without the request input on routes whose body holds secrets."""
+    if not request.url.path.startswith(_SECRET_BODY_PATHS):
+        return await request_validation_exception_handler(request, exc)
+    errors = [{k: v for k, v in error.items() if k not in ("input", "ctx")} for error in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
 
 
 def _model_query(db: Session):
