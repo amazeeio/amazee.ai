@@ -59,7 +59,9 @@ LOCK_BUSY = "another sync run holds the proxy"
 LOCK_SKIPPED = "another sync run holds the proxy; the next run repairs it"
 NOT_MANAGED_BY_REGISTRY = "the registry does not manage the proxy"
 _LOCK_TIMEOUT = "55P03"
-_MODEL_STEPS = ("create_model", "update_model", "delete_model")
+_MODEL_STEPS = ("create_model", "update_model", "replace_model", "delete_model")
+# Steps that create a deployment and read the proxy again for its id.
+_CREATES = ("create_model", "replace_model")
 
 
 def _now() -> datetime:
@@ -413,7 +415,7 @@ def _record_repair(proxy: _Proxy, step: dict) -> None:
 
 def _sent_price(step: dict) -> dict | None:
     """The price fields that a create sent, for a write run that compared no prices."""
-    if step["action"] != "create_model":
+    if step["action"] not in _CREATES:
         return None
     return {k: v for k, v in step["payload"]["litellm_params"].items() if "cost" in k}
 
@@ -520,7 +522,7 @@ def _send(proxy: _Proxy, writer: ProxyWriter, step: dict, known_ids: set, read_a
             writer.update_credential(step["credential"], values, _pushed_info(db, step, values))
         elif action == "delete_credential":
             writer.delete_credential(step["credential"])
-        elif action == "create_model":
+        elif action in _CREATES:
             writer.create_model(step["payload"])
         elif action == "update_model":
             body = _update_body(step)
@@ -534,7 +536,7 @@ def _send(proxy: _Proxy, writer: ProxyWriter, step: dict, known_ids: set, read_a
         error = (exc, _error(exc, secrets))
 
     message = None
-    if action == "create_model":
+    if action in _CREATES:
         # LiteLLM can save the deployment and still answer with an error.
         created = _find_created(proxy, step, known_ids)
         if created is not None:
@@ -555,6 +557,12 @@ def _send(proxy: _Proxy, writer: ProxyWriter, step: dict, known_ids: set, read_a
                 except (httpx.HTTPError, httpx.InvalidURL) as exc:
                     error = (exc, "the registry row was deleted while the create ran, and the delete failed: "
                              + _error(exc, secrets))
+            elif action == "replace_model":
+                # The new deployment runs, so the old one can go; the model name never has none.
+                try:
+                    writer.delete_model(step["deployment_id"])
+                except (httpx.HTTPError, httpx.InvalidURL) as exc:
+                    error = (exc, "the new deployment runs, but the delete of the old one failed: " + _error(exc, secrets))
         elif error is None:
             error = (None, "LiteLLM answered, but the proxy shows no new deployment")
 
@@ -744,7 +752,9 @@ def _sync_locked(proxy: _Proxy) -> dict | None:
                     price = _sent_price(step)
                 if price is not None:
                     _set_row(db, step["row_id"], **_price_columns(price))
-                if repair and _hand_edit(before.get(step["row_id"]), by_row.get(step["row_id"]), step):
+                # A replace fixes what LiteLLM cannot clear; it is no hand edit.
+                hand_edit = _hand_edit(before.get(step["row_id"]), by_row.get(step["row_id"]), step)
+                if repair and step["action"] != "replace_model" and hand_edit:
                     _record_repair(proxy, step)
             db.commit()
     return stats

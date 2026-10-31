@@ -401,7 +401,7 @@ class RegistryPlanStep(BaseModel):
     proxy: str
     action: Literal[
         "create_credential", "update_credential", "delete_credential",
-        "create_model", "update_model", "delete_model", "write_alias_map", "read_proxy",
+        "create_model", "update_model", "replace_model", "delete_model", "write_alias_map", "read_proxy",
     ]
     model: str | None = None
     model_name: str | None = None

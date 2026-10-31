@@ -449,3 +449,41 @@ def test_a_price_with_one_per_token_field_keeps_the_other_on_the_proxy():
 
     # A manual scope can set one side only; the other side is not cleared.
     assert step["changes"]["prices"]["to"] == {"input_cost_per_token": 2e-06, "cache_read_input_token_cost": None}
+
+
+def _made_row(**params):
+    """A live deployment that the sync created, with a named credential and a cost field LiteLLM cannot clear."""
+    row = _live_row(input_cost_per_token=2e-06, output_cost_per_image=0.2, **params)
+    row["model_info"]["managed_by"] = MANAGED_BY
+    return row
+
+
+def test_a_registry_made_deployment_with_an_unclearable_cost_field_is_replaced():
+    deployment = replace(GPT, price={"input_cost_per_token": 2e-06}, row_id=7)
+
+    [step] = plan(PROXY, LiveProxy(deployments=[_made_row()], credentials=frozenset({"c1"})), [deployment], frozenset({"prices"}))
+
+    assert (step["action"], step["deployment_id"], step["blocked"]) == ("replace_model", "d1", False)
+    assert step["payload"]["litellm_params"] == {
+        "input_cost_per_token": 2e-06, "model": "openai/gpt-4o", "litellm_credential_name": "c1",
+    }
+    assert step["changes"] == {"unclearable_costs": {"from": {"output_cost_per_image": 0.2}, "to": None}}
+
+
+@pytest.mark.parametrize("case", ["adopted", "inline secret", "stored secret", "no credential"])
+def test_any_other_deployment_with_an_unclearable_cost_field_gets_only_the_note(case):
+    row = _made_row(api_key="sk-****") if case == "inline secret" else _made_row()
+    deployment = replace(GPT, price={"input_cost_per_token": 2e-06})
+    if case == "adopted":
+        del row["model_info"]["managed_by"]
+    if case == "stored secret":
+        # An os.environ/ reference would go into the new create; a value would be lost.
+        deployment = replace(deployment, params={"aws_secret_access_key": "plain-value"})
+    if case == "no credential":
+        del row["litellm_params"]["litellm_credential_name"]
+        deployment = replace(deployment, credential=None)
+
+    steps = plan(PROXY, LiveProxy(deployments=[row]), [deployment], frozenset({"prices"}))
+
+    assert [s["action"] for s in steps] == ["update_model"]
+    assert steps[0]["problems"][-1] == UNCLEARABLE_COSTS.format("output_cost_per_image")

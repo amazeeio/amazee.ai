@@ -5,7 +5,7 @@ Pure, with no database and no HTTP, so a dry run and the sync can share it.
 
 from dataclasses import dataclass, field
 
-from app.registry.litellm import without_alias_copies
+from app.registry.litellm import without_alias_copies, without_secrets
 from app.registry.prices import price_fields
 from app.registry.rules import credential_provider
 
@@ -146,10 +146,7 @@ def _credential_step(proxy: str, credential: Credential, live: frozenset, rows: 
     return step
 
 
-def _create(
-    proxy: str, deployment: Deployment, live: LiveProxy, rows: list[dict], known_ids: frozenset,
-    credential_providers: frozenset,
-) -> dict:
+def _create_payload(deployment: Deployment) -> dict:
     # The stored params first, so the price, the model and the credential that the registry sets win. A stored
     # cost field is left out: the create sends the wanted price only, or the next repair would clear it.
     stored_costs = price_fields(deployment.params).keys()
@@ -163,11 +160,18 @@ def _create(
     params["model"] = deployment.litellm_model
     if deployment.credential:
         params["litellm_credential_name"] = deployment.credential
-    payload = {
+    return {
         "model_name": deployment.model_name,
         "litellm_params": params,
         "model_info": {"access_groups": sorted(deployment.access_groups), "managed_by": MANAGED_BY},
     }
+
+
+def _create(
+    proxy: str, deployment: Deployment, live: LiveProxy, rows: list[dict], known_ids: frozenset,
+    credential_providers: frozenset,
+) -> dict:
+    payload = _create_payload(deployment)
     problems, notes = [], []
     if deployment.credential and deployment.credential not in live.credentials:
         problems.append(CREDENTIAL_NOT_ON_PROXY.format(deployment.credential))
@@ -237,13 +241,41 @@ def _update(
                 notes.append(PROVISIONED_ONLY)
             else:
                 changes["prices"] = {"from": live_price, "to": wanted_price}
-        if not deployment.provisioned_only and (kept := sorted(extra - LITELLM_CLEARABLE_COSTS)):
+        kept = [] if deployment.provisioned_only else sorted(extra - LITELLM_CLEARABLE_COSTS)
+        if kept and _replaceable(deployment, row):
+            # LiteLLM cannot clear these, so a deployment that the sync made is created again with the wanted
+            # params: the sync creates the new one first, then deletes this one.
+            changes["unclearable_costs"] = {"from": {name: params[name] for name in kept}, "to": None}
+            changes.pop("prices", None)
+            if not _managed(row):
+                problems.insert(0, NOT_MANAGED)
+            return _step(
+                proxy, "replace_model", deployment, payload=_create_payload(deployment), changes=changes,
+                problems=problems, notes=notes,
+            )
+        if kept:
             notes.append(UNCLEARABLE_COSTS.format(", ".join(kept)))
     if not changes and not problems and not notes:
         return None
     if changes and not _managed(row):
         problems.insert(0, NOT_MANAGED)
     return _step(proxy, "update_model", deployment, changes=changes, problems=problems, notes=notes)
+
+
+def _inline_secrets(params: dict) -> bool:
+    return without_secrets(params).keys() != params.keys()
+
+
+def _replaceable(deployment: Deployment, row: dict) -> bool:
+    """True for a deployment that the sync made, with a named credential and no inline secret anywhere: a new
+    create has every value it needs, so nothing is lost when the old one goes."""
+    params = row.get("litellm_params") or {}
+    return (
+        (row.get("model_info") or {}).get("managed_by") == MANAGED_BY
+        and bool(params.get("litellm_credential_name"))
+        and not _inline_secrets(params)
+        and not _inline_secrets(deployment.params)
+    )
 
 
 def _managed(row: dict) -> bool:

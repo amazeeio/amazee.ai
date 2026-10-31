@@ -12,6 +12,7 @@ from app.registry.config import CREDENTIAL_KEYS_ENV
 from app.registry.crypto import encrypt_values
 from app.registry.models import (
     DBRegistryAlias,
+    DBRegistryEvent,
     DBRegistryProxy,
     DBRegistryModelPrice,
     DBRegistryModelRegion,
@@ -489,3 +490,53 @@ def test_an_ok_step_stores_the_compared_price_whatever_it_changed(registry_db, u
     assert ("update_model", "ok", None) in steps
     # The step changed only the name, and the proxy has the compared price.
     assert _row(registry_db, "us-gpt").prices == {"input_cost_per_token": 2.5e-06}
+
+
+def _registry_made_gpt(registry_db, live_proxies):
+    """us-gpt was created by the sync, with credential c1, and the proxy has a cost field LiteLLM cannot clear."""
+    gpt = _row(registry_db, "us-gpt")
+    gpt.litellm_params = {"litellm_credential_name": "c1"}
+    gpt.model_info = {"id": "us-gpt", "managed_by": MANAGED_BY}
+    registry_db.commit()
+    live = live_proxies.by_url[US_URL]["model_info"][0]
+    live["litellm_params"].update({"litellm_credential_name": "c1", "input_cost_per_token": 2.5e-06, "output_cost_per_image": 0.2})
+    live["model_info"]["managed_by"] = MANAGED_BY
+    return gpt
+
+
+def test_a_registry_made_deployment_with_an_unclearable_cost_field_is_replaced(registry_db, us, live_proxies):
+    _registry_made_gpt(registry_db, live_proxies)
+
+    run, steps = _run(registry_db, us, full=True)
+
+    assert ("replace_model", "ok", None) in steps
+    model_writes = [w for w in live_proxies.writes if w[1].endswith("_model")]
+    assert [(w[1], w[2] if w[1] == "delete_model" else None) for w in model_writes] == [
+        ("create_model", None), ("delete_model", "us-gpt"),
+    ]
+    [new] = [r for r in live_proxies.by_url[US_URL]["model_info"] if r["model_name"] == "gpt-4o"]
+    assert "output_cost_per_image" not in new["litellm_params"]
+    assert _row(registry_db, new["model_info"]["id"]).model_name == "gpt-4o"
+    assert registry_db.query(DBRegistryEvent).count() == 0
+
+
+def test_a_failed_create_keeps_the_deployment_it_would_replace(registry_db, us, live_proxies):
+    _registry_made_gpt(registry_db, live_proxies)
+    live_proxies.fail[(US_URL, "create_model")] = (500, "boom", False)
+
+    run, steps = _run(registry_db, us, full=True)
+
+    [replaced] = [s for s in steps if s[0] == "replace_model"]
+    assert replaced[1] == "failed"
+    assert "delete_model" not in _actions(live_proxies)
+    assert _row(registry_db, "us-gpt").sync_error == replaced[2]
+
+
+def test_an_adopted_deployment_with_an_unclearable_cost_field_is_not_replaced(registry_db, us, live_proxies):
+    _registry_made_gpt(registry_db, live_proxies)
+    del live_proxies.by_url[US_URL]["model_info"][0]["model_info"]["managed_by"]
+
+    run, steps = _run(registry_db, us, full=True)
+
+    assert not [s for s in steps if s[0] in ("replace_model", "update_model")]
+    assert not [w for w in live_proxies.writes if w[1].endswith("_model")]
