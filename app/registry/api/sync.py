@@ -4,6 +4,7 @@ It imports the planning helpers of dry_run.py and never a route module, so a scr
 import cycle. A run saves only ids in its scope and reads the wanted state again after it takes the proxy lock.
 """
 
+import json
 import logging
 from collections.abc import Callable
 from dataclasses import replace
@@ -228,10 +229,19 @@ def create_run(db: Session, trigger: str, plans_or_scope) -> DBRegistrySyncRun:
     return run
 
 
+def _secret_forms(secret: str) -> set[str]:
+    """The forms in which LiteLLM can echo a secret: as is, JSON-escaped, as a Python repr, and line by line."""
+    forms = {secret, json.dumps(secret)[1:-1], repr(secret)[1:-1]}
+    # A private key is several lines, and an echo can break it at a line end.
+    forms |= {line.strip() for line in secret.splitlines()}
+    return {form for form in forms if len(form) >= 8}
+
+
 def _scrub(message: str, secrets) -> str:
     """The message with each secret of 8 characters or more replaced, because LiteLLM can echo a payload."""
-    for secret in sorted({s for s in secrets if isinstance(s, str) and len(s) >= 8}, key=len, reverse=True):
-        message = message.replace(secret, "********")
+    forms = set().union(*(_secret_forms(s) for s in secrets if isinstance(s, str)))
+    for form in sorted(forms, key=len, reverse=True):
+        message = message.replace(form, "********")
     return message
 
 

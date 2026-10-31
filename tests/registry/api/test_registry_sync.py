@@ -1,3 +1,4 @@
+import json
 from datetime import date
 
 import pytest
@@ -344,3 +345,17 @@ def test_a_full_scope_with_skip_failed_leaves_out_and_lists_failed_deployments(r
     assert run.stats["proxies"]["local-us1"]["failed"] == ["claude-new"]
     assert all(w[2] != "us-claude" for w in live_proxies.writes if w[1] == "update_model")
     assert _row(registry_db, "us-claude").sync_error == "HTTP 500: boom"
+
+
+def test_scrub_catches_a_secret_in_escaped_or_multi_line_form():
+    from app.registry.api.sync import _scrub, _strings
+
+    private_key = "-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0B\nAQEFAASCBKYwggSiAgEAAoIB\n-----END PRIVATE KEY-----\n"
+    service_account = json.dumps({"type": "service_account", "private_key": private_key})
+    values = {"vertex_credentials": service_account, "nested": {"private_key": private_key}}
+    echoes = [json.dumps(values), repr(values), f"key line {private_key.splitlines()[1]} leaked"]
+
+    for echo in echoes:
+        scrubbed = _scrub(f"HTTP 400: {echo}", _strings(values))
+        assert "MIIEvAIBADANBgkqhkiG9w0B" not in scrubbed, echo
+        assert "AQEFAASCBKYwggSiAgEAAoIB" not in scrubbed, echo
