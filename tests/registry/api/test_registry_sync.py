@@ -608,16 +608,17 @@ def test_a_retry_deletes_the_old_deployment_that_a_replace_left(registry_db, us,
     assert "us-gpt" not in [r["model_info"]["id"] for r in live_proxies.by_url[US_URL]["model_info"]]
 
 
-def test_a_disable_of_a_deployment_with_inline_secrets_keeps_it(registry_db, us, live_proxies):
-    from app.registry.planner import INLINE_SECRETS
+def test_a_disable_of_an_adopted_deployment_with_no_named_credential_keeps_it(registry_db, us, live_proxies):
+    from app.registry.planner import NO_NAMED_CREDENTIAL
 
-    live_proxies.by_url[US_URL]["model_info"][0]["litellm_params"]["api_key"] = "sk-****"
+    # Inline keys, which LiteLLM strips from /model/info: the sync cannot see them.
+    live_proxies.by_url[US_URL]["model_info"][0]["litellm_params"]["api_key"] = "sk-inline"
     gpt = _row(registry_db, "us-gpt")
     gpt.enabled = False
     registry_db.commit()
 
     run, steps = _run(registry_db, us, deployments=[gpt.id])
 
-    assert steps == [("delete_model", "failed", INLINE_SECRETS)]
+    assert steps == [("delete_model", "failed", NO_NAMED_CREDENTIAL)]
     assert live_proxies.writes == []
     assert _row(registry_db, "us-gpt").litellm_deployment_id == "us-gpt"

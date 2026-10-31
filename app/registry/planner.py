@@ -45,9 +45,9 @@ UNCLEARABLE_COSTS = (
     "the proxy has the cost fields {} that the registry price does not have, and LiteLLM cannot clear them "
     "with an update; remove them on the proxy by hand"
 )
-INLINE_SECRETS = (
-    "the deployment has inline credentials, and the registry keeps no secret values, so a disable would lose them; "
-    "move it to a named credential before you disable it"
+NO_NAMED_CREDENTIAL = (
+    "the deployment uses no named credential, so the registry cannot restore its credentials after a disable; "
+    "move it to a named credential, or delete it"
 )
 RECREATE = "the deployment is gone from the proxy; the sync creates it again"
 CREDENTIAL_IN_USE = "a live deployment on the proxy uses the credential {}, so the sync does not delete it"
@@ -277,7 +277,11 @@ def _inline_secrets(params: dict) -> bool:
 
 def _replaceable(deployment: Deployment, row: dict) -> bool:
     """True for a deployment that the sync made, with a named credential and no inline secret anywhere: a new
-    create has every value it needs, so nothing is lost when the old one goes."""
+    create has every value it needs, so nothing is lost when the old one goes.
+
+    LiteLLM strips secret keys from /model/info, so the inline-secret checks see little; the marker and the
+    named credential are the real guard.
+    """
     params = row.get("litellm_params") or {}
     return (
         (row.get("model_info") or {}).get("managed_by") == MANAGED_BY
@@ -358,10 +362,15 @@ def plan(
         if not deployment.keep:
             if row is not None:
                 problems = [] if _managed(row) else [NOT_MANAGED]
-                # A disable keeps the row to enable it again, but a new create cannot bring back inline secrets.
-                # A deleted row (no row id) is gone for good, so its deployment goes.
-                if deployment.row_id is not None and _inline_secrets(row.get("litellm_params") or {}):
-                    problems.append(INLINE_SECRETS)
+                # A disable keeps the row to enable it again with a new create. LiteLLM strips secret keys from
+                # /model/info, so only a named credential or the registry's own create shows that the create can
+                # authenticate. A deleted row (no row id) is gone for good, so its deployment goes.
+                if (
+                    deployment.row_id is not None
+                    and not (row.get("litellm_params") or {}).get("litellm_credential_name")
+                    and (row.get("model_info") or {}).get("managed_by") != MANAGED_BY
+                ):
+                    problems.append(NO_NAMED_CREDENTIAL)
                 steps.append(_step(proxy, "delete_model", deployment, problems=problems))
         elif deployment.deployment_id is None or (row is None and deployment.recreate):
             steps.append(_create(proxy, deployment, live, rows, known_ids, credential_providers))

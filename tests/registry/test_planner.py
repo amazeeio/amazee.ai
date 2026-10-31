@@ -7,7 +7,7 @@ from app.registry.planner import (
     CANNOT_CLEAR_CREDENTIAL,
     CREDENTIAL_IN_USE,
     DELETES_EVERY_ALIAS,
-    INLINE_SECRETS,
+    NO_NAMED_CREDENTIAL,
     LIVE_NAME_CLASH,
     MANAGED_BY,
     NO_CREDENTIAL,
@@ -490,14 +490,22 @@ def test_any_other_deployment_with_an_unclearable_cost_field_gets_only_the_note(
     assert steps[0]["problems"][-1] == UNCLEARABLE_COSTS.format("output_cost_per_image")
 
 
-@pytest.mark.parametrize("row_id, secret, blocked", [(7, True, True), (7, False, False), (None, True, False)])
-def test_a_disable_never_deletes_a_deployment_with_inline_secrets(row_id, secret, blocked):
-    # row_id None: the registry row is gone, so the deployment goes for good.
-    row = _live_row(api_key="sk-****") if secret else _live_row()
-    removed = replace(GPT, keep=False, row_id=row_id)
+@pytest.mark.parametrize("case, blocked", [
+    ("adopted, no named credential", True),
+    ("named credential", False),
+    ("registry-made", False),
+    ("row deleted", False),
+])
+def test_a_disable_keeps_a_deployment_whose_credentials_the_registry_cannot_restore(case, blocked):
+    # LiteLLM strips secret keys from /model/info, so the registry cannot see inline credentials; it can only
+    # show that a named credential or its own create can bring the deployment back.
+    row = _live_row(credential="c1" if case == "named credential" else None)
+    if case == "registry-made":
+        row["model_info"]["managed_by"] = MANAGED_BY
+    removed = replace(GPT, keep=False, row_id=None if case == "row deleted" else 7)
 
     [step] = plan(PROXY, LiveProxy(deployments=[row]), [removed])
 
     assert step["action"] == "delete_model"
-    assert step["problems"] == ([INLINE_SECRETS] if blocked else [])
+    assert step["problems"] == ([NO_NAMED_CREDENTIAL] if blocked else [])
     assert step["blocked"] is blocked

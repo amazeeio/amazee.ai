@@ -79,6 +79,20 @@ def models(registry_db):
     registry_db.commit()
 
 
+# The keys that LiteLLM's remove_sensitive_info_from_deployment pops from /model/info (v1.102.1).
+_STRIPPED = {
+    "api_key", "client_secret", "vertex_credentials", "vertex_ai_credentials", "aws_access_key_id",
+    "aws_secret_access_key",
+}
+
+
+def _as_litellm_shows(row):
+    """A copy of a live row as /model/info answers it: without the secret keys."""
+    if not isinstance(row, dict) or not isinstance(row.get("litellm_params"), dict):
+        return row
+    return {**row, "litellm_params": {k: v for k, v in row["litellm_params"].items() if k not in _STRIPPED}}
+
+
 class _FakeProxyClient:
     """Answers like a proxy from `live_proxies.by_url`; a URL that is not there is an empty proxy."""
 
@@ -99,7 +113,9 @@ class _FakeProxyClient:
         answer = self._answer()
         if isinstance(answer, Exception):
             raise answer
-        return answer.get("model_info", [])
+        rows = answer.get("model_info", [])
+        # A test can give a malformed answer on purpose; only a list of rows is stripped.
+        return [_as_litellm_shows(row) for row in rows] if isinstance(rows, list) else rows
 
     def alias_map(self):
         return self._answer().get("aliases", {})
