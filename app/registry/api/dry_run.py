@@ -217,9 +217,6 @@ def short_reason(exc: Exception) -> str:
     """Why a proxy read failed, in a few words. It never holds the URL or the key."""
     if isinstance(exc, httpx.HTTPStatusError):
         return f"HTTP {exc.response.status_code}"
-    # InvalidURL is not an HTTPError: a malformed litellm_api_url raises it before any request.
-    if isinstance(exc, httpx.HTTPError | httpx.InvalidURL):
-        return type(exc).__name__
     if isinstance(exc, ValueError | AttributeError | TypeError):
         return "bad JSON"
     return type(exc).__name__
@@ -242,18 +239,22 @@ def read_live(url: str, key: str) -> planner.LiveProxy | str:
     return planner.LiveProxy(rows, aliases, frozenset(credentials))
 
 
+def unreadable(url: str | None, active: bool) -> str | None:
+    """Why the sync does not read a proxy at all, or None."""
+    if not url:
+        return "no proxy URL"
+    if not active:
+        return "the proxy is inactive"
+    return None
+
+
 def plan_steps(plans: list[ProxyPlan]) -> list[dict]:
     """The planned steps of each proxy, sorted by proxy name. A proxy that cannot be read gives one step."""
     steps = []
     # ponytail: the reads run one after the other, so each proxy that does not answer adds up to
     # HTTP_TIMEOUT_SECONDS. Read the proxies at the same time if the dry runs become too slow.
     for plan in sorted(plans, key=lambda plan: plan.proxy):
-        if not plan.url:
-            live = "no proxy URL"
-        elif not plan.active:
-            live = "the proxy is inactive"
-        else:
-            live = read_live(plan.url, plan.key)
+        live = unreadable(plan.url, plan.active) or read_live(plan.url, plan.key)
         if isinstance(live, str):
             steps.append(
                 {
@@ -266,10 +267,9 @@ def plan_steps(plans: list[ProxyPlan]) -> list[dict]:
     return steps
 
 
-def plan_proxy(plan: ProxyPlan, live: planner.LiveProxy, known_ids: frozenset | None = None) -> list[dict]:
+def plan_proxy(plan: ProxyPlan, live: planner.LiveProxy) -> list[dict]:
     """The planner steps of one proxy plan against its live state."""
     return planner.plan(
-        plan.proxy, live, plan.deployments, plan.fields, plan.aliases, plan.removed_alias,
-        plan.known_ids if known_ids is None else known_ids, plan.credentials, plan.credential_providers,
-        plan.aliases_adopted,
+        plan.proxy, live, plan.deployments, plan.fields, plan.aliases, plan.removed_alias, plan.known_ids,
+        plan.credentials, plan.credential_providers, plan.aliases_adopted,
     )

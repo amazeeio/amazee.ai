@@ -32,12 +32,13 @@ from app.registry.api.dry_run import (
     plan_steps,
     read_live,
     short_reason,
+    unreadable,
 )
 from app.registry.config import registry_manages
 from app.registry.importer import import_proxy
 from app.registry.runs import record_run
 from app.registry.versions import active_regions
-from app.registry.crypto import MissingKey, decrypt_values
+from app.registry.crypto import CANNOT_DECRYPT, MissingKey, decrypt_values
 from app.registry.litellm import ProxyWriter, without_alias_copies, without_secrets
 from app.registry.models import (
     DBRegistryCredential,
@@ -57,7 +58,6 @@ STALE = "the proxy changed after the plan; the next repair plans it again"
 LOCK_BUSY = "another sync run holds the proxy"
 LOCK_SKIPPED = "another sync run holds the proxy; the next run repairs it"
 NOT_MANAGED_BY_REGISTRY = "the registry does not manage the proxy"
-CANNOT_DECRYPT = "the credential values cannot be decrypted with the keys in REGISTRY_CREDENTIAL_KEYS"
 _LOCK_TIMEOUT = "55P03"
 _MODEL_STEPS = ("create_model", "update_model", "delete_model")
 
@@ -90,37 +90,34 @@ def _save(
     """
     # The flush runs the database checks, so a dry run fails where the write would.
     db.flush()
-    if not dry_run:
-        plans = plan() if plan else []
-        row_ids = [d.row_id for p in plans for d in p.deployments if d.row_id is not None]
-        if row_ids:
-            # "fetch" also sets the value on the rows in the session, which the body reads.
-            db.query(DBRegistryModelRegion).filter(DBRegistryModelRegion.id.in_(row_ids)).update(
-                {"changed_at": _now()}, synchronize_session="fetch"
-            )
-        result = _body(result)
-        managed = [p for p in plans if registry_manages(p.proxy)]
-        run = create_run(db, "write", managed) if background is not None and managed else None
-        # One commit, so the write and its pending run are saved together.
-        db.commit()
-        if run is None:
-            return result
-        background.add_task(execute_run, run.id)
-        if response is not None:
-            response.status_code = 202
-        return RegistrySyncStarted(sync_run_id=run.id, result=None if isinstance(result, Response) else result)
     plans = plan() if plan else []
-    result = _body(result)
-    # End the transaction before the proxy reads, so no row lock is held during HTTP.
-    db.rollback()
-    if response is not None:
-        response.status_code = 200
-    return RegistryDryRun(result=None if isinstance(result, Response) else result, steps=plan_steps(plans))
-
-
-def _body(result):
+    row_ids = [d.row_id for p in plans for d in p.deployments if d.row_id is not None]
+    if not dry_run and row_ids:
+        # "fetch" also sets the value on the rows in the session, which the body reads.
+        db.query(DBRegistryModelRegion).filter(DBRegistryModelRegion.id.in_(row_ids)).update(
+            {"changed_at": _now()}, synchronize_session="fetch"
+        )
     # A Response is callable too, but it is a finished body.
-    return result() if callable(result) and not isinstance(result, Response) else result
+    if callable(result) and not isinstance(result, Response):
+        result = result()
+    body = None if isinstance(result, Response) else result
+    if dry_run:
+        # End the transaction before the proxy reads, so no row lock is held during HTTP.
+        db.rollback()
+        if response is not None:
+            response.status_code = 200
+        return RegistryDryRun(result=body, steps=plan_steps(plans))
+    # Only a write with a plan passes `background`, and only a plan has proxies.
+    managed = [p for p in plans if registry_manages(p.proxy)]
+    run = create_run(db, "write", scope_of(managed)) if managed else None
+    # One commit, so the write and its pending run are saved together.
+    db.commit()
+    if run is None:
+        return result
+    background.add_task(execute_run, run.id)
+    if response is not None:
+        response.status_code = 202
+    return RegistrySyncStarted(sync_run_id=run.id, result=body)
 
 
 def scope_of(plans: list[ProxyPlan]) -> dict:
@@ -231,9 +228,8 @@ def plans_for_scope(db: Session, region: DBRegion, entry: dict) -> tuple[ProxyPl
     return plan, left_out
 
 
-def create_run(db: Session, trigger: str, plans_or_scope) -> DBRegistrySyncRun:
+def create_run(db: Session, trigger: str, scope: dict) -> DBRegistrySyncRun:
     """Add a pending run. The caller commits it with its write, so the run exists before its task starts."""
-    scope = plans_or_scope if isinstance(plans_or_scope, dict) else scope_of(plans_or_scope)
     run = DBRegistrySyncRun(
         trigger=trigger, status="pending", region_ids=sorted(int(region_id) for region_id in scope), scope=scope
     )
@@ -322,7 +318,7 @@ class _Lock:
 class _Proxy:
     """One region of a run: the plain values that the steps need, so no ORM object is read during HTTP."""
 
-    def __init__(self, db: Session, run_id: int, region: DBRegion, entry: dict, trigger: str = "write"):
+    def __init__(self, db: Session, run_id: int, region: DBRegion, entry: dict, trigger: str):
         self.db, self.run_id, self.entry, self.trigger = db, run_id, entry, trigger
         self.region_id, self.name = region.id, region.name
         self.url, self.key = region.litellm_api_url, region.litellm_api_key
@@ -498,11 +494,7 @@ def _send(proxy: _Proxy, writer: ProxyWriter, step: dict, known_ids: set, read_a
             info = created["model_info"]
             known_ids.add(info["id"])
             if error is not None:
-                answer = (
-                    f"HTTP {error[0].response.status_code}"
-                    if isinstance(error[0], httpx.HTTPStatusError) else type(error[0]).__name__
-                )
-                message = f"LiteLLM answered {answer}, but the deployment exists"
+                message = f"LiteLLM answered {short_reason(error[0])}, but the deployment exists"
             error = None
             stored = _set_row(
                 db, step["row_id"], litellm_deployment_id=info["id"], model_info=without_secrets(info),
@@ -596,17 +588,11 @@ def _unmanaged(live: planner.LiveProxy, known_ids) -> list[dict]:
     ]
 
 
-def _region_reason(region: DBRegion | None) -> str | None:
-    if region is None:
-        return "the proxy no longer exists"
+def _region_reason(region: DBRegion) -> str | None:
     # Rule 8 again for each region, so a run made before an env change pushes nothing.
     if not registry_manages(region.name):
         return NOT_MANAGED_BY_REGISTRY
-    if region.is_active is not True:
-        return "the proxy is inactive"
-    if not region.litellm_api_url:
-        return "no proxy URL"
-    return None
+    return unreadable(region.litellm_api_url, region.is_active is True)
 
 
 def _sync_region(
@@ -658,7 +644,7 @@ def _sync_locked(proxy: _Proxy) -> dict | None:
         return None
 
     known_ids = set(plan.known_ids)
-    steps = plan_proxy(plan, live, frozenset(known_ids))
+    steps = plan_proxy(plan, live)
     stats = None
     if proxy.entry["full"]:
         stats = {"drift": _drift(steps), "unmanaged": _unmanaged(live, known_ids), "failed": left_out}
@@ -756,27 +742,22 @@ def _daily(db: Session) -> dict:
     stats: dict = {"stuck": stuck, "imported": [], "import_failed": {}, "runs": {}}
 
     # A plain import read no aliases, so a proxy is done only when the adopt import ran.
-    imported = db.query(DBRegistryProxy.region_id).filter(DBRegistryProxy.adopted_at.isnot(None))
-    for region in [r for r in active_regions(db) if r.id not in {rid for (rid,) in imported}]:
-        name = region.name
+    adopted = {rid for (rid,) in db.query(DBRegistryProxy.region_id).filter(DBRegistryProxy.adopted_at.isnot(None))}
+    regions = [(region, region.id, region.name) for region in active_regions(db)]
+    for region, region_id, name in regions:
+        if region_id in adopted:
+            continue
         try:
             import_proxy(db, region, adopt=True)
             stats["imported"].append(name)
+            adopted.add(region_id)
         except Exception as exc:
             # One proxy that cannot be read must not stop the repair of the others.
             stats["import_failed"][name] = short_reason(exc)
 
-    managed = [
-        region
-        for region in active_regions(db)
-        if registry_manages(region.name)
-        and db.query(DBRegistryProxy.imported_at).filter_by(region_id=region.id).scalar() is not None
-    ]
-    if not managed:
-        stats["managed"] = []
-        return stats
-    stats["managed"] = [region.name for region in managed]
-    for region_id, name in [(region.id, region.name) for region in managed]:
+    managed = [(region_id, name) for _, region_id, name in regions if region_id in adopted and registry_manages(name)]
+    stats["managed"] = [name for _, name in managed]
+    for region_id, name in managed:
         run = create_run(db, "daily", full_scope([region_id], skip_failed=True))
         db.commit()
         run_id = run.id

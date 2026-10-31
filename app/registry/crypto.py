@@ -12,6 +12,9 @@ class MissingKey(Exception):
     pass
 
 
+CANNOT_DECRYPT = f"the credential values cannot be decrypted with the keys in {CREDENTIAL_KEYS_ENV}"
+
+
 def _keys() -> list[Fernet]:
     raw = [k.strip() for k in os.getenv(CREDENTIAL_KEYS_ENV, "").split(",") if k.strip()]
     if not raw:

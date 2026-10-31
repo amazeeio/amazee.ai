@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.db.models import DBRegion
 from app.registry.api.dry_run import plan_steps
+from app.registry.api.proxy_models import _import_problems
 from app.registry.api.routes import _find_proxy, _paginate, refuse, router
 from app.registry.api.sync import create_run, execute_run, full_scope, retry_scope, scope_plans
 from app.registry.config import registry_manages
@@ -159,8 +160,7 @@ def repair_proxy(
     problems = []
     if not registry_manages(region.name):
         problems.append(RegistryProblem(message="The registry does not manage the proxy", proxy=proxy, status=409))
-    if db.query(DBRegistryProxy.imported_at).filter_by(region_id=region.id).scalar() is None:
-        problems.append(RegistryProblem(message=f"Import the proxy {proxy} first", proxy=proxy, status=409))
+    problems += _import_problems([db.get(DBRegistryProxy, region.id)], {region.id: region.name})
     refuse(problems)
     scope = full_scope([region.id])
     if dry_run:

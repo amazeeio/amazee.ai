@@ -13,7 +13,7 @@ from app.registry.api.dry_run import credential_plans
 from app.registry.api.proxy_models import _import_first
 from app.registry.api.sync import _save
 from app.registry.api.routes import Refused, refuse, router
-from app.registry.crypto import MissingKey, decrypt_values, encrypt_values
+from app.registry.crypto import CANNOT_DECRYPT, MissingKey, decrypt_values, encrypt_values
 from app.registry.litellm import without_secrets
 from app.registry.models import (
     DBRegistryCredential,
@@ -196,7 +196,7 @@ def update_credential(
         except (MissingKey, InvalidToken):
             stored = None
             problems.append(RegistryProblem(
-                message="The stored values cannot be decrypted with the keys in REGISTRY_CREDENTIAL_KEYS", status=409
+                message=CANNOT_DECRYPT, status=409
             ))
         if stored is not None:
             token = _encrypted({**stored, **body.values}, problems)
