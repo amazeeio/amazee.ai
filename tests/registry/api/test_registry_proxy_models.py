@@ -834,19 +834,20 @@ def test_a_write_on_a_proxy_that_only_a_plain_import_read_adopts_it_first(
     ]
 
 
-@pytest.mark.parametrize("body", [{"groups": ["nope"]}, {"credential": "nope"}])
-def test_a_refused_write_does_not_import_the_proxy_first(client, admin_token, registry_db, setup, live_proxies, body):
-    eu_proxy = registry_db.get(DBRegistryProxy, setup["eu"].id)
-    eu_proxy.imported_at = eu_proxy.adopted_at = None
+def test_a_write_can_name_a_credential_that_only_the_adopt_import_reads(
+    client, admin_token, registry_db, setup, live_proxies, managed_proxies
+):
+    # The adopt import creates the credential from the live proxy, so the name is unknown only before it.
+    managed_proxies.add("local-eu1")
+    registry_db.get(DBRegistryProxy, setup["eu"].id).adopted_at = None
     registry_db.commit()
-    live_proxies.by_url[EU_URL] = {"model_info": [live_row("eu-new", "gpt-old", "openai/gpt-old")]}
+    live_proxies.by_url[EU_URL] = {
+        "model_info": [live_row("eu-gpt", "gpt-4o", "openai/gpt-4o")], "credentials": ["live-only"],
+    }
 
-    response = _put(client, admin_token, "local-eu1", "openai/gpt-4o", body)
+    ok(_put(client, admin_token, "local-eu1", "openai/gpt-4o", {"credential": "live-only"}), 202)
 
-    assert response.status_code == 422
-    assert live_proxies.calls == []
-    registry_db.expire_all()
-    assert registry_db.get(DBRegistryProxy, setup["eu"].id).imported_at is None
+    assert _deployment(registry_db, setup["eu"].id, "gpt-4o").litellm_params == {"litellm_credential_name": "live-only"}
 
 
 @pytest.mark.parametrize("managed, active", [(True, False), (False, True)])
