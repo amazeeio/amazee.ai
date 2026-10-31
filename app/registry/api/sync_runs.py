@@ -56,7 +56,14 @@ def _steps(db: Session, run_id: int) -> list[DBRegistrySyncStep]:
     )
 
 
-def _start(db: Session, trigger: str, scope: dict, response: Response, background: BackgroundTasks):
+def _start(
+    db: Session, trigger: str, scope: dict, dry_run: bool, response: Response, background: BackgroundTasks
+):
+    """Start a run of the scope, or in a dry run, plan it and save nothing."""
+    if dry_run:
+        plans = scope_plans(db, scope)
+        db.rollback()
+        return RegistryDryRun(result=None, steps=plan_steps(plans))
     run = create_run(db, trigger, scope)
     db.commit()
     background.add_task(execute_run, run.id)
@@ -93,15 +100,14 @@ def get_sync_run(run_id: int, db: Session = Depends(get_db)):
     for step in steps:
         statuses[step.region_id].add(step.status)
     finished = run.status in ("ok", "failed")
-    results = {}
-    for region_id in run.region_ids or []:
-        found = statuses[region_id]
-        if "failed" in found:
-            results[names.get(region_id, str(region_id))] = "failed"
-        elif "pending" in found or not finished:
-            results[names.get(region_id, str(region_id))] = "pending"
-        else:
-            results[names.get(region_id, str(region_id))] = "ok"
+    results = {
+        names.get(region_id, str(region_id)): (
+            "failed" if "failed" in statuses[region_id]
+            else "pending" if "pending" in statuses[region_id] or not finished
+            else "ok"
+        )
+        for region_id in run.region_ids or []
+    }
     return RegistrySyncRunDetailResponse(
         **_run_response(run, names),
         steps=[
@@ -135,12 +141,7 @@ def retry_sync_run(
         refuse([RegistryProblem(message="The sync run has not finished", status=409)])
     if not any(step.status == "failed" for step in steps):
         refuse([RegistryProblem(message="The sync run has no failed step", status=409)])
-    scope = retry_scope(run, steps)
-    if dry_run:
-        plans = scope_plans(db, scope)
-        db.rollback()
-        return RegistryDryRun(result=None, steps=plan_steps(plans))
-    return _start(db, "retry", scope, response, background)
+    return _start(db, "retry", retry_scope(run, steps), dry_run, response, background)
 
 
 @router.post(
@@ -162,9 +163,4 @@ def repair_proxy(
         problems.append(RegistryProblem(message="The registry does not manage the proxy", proxy=proxy, status=409))
     problems += _import_problems([db.get(DBRegistryProxy, region.id)], {region.id: region.name})
     refuse(problems)
-    scope = full_scope([region.id])
-    if dry_run:
-        plans = scope_plans(db, scope)
-        db.rollback()
-        return RegistryDryRun(result=None, steps=plan_steps(plans))
-    return _start(db, "repair", scope, response, background)
+    return _start(db, "repair", full_scope([region.id]), dry_run, response, background)

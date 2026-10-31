@@ -16,7 +16,7 @@ from app.core.config import catalog_manages
 from app.core.security import get_role_min_system_admin
 from app.db.database import get_db
 from app.db.models import DBRegion
-from app.registry.api.dry_run import _access_groups, deployment_plans
+from app.registry.api.dry_run import _access_groups, deployment_plans, proxy_credentials
 from app.registry.api.sync import _save
 from app.registry.config import registry_manages
 from app.registry.importer import STEP as IMPORT_STEP
@@ -30,8 +30,6 @@ from app.registry.models import (
     DBRegistryModelRegion,
     DBRegistryModelSupport,
     DBRegistryProvider,
-    DBRegistryCredential,
-    DBRegistryCredentialRegion,
     DBRegistryProxy,
     DBRegistryRun,
     DBRegistrySyncRun,
@@ -593,13 +591,6 @@ def get_proxy(proxy: str, db: Session = Depends(get_db)):
             RegistryDeploymentResponse(**_deployment_fields(deployment, region.name, groups))
         )
 
-    credentials = [
-        name
-        for (name,) in db.query(DBRegistryCredential.name)
-        .join(DBRegistryCredentialRegion, DBRegistryCredentialRegion.credential_id == DBRegistryCredential.id)
-        .filter(DBRegistryCredentialRegion.region_id == region.id)
-        .order_by(DBRegistryCredential.name)
-    ]
     # The stats of a full scope, so a GET never reads the proxy.
     repair = (
         db.query(DBRegistrySyncRun)
@@ -617,7 +608,7 @@ def get_proxy(proxy: str, db: Session = Depends(get_db)):
     return RegistryProxyDetailResponse(
         **found[0].model_dump(),
         checked_at=checked_at,
-        credentials=credentials,
+        credentials=proxy_credentials(db, region.id),
         drift=found_drift.get("drift"),
         unmanaged=found_drift.get("unmanaged"),
         drift_checked_at=repair.finished_at if repair else None,

@@ -158,6 +158,17 @@ def credential_providers(db: Session, region_ids) -> dict[int, frozenset]:
     return {region_id: frozenset(providers) for region_id, providers in found.items()}
 
 
+def proxy_credentials(db: Session, region_id: int) -> list[str]:
+    """The sorted names of the registry credentials on one proxy."""
+    return [
+        name
+        for (name,) in db.query(DBRegistryCredential.name)
+        .join(DBRegistryCredentialRegion, DBRegistryCredentialRegion.credential_id == DBRegistryCredential.id)
+        .filter(DBRegistryCredentialRegion.region_id == region_id)
+        .order_by(DBRegistryCredential.name)
+    ]
+
+
 def credential_plans(db: Session, name: str, region_ids, rotate: bool = False, keep: bool = True) -> list[ProxyPlan]:
     """One plan per proxy for one credential. A deleted credential plans only its delete, so it needs no row."""
     row = db.query(DBRegistryCredential).filter_by(name=name).one_or_none()

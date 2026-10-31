@@ -30,6 +30,7 @@ from app.registry.api.dry_run import (
     deployment_plans,
     plan_proxy,
     plan_steps,
+    proxy_credentials,
     read_live,
     short_reason,
     unreadable,
@@ -44,7 +45,6 @@ from app.registry.models import (
     DBRegistryCredential,
     DBRegistryEvent,
     DBRegistryProxy,
-    DBRegistryCredentialRegion,
     DBRegistryModelRegion,
     DBRegistrySyncRun,
     DBRegistrySyncStep,
@@ -197,11 +197,7 @@ def plans_for_scope(db: Session, region: DBRegion, entry: dict) -> tuple[ProxyPl
             left_out = sorted({row.model_name for row in rows if row.sync_error is not None})
             rows = [row for row in rows if row.sync_error is None]
         entry = {**entry, "aliases": True, "credentials": [
-            {"name": name, "rotate": False, "keep": True}
-            for (name,) in db.query(DBRegistryCredential.name)
-            .join(DBRegistryCredentialRegion, DBRegistryCredentialRegion.credential_id == DBRegistryCredential.id)
-            .filter(DBRegistryCredentialRegion.region_id == region.id)
-            .order_by(DBRegistryCredential.name)
+            {"name": name, "rotate": False, "keep": True} for name in proxy_credentials(db, region.id)
         ]}
     else:
         fields = frozenset(entry["fields"]) or planner.DEPLOYMENT_FIELDS
