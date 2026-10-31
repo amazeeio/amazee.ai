@@ -82,10 +82,9 @@ def _import_problems(proxies, names: dict[int, str]) -> list[RegistryProblem]:
     ]
 
 
-def _import_failed(proxy: str, exc: Exception) -> RegistryProblem:
-    return RegistryProblem(
-        message=f"The automatic import of {proxy} failed: {short_reason(exc)}", proxy=proxy, status=409
-    )
+def _import_failed(proxy: str, exc: Exception, automatic: bool = True) -> RegistryProblem:
+    kind = "automatic import" if automatic else "import"
+    return RegistryProblem(message=f"The {kind} of {proxy} failed: {short_reason(exc)}", proxy=proxy, status=409)
 
 
 def _import_first(db: Session, regions, early: list[RegistryProblem]) -> None:
@@ -623,6 +622,6 @@ def import_proxy_now(proxy: str, dry_run: bool = Query(False), db: Session = Dep
         stats = import_proxy(db, region, adopt=True)
     except Exception as exc:
         db.rollback()
-        raise Refused([_import_failed(name, exc)]) from None
+        raise Refused([_import_failed(name, exc, automatic=False)]) from None
     _check_new_proxy(db, region)
     return stats

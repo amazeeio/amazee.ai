@@ -51,5 +51,5 @@ def test_an_import_of_a_proxy_that_cannot_be_read_gives_409(client, admin_token,
     response = client.post(IMPORT, headers=auth(admin_token))
 
     assert response.status_code == 409
-    assert messages(response) == ["The automatic import of local-us1 failed: ConnectError"]
+    assert messages(response) == ["The import of local-us1 failed: ConnectError"]
     assert _state(registry_db) == before
