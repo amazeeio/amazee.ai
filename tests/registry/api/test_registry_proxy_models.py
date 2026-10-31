@@ -91,7 +91,7 @@ def test_put_with_no_body_creates_a_deployment_with_the_defaults(client, admin_t
         "proxy": "local-us1", "model_name": "gpt-old", "litellm_model": "openai/gpt-old",
         "litellm_deployment_id": None, "enabled": True,
         "input_cost_per_token": None, "output_cost_per_token": None, "prices": {}, "access_groups": [],
-        "credential": None, "price": None,
+        "credential": None, "price": None, "synced_at": None, "changed_at": None, "sync_error": None,
     }]
     row = _deployment(registry_db, setup["us"].id, "gpt-old")
     assert (row.litellm_deployment_id, row.litellm_params, row.model_info) == (None, {}, {})

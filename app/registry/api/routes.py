@@ -5,7 +5,8 @@ from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, cast, func, or_, select
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
 from app.core.config import catalog_manages
@@ -14,6 +15,7 @@ from app.db.database import get_db
 from app.db.models import DBRegion
 from app.registry.api.dry_run import _access_groups, deployment_plans
 from app.registry.api.sync import _save
+from app.registry.config import registry_manages
 from app.registry.importer import STEP as IMPORT_STEP
 from app.registry.models import (
     DBRegistryCloudAvailability,
@@ -25,8 +27,11 @@ from app.registry.models import (
     DBRegistryModelRegion,
     DBRegistryModelSupport,
     DBRegistryProvider,
+    DBRegistryCredential,
+    DBRegistryCredentialRegion,
     DBRegistryProxy,
     DBRegistryRun,
+    DBRegistrySyncRun,
 )
 from app.registry.eol import refresh_eol
 from app.registry.prices import pick_price, set_manual_prices
@@ -178,7 +183,16 @@ def _deployment_fields(deployment: DBRegistryModelRegion, proxy: str, groups: di
         "prices": deployment.prices,
         "access_groups": groups.get(deployment.id, []),
         "credential": (deployment.litellm_params or {}).get("litellm_credential_name"),
+        "synced_at": deployment.synced_at,
+        "changed_at": deployment.changed_at,
+        "sync_error": deployment.sync_error,
     }
+
+
+def _owner(name: str) -> str:
+    if registry_manages(name):
+        return "registry"
+    return "catalog" if catalog_manages(name) else "none"
 
 
 def _proxy_responses(db: Session, region_id: int | None = None) -> list[RegistryProxyResponse]:
@@ -216,7 +230,7 @@ def _proxy_responses(db: Session, region_id: int | None = None) -> list[Registry
             cloud_regions=proxy.cloud_regions,
             imported_at=proxy.imported_at,
             providers=provider_names[region.id],
-            owner="catalog" if catalog_manages(region.name) else "none",
+            owner=_owner(region.name),
             models_supported=supported_counts.get(region.id, 0),
             models_enabled=enabled_counts.get(region.id, 0),
         )
@@ -564,9 +578,34 @@ def get_proxy(proxy: str, db: Session = Depends(get_db)):
             RegistryDeploymentResponse(**_deployment_fields(deployment, region.name, groups))
         )
 
+    credentials = [
+        name
+        for (name,) in db.query(DBRegistryCredential.name)
+        .join(DBRegistryCredentialRegion, DBRegistryCredentialRegion.credential_id == DBRegistryCredential.id)
+        .filter(DBRegistryCredentialRegion.region_id == region.id)
+        .order_by(DBRegistryCredential.name)
+    ]
+    # The stats of a full scope, so a GET never reads the proxy.
+    repair = (
+        db.query(DBRegistrySyncRun)
+        .filter(
+            DBRegistrySyncRun.trigger.in_(("daily", "repair")),
+            DBRegistrySyncRun.finished_at.isnot(None),
+            cast(DBRegistrySyncRun.region_ids, JSONB).contains([region.id]),
+            cast(DBRegistrySyncRun.stats, JSONB)["proxies"].has_key(region.name),
+        )
+        .order_by(DBRegistrySyncRun.finished_at.desc(), DBRegistrySyncRun.id.desc())
+        .first()
+    )
+    found_drift = repair.stats["proxies"][region.name] if repair else {}
+
     return RegistryProxyDetailResponse(
         **found[0].model_dump(),
         checked_at=checked_at,
+        credentials=credentials,
+        drift=found_drift.get("drift"),
+        unmanaged=found_drift.get("unmanaged"),
+        drift_checked_at=repair.finished_at if repair else None,
         models=[
             RegistryProxyModelResponse(
                 key=f"{provider}/{model.model_id}",

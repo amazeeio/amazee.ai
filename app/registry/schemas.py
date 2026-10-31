@@ -165,6 +165,11 @@ class RegistryDeploymentResponse(BaseModel):
     access_groups: list[str]
     # The name of the LiteLLM credential, or null when the credential is inline. Never its values.
     credential: str | None
+    # On amazee.ai's clock. changed_at later than synced_at means a change waits for the sync.
+    synced_at: datetime | None
+    changed_at: datetime | None
+    # The message of the last sync step that failed, or null.
+    sync_error: str | None
 
 
 class RegistryModelDeploymentResponse(RegistryDeploymentResponse):
@@ -196,7 +201,7 @@ class RegistryProxyResponse(BaseModel):
     imported_at: datetime | None
     # The providers with a deployment on this proxy.
     providers: list[str]
-    # Who may change what runs on the proxy: `catalog` or `none`.
+    # Who may change what runs on the proxy: `registry`, `catalog` or `none`.
     owner: str
     models_supported: int
     models_enabled: int
@@ -223,6 +228,12 @@ class RegistryProxyModelResponse(BaseModel):
 class RegistryProxyDetailResponse(RegistryProxyResponse):
     checked_at: datetime | None
     models: list[RegistryProxyModelResponse]
+    # The names of the registry credentials on the proxy. Never their values.
+    credentials: list[str]
+    # From the newest finished daily or repair run of the proxy, with no live read; null with no such run.
+    drift: list[dict] | None
+    unmanaged: list[dict] | None
+    drift_checked_at: datetime | None
 
 
 class RegistryEventResponse(BaseModel):
