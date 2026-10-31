@@ -250,25 +250,30 @@ def test_a_proxy_that_the_registry_does_not_manage_gets_nothing(registry_db, us,
 def test_an_empty_alias_map_never_deletes_live_aliases(registry_db, us, live_proxies):
     live_proxies.by_url[US_URL]["aliases"] = {"chat": "gpt-4o"}
 
-    run, steps = _run(registry_db, us, aliases=True)
+    run, [(action, status, message)] = _run(registry_db, us, aliases=True)
 
-    assert steps == [("read_proxy", "failed", DELETES_EVERY_ALIAS)]
+    assert (action, status) == ("write_alias_map", "failed")
+    assert message.startswith(DELETES_EVERY_ALIAS)
     assert live_proxies.writes == []
 
 
-def test_a_retry_after_the_alias_guard_runs_the_whole_proxy_again(registry_db, us, live_proxies):
+def test_the_alias_guard_blocks_only_the_alias_step_and_a_retry_takes_it_again(registry_db, us, live_proxies):
     from app.registry.api.sync import retry_scope
 
+    # A live alias made by hand, and a registry with no alias at all.
     live_proxies.by_url[US_URL]["aliases"] = {"chat": "gpt-4o"}
     gpt = _row(registry_db, "us-gpt")
     gpt.model_name = "gpt-renamed"
     registry_db.commit()
 
-    run, _ = _run(registry_db, us, deployments=[gpt.id], aliases=True)
-    steps = registry_db.query(DBRegistrySyncStep).filter_by(run_id=run.id).all()
+    run, steps = _run(registry_db, us, deployments=[gpt.id], aliases=True)
 
-    # The guard stopped the proxy before the rename, so the retry must take the rename too.
-    assert retry_scope(run, steps)[str(us.id)]["deployments"] == [gpt.id]
+    # The repair of the deployment still runs.
+    assert [(a, s) for a, s, _ in steps] == [("update_model", "ok"), ("write_alias_map", "failed")]
+    assert _actions(live_proxies) == ["update_model"]
+    rows = registry_db.query(DBRegistrySyncStep).filter_by(run_id=run.id).all()
+    entry = retry_scope(run, rows)[str(us.id)]
+    assert (entry["aliases"], entry["deployments"]) == (True, [])
 
 
 def test_a_row_deleted_during_its_create_has_the_new_deployment_deleted(registry_db, us, live_proxies):

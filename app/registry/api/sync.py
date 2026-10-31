@@ -682,13 +682,8 @@ def _sync_locked(proxy: _Proxy) -> dict | None:
         proxy.record("read_proxy", "failed", f"the proxy could not be read: {live}")
         db.commit()
         return None
-    if plan.aliases is not None and not plan.aliases and live.aliases.keys() - {plan.removed_alias}:
-        # The registry never wipes live aliases that the adopt import has not read. Recorded as a read
-        # failure: no step ran, so a retry takes the whole proxy again.
-        proxy.record("read_proxy", "failed", planner.DELETES_EVERY_ALIAS)
-        db.commit()
-        return None
-
+    # An empty wanted alias map with live aliases is blocked in the planner (DELETES_EVERY_ALIAS), so only the
+    # alias step fails and the other steps of the proxy still run.
     known_ids = set(plan.known_ids)
     # An update with only notes sends nothing, so the run records no step for it; a dry run still shows it.
     steps = [step for step in plan_proxy(plan, live) if _sendable(step) or step["blocked"]]
