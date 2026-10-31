@@ -50,6 +50,7 @@ class ProxyPlan:
     credentials: tuple = ()
     # The providers of the registry credentials on the proxy, mapped for rule 6.
     credential_providers: frozenset = frozenset()
+    region_id: int | None = None
 
 
 def _access_groups(db: Session, deployment_ids: list[int]) -> dict[int, list[str]]:
@@ -94,7 +95,8 @@ def _save(
 
 def _proxy_plan(region: DBRegion, **wanted) -> ProxyPlan:
     return ProxyPlan(
-        region.name, region.litellm_api_url, region.litellm_api_key, active=region.is_active is True, **wanted
+        region.name, region.litellm_api_url, region.litellm_api_key, active=region.is_active is True,
+        region_id=region.id, **wanted,
     )
 
 
@@ -275,8 +277,13 @@ def plan_steps(plans: list[ProxyPlan]) -> list[dict]:
                 {"proxy": plan.proxy, "action": "read_proxy", "problems": [f"the proxy could not be read: {live}"]}
             )
         else:
-            steps += planner.plan(
-                plan.proxy, live, plan.deployments, plan.fields, plan.aliases, plan.removed_alias, plan.known_ids,
-                plan.credentials, plan.credential_providers,
-            )
+            steps += plan_proxy(plan, live)
     return steps
+
+
+def plan_proxy(plan: ProxyPlan, live: planner.LiveProxy, known_ids: frozenset | None = None) -> list[dict]:
+    """The planner steps of one proxy plan against its live state."""
+    return planner.plan(
+        plan.proxy, live, plan.deployments, plan.fields, plan.aliases, plan.removed_alias,
+        plan.known_ids if known_ids is None else known_ids, plan.credentials, plan.credential_providers,
+    )

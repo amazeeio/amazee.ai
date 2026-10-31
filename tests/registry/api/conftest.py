@@ -2,6 +2,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from app.db.models import DBRegion
@@ -106,14 +107,114 @@ class _FakeProxyClient:
         return set(self._answer().get("credentials", ()))
 
 
+class _FakeProxyWriter:
+    """Changes `live_proxies.by_url[url]` the way a proxy would, and puts each call in `live_proxies.writes`.
+
+    `live_proxies.fail[(url, action)] = (status, body, saved)` makes a call fail; with `saved`, the change is
+    made before the error, as LiteLLM can do.
+    """
+
+    def __init__(self, proxies, url, key):
+        self._proxies, self._url = proxies, url
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        pass
+
+    def _state(self):
+        state = self._proxies.by_url.setdefault(self._url, {})
+        for name, empty in (("model_info", list), ("aliases", dict), ("credentials", list)):
+            state.setdefault(name, empty())
+        return state
+
+    def _call(self, action, change, *args):
+        self._proxies.writes.append((self._url, action, *args))
+        if hook := self._proxies.hooks.get(action):
+            hook()
+        failure = self._proxies.fail.get((self._url, action))
+        if failure is None or failure[2]:
+            change(self._state())
+        if failure is not None:
+            status, body, _ = failure
+            request = httpx.Request("POST", f"{self._url}/{action}")
+            response = httpx.Response(status, text=body, request=request)
+            raise httpx.HTTPStatusError(body, request=request, response=response)
+        return {}
+
+    def create_model(self, payload):
+        self._proxies.created += 1
+        dep_id = f"new-{self._proxies.created}"
+
+        def change(state):
+            state["model_info"].append({
+                "model_name": payload["model_name"],
+                "litellm_params": dict(payload["litellm_params"]),
+                "model_info": {**payload["model_info"], "id": dep_id, "db_model": True},
+            })
+
+        return self._call("create_model", change, payload)
+
+    def update_model(self, dep_id, body):
+        def change(state):
+            for row in state["model_info"]:
+                if row["model_info"].get("id") == dep_id:
+                    if "model_name" in body:
+                        row["model_name"] = body["model_name"]
+                    row["litellm_params"] = {**row["litellm_params"], **body.get("litellm_params", {})}
+                    row["model_info"] = {**row["model_info"], **body.get("model_info", {})}
+
+        return self._call("update_model", change, dep_id, body)
+
+    def delete_model(self, dep_id):
+        def change(state):
+            state["model_info"] = [row for row in state["model_info"] if row["model_info"].get("id") != dep_id]
+
+        return self._call("delete_model", change, dep_id)
+
+    def set_alias_map(self, full_map):
+        def change(state):
+            state["aliases"] = dict(full_map)
+
+        return self._call("set_alias_map", change, full_map)
+
+    def create_credential(self, name, values, info):
+        def change(state):
+            state["credentials"] = sorted({*state["credentials"], name})
+
+        return self._call("create_credential", change, name, values, info)
+
+    def update_credential(self, name, values, info):
+        return self._call("update_credential", lambda state: None, name, values, info)
+
+    def delete_credential(self, name):
+        def change(state):
+            state["credentials"] = [c for c in state["credentials"] if c != name]
+
+        return self._call("delete_credential", change, name)
+
+
 @pytest.fixture(autouse=True)
 def live_proxies(monkeypatch):
-    """No API test reaches the network: each dry-run read of a proxy goes to this fake and is put in `calls`."""
-    proxies = SimpleNamespace(by_url={}, calls=[])
+    """No API test reaches the network: each read of a proxy goes to this fake and is put in `calls`, and each
+    sync write goes to the fake writer and is put in `writes`."""
+    proxies = SimpleNamespace(by_url={}, calls=[], writes=[], fail={}, hooks={}, created=0)
     monkeypatch.setattr(
         "app.registry.api.dry_run.ProxyClient", lambda url, key: _FakeProxyClient(proxies, url, key)
     )
+    monkeypatch.setattr(
+        "app.registry.api.sync.ProxyWriter", lambda url, key: _FakeProxyWriter(proxies, url, key)
+    )
     return proxies
+
+
+@pytest.fixture(autouse=True)
+def managed_proxies(monkeypatch):
+    """The proxy names that the registry sync may write to. Empty, so a write keeps its plain answer."""
+    managed = set()
+    monkeypatch.setattr("app.registry.api.sync.registry_manages", lambda name: name in managed)
+    return managed
 
 
 def live_row(dep_id, name, model, credential=None, groups=(), db_model=True, **params):
