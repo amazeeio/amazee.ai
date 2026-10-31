@@ -260,3 +260,19 @@ def test_a_pushed_credential_names_its_provider_and_region_in_its_info(
     assert info == {
         "note": "main", "custom_llm_provider": "bedrock", "aws_region_name": "us-east-1", "vertex_location": "us-central1",
     }
+
+
+def test_a_retry_does_not_delete_a_credential_that_was_added_back(
+    client, admin_token, registry_db, us, live_proxies, credential_key
+):
+    ok(_create(client, admin_token), 202)
+    live_proxies.fail[(US_URL, "delete_credential")] = (500, "boom", False)
+    removed = ok(client.patch("/registry/credentials/Open AI", json={"proxies": []}, headers=auth(admin_token)), 202)
+    live_proxies.fail.clear()
+    ok(client.patch("/registry/credentials/Open AI", json={"proxies": ["local-us1"]}, headers=auth(admin_token)), 202)
+
+    ok(client.post(f"/registry/sync-runs/{removed['sync_run_id']}/retry", headers=auth(admin_token)), 202)
+
+    # The proxy is linked again, so the retry keeps the credential.
+    assert "Open AI" in live_proxies.by_url[US_URL]["credentials"]
+    assert [w for w in live_proxies.writes if w[1] == "delete_credential"] == [(US_URL, "delete_credential", "Open AI")]

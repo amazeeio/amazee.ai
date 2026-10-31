@@ -226,8 +226,13 @@ def plans_for_scope(db: Session, region: DBRegion, entry: dict) -> tuple[ProxyPl
             aliases_adopted=wanted.aliases_adopted,
         )
     if entry["credentials"]:
+        # Whether the proxy keeps a credential is read now, under the lock: a write after this run was made, or
+        # before its retry, can have linked the proxy again or removed it.
+        linked = set(proxy_credentials(db, region.id))
         plan = replace(plan, credentials=tuple(
-            credential_plans(db, item["name"], [region.id], item["rotate"], item["keep"])[0].credentials[0]
+            credential_plans(
+                db, item["name"], [region.id], item["rotate"] and item["name"] in linked, item["name"] in linked
+            )[0].credentials[0]
             for item in entry["credentials"]
         ))
     return plan, left_out
