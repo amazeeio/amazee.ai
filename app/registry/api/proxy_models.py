@@ -26,6 +26,8 @@ from app.registry.api.routes import (
 from app.registry.models import (
     DBRegistryAccessGroup,
     DBRegistryAlias,
+    DBRegistryCredential,
+    DBRegistryCredentialRegion,
     DBRegistryModel,
     DBRegistryModelPrice,
     DBRegistryModelRegion,
@@ -36,6 +38,7 @@ from app.registry.models import (
 from app.registry.planner import DEPLOYMENT_FIELDS
 from app.registry.rules import (
     backend_problem,
+    credential_provider,
     default_backend,
     enable_problems,
     geo_problem,
@@ -80,6 +83,62 @@ def _group_ids(db: Session, slugs: list[str], problems: list[RegistryProblem]) -
     )
     problems += [RegistryProblem(message=f"Unknown access group {slug}") for slug in sorted(set(slugs) - found.keys())]
     return found
+
+
+def _credential_problems(db: Session, wanted: list[tuple[str, int, str, str, str | None]]) -> list[RegistryProblem]:
+    """Unknown credentials, credentials not on the proxy, and rule 6, for each
+    (credential name, region id, proxy name, model key, model provider), in a fixed number of queries.
+    A null model provider skips rule 6.
+
+    FOR KEY SHARE makes a credential DELETE wait for this write, or the write sees the credential as unknown.
+    The sorted order keeps the lock order the same in every call.
+    """
+    names = sorted({name for name, *_ in wanted})
+    if not names:
+        return []
+    rows = {
+        row.name: row
+        for row in db.query(DBRegistryCredential)
+        .filter(DBRegistryCredential.name.in_(names))
+        .order_by(DBRegistryCredential.name)
+        .with_for_update(read=True, key_share=True)
+    }
+    links = set(
+        db.query(DBRegistryCredentialRegion.credential_id, DBRegistryCredentialRegion.region_id).filter(
+            DBRegistryCredentialRegion.credential_id.in_([row.id for row in rows.values()])
+        )
+    )
+    # A credential from the adopt import has no provider, so it gets the providers of its users, on any proxy.
+    providers = {name: {credential_provider(row.provider)} for name, row in rows.items() if row.provider}
+    unset = [name for name, row in rows.items() if not row.provider]
+    if unset:
+        used_by = DBRegistryModelRegion.litellm_params["litellm_credential_name"].as_string()
+        for name, provider in (
+            db.query(used_by, DBRegistryProvider.name)
+            .join(DBRegistryModel, DBRegistryModel.id == DBRegistryModelRegion.model_id)
+            .join(DBRegistryProvider, DBRegistryProvider.id == DBRegistryModel.provider_id)
+            .filter(used_by.in_(unset))
+            .distinct()
+        ):
+            providers.setdefault(name, set()).add(credential_provider(provider))
+
+    problems = []
+    for name, region_id, proxy, key, provider in wanted:
+        row = rows.get(name)
+        if row is None:
+            problems.append(RegistryProblem(message=f"Unknown credential {name}", proxy=proxy))
+            continue
+        if (row.id, region_id) not in links:
+            problems.append(RegistryProblem(
+                message=f"The credential {name} is not on the proxy {proxy}", proxy=proxy, status=409
+            ))
+        allowed = providers.get(name)
+        if provider and allowed and credential_provider(provider) not in allowed:
+            problems.append(RegistryProblem(
+                message=f"the credential {name} is for {', '.join(sorted(allowed))}, not {provider}",
+                proxy=proxy, model=key,
+            ))
+    return problems
 
 
 def _alias_names(db: Session, region_ids) -> set[tuple[int, str]]:
@@ -221,6 +280,8 @@ def set_proxy_model(
         enabled = changes.get("enabled", True)
         if enabled:
             check_enable(availability, [(backend, {})])
+        if changes.get("credential"):
+            problems += _credential_problems(db, [(changes["credential"], region.id, region.name, key, provider)])
         refuse(problems)
         deployments = [_add_deployment(db, model, region.id, name, backend, changes.get("credential"), enabled)]
         db.flush()
@@ -265,6 +326,8 @@ def set_proxy_model(
                     add(problem)
         if checked:
             check_enable(Availability(db), checked)
+        if changes.get("credential"):
+            problems += _credential_problems(db, [(changes["credential"], region.id, region.name, key, provider)])
         refuse(problems)
 
         for deployment in deployments:
@@ -386,7 +449,7 @@ def roll_out(
     owners = _name_owners(db, region_ids, [model.model_id for model, _ in models.values()])
 
     # Every check runs before the first write, so a 4xx changes nothing.
-    entries, pairs = [], []
+    entries, pairs, credentials = [], [], []
     for key in keys:
         model, provider = models[key]
         for name in body.proxies:
@@ -428,6 +491,10 @@ def roll_out(
                 proxy=name, model=key, action=action, model_name=model_name, litellm_model=backend,
             ))
             pairs.append((model, region_id, existing))
+            if body.proxies[name]:
+                # Rule 6 only where the rollout writes the credential; a deployment that exists keeps its own.
+                credentials.append((body.proxies[name], region_id, name, key, None if existing else provider))
+    problems += _credential_problems(db, credentials)
     refuse(problems)
 
     targets = []

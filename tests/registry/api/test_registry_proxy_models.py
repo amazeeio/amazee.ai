@@ -20,6 +20,7 @@ from tests.registry.api.conftest import (
     UNSUPPORTED,
     US_URL,
     auth,
+    credential,
     live_row,
     messages,
     model,
@@ -43,6 +44,8 @@ def setup(registry_db, writable):
         DBRegistryAlias(region_id=writable["us"].id, alias="zeta", target="gpt-4o"),
         DBRegistryAlias(region_id=writable["us"].id, alias="chat", target="claude-x"),
     ])
+    for name in ("openai-main", "Open AI"):
+        credential(registry_db, name, proxies=writable.values())
     registry_db.commit()
     return writable
 
@@ -138,9 +141,10 @@ def test_put_changes_one_deployment(client, admin_token, registry_db, setup):
 
 
 def test_put_accepts_a_credential_name_with_a_space(client, admin_token, registry_db, setup):
-    ok(_put(client, admin_token, "local-us1", "openai/gpt-4o", {"credential": "AWS Bedrock"}))
+    # A name that no deployment uses: rule 6 would refuse AWS Bedrock, which a Bedrock deployment uses.
+    ok(_put(client, admin_token, "local-us1", "openai/gpt-4o", {"credential": "Open AI"}))
 
-    assert _deployment(registry_db, setup["us"].id, "gpt-4o").litellm_params == {"litellm_credential_name": "AWS Bedrock"}
+    assert _deployment(registry_db, setup["us"].id, "gpt-4o").litellm_params == {"litellm_credential_name": "Open AI"}
 
 
 def test_put_changes_every_deployment_of_the_model(client, admin_token, registry_db, setup):
@@ -691,3 +695,75 @@ def test_writes_read_no_proxy(client, admin_token, setup, live_proxies):
     assert _delete(client, admin_token, "local-eu1", "openai/gpt-4o").status_code == 204
 
     assert live_proxies.calls == []
+
+
+def _bedrock_credential(db, setup, name="AWS Keys"):
+    credential(db, name, provider="bedrock", proxies=setup.values())
+    db.commit()
+
+
+def test_put_refuses_an_unknown_credential(client, admin_token, registry_db, setup):
+    before = _state(registry_db)
+    response = _put(client, admin_token, "local-us1", "openai/gpt-4o", {"credential": "nope"})
+
+    assert response.status_code == 422
+    assert messages(response) == ["Unknown credential nope"]
+    assert _state(registry_db) == before
+
+
+def test_put_refuses_a_credential_that_is_not_on_the_proxy(client, admin_token, registry_db, setup):
+    credential(registry_db, "eu-only", proxies=[setup["eu"]])
+    registry_db.commit()
+
+    response = _put(client, admin_token, "local-us1", "openai/gpt-old", {"credential": "eu-only"})
+
+    assert response.status_code == 409
+    assert messages(response) == ["The credential eu-only is not on the proxy local-us1"]
+
+
+def test_put_takes_a_bedrock_credential_for_a_bedrock_mantle_model(client, admin_token, registry_db, setup):
+    add_model(registry_db, "bedrock_mantle", "openai.gpt-5.4")
+    _bedrock_credential(registry_db, setup)
+
+    ok(_put(client, admin_token, "local-us1", "bedrock_mantle/openai.gpt-5.4", {"credential": "AWS Keys"}, "?force=true"), 201)
+
+
+@pytest.mark.parametrize("query", ["", "?force=true"])
+def test_put_refuses_a_credential_of_another_provider(client, admin_token, registry_db, setup, query):
+    add_model(registry_db, "vertex_ai", "gemini-x")
+    _bedrock_credential(registry_db, setup)
+    before = _state(registry_db)
+
+    response = _put(client, admin_token, "local-us1", "vertex_ai/gemini-x", {"credential": "AWS Keys"}, query)
+
+    assert response.status_code == 422
+    assert "the credential AWS Keys is for bedrock, not vertex_ai" in messages(response)
+    assert _state(registry_db) == before
+
+
+def test_a_credential_with_no_provider_gets_the_providers_of_its_users(client, admin_token, registry_db, setup):
+    # AWS Bedrock has no provider. A bedrock and a bedrock_mantle deployment use it: both map to bedrock.
+    mantle = add_model(registry_db, "bedrock_mantle", "openai.gpt-5.4")
+    registry_db.add(DBRegistryModelRegion(
+        model_id=mantle.id, region_id=setup["us"].id, model_name="gpt-5.4", litellm_model="openai/openai.gpt-5.4",
+        litellm_params={"litellm_credential_name": "AWS Bedrock"},
+    ))
+    add_model(registry_db, "bedrock_mantle", "moonshotai.kimi-k2.5")
+    add_model(registry_db, "vertex_ai", "gemini-x")
+    registry_db.commit()
+
+    ok(_put(
+        client, admin_token, "local-us1", "bedrock_mantle/moonshotai.kimi-k2.5", {"credential": "AWS Bedrock"},
+        "?force=true",
+    ), 201)
+    response = _put(client, admin_token, "local-us1", "vertex_ai/gemini-x", {"credential": "AWS Bedrock"}, "?force=true")
+    assert messages(response) == ["the credential AWS Bedrock is for bedrock, not vertex_ai"]
+
+
+def test_credential_problems_join_the_other_problems(client, admin_token, registry_db, setup):
+    response = _put(
+        client, admin_token, "local-us1", "openai/gpt-old", {"credential": "nope", "model_name": "zeta"}, "?force=true"
+    )
+
+    assert response.status_code == 422
+    assert messages(response) == ["the model name zeta is an alias on this proxy", "Unknown credential nope"]

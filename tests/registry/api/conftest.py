@@ -7,6 +7,8 @@ import pytest
 from app.db.models import DBRegion
 from app.registry.models import (
     DBRegistryAccessGroup,
+    DBRegistryCredential,
+    DBRegistryCredentialRegion,
     DBRegistryModel,
     DBRegistryModelPrice,
     DBRegistryModelRegion,
@@ -215,6 +217,16 @@ def deployment_state(db):
     return deployments, links
 
 
+def credential(db, name, provider=None, proxies=()):
+    """A registry credential with no values, linked to the given regions."""
+    row = DBRegistryCredential(name=name, provider=provider, credential_info={})
+    db.add(row)
+    db.flush()
+    db.add_all(DBRegistryCredentialRegion(credential_id=row.id, region_id=region.id) for region in proxies)
+    db.flush()
+    return row
+
+
 @pytest.fixture
 def writable(registry_db, deployed):
     """The `deployed` proxies, imported, with the access groups alpha and beta and support rows for gpt-old."""
@@ -227,5 +239,7 @@ def writable(registry_db, deployed):
     ])
     for proxy in registry_db.query(DBRegistryProxy):
         proxy.imported_at = CHECKED_AT
+    for name in ("c1", "c2", "AWS Bedrock"):
+        credential(registry_db, name, proxies=deployed.values())
     registry_db.commit()
     return deployed

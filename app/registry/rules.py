@@ -28,6 +28,15 @@ _GEOS_BY_FAMILY = (
     ("il-", ("il",)),
     ("mx-", ("mx",)),
 )
+# Rule 6: providers that use the same credentials. Bedrock Mantle takes the AWS keys of Bedrock.
+CREDENTIAL_PROVIDERS = {"bedrock_mantle": "bedrock"}
+
+
+def credential_provider(provider: str) -> str:
+    """The provider whose credentials `provider` uses. Rule 6 compares only these names."""
+    return CREDENTIAL_PROVIDERS.get(provider, provider)
+
+
 # `{proxy}` and `{key}` are the literal path text: the rule functions do not know the names.
 UNKNOWN_BEDROCK_REGION = "the proxy's Bedrock region is unknown; set it with PATCH /registry/proxies/{proxy}"
 NO_PRICE = "the model has no price on the proxy or in the registry; set one with PATCH /registry/models/{key}"
