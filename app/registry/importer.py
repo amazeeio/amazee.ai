@@ -188,8 +188,11 @@ def import_deployments(
     found = _proxy_cloud_regions(deployments, credential_regions)
     # An admin can set a region, so a stored value wins and the adopt mode only adds new providers.
     proxy.cloud_regions = {**found, **(proxy.cloud_regions or {})} if adopt else found
+    now = datetime.now(UTC)
     if proxy.imported_at is None:
-        proxy.imported_at = datetime.now(UTC)
+        proxy.imported_at = now
+    if adopt and proxy.adopted_at is None:
+        proxy.adopted_at = now
     return stats
 
 

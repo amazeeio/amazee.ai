@@ -63,12 +63,14 @@ def test_sync_migration_drops_and_adds_its_tables_and_columns(db):
             migration.downgrade()
             assert not tables & set(inspect(connection).get_table_names())
             assert not sync_columns & set(_columns(connection, "registry_model_regions"))
+            assert "adopted_at" not in _columns(connection, "registry_proxies")
 
             migration.upgrade()
             inspector = inspect(connection)
             assert tables <= set(inspector.get_table_names())
             deployment = _columns(connection, "registry_model_regions")
             assert all(deployment[c]["nullable"] for c in sync_columns)
+            assert _columns(connection, "registry_proxies")["adopted_at"]["nullable"] is True
             assert ["name"] in [c["column_names"] for c in inspector.get_unique_constraints("registry_credentials")]
             assert _columns(connection, "registry_credentials")["values_encrypted"]["nullable"] is True
 

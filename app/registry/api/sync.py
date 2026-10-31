@@ -209,7 +209,11 @@ def plans_for_scope(db: Session, region: DBRegion, entry: dict) -> tuple[ProxyPl
         credential_providers=credential_providers(db, [region.id]).get(region.id, frozenset()),
     )
     if entry["aliases"]:
-        plan = replace(plan, aliases=alias_plans(db, region)[0].aliases, removed_alias=entry.get("removed_alias"))
+        wanted = alias_plans(db, region)[0]
+        plan = replace(
+            plan, aliases=wanted.aliases, removed_alias=entry.get("removed_alias"),
+            aliases_adopted=wanted.aliases_adopted,
+        )
     if entry["credentials"]:
         plan = replace(plan, credentials=tuple(
             credential_plans(db, item["name"], [region.id], item["rotate"], item["keep"])[0].credentials[0]
@@ -526,7 +530,10 @@ def _subject_steps(plan: ProxyPlan, step: dict, live: planner.LiveProxy, known_i
             credential_providers=plan.credential_providers,
         )
     if step["action"] == "write_alias_map":
-        return planner.plan(plan.proxy, live, aliases=plan.aliases, removed_alias=plan.removed_alias)
+        return planner.plan(
+            plan.proxy, live, aliases=plan.aliases, removed_alias=plan.removed_alias,
+            aliases_adopted=plan.aliases_adopted,
+        )
     credential = next(c for c in plan.credentials if c.name == step["credential"])
     return planner.plan(plan.proxy, live, credentials=[credential])
 
@@ -735,7 +742,8 @@ def _daily(db: Session) -> dict:
     db.commit()
     stats: dict = {"stuck": stuck, "imported": [], "import_failed": {}, "runs": {}}
 
-    imported = db.query(DBRegistryProxy.region_id).filter(DBRegistryProxy.imported_at.isnot(None))
+    # A plain import read no aliases, so a proxy is done only when the adopt import ran.
+    imported = db.query(DBRegistryProxy.region_id).filter(DBRegistryProxy.adopted_at.isnot(None))
     for region in [r for r in active_regions(db) if r.id not in {rid for (rid,) in imported}]:
         name = region.name
         try:

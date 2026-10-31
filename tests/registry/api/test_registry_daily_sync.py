@@ -115,7 +115,8 @@ def test_a_stuck_run_is_marked_failed(registry_db, us):
 
 
 def test_an_active_proxy_that_was_never_imported_is_imported(registry_db, us, live_proxies):
-    registry_db.get(DBRegistryProxy, us["eu"].id).imported_at = None
+    eu_proxy = registry_db.get(DBRegistryProxy, us["eu"].id)
+    eu_proxy.imported_at = eu_proxy.adopted_at = None
     registry_db.commit()
 
     stats = _daily(registry_db)
@@ -151,3 +152,13 @@ def test_no_managed_proxy_makes_no_run(registry_db, us, managed_proxies, live_pr
     assert (stats["managed"], stats["runs"]) == ([], {})
     assert registry_db.query(DBRegistrySyncRun).count() == 0
     assert live_proxies.writes == []
+
+
+def test_a_proxy_that_only_a_plain_import_read_is_adopted(registry_db, us, live_proxies):
+    registry_db.get(DBRegistryProxy, us["eu"].id).adopted_at = None
+    registry_db.commit()
+
+    stats = _daily(registry_db)
+
+    assert stats["imported"] == ["local-eu1"]
+    assert registry_db.get(DBRegistryProxy, us["eu"].id).adopted_at is not None

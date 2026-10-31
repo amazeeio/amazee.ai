@@ -80,7 +80,7 @@ def _import_failed(proxy: str, exc: Exception) -> RegistryProblem:
 
 
 def _import_first(db: Session, regions) -> None:
-    """Adopt-import each proxy that was never imported, before the write locks it.
+    """Adopt-import each proxy that the adopt import never read, before the write locks it.
 
     Each import commits the request session. The import reads the proxy, so it runs before any lock.
     """
@@ -88,7 +88,7 @@ def _import_first(db: Session, regions) -> None:
     waiting = [
         region_id
         for (region_id,) in db.query(DBRegistryProxy.region_id)
-        .filter(DBRegistryProxy.region_id.in_(regions), DBRegistryProxy.imported_at.is_(None))
+        .filter(DBRegistryProxy.region_id.in_(regions), DBRegistryProxy.adopted_at.is_(None))
         .order_by(DBRegistryProxy.region_id)
     ]
     for region_id in waiting:

@@ -94,9 +94,11 @@ def upgrade() -> None:
     op.add_column("registry_model_regions", sa.Column("synced_at", sa.DateTime(timezone=True), nullable=True))
     op.add_column("registry_model_regions", sa.Column("changed_at", sa.DateTime(timezone=True), nullable=True))
     op.add_column("registry_model_regions", sa.Column("sync_error", sa.String(), nullable=True))
+    op.add_column("registry_proxies", sa.Column("adopted_at", sa.DateTime(timezone=True), nullable=True))
 
 
 def downgrade() -> None:
+    op.drop_column("registry_proxies", "adopted_at")
     for column in _DEPLOYMENT_COLUMNS:
         op.drop_column("registry_model_regions", column)
     op.drop_index("ix_registry_sync_steps_run_id", table_name="registry_sync_steps")

@@ -97,6 +97,9 @@ class DBRegistryProxy(Base):
     cloud_regions = Column(JSON, nullable=False, default=dict)
     # Set once by the import. The API adds planned deployments to the proxy only after it.
     imported_at = Column(DateTime(timezone=True), nullable=True)
+    # Set by the adopt import, which reads the live aliases and credentials. Until then the sync sends no
+    # alias map, because the registry does not know the live aliases that the full map would delete.
+    adopted_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class DBRegistryModelRegion(Base):

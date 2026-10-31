@@ -12,12 +12,13 @@ from app.registry.config import CREDENTIAL_KEYS_ENV
 from app.registry.crypto import encrypt_values
 from app.registry.models import (
     DBRegistryAlias,
+    DBRegistryProxy,
     DBRegistryModelPrice,
     DBRegistryModelRegion,
     DBRegistrySyncRun,
     DBRegistrySyncStep,
 )
-from app.registry.planner import DELETES_EVERY_ALIAS, LIVE_NAME_CLASH, MANAGED_BY, NOT_MANAGED
+from app.registry.planner import DELETES_EVERY_ALIAS, LIVE_NAME_CLASH, MANAGED_BY, NOT_ADOPTED, NOT_MANAGED
 from tests.registry.api.conftest import US_URL, credential, live_row, model
 
 MASTER_KEY = "sk-master-key-0123"
@@ -359,3 +360,18 @@ def test_scrub_catches_a_secret_in_escaped_or_multi_line_form():
         scrubbed = _scrub(f"HTTP 400: {echo}", _strings(values))
         assert "MIIEvAIBADANBgkqhkiG9w0B" not in scrubbed, echo
         assert "AQEFAASCBKYwggSiAgEAAoIB" not in scrubbed, echo
+
+
+def test_no_alias_map_goes_to_a_proxy_that_the_adopt_import_never_read(registry_db, us, live_proxies):
+    # A plain import read no aliases, so the registry would delete the live one with its full map.
+    registry_db.get(DBRegistryProxy, us.id).adopted_at = None
+    registry_db.add(DBRegistryAlias(region_id=us.id, alias="new", target="gpt-4o"))
+    registry_db.commit()
+    live_proxies.by_url[US_URL]["aliases"] = {"old": "gpt-4o"}
+
+    run, steps = _run(registry_db, us, aliases=True)
+
+    [(action, status, message)] = steps
+    assert (action, status) == ("write_alias_map", "failed")
+    assert NOT_ADOPTED in message
+    assert live_proxies.writes == []

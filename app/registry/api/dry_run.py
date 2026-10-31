@@ -48,6 +48,8 @@ class ProxyPlan:
     # The providers of the registry credentials on the proxy, mapped for rule 6.
     credential_providers: frozenset = frozenset()
     region_id: int | None = None
+    # False until the adopt import read the proxy's live aliases.
+    aliases_adopted: bool = True
 
 
 def _access_groups(db: Session, deployment_ids: list[int]) -> dict[int, list[str]]:
@@ -186,7 +188,8 @@ def alias_plans(db: Session, region: DBRegion, removed_alias: str | None = None)
         row.alias: {"model": row.target, "hidden": True} if row.hidden else row.target
         for row in db.query(DBRegistryAlias).filter(DBRegistryAlias.region_id == region.id)
     }
-    return [_proxy_plan(region, aliases=aliases, removed_alias=removed_alias)]
+    adopted = db.query(DBRegistryProxy.adopted_at).filter_by(region_id=region.id).scalar() is not None
+    return [_proxy_plan(region, aliases=aliases, removed_alias=removed_alias, aliases_adopted=adopted)]
 
 
 def _readable_row(row: dict) -> dict | None:
@@ -265,4 +268,5 @@ def plan_proxy(plan: ProxyPlan, live: planner.LiveProxy, known_ids: frozenset | 
     return planner.plan(
         plan.proxy, live, plan.deployments, plan.fields, plan.aliases, plan.removed_alias,
         plan.known_ids if known_ids is None else known_ids, plan.credentials, plan.credential_providers,
+        plan.aliases_adopted,
     )

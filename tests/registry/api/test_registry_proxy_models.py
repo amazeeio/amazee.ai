@@ -558,7 +558,8 @@ def test_delete_dry_run_keeps_the_rows(client, admin_token, registry_db, setup):
 
 
 def test_a_dry_run_on_a_proxy_that_was_never_imported_gets_409(client, admin_token, registry_db, setup, live_proxies):
-    registry_db.get(DBRegistryProxy, setup["eu"].id).imported_at = None
+    eu_proxy = registry_db.get(DBRegistryProxy, setup["eu"].id)
+    eu_proxy.imported_at = eu_proxy.adopted_at = None
     registry_db.commit()
     before = _state(registry_db)
 
@@ -577,7 +578,8 @@ def test_a_dry_run_on_a_proxy_that_was_never_imported_gets_409(client, admin_tok
 
 
 def test_a_write_on_a_proxy_that_was_never_imported_imports_it_first(client, admin_token, registry_db, setup, live_proxies):
-    registry_db.get(DBRegistryProxy, setup["eu"].id).imported_at = None
+    eu_proxy = registry_db.get(DBRegistryProxy, setup["eu"].id)
+    eu_proxy.imported_at = eu_proxy.adopted_at = None
     registry_db.commit()
     live_proxies.by_url[EU_URL] = {"model_info": [
         live_row("eu-gpt", "gpt-4o", "openai/gpt-4o"), live_row("eu-new", "gpt-old", "openai/gpt-old"),
@@ -593,7 +595,8 @@ def test_a_write_on_a_proxy_that_was_never_imported_imports_it_first(client, adm
 
 
 def test_a_failed_automatic_import_gives_409_and_changes_nothing(client, admin_token, registry_db, setup, live_proxies):
-    registry_db.get(DBRegistryProxy, setup["eu"].id).imported_at = None
+    eu_proxy = registry_db.get(DBRegistryProxy, setup["eu"].id)
+    eu_proxy.imported_at = eu_proxy.adopted_at = None
     registry_db.commit()
     before = _state(registry_db)
     live_proxies.by_url[EU_URL] = httpx.ConnectError("down")
@@ -801,3 +804,19 @@ def test_credential_problems_join_the_other_problems(client, admin_token, regist
 
     assert response.status_code == 422
     assert messages(response) == ["the model name zeta is an alias on this proxy", "Unknown credential nope"]
+
+
+def test_a_write_on_a_proxy_that_only_a_plain_import_read_adopts_it_first(client, admin_token, registry_db, setup, live_proxies):
+    registry_db.get(DBRegistryProxy, setup["eu"].id).adopted_at = None
+    registry_db.commit()
+    live_proxies.by_url[EU_URL] = {
+        "model_info": [live_row("eu-gpt", "gpt-4o", "openai/gpt-4o")], "aliases": {"old": "gpt-4o"},
+    }
+
+    ok(_put(client, admin_token, "local-eu1", "openai/gpt-4o", {"groups": ["alpha"]}))
+
+    registry_db.expire_all()
+    assert registry_db.get(DBRegistryProxy, setup["eu"].id).adopted_at is not None
+    assert [(a.alias, a.target) for a in registry_db.query(DBRegistryAlias).filter_by(region_id=setup["eu"].id)] == [
+        ("old", "gpt-4o")
+    ]

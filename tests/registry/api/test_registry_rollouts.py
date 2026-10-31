@@ -277,7 +277,8 @@ def test_rollout_query_count_does_not_grow_with_the_pairs(client, admin_token, r
 
 
 def test_rollout_dry_run_to_a_proxy_that_was_never_imported_gets_409(client, admin_token, registry_db, setup):
-    registry_db.get(DBRegistryProxy, setup["eu"].id).imported_at = None
+    eu_proxy = registry_db.get(DBRegistryProxy, setup["eu"].id)
+    eu_proxy.imported_at = eu_proxy.adopted_at = None
     registry_db.commit()
     before = _state(registry_db)
 

@@ -13,6 +13,10 @@ ALREADY_RUNS = "the proxy already runs this deployment; the phase 3 import adopt
 NOT_ON_PROXY = "the deployment is not on the proxy"
 PROVISIONED_ONLY = "the deployment is a provisioned-only Bedrock variant; the sync writes no per-token price into it"
 DELETES_EVERY_ALIAS = "this would delete every live alias; the phase 3 import must read them first"
+NOT_ADOPTED = (
+    "the adopt import has not read the live aliases of the proxy, so the full map could delete them; "
+    "run POST /registry/proxies/{proxy}/import"
+)
 REMOVES_LIVE_ALIAS = (
     "the live alias {} is not in the registry, so the sync would remove it; the phase 3 import must read it first"
 )
@@ -216,7 +220,7 @@ def alias_entry(value) -> tuple | None:
     return None if value is None else (value, False)
 
 
-def _alias_step(proxy: str, live: dict, wanted: dict, removed_alias: str | None) -> dict | None:
+def _alias_step(proxy: str, live: dict, wanted: dict, removed_alias: str | None, adopted: bool) -> dict | None:
     changes = {
         name: {"from": live.get(name), "to": wanted.get(name)}
         for name in sorted(live.keys() | wanted.keys())
@@ -226,6 +230,8 @@ def _alias_step(proxy: str, live: dict, wanted: dict, removed_alias: str | None)
         return None
     # Deleting the last alias on purpose leaves an empty map, and that is no problem.
     problems = [DELETES_EVERY_ALIAS] if not wanted and live.keys() - {removed_alias} else []
+    if not adopted:
+        problems.append(NOT_ADOPTED)
     # The full map drops every live alias that the registry does not have, not only the one a DELETE names.
     # The registry owns the map, so this only informs.
     notes = [
@@ -245,6 +251,7 @@ def plan(
     known_ids: frozenset = frozenset(),
     credentials=(),
     credential_providers: frozenset = frozenset(),
+    aliases_adopted: bool = True,
 ) -> list[dict]:
     """The steps that bring the proxy to the wanted state. Only the names in `fields` are compared.
 
@@ -253,6 +260,7 @@ def plan(
     `known_ids` are the LiteLLM deployment ids that the registry holds on the proxy.
     `credentials` come first, so a deployment can use a credential that the same plan creates.
     `credential_providers` are the providers of the registry credentials on the proxy, mapped for rule 6.
+    `aliases_adopted` is False until the adopt import read the live aliases; the alias step is blocked until then.
     A step with `blocked` set is never sent.
     """
     rows, _ = without_alias_copies(live.deployments, set(live.aliases))
@@ -278,6 +286,6 @@ def plan(
             steps.append(_step(proxy, "update_model", deployment, changes={}, problems=[NOT_ON_PROXY]))
         elif step := _update(proxy, deployment, row, fields, live.credentials, rows, known_ids):
             steps.append(step)
-    if aliases is not None and (step := _alias_step(proxy, live.aliases, aliases, removed_alias)):
+    if aliases is not None and (step := _alias_step(proxy, live.aliases, aliases, removed_alias, aliases_adopted)):
         steps.append(step)
     return steps

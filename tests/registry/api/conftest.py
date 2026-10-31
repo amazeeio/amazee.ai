@@ -348,7 +348,7 @@ def writable(registry_db, deployed):
         support_row(old.id, deployed["eu"].id),
     ])
     for proxy in registry_db.query(DBRegistryProxy):
-        proxy.imported_at = CHECKED_AT
+        proxy.imported_at = proxy.adopted_at = CHECKED_AT
     for name in ("c1", "c2", "AWS Bedrock"):
         credential(registry_db, name, proxies=deployed.values())
     registry_db.commit()

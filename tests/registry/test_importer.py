@@ -408,7 +408,9 @@ def test_an_adopt_import_adds_only_new_deployments_and_keeps_the_rows(registry_d
     assert registry_db.query(DBRegistryModelRegion).filter_by(litellm_deployment_id="dep-1").one().model_name == (
         "renamed-by-admin"
     )
-    assert registry_db.get(DBRegistryProxy, proxy_region.id).imported_at == imported_at
+    proxy = registry_db.get(DBRegistryProxy, proxy_region.id)
+    assert proxy.imported_at == imported_at
+    assert proxy.adopted_at is not None
 
 
 def test_an_adopt_import_merges_cloud_regions_and_keeps_an_admin_value(registry_db, proxy_region):
