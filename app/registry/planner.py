@@ -16,6 +16,16 @@ REMOVES_LIVE_ALIAS = (
     "the live alias {} is not in the registry, so the sync would remove it; the phase 3 import must read it first"
 )
 CREDENTIAL_NOT_ON_PROXY = "the credential {} is not on the proxy"
+NOT_MANAGED = "the deployment comes from the proxy config file; the sync does not change or delete it"
+LIVE_NAME_CLASH = (
+    "the proxy runs another model as {}, and the registry does not know that deployment; run the adopt import first"
+)
+CANNOT_CLEAR_CREDENTIAL = (
+    "LiteLLM keeps a credential name that an update leaves out, and the sync never creates a deployment again"
+)
+RECREATE = "the deployment is gone from the proxy; the sync creates it again"
+# model_info.managed_by of every deployment that the sync creates.
+MANAGED_BY = "amazee-registry"
 
 
 @dataclass(frozen=True)
@@ -30,9 +40,15 @@ class Deployment:
     deployment_id: str | None = None
     # False when the write removed the deployment or turned it off.
     keep: bool = True
-    # The price fields from pick_price(), set only by a price write.
+    # The price fields from pick_price(). An update compares them only when `fields` has "prices".
     price: dict | None = None
     provisioned_only: bool = False
+    # The registry_model_regions id, or None for a row that the write deleted.
+    row_id: int | None = None
+    # True when the registry created the deployment, so the sync may create it again when it is gone.
+    recreate: bool = False
+    # The stored litellm_params, which hold no secrets.
+    params: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -42,7 +58,8 @@ class LiveProxy:
     credentials: frozenset = frozenset()
 
 
-def _step(proxy, action, deployment=None, payload=None, changes=None, problems=()) -> dict:
+def _step(proxy, action, deployment=None, payload=None, changes=None, problems=(), notes=()) -> dict:
+    """One step. `problems` stop the sync from sending the step; `notes` only inform."""
     return {
         "proxy": proxy,
         "action": action,
@@ -51,20 +68,39 @@ def _step(proxy, action, deployment=None, payload=None, changes=None, problems=(
         "deployment_id": deployment.deployment_id if deployment else None,
         "payload": payload,
         "changes": changes,
-        "problems": list(problems),
+        "problems": [*problems, *notes],
+        "row_id": deployment.row_id if deployment else None,
+        "blocked": bool(problems),
+        "credential": None,
     }
 
 
-def _create(proxy: str, deployment: Deployment, live: LiveProxy, rows: list[dict]) -> dict:
-    params = {"model": deployment.litellm_model}
+def _name_clash(name: str, litellm_model: str, rows: list[dict], known_ids: frozenset, own_id=None) -> bool:
+    """True when a live deployment that the registry does not know runs another model under the name."""
+    return any(
+        row.get("model_name") == name
+        and (row.get("litellm_params") or {}).get("model") != litellm_model
+        and (row.get("model_info") or {}).get("id") not in known_ids | {own_id}
+        for row in rows
+    )
+
+
+def _create(proxy: str, deployment: Deployment, live: LiveProxy, rows: list[dict], known_ids: frozenset) -> dict:
+    # The stored params first, so the price, the model and the credential that the registry sets win.
+    params = {
+        key: value for key, value in deployment.params.items() if key not in ("model", "litellm_credential_name")
+    }
+    if deployment.price and not deployment.provisioned_only:
+        params.update(deployment.price)
+    params["model"] = deployment.litellm_model
     if deployment.credential:
         params["litellm_credential_name"] = deployment.credential
     payload = {
         "model_name": deployment.model_name,
         "litellm_params": params,
-        "model_info": {"access_groups": sorted(deployment.access_groups)},
+        "model_info": {"access_groups": sorted(deployment.access_groups), "managed_by": MANAGED_BY},
     }
-    problems = []
+    problems, notes = [], []
     if deployment.credential and deployment.credential not in live.credentials:
         problems.append(CREDENTIAL_NOT_ON_PROXY.format(deployment.credential))
     if any(
@@ -73,10 +109,17 @@ def _create(proxy: str, deployment: Deployment, live: LiveProxy, rows: list[dict
         for row in rows
     ):
         problems.append(ALREADY_RUNS)
-    return _step(proxy, "create_model", deployment, payload=payload, problems=problems)
+    if _name_clash(deployment.model_name, deployment.litellm_model, rows, known_ids):
+        problems.append(LIVE_NAME_CLASH.format(deployment.model_name))
+    if deployment.deployment_id is not None:
+        notes.append(RECREATE)
+    return _step(proxy, "create_model", deployment, payload=payload, problems=problems, notes=notes)
 
 
-def _update(proxy: str, deployment: Deployment, row: dict, fields: frozenset, credentials: frozenset) -> dict | None:
+def _update(
+    proxy: str, deployment: Deployment, row: dict, fields: frozenset, credentials: frozenset, rows: list[dict],
+    known_ids: frozenset,
+) -> dict | None:
     params = row.get("litellm_params") or {}
     live = {
         "model_name": row.get("model_name"),
@@ -96,21 +139,34 @@ def _update(proxy: str, deployment: Deployment, row: dict, fields: frozenset, cr
         for name in sorted(fields & live.keys())
         if live[name] != wanted[name]
     }
-    problems = []
+    problems, notes = [], []
     # Only a step that changes the credential names it, so a price step does not repeat an old problem.
     if "credential" in changes and deployment.credential and deployment.credential not in credentials:
         problems.append(CREDENTIAL_NOT_ON_PROXY.format(deployment.credential))
+    if "credential" in changes and deployment.credential is None:
+        problems.append(CANNOT_CLEAR_CREDENTIAL)
+    if "model_name" in changes and _name_clash(
+        deployment.model_name, deployment.litellm_model, rows, known_ids, (row.get("model_info") or {}).get("id")
+    ):
+        problems.append(LIVE_NAME_CLASH.format(deployment.model_name))
     if "prices" in fields and deployment.price is not None:
         # A price lives in litellm_params on the proxy; compare only the fields the registry sets.
         live_price = {name: params.get(name) for name in deployment.price}
         if live_price != deployment.price:
             if deployment.provisioned_only:
-                problems.append(PROVISIONED_ONLY)
+                notes.append(PROVISIONED_ONLY)
             else:
                 changes["prices"] = {"from": live_price, "to": deployment.price}
-    if not changes and not problems:
+    if not changes and not problems and not notes:
         return None
-    return _step(proxy, "update_model", deployment, changes=changes, problems=problems)
+    if changes and not _managed(row):
+        problems.insert(0, NOT_MANAGED)
+    return _step(proxy, "update_model", deployment, changes=changes, problems=problems, notes=notes)
+
+
+def _managed(row: dict) -> bool:
+    """Only a deployment in the proxy database can be changed; one from the config file cannot."""
+    return (row.get("model_info") or {}).get("db_model") is True
 
 
 def _alias(value) -> tuple | None:
@@ -130,11 +186,12 @@ def _alias_step(proxy: str, live: dict, wanted: dict, removed_alias: str | None)
         return None
     problems = [DELETES_EVERY_ALIAS] if live and not wanted else []
     # The full map drops every live alias that the registry does not have, not only the one a DELETE names.
-    problems += [
+    # The registry owns the map, so this only informs.
+    notes = [
         REMOVES_LIVE_ALIAS.format(name) for name in sorted(live.keys() - wanted.keys()) if name != removed_alias
     ]
     # The sync always sends the full map, so the payload is the full map.
-    return _step(proxy, "write_alias_map", payload=dict(wanted), changes=changes, problems=problems)
+    return _step(proxy, "write_alias_map", payload=dict(wanted), changes=changes, problems=problems, notes=notes)
 
 
 def plan(
@@ -144,11 +201,14 @@ def plan(
     fields: frozenset = DEPLOYMENT_FIELDS,
     aliases: dict | None = None,
     removed_alias: str | None = None,
+    known_ids: frozenset = frozenset(),
 ) -> list[dict]:
     """The steps that bring the proxy to the wanted state. Only the names in `fields` are compared.
 
     `aliases` is the wanted full alias map in the LiteLLM form, or None when the write changes no alias.
     `removed_alias` is the alias that the write deletes on purpose, so its removal is no problem.
+    `known_ids` are the LiteLLM deployment ids that the registry holds on the proxy.
+    A step with `blocked` set is never sent.
     """
     rows, _ = without_alias_copies(live.deployments, set(live.aliases))
     by_id = {(row.get("model_info") or {}).get("id"): row for row in rows}
@@ -158,12 +218,13 @@ def plan(
         row = by_id.get(deployment.deployment_id)
         if not deployment.keep:
             if row is not None:
-                steps.append(_step(proxy, "delete_model", deployment))
-        elif deployment.deployment_id is None:
-            steps.append(_create(proxy, deployment, live, rows))
+                problems = [] if _managed(row) else [NOT_MANAGED]
+                steps.append(_step(proxy, "delete_model", deployment, problems=problems))
+        elif deployment.deployment_id is None or (row is None and deployment.recreate):
+            steps.append(_create(proxy, deployment, live, rows, known_ids))
         elif row is None:
             steps.append(_step(proxy, "update_model", deployment, changes={}, problems=[NOT_ON_PROXY]))
-        elif step := _update(proxy, deployment, row, fields, live.credentials):
+        elif step := _update(proxy, deployment, row, fields, live.credentials, rows, known_ids):
             steps.append(step)
     if aliases is not None and (step := _alias_step(proxy, live.aliases, aliases, removed_alias)):
         steps.append(step)

@@ -4,9 +4,14 @@ import pytest
 
 from app.registry.planner import (
     ALREADY_RUNS,
+    CANNOT_CLEAR_CREDENTIAL,
     DELETES_EVERY_ALIAS,
+    LIVE_NAME_CLASH,
+    MANAGED_BY,
+    NOT_MANAGED,
     NOT_ON_PROXY,
     PROVISIONED_ONLY,
+    RECREATE,
     REMOVES_LIVE_ALIAS,
     Deployment,
     LiveProxy,
@@ -20,19 +25,23 @@ GPT = Deployment(
 )
 
 
-def _live_row(dep_id="d1", name="gpt-4o", model="openai/gpt-4o", credential="c1", groups=("beta",), **params):
+def _live_row(
+    dep_id="d1", name="gpt-4o", model="openai/gpt-4o", credential="c1", groups=("beta",), db_model=True, **params
+):
     litellm_params = {"model": model, **params}
     if credential:
         litellm_params["litellm_credential_name"] = credential
-    info = {"id": dep_id, "access_groups": list(groups)}
+    info = {"id": dep_id, "access_groups": list(groups), "db_model": db_model}
     return {"model_name": name, "litellm_params": litellm_params, "model_info": info}
 
 
-def _step(action, deployment=None, payload=None, changes=None, problems=()):
+def _step(action, deployment=None, payload=None, changes=None, problems=(), blocked=None):
     return {
         "proxy": PROXY, "action": action, "model": deployment and deployment.model,
         "model_name": deployment and deployment.model_name, "deployment_id": deployment and deployment.deployment_id,
         "payload": payload, "changes": changes, "problems": list(problems),
+        "row_id": deployment and deployment.row_id, "blocked": bool(problems) if blocked is None else blocked,
+        "credential": None,
     }
 
 
@@ -48,7 +57,7 @@ def test_create_gives_the_payload():
         payload={
             "model_name": "gpt-4o",
             "litellm_params": {"model": "openai/gpt-4o", "litellm_credential_name": "c1"},
-            "model_info": {"access_groups": ["beta"]},
+            "model_info": {"access_groups": ["beta"], "managed_by": MANAGED_BY},
         },
     )]
 
@@ -57,7 +66,7 @@ def test_create_with_no_credential_sends_no_credential_name():
     [step] = plan(PROXY, LiveProxy(), [_new(credential=None, access_groups=())])
 
     assert step["payload"]["litellm_params"] == {"model": "openai/gpt-4o"}
-    assert step["payload"]["model_info"] == {"access_groups": []}
+    assert step["payload"]["model_info"] == {"access_groups": [], "managed_by": MANAGED_BY}
     assert step["problems"] == []
 
 
@@ -119,7 +128,7 @@ def test_access_groups_in_another_order_are_the_same_groups():
 
     assert plan(PROXY, LiveProxy(deployments=[_live_row(groups=("team-z", "teama"))]), [deployment]) == []
     [step] = plan(PROXY, LiveProxy(credentials=frozenset({"c1"})), [replace(deployment, deployment_id=None)])
-    assert step["payload"]["model_info"] == {"access_groups": ["team-z", "teama"]}
+    assert step["payload"]["model_info"]["access_groups"] == ["team-z", "teama"]
     [step] = plan(PROXY, LiveProxy(deployments=[_live_row(groups=("teama",))]), [deployment])
     assert step["changes"] == {"access_groups": {"from": ["teama"], "to": ["team-z", "teama"]}}
 
@@ -161,7 +170,7 @@ def test_price_change_of_a_provisioned_only_variant_has_a_problem():
     deployment = replace(GPT, price={"input_cost_per_token": 2e-06}, provisioned_only=True)
 
     assert plan(PROXY, LiveProxy(deployments=[_live_row()]), [deployment], frozenset({"prices"})) == [
-        _step("update_model", deployment, changes={}, problems=[PROVISIONED_ONLY])
+        _step("update_model", deployment, changes={}, problems=[PROVISIONED_ONLY], blocked=False)
     ]
 
 
@@ -209,7 +218,7 @@ def test_alias_map_lists_added_changed_and_removed_aliases():
         "fast": {"from": {"model": "gpt-4o", "hidden": True}, "to": "gpt-4o"},
         "new": {"from": None, "to": {"model": "gpt-4o", "hidden": True}},
         "old": {"from": "gpt-3", "to": None},
-    }, problems=[REMOVES_LIVE_ALIAS.format("old")])]
+    }, problems=[REMOVES_LIVE_ALIAS.format("old")], blocked=False)]
 
 
 def test_alias_map_warns_for_each_live_alias_it_removes():
@@ -247,3 +256,78 @@ def test_an_empty_alias_map_that_removes_live_aliases_has_a_problem():
 
 def test_no_wanted_alias_map_plans_no_alias_step():
     assert plan(PROXY, LiveProxy(aliases={"chat": "gpt-4o"})) == []
+
+
+PRICE = {"input_cost_per_token": 2e-06, "output_cost_per_token": 8e-06}
+
+
+def test_create_writes_the_price_and_keeps_the_stored_params():
+    deployment = _new(price=PRICE, params={"model": "x", "litellm_credential_name": "c0", "rpm": 10})
+
+    [step] = plan(PROXY, LiveProxy(credentials=frozenset({"c1"})), [deployment])
+
+    assert step["payload"]["litellm_params"] == {
+        "rpm": 10, **PRICE, "model": "openai/gpt-4o", "litellm_credential_name": "c1",
+    }
+
+
+def test_create_of_a_provisioned_only_variant_writes_no_price():
+    [step] = plan(PROXY, LiveProxy(credentials=frozenset({"c1"})), [_new(price=PRICE, provisioned_only=True)])
+
+    assert step["payload"]["litellm_params"] == {"model": "openai/gpt-4o", "litellm_credential_name": "c1"}
+
+
+def test_a_config_file_deployment_is_not_changed_or_deleted():
+    live = LiveProxy(deployments=[_live_row(name="gpt", db_model=None)])
+
+    [update] = plan(PROXY, live, [GPT])
+    [delete] = plan(PROXY, live, [replace(GPT, keep=False)])
+
+    assert (update["problems"], update["blocked"]) == ([NOT_MANAGED], True)
+    assert (delete["problems"], delete["blocked"]) == ([NOT_MANAGED], True)
+    # With nothing to change, there is no step.
+    assert plan(PROXY, LiveProxy(deployments=[_live_row(db_model=False)]), [GPT]) == []
+
+
+def test_create_refuses_a_live_name_that_runs_another_model():
+    live = LiveProxy(deployments=[_live_row(dep_id="x9", model="openai/gpt-4")], credentials=frozenset({"c1"}))
+
+    [step] = plan(PROXY, live, [_new()])
+
+    assert step["problems"] == [LIVE_NAME_CLASH.format("gpt-4o")]
+    assert step["blocked"] is True
+    # A deployment that the registry holds is no clash: another write manages it.
+    [known] = plan(PROXY, live, [_new()], known_ids=frozenset({"x9"}))
+    assert known["problems"] == []
+
+
+def test_a_rename_refuses_a_live_name_that_runs_another_model():
+    live = LiveProxy(deployments=[_live_row(name="gpt"), _live_row(dep_id="x9", model="openai/gpt-4")])
+
+    [step] = plan(PROXY, live, [GPT], known_ids=frozenset({"d1"}))
+
+    assert step["problems"] == [LIVE_NAME_CLASH.format("gpt-4o")]
+    # The same deployment under its old name, and a known id, are no clash.
+    assert plan(PROXY, live, [GPT], known_ids=frozenset({"d1", "x9"}))[0]["problems"] == []
+
+
+def test_a_registry_deployment_that_is_gone_is_created_again():
+    deployment = replace(GPT, recreate=True, row_id=7)
+
+    [step] = plan(PROXY, LiveProxy(credentials=frozenset({"c1"})), [deployment])
+
+    assert (step["action"], step["deployment_id"], step["row_id"]) == ("create_model", "d1", 7)
+    assert (step["problems"], step["blocked"]) == ([RECREATE], False)
+
+
+def test_an_adopted_deployment_that_is_gone_is_not_created_again():
+    [step] = plan(PROXY, LiveProxy(), [GPT])
+
+    assert (step["action"], step["problems"], step["blocked"]) == ("update_model", [NOT_ON_PROXY], True)
+
+
+def test_an_update_that_clears_the_credential_is_blocked():
+    [step] = plan(PROXY, LiveProxy(deployments=[_live_row()]), [replace(GPT, credential=None)])
+
+    assert step["changes"] == {"credential": {"from": "c1", "to": None}}
+    assert (step["problems"], step["blocked"]) == ([CANNOT_CLEAR_CREDENTIAL], True)

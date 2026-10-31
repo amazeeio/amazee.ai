@@ -116,12 +116,12 @@ def live_proxies(monkeypatch):
     return proxies
 
 
-def live_row(dep_id, name, model, credential=None, groups=(), **params):
+def live_row(dep_id, name, model, credential=None, groups=(), db_model=True, **params):
     """One row of a proxy's `/model/info`. Extra keyword arguments go into `litellm_params`."""
     litellm_params = {"model": model, **params}
     if credential:
         litellm_params["litellm_credential_name"] = credential
-    info = {"id": dep_id, "access_groups": list(groups)}
+    info = {"id": dep_id, "access_groups": list(groups), "db_model": db_model}
     return {"model_name": name, "litellm_params": litellm_params, "model_info": info}
 
 

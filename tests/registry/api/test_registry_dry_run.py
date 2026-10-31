@@ -6,7 +6,7 @@ import pytest
 from app.registry.api.dry_run import ProxyPlan, deployment_plans, plan_steps, read_live
 from app.registry.litellm import ProxyClient
 from app.registry.models import DBRegistryCloudAvailability, DBRegistryModelRegion
-from app.registry.planner import DEPLOYMENT_FIELDS, Deployment, LiveProxy
+from app.registry.planner import DEPLOYMENT_FIELDS, MANAGED_BY, Deployment, LiveProxy
 from tests.registry.api.conftest import EU_URL, US_URL, live_row
 
 _REQUEST = httpx.Request("GET", f"{US_URL}/model/info")
@@ -153,12 +153,31 @@ def test_deployment_plans_give_one_plan_per_proxy(registry_db, deployed):
 
     assert set(plans) == {"local-eu1", "local-us1"}
     assert (plans["local-us1"].url, plans["local-us1"].key) == (US_URL, "sk-test")
+    eu_row = registry_db.query(DBRegistryModelRegion).filter_by(litellm_deployment_id="eu-gpt").one()
     assert plans["local-eu1"].deployments == [Deployment(
         model="openai/gpt-4o", model_name="gpt-4o", litellm_model="openai/gpt-4o", deployment_id="eu-gpt",
-        keep=False,
+        keep=False, price={"input_cost_per_token": 2.5e-06}, row_id=eu_row.id, recreate=True,
     )]
     assert [d.deployment_id for d in plans["local-us1"].deployments] == ["us-claude", "us-gpt"]
-    assert all(d.keep and d.price is None for d in plans["local-us1"].deployments)
+    assert all(d.keep for d in plans["local-us1"].deployments)
+    # The ids that the registry holds on each proxy.
+    assert (plans["local-eu1"].known_ids, plans["local-us1"].known_ids) == ({"eu-gpt"}, {"us-claude", "us-gpt"})
+
+
+def test_deployment_plans_mark_only_registry_rows_for_a_new_create(registry_db, deployed):
+    claude = registry_db.query(DBRegistryModelRegion).filter_by(litellm_deployment_id="us-claude").one()
+    gpt = registry_db.query(DBRegistryModelRegion).filter_by(litellm_deployment_id="us-gpt").one()
+    claude.model_info = {"id": "us-claude", "db_model": True}
+    gpt.model_info = {"id": "us-gpt", "managed_by": MANAGED_BY}
+    registry_db.commit()
+
+    [plan] = deployment_plans(registry_db, [claude, gpt], DEPLOYMENT_FIELDS)
+    [removed] = deployment_plans(registry_db, [claude], DEPLOYMENT_FIELDS, removed=True)
+
+    assert [(d.recreate, d.params) for d in plan.deployments] == [
+        (False, {"litellm_credential_name": "AWS Bedrock"}), (True, {}),
+    ]
+    assert removed.deployments[0].row_id is None
 
 
 def test_deployment_plans_live_only_and_removed(registry_db, deployed):

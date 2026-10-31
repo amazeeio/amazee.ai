@@ -650,7 +650,7 @@ def test_put_create_dry_run_plans_the_create(client, admin_token, setup, live_pr
         "payload": {
             "model_name": "gpt-old",
             "litellm_params": {"model": "openai/gpt-old", "litellm_credential_name": "c1"},
-            "model_info": {"access_groups": ["alpha"]},
+            "model_info": {"access_groups": ["alpha"], "managed_by": "amazee-registry"},
         },
     }]
 

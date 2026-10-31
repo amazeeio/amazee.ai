@@ -42,6 +42,8 @@ class ProxyPlan:
     aliases: dict | None = None
     removed_alias: str | None = None
     active: bool = True
+    # The LiteLLM deployment ids that the registry holds on the proxy.
+    known_ids: frozenset = frozenset()
 
 
 def _access_groups(db: Session, deployment_ids: list[int]) -> dict[int, list[str]]:
@@ -113,31 +115,30 @@ def deployment_plans(
     }
     # A delete already removed the links of its rows.
     groups = {} if removed else _access_groups(db, [row.id for row in rows])
-    prices = "prices" in fields
-    if prices:
-        price_rows = defaultdict(list)
-        for price in db.query(DBRegistryModelPrice).filter(DBRegistryModelPrice.model_id.in_(model_ids)):
-            price_rows[price.model_id].append(price)
-        cloud_regions = dict(
-            db.query(DBRegistryProxy.region_id, DBRegistryProxy.cloud_regions).filter(
-                DBRegistryProxy.region_id.in_(region_ids)
-            )
+    # Every row gets its price, because a create writes it whatever the write changed.
+    price_rows = defaultdict(list)
+    for price in db.query(DBRegistryModelPrice).filter(DBRegistryModelPrice.model_id.in_(model_ids)):
+        price_rows[price.model_id].append(price)
+    cloud_regions = dict(
+        db.query(DBRegistryProxy.region_id, DBRegistryProxy.cloud_regions).filter(
+            DBRegistryProxy.region_id.in_(region_ids)
         )
-        availability = Availability(db)
+    )
+    availability = Availability(db)
+    known_ids = _known_ids(db, region_ids)
 
     by_region: dict[int, list[planner.Deployment]] = defaultdict(list)
     for row in rows:
         provider, model_id = models[row.model_id]
-        price, provisioned_only = None, False
-        if prices:
-            cloud_region = (cloud_regions.get(row.region_id) or {}).get(provider)
-            picked = pick_price(price_rows[row.model_id], provider, row.litellm_model, cloud_region)
-            price = dict(picked.prices) if picked else None
-            # The same detection as the support check's `deployed_provisioned_only`.
-            provisioned_only = (
-                availability.in_region_problem(provider, model_id, cloud_region, row.litellm_model)
-                == "provisioned_only"
-            )
+        cloud_region = (cloud_regions.get(row.region_id) or {}).get(provider)
+        picked = pick_price(price_rows[row.model_id], provider, row.litellm_model, cloud_region)
+        price = dict(picked.prices) if picked else None
+        # The same detection as the support check's `deployed_provisioned_only`.
+        provisioned_only = (
+            availability.in_region_problem(provider, model_id, cloud_region, row.litellm_model)
+            == "provisioned_only"
+        )
+        info = row.model_info or {}
         by_region[row.region_id].append(planner.Deployment(
             model=f"{provider}/{model_id}",
             model_name=row.model_name,
@@ -148,11 +149,27 @@ def deployment_plans(
             keep=row.enabled and not removed,
             price=price,
             provisioned_only=provisioned_only,
+            row_id=None if removed else row.id,
+            # An adopted row has the model_info of the proxy and no marker; an API row has none until the sync.
+            recreate=not info or info.get("managed_by") == planner.MANAGED_BY,
+            params=dict(row.litellm_params or {}),
         ))
     return [
-        _proxy_plan(regions[region_id], deployments=deployments, fields=fields)
+        _proxy_plan(
+            regions[region_id], deployments=deployments, fields=fields, known_ids=known_ids.get(region_id, frozenset())
+        )
         for region_id, deployments in by_region.items()
     ]
+
+
+def _known_ids(db: Session, region_ids) -> dict[int, frozenset]:
+    """The LiteLLM deployment ids that the registry holds, per region, in one query."""
+    ids = defaultdict(set)
+    for region_id, deployment_id in db.query(
+        DBRegistryModelRegion.region_id, DBRegistryModelRegion.litellm_deployment_id
+    ).filter(DBRegistryModelRegion.region_id.in_(region_ids), DBRegistryModelRegion.litellm_deployment_id.isnot(None)):
+        ids[region_id].add(deployment_id)
+    return {region_id: frozenset(found) for region_id, found in ids.items()}
 
 
 def alias_plans(db: Session, region: DBRegion, removed_alias: str | None = None) -> list[ProxyPlan]:
@@ -224,5 +241,7 @@ def plan_steps(plans: list[ProxyPlan]) -> list[dict]:
                 {"proxy": plan.proxy, "action": "read_proxy", "problems": [f"the proxy could not be read: {live}"]}
             )
         else:
-            steps += planner.plan(plan.proxy, live, plan.deployments, plan.fields, plan.aliases, plan.removed_alias)
+            steps += planner.plan(
+                plan.proxy, live, plan.deployments, plan.fields, plan.aliases, plan.removed_alias, plan.known_ids
+            )
     return steps
