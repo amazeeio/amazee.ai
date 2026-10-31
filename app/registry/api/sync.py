@@ -131,6 +131,43 @@ def scope_of(plans: list[ProxyPlan]) -> dict:
     return scope
 
 
+def full_scope(region_ids, skip_failed: bool = False) -> dict:
+    """A scope that repairs every deployment, the alias map and the credentials of each proxy."""
+    return {str(region_id): {**_entry(), "full": True, "skip_failed": skip_failed} for region_id in region_ids}
+
+
+def retry_scope(run: DBRegistrySyncRun, steps: list[DBRegistrySyncStep]) -> dict:
+    """The scope of the failed items of a run only. A proxy that could not be read or locked is retried whole."""
+    scope = {}
+    for region_id in sorted({step.region_id for step in steps if step.status == "failed"}):
+        original = {**_entry(), **run.scope.get(str(region_id), {})}
+        failed = [step for step in steps if step.region_id == region_id and step.status == "failed"]
+        if any(step.action in ("read_proxy", "lock_proxy") for step in failed):
+            scope[str(region_id)] = original
+            continue
+        fields = planner.DEPLOYMENT_FIELDS | {"prices"} if original["full"] else original["fields"]
+        failed_ids = {step.deployment_id for step in failed if step.action == "delete_model"}
+        names = {step.credential for step in failed if step.credential}
+        known = {item["name"]: item for item in original["credentials"]}
+        scope[str(region_id)] = {
+            **_entry(),
+            "deployments": sorted({step.model_region_id for step in failed if step.model_region_id is not None}),
+            "deleted": [item for item in original["deleted"] if item["deployment_id"] in failed_ids],
+            "fields": sorted(fields),
+            "aliases": any(step.action == "write_alias_map" for step in failed),
+            "removed_alias": original["removed_alias"],
+            # A full scope found its credentials itself, so they are not in its entry.
+            "credentials": [known.get(name, {"name": name, "rotate": False, "keep": True}) for name in sorted(names)],
+        }
+    return scope
+
+
+def scope_plans(db: Session, scope: dict) -> list[ProxyPlan]:
+    """The wanted plan of each proxy of a scope, for a dry run."""
+    regions = {region.id: region for region in db.query(DBRegion).filter(DBRegion.id.in_([int(k) for k in scope]))}
+    return [plans_for_scope(db, regions[int(key)], entry)[0] for key, entry in scope.items() if int(key) in regions]
+
+
 def plans_for_scope(db: Session, region: DBRegion, entry: dict) -> tuple[ProxyPlan, list[str]]:
     """The wanted state of one proxy for one scope entry, read from the database now, and the model names of
     the deployments that a full scope with `skip_failed` leaves out.

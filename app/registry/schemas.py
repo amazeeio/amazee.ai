@@ -408,3 +408,40 @@ class RegistrySyncStarted[T](BaseModel):
     sync_run_id: int
     # The body of the write, or null where the write answers 204.
     result: T
+
+
+class RegistrySyncRunResponse(BaseModel):
+    id: int
+    # write, retry, repair or daily.
+    trigger: str
+    # pending, running, ok or failed.
+    status: str
+    proxies: list[str]
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    error: str | None
+    stats: dict | None
+
+
+class RegistrySyncStepResponse(BaseModel):
+    proxy: str
+    position: int
+    action: str
+    model: str | None
+    model_name: str | None
+    deployment_id: str | None
+    # The credential name of a credential step. Never its values.
+    credential: str | None
+    payload: dict | None
+    changes: dict | None
+    # pending, ok, failed or skipped.
+    status: str
+    message: str | None
+    finished_at: datetime | None
+
+
+class RegistrySyncRunDetailResponse(RegistrySyncRunResponse):
+    steps: list[RegistrySyncStepResponse]
+    # Per proxy: pending, ok or failed.
+    results: dict[str, str]

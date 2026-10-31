@@ -213,7 +213,8 @@ def live_proxies(monkeypatch):
 def managed_proxies(monkeypatch):
     """The proxy names that the registry sync may write to. Empty, so a write keeps its plain answer."""
     managed = set()
-    monkeypatch.setattr("app.registry.api.sync.registry_manages", lambda name: name in managed)
+    for module in ("sync", "sync_runs"):
+        monkeypatch.setattr(f"app.registry.api.{module}.registry_manages", lambda name: name in managed)
     return managed
 
 
