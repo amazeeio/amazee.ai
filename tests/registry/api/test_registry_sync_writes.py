@@ -154,9 +154,10 @@ def test_credential_writes_push_the_values_only_to_the_proxy(
     deleted = client.delete("/registry/credentials/Open AI", headers=auth(admin_token))
 
     assert [ok(r, 202)["sync_run_id"] for r in (created, patched, deleted)] == [1, 2, 3]
+    info = {"custom_llm_provider": "openai"}
     assert [w[1:] for w in live_proxies.writes] == [
-        ("create_credential", "Open AI", {"api_key": SECRET}, {}),
-        ("update_credential", "Open AI", {"api_key": SECRET + "-new"}, {}),
+        ("create_credential", "Open AI", {"api_key": SECRET}, info),
+        ("update_credential", "Open AI", {"api_key": SECRET + "-new"}, info),
         ("delete_credential", "Open AI"),
     ]
     assert "Open AI" not in live_proxies.by_url[US_URL]["credentials"]
@@ -242,3 +243,20 @@ def test_an_alias_dry_run_imports_nothing(client, admin_token, registry_db, us, 
 
     registry_db.expire_all()
     assert registry_db.get(DBRegistryProxy, us["us"].id).adopted_at is None
+
+
+def test_a_pushed_credential_names_its_provider_and_region_in_its_info(
+    client, admin_token, registry_db, us, live_proxies, credential_key
+):
+    body = {
+        "name": "AWS Keys", "provider": "bedrock", "proxies": ["local-us1"], "info": {"note": "main"},
+        "values": {"aws_access_key_id": SECRET, "aws_region_name": "us-east-1", "vertex_location": "us-central1"},
+    }
+
+    ok(client.post("/registry/credentials", json=body, headers=auth(admin_token)), 202)
+
+    # A later import reads the cloud region from the info, and LiteLLM the provider.
+    [(_, _, _, _, info)] = live_proxies.writes
+    assert info == {
+        "note": "main", "custom_llm_provider": "bedrock", "aws_region_name": "us-east-1", "vertex_location": "us-central1",
+    }

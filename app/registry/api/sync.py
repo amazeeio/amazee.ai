@@ -452,6 +452,23 @@ def _credential_values(db: Session, name: str) -> dict | str:
         db.commit()
 
 
+# Values that are not secret and that an import reads from credential_info for the proxy's cloud region.
+_INFO_FROM_VALUES = ("aws_region_name", "vertex_location")
+
+
+def _pushed_info(db: Session, step: dict, values: dict) -> dict:
+    """The credential_info that the proxy gets: the stored info, the provider, and the region fields of the values."""
+    info = dict(step["payload"]["credential_info"])
+    provider = db.query(DBRegistryCredential.provider).filter_by(name=step["credential"]).scalar()
+    db.commit()
+    if provider:
+        info.setdefault("custom_llm_provider", provider)
+    for name in _INFO_FROM_VALUES:
+        if name in values and name not in info:
+            info[name] = values[name]
+    return info
+
+
 def _find_created(proxy: _Proxy, step: dict, known_ids: set) -> dict | None:
     """The live deployment that a create made, or None. It reads the proxy again, also after an error answer."""
     live = read_live(proxy.url, proxy.key)
@@ -498,9 +515,9 @@ def _send(proxy: _Proxy, writer: ProxyWriter, step: dict, known_ids: set, read_a
     error = None
     try:
         if action == "create_credential":
-            writer.create_credential(step["credential"], values, step["payload"]["credential_info"])
+            writer.create_credential(step["credential"], values, _pushed_info(db, step, values))
         elif action == "update_credential":
-            writer.update_credential(step["credential"], values, step["payload"]["credential_info"])
+            writer.update_credential(step["credential"], values, _pushed_info(db, step, values))
         elif action == "delete_credential":
             writer.delete_credential(step["credential"])
         elif action == "create_model":
