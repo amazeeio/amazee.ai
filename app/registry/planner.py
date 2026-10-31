@@ -40,6 +40,7 @@ LITELLM_CLEARABLE_COSTS = frozenset({
     "input_cost_per_token", "output_cost_per_token", "input_cost_per_character", "output_cost_per_character",
     "cache_read_input_token_cost", "cache_creation_input_token_cost",
 })
+_TOKEN_PAIR = frozenset({"input_cost_per_token", "output_cost_per_token"})
 UNCLEARABLE_COSTS = (
     "the proxy has the cost fields {} that the registry price does not have, and LiteLLM cannot clear them "
     "with an update; remove them on the proxy by hand"
@@ -225,7 +226,11 @@ def _update(
         # A price lives in litellm_params on the proxy. Every live cost field counts: one that the wanted price
         # does not have would still price the calls, so the update clears it with a null.
         extra = price_fields(params).keys() - deployment.price.keys()
-        wanted_price = {**deployment.price, **{name: None for name in extra & LITELLM_CLEARABLE_COSTS}}
+        clearable = LITELLM_CLEARABLE_COSTS
+        if len(_TOKEN_PAIR & deployment.price.keys()) == 1:
+            # A manual scope can set one side of the per-token pair only; the other side stays on the proxy.
+            clearable = clearable - _TOKEN_PAIR
+        wanted_price = {**deployment.price, **{name: None for name in extra & clearable}}
         live_price = {name: params.get(name) for name in wanted_price}
         if live_price != wanted_price:
             if deployment.provisioned_only:

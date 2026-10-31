@@ -440,3 +440,12 @@ def test_a_create_sends_only_the_wanted_price_and_no_stored_cost_field():
     assert step["payload"]["litellm_params"] == {
         "rpm": 10, "input_cost_per_token": 2e-06, "model": "openai/gpt-4o", "litellm_credential_name": "c1",
     }
+
+
+def test_a_price_with_one_per_token_field_keeps_the_other_on_the_proxy():
+    row = _live_row(input_cost_per_token=1e-06, output_cost_per_token=4e-06, cache_read_input_token_cost=1e-08)
+
+    [step] = plan(PROXY, LiveProxy(deployments=[row]), [replace(GPT, price={"input_cost_per_token": 2e-06})], frozenset({"prices"}))
+
+    # A manual scope can set one side only; the other side is not cleared.
+    assert step["changes"]["prices"]["to"] == {"input_cost_per_token": 2e-06, "cache_read_input_token_cost": None}
