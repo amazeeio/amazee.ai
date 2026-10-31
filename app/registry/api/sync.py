@@ -350,13 +350,26 @@ def _set_row(db: Session, row_id: int | None, **values) -> int:
     return db.query(DBRegistryModelRegion).filter_by(id=row_id).update(values, synchronize_session=False)
 
 
-def _mark_in_sync(db: Session, row_id: int | None, read_at: datetime, removed: frozenset = frozenset()) -> None:
+def _price_columns(price: dict) -> dict:
+    """The deployment's own price columns for a price that is now in its litellm_params on the proxy."""
+    return {
+        "prices": dict(price),
+        "input_cost_per_token": price.get("input_cost_per_token"),
+        "output_cost_per_token": price.get("output_cost_per_token"),
+    }
+
+
+def _mark_in_sync(
+    db: Session, row_id: int | None, read_at: datetime, removed: frozenset = frozenset(), price: dict | None = None
+) -> None:
     """Record that a deployment matches the proxy, only when it did not before, so a run that finds no drift
-    changes nothing. A removed deployment that the proxy no longer runs also loses its LiteLLM id."""
+    changes nothing. A removed deployment that the proxy no longer runs also loses its LiteLLM id. `price` is
+    the compared price that the proxy has."""
     if row_id is None:
         return
     if row_id in removed:
         _set_row(db, row_id, litellm_deployment_id=None)
+    values = {"synced_at": read_at, "sync_error": None, **(_price_columns(price) if price is not None else {})}
     db.query(DBRegistryModelRegion).filter(
         DBRegistryModelRegion.id == row_id,
         or_(
@@ -364,11 +377,25 @@ def _mark_in_sync(db: Session, row_id: int | None, read_at: datetime, removed: f
             DBRegistryModelRegion.sync_error.isnot(None),
             DBRegistryModelRegion.changed_at > DBRegistryModelRegion.synced_at,
         ),
-    ).update({"synced_at": read_at, "sync_error": None}, synchronize_session=False)
+    ).update(values, synchronize_session=False)
+
+
+def _hand_edit(before: tuple | None, deployment: planner.Deployment | None, step: dict) -> bool:
+    """True when only the live side moved: the row was in sync, and the registry wants what it pushed last time.
+
+    API writes set changed_at, so an in-sync row has no registry-side change but a new picked price. The row's
+    prices hold the price that the sync put on the proxy last, so an equal wanted price means the proxy moved.
+    """
+    if before is None or deployment is None:
+        return False
+    synced_at, changed_at, sync_error, prices = before
+    if synced_at is None or sync_error is not None or (changed_at is not None and changed_at > synced_at):
+        return False
+    return "prices" not in (step["changes"] or {}) or (prices or {}) == (deployment.price or {})
 
 
 def _record_repair(proxy: _Proxy, step: dict) -> None:
-    """A proxy.drift_repaired event for a deployment that a daily or repair run put right."""
+    """A proxy.drift_repaired event for a deployment that someone changed on the proxy by hand."""
     found = proxy.db.query(DBRegistryModelRegion.model_id, DBRegistryModelRegion.litellm_deployment_id).filter_by(
         id=step["row_id"]
     ).first()
@@ -382,6 +409,13 @@ def _record_repair(proxy: _Proxy, step: dict) -> None:
             "sync_run_id": proxy.run_id,
         },
     ))
+
+
+def _sent_price(step: dict) -> dict | None:
+    """The price fields that a create sent, for a write run that compared no prices."""
+    if step["action"] != "create_model":
+        return None
+    return {k: v for k, v in step["payload"]["litellm_params"].items() if "cost" in k}
 
 
 def _update_body(step: dict) -> dict:
@@ -622,6 +656,22 @@ def _sync_locked(proxy: _Proxy) -> dict | None:
     read_at = _now()
     plan, left_out = plans_for_scope(db, db.get(DBRegion, proxy.region_id), proxy.entry)
     scoped_rows = {d.row_id for d in plan.deployments if d.row_id is not None}
+    by_row = {d.row_id: d for d in plan.deployments if d.row_id is not None}
+    # The sync state before this run, so a drift event can tell a hand edit from a registry change.
+    before = {
+        row_id: (synced_at, changed_at, sync_error, prices)
+        for row_id, synced_at, changed_at, sync_error, prices in db.query(
+            DBRegistryModelRegion.id, DBRegistryModelRegion.synced_at, DBRegistryModelRegion.changed_at,
+            DBRegistryModelRegion.sync_error, DBRegistryModelRegion.prices,
+        ).filter(DBRegistryModelRegion.id.in_(scoped_rows))
+    }
+
+    def compared_price(row_id):
+        # Only a compared price that the sync writes is known to be on the proxy.
+        found = by_row.get(row_id)
+        if found is None or "prices" not in plan.fields or found.provisioned_only or found.price is None:
+            return None
+        return found.price
     # No transaction stays open during HTTP.
     db.commit()
 
@@ -649,7 +699,7 @@ def _sync_locked(proxy: _Proxy) -> dict | None:
     # A deployment in the scope with no step is already in sync.
     removed = frozenset(d.row_id for d in plan.deployments if d.row_id is not None and not d.keep)
     for row_id in scoped_rows - stepped:
-        _mark_in_sync(db, row_id, read_at, removed)
+        _mark_in_sync(db, row_id, read_at, removed, compared_price(row_id))
     repair = proxy.trigger in ("daily", "repair")
     if repair:
         # Drift that no write pushed is a change too, so changed_at is never later than synced_at after a success.
@@ -673,9 +723,13 @@ def _sync_locked(proxy: _Proxy) -> dict | None:
             if status == "failed":
                 _set_row(db, step["row_id"], sync_error=message)
             elif in_sync:
-                _mark_in_sync(db, step["row_id"], read_at, removed)
-            elif status == "ok" and repair and step["action"] in _MODEL_STEPS:
-                _record_repair(proxy, step)
+                _mark_in_sync(db, step["row_id"], read_at, removed, compared_price(step["row_id"]))
+            elif status == "ok" and step["action"] in _MODEL_STEPS:
+                pushed = step["action"] == "create_model" or "prices" in (step["changes"] or {})
+                if pushed and (price := compared_price(step["row_id"]) or _sent_price(step)) is not None:
+                    _set_row(db, step["row_id"], **_price_columns(price))
+                if repair and _hand_edit(before.get(step["row_id"]), by_row.get(step["row_id"]), step):
+                    _record_repair(proxy, step)
             db.commit()
     return stats
 

@@ -8,6 +8,7 @@ from app.registry import config
 from app.registry.api.sync import STUCK, run_registry_sync
 from app.registry.models import (
     DBRegistryEvent,
+    DBRegistryModelPrice,
     DBRegistryModelRegion,
     DBRegistryProxy,
     DBRegistryRun,
@@ -47,6 +48,8 @@ def _sync_state(db):
 
 
 def test_the_daily_step_repairs_a_hand_edit_and_records_it(registry_db, us, live_proxies):
+    # The first run finds the proxy in sync; then someone renames the deployment by hand.
+    _daily(registry_db)
     live_proxies.by_url[US_URL]["model_info"][0]["model_name"] = "hand-edit"
 
     stats = _daily(registry_db)
@@ -62,10 +65,11 @@ def test_the_daily_step_repairs_a_hand_edit_and_records_it(registry_db, us, live
     }
     gpt = registry_db.query(DBRegistryModelRegion).filter_by(litellm_deployment_id="us-gpt").one()
     assert gpt.changed_at == gpt.synced_at is not None
-    assert registry_db.query(DBRegistryRun).filter_by(step="registry-sync").one().status == "ok"
+    assert {run.status for run in registry_db.query(DBRegistryRun).filter_by(step="registry-sync")} == {"ok"}
 
 
 def test_a_second_daily_run_changes_nothing(registry_db, us, live_proxies):
+    _daily(registry_db)
     live_proxies.by_url[US_URL]["model_info"][0]["model_name"] = "hand-edit"
     _daily(registry_db)
     writes, state = list(live_proxies.writes), _sync_state(registry_db)
@@ -162,3 +166,42 @@ def test_a_proxy_that_only_a_plain_import_read_is_adopted(registry_db, us, live_
 
     assert stats["imported"] == ["local-eu1"]
     assert registry_db.get(DBRegistryProxy, us["eu"].id).adopted_at is not None
+
+
+def _gpt(db):
+    db.expire_all()
+    return db.query(DBRegistryModelRegion).filter_by(litellm_deployment_id="us-gpt").one()
+
+
+def test_the_first_sync_after_an_adopt_import_records_no_drift(registry_db, us, live_proxies):
+    # The rows were never in sync, so a difference is the registry's own change, not a hand edit.
+    live_proxies.by_url[US_URL]["model_info"][0]["model_name"] = "hand-edit"
+
+    _daily(registry_db)
+
+    assert [w[1] for w in live_proxies.writes] == ["update_model"]
+    assert registry_db.query(DBRegistryEvent).count() == 0
+
+
+def test_a_price_change_on_the_registry_side_records_no_drift(registry_db, us, live_proxies):
+    _daily(registry_db)
+    gpt_model = registry_db.query(DBRegistryModelPrice).filter_by(model_id=_gpt(registry_db).model_id, scope_kind="base").one()
+    gpt_model.prices = {"input_cost_per_token": 3e-06}
+    registry_db.commit()
+
+    _daily(registry_db)
+
+    assert live_proxies.writes[-1][3] == {"litellm_params": {"input_cost_per_token": 3e-06}}
+    assert registry_db.query(DBRegistryEvent).count() == 0
+    # The row keeps the price that is now on the proxy.
+    assert _gpt(registry_db).prices == {"input_cost_per_token": 3e-06}
+
+
+def test_a_hand_edit_of_the_live_price_records_one_drift(registry_db, us, live_proxies):
+    _daily(registry_db)
+    live_proxies.by_url[US_URL]["model_info"][0]["litellm_params"]["input_cost_per_token"] = 9e-06
+
+    _daily(registry_db)
+
+    [event] = registry_db.query(DBRegistryEvent).all()
+    assert event.data["fields"] == ["prices"]
