@@ -690,7 +690,8 @@ def _sync_locked(proxy: _Proxy) -> dict | None:
         return None
 
     known_ids = set(plan.known_ids)
-    steps = plan_proxy(plan, live)
+    # An update with only notes sends nothing, so the run records no step for it; a dry run still shows it.
+    steps = [step for step in plan_proxy(plan, live) if _sendable(step) or step["blocked"]]
     stats = None
     if proxy.entry["full"]:
         stats = {"drift": _drift(steps), "unmanaged": _unmanaged(live, known_ids), "failed": left_out}

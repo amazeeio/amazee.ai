@@ -402,3 +402,30 @@ def test_a_disabled_deployment_that_is_already_gone_loses_its_id(registry_db, us
 
     assert steps == []
     assert _row(registry_db, name="claude-x").litellm_deployment_id is None
+
+
+def test_a_full_sync_records_no_step_that_has_only_a_note(registry_db, us, live_proxies):
+    from app.registry.models import DBRegistryCloudAvailability
+
+    claude = _row(registry_db, "us-claude")
+    claude.litellm_model = "bedrock/anthropic.claude-x-v1:0"
+    live_proxies.by_url[US_URL]["model_info"][1]["litellm_params"]["model"] = "bedrock/anthropic.claude-x-v1:0"
+    registry_db.add_all([
+        DBRegistryModelPrice(
+            model_id=claude.model_id, scope_kind="base", scope="", prices={"input_cost_per_token": 3e-06},
+            source="litellm", last_seen=date(2026, 1, 1),
+        ),
+        DBRegistryCloudAvailability(
+            provider="bedrock", model_id="anthropic.claude-x-v1:0", cloud_region="us-east-1",
+            source="bedrock_community", call_types=["PROVISIONED"], last_seen=date(2026, 1, 1),
+        ),
+    ])
+    registry_db.commit()
+
+    run, steps = _run(registry_db, us, full=True)
+
+    # The provisioned-only note has nothing to send; a dry run still shows it.
+    assert [s for s in steps if s[0] == "update_model"] == [
+        ("update_model", "ok", None)
+    ]
+    assert _row(registry_db, "us-claude").synced_at is not None
