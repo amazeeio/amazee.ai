@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.db.models import DBRegion
 from app.registry.api.dry_run import plan_steps
-from app.registry.api.proxy_models import _import_problems
+from app.registry.api.proxy_models import _import_first, _import_problems
 from app.registry.api.routes import _find_proxy, _paginate, refuse, router
 from app.registry.api.sync import create_run, execute_run, full_scope, retry_scope, scope_plans
 from app.registry.config import registry_manages
@@ -159,6 +159,9 @@ def repair_proxy(
     problems = []
     if not registry_manages(region.name):
         problems.append(RegistryProblem(message="The registry does not manage the proxy", proxy=proxy, status=409))
+    if not dry_run:
+        # As every write: an unmanaged proxy refuses first, and the import commits.
+        _import_first(db, [region], problems)
     problems += _import_problems([db.get(DBRegistryProxy, region.id)], {region.id: region.name})
     refuse(problems)
     return _start(db, "repair", full_scope([region.id]), dry_run, response, background)

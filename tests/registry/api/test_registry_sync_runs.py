@@ -145,3 +145,16 @@ def test_a_repair_of_an_unmanaged_proxy_gives_409(client, admin_token, registry_
     assert response.status_code == 409
     assert messages(response) == ["The registry does not manage the proxy"]
     assert live_proxies.writes == []
+
+
+def test_a_repair_of_a_never_imported_proxy_imports_it_first(client, admin_token, registry_db, us, live_proxies):
+    from app.registry.models import DBRegistryProxy
+
+    proxy = registry_db.get(DBRegistryProxy, us["us"].id)
+    proxy.imported_at = proxy.adopted_at = None
+    registry_db.commit()
+
+    ok(client.post("/registry/proxies/local-us1/sync", headers=auth(admin_token)), 202)
+
+    registry_db.expire_all()
+    assert registry_db.get(DBRegistryProxy, us["us"].id).adopted_at is not None
