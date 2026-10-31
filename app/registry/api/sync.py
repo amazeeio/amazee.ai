@@ -7,12 +7,12 @@ import cycle. A run saves only ids in its scope and reads the wanted state again
 import logging
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from cryptography.fernet import InvalidToken
 from fastapi import BackgroundTasks, Response
-from sqlalchemy import text
+from sqlalchemy import func, or_, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -30,12 +30,18 @@ from app.registry.api.dry_run import (
     plan_proxy,
     plan_steps,
     read_live,
+    short_reason,
 )
 from app.registry.config import registry_manages
+from app.registry.importer import import_proxy
+from app.registry.runs import record_run
+from app.registry.versions import active_regions
 from app.registry.crypto import MissingKey, decrypt_values
 from app.registry.litellm import ProxyWriter, without_alias_copies, without_secrets
 from app.registry.models import (
     DBRegistryCredential,
+    DBRegistryEvent,
+    DBRegistryProxy,
     DBRegistryCredentialRegion,
     DBRegistryModelRegion,
     DBRegistrySyncRun,
@@ -293,8 +299,8 @@ class _Lock:
 class _Proxy:
     """One region of a run: the plain values that the steps need, so no ORM object is read during HTTP."""
 
-    def __init__(self, db: Session, run_id: int, region: DBRegion, entry: dict):
-        self.db, self.run_id, self.entry = db, run_id, entry
+    def __init__(self, db: Session, run_id: int, region: DBRegion, entry: dict, trigger: str = "write"):
+        self.db, self.run_id, self.entry, self.trigger = db, run_id, entry, trigger
         self.region_id, self.name = region.id, region.name
         self.url, self.key = region.litellm_api_url, region.litellm_api_key
         self.position = 0
@@ -327,6 +333,38 @@ def _set_row(db: Session, row_id: int | None, **values) -> int:
     if row_id is None:
         return 0
     return db.query(DBRegistryModelRegion).filter_by(id=row_id).update(values, synchronize_session=False)
+
+
+def _mark_in_sync(db: Session, row_id: int | None, read_at: datetime) -> None:
+    """Record that a deployment matches the proxy, only when it did not before, so a run that finds no drift
+    changes nothing."""
+    if row_id is None:
+        return
+    db.query(DBRegistryModelRegion).filter(
+        DBRegistryModelRegion.id == row_id,
+        or_(
+            DBRegistryModelRegion.synced_at.is_(None),
+            DBRegistryModelRegion.sync_error.isnot(None),
+            DBRegistryModelRegion.changed_at > DBRegistryModelRegion.synced_at,
+        ),
+    ).update({"synced_at": read_at, "sync_error": None}, synchronize_session=False)
+
+
+def _record_repair(proxy: _Proxy, step: dict) -> None:
+    """A proxy.drift_repaired event for a deployment that a daily or repair run put right."""
+    found = proxy.db.query(DBRegistryModelRegion.model_id, DBRegistryModelRegion.litellm_deployment_id).filter_by(
+        id=step["row_id"]
+    ).first()
+    if found is None:
+        return
+    proxy.db.add(DBRegistryEvent(
+        type="proxy.drift_repaired", model_id=found[0], region_id=proxy.region_id,
+        data={
+            "action": step["action"], "model_name": step["model_name"],
+            "deployment_id": step["deployment_id"] or found[1], "fields": sorted(step["changes"] or {}),
+            "sync_run_id": proxy.run_id,
+        },
+    ))
 
 
 def _update_body(step: dict) -> dict:
@@ -499,6 +537,10 @@ def _recheck(proxy: _Proxy, plan: ProxyPlan, step: dict, known_ids: set) -> tupl
     return step, None
 
 
+def _sendable(step: dict) -> bool:
+    return not step["blocked"] and not (step["action"] == "update_model" and not step["changes"])
+
+
 def _drift(steps: list[dict]) -> list[dict]:
     """The planned steps that would send something."""
     return [
@@ -507,7 +549,7 @@ def _drift(steps: list[dict]) -> list[dict]:
             "fields": sorted(step["changes"] or {}),
         }
         for step in steps
-        if not step["blocked"] and not (step["action"] == "update_model" and not step["changes"])
+        if _sendable(step)
     ]
 
 
@@ -539,13 +581,15 @@ def _region_reason(region: DBRegion | None) -> str | None:
     return None
 
 
-def _sync_region(db: Session, run_id: int, region_id: int, entry: dict, wait: bool) -> tuple[str, dict] | None:
+def _sync_region(
+    db: Session, run_id: int, region_id: int, entry: dict, wait: bool, trigger: str
+) -> tuple[str, dict] | None:
     """Sync one proxy. Returns (proxy name, stats) for a full scope."""
     region = db.get(DBRegion, region_id)
     if region is None:
         logger.warning("Sync run %s: region %s no longer exists", run_id, region_id)
         return None
-    proxy = _Proxy(db, run_id, region, entry)
+    proxy = _Proxy(db, run_id, region, entry, trigger)
     if reason := _region_reason(region):
         proxy.record("read_proxy", "failed", reason)
         db.commit()
@@ -593,15 +637,20 @@ def _sync_locked(proxy: _Proxy) -> dict | None:
     stepped = {step["row_id"] for step in steps}
     # A deployment in the scope with no step is already in sync.
     for row_id in scoped_rows - stepped:
-        _set_row(db, row_id, synced_at=read_at, sync_error=None)
+        _mark_in_sync(db, row_id, read_at)
+    repair = proxy.trigger in ("daily", "repair")
+    if repair:
+        # Drift that no write pushed is a change too, so changed_at is never later than synced_at after a success.
+        for step in steps:
+            if _sendable(step):
+                _set_row(db, step["row_id"], changed_at=read_at)
     db.commit()
 
     with ProxyWriter(proxy.url, proxy.key) as writer:
         # ponytail: one live read per step; batch the reads if a proxy gets slow.
         for index, (step_id, step) in enumerate(zip(ids, steps, strict=True)):
-            sendable = not step["blocked"] and not (step["action"] == "update_model" and not step["changes"])
-            # The first step goes out on the read above; each later step checks the proxy again (AC 12).
-            current, reason = _recheck(proxy, plan, step, known_ids) if index and sendable else (step, None)
+            # The first step goes out on the read above; each later step checks the proxy again.
+            current, reason = _recheck(proxy, plan, step, known_ids) if index and _sendable(step) else (step, None)
             if current is None:
                 status, message = "skipped", reason
             else:
@@ -612,7 +661,9 @@ def _sync_locked(proxy: _Proxy) -> dict | None:
             if status == "failed":
                 _set_row(db, step["row_id"], sync_error=message)
             elif in_sync:
-                _set_row(db, step["row_id"], synced_at=read_at, sync_error=None)
+                _mark_in_sync(db, step["row_id"], read_at)
+            elif status == "ok" and repair and step["action"] in _MODEL_STEPS:
+                _record_repair(proxy, step)
             db.commit()
     return stats
 
@@ -630,12 +681,12 @@ def execute_run(run_id: int, wait: bool = True) -> None:
         if not started:
             return
         run = db.get(DBRegistrySyncRun, run_id)
-        scope = dict(run.scope)
+        scope, trigger = dict(run.scope), run.trigger
         db.commit()
         error, proxies = None, {}
         try:
             for region_id in sorted(int(key) for key in scope):
-                if found := _sync_region(db, run_id, region_id, scope[str(region_id)], wait):
+                if found := _sync_region(db, run_id, region_id, scope[str(region_id)], wait, trigger):
                     proxies[found[0]] = found[1]
         except Exception as exc:
             db.rollback()
@@ -649,3 +700,56 @@ def execute_run(run_id: int, wait: bool = True) -> None:
         db.commit()
     finally:
         db.close()
+
+
+STUCK = "the run did not finish; the process that ran it stopped"
+
+
+def run_registry_sync(db: Session) -> dict:
+    """The daily step: close stuck runs, adopt-import new proxies, then repair each registry-managed proxy."""
+    return record_run(db, "registry-sync", lambda: _daily(db))
+
+
+def _daily(db: Session) -> dict:
+    now = _now()
+    # BackgroundTasks has no retry, so a run whose process stopped stays open until this marks it.
+    stuck = (
+        db.query(DBRegistrySyncRun)
+        .filter(
+            DBRegistrySyncRun.status.in_(("pending", "running")),
+            func.coalesce(DBRegistrySyncRun.started_at, DBRegistrySyncRun.created_at)
+            < now - timedelta(minutes=config.SYNC_STUCK_MINUTES),
+        )
+        .update({"status": "failed", "error": STUCK, "finished_at": now}, synchronize_session=False)
+    )
+    db.commit()
+    stats: dict = {"stuck": stuck, "imported": [], "import_failed": {}, "runs": {}}
+
+    imported = db.query(DBRegistryProxy.region_id).filter(DBRegistryProxy.imported_at.isnot(None))
+    for region in [r for r in active_regions(db) if r.id not in {rid for (rid,) in imported}]:
+        name = region.name
+        try:
+            import_proxy(db, region, adopt=True)
+            stats["imported"].append(name)
+        except Exception as exc:
+            # One proxy that cannot be read must not stop the repair of the others.
+            stats["import_failed"][name] = short_reason(exc)
+
+    managed = [
+        region
+        for region in active_regions(db)
+        if registry_manages(region.name)
+        and db.query(DBRegistryProxy.imported_at).filter_by(region_id=region.id).scalar() is not None
+    ]
+    if not managed:
+        stats["managed"] = []
+        return stats
+    stats["managed"] = [region.name for region in managed]
+    for region_id, name in [(region.id, region.name) for region in managed]:
+        run = create_run(db, "daily", full_scope([region_id], skip_failed=True))
+        db.commit()
+        run_id = run.id
+        # A busy proxy is skipped with a note; the next daily run repairs it.
+        execute_run(run_id, wait=False)
+        stats["runs"][name] = run_id
+    return stats

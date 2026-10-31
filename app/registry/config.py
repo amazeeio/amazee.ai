@@ -74,3 +74,5 @@ SYNC_LOCK_WAIT_SECONDS = float(os.getenv("REGISTRY_SYNC_LOCK_WAIT_SECONDS", "60"
 # The first key of the per-proxy advisory lock of the sync; the region id is the second.
 # The old catalog's alias lock uses 743_291_648, so this one must differ.
 SYNC_LOCK_NAMESPACE = 518_406_271
+# A sync run that is pending or running for longer than this is marked failed by the daily step.
+SYNC_STUCK_MINUTES = float(os.getenv("REGISTRY_SYNC_STUCK_MINUTES", "60"))
