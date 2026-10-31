@@ -460,3 +460,19 @@ def test_a_two_field_price_leaves_only_those_fields_that_litellm_can_clear(regis
         "input_cost_per_second": 0.1, "output_cost_per_image": 0.2,
     }
     assert [s[1] for s in steps] == ["ok"]
+
+
+def test_a_disabled_deployment_gets_no_stored_price(registry_db, us, live_proxies):
+    claude = _row(registry_db, "us-claude")
+    claude.enabled = False
+    registry_db.add(DBRegistryModelPrice(
+        model_id=claude.model_id, scope_kind="base", scope="", prices={"input_cost_per_token": 3e-06},
+        source="litellm", last_seen=date(2026, 1, 1),
+    ))
+    registry_db.commit()
+    live_proxies.by_url[US_URL]["model_info"].pop(1)
+
+    _run(registry_db, us, full=True)
+
+    # Nothing runs on the proxy for it, so no price is there.
+    assert _row(registry_db, name="claude-x").prices == {}

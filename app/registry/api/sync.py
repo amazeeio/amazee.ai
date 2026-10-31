@@ -684,9 +684,9 @@ def _sync_locked(proxy: _Proxy) -> dict | None:
     }
 
     def compared_price(row_id):
-        # Only a compared price that the sync writes is known to be on the proxy.
+        # Only a compared price that the sync writes is known to be on the proxy; a removed deployment has none.
         found = by_row.get(row_id)
-        if found is None or "prices" not in plan.fields or found.provisioned_only or found.price is None:
+        if found is None or not found.keep or "prices" not in plan.fields or found.provisioned_only or found.price is None:
             return None
         return found.price
     # No transaction stays open during HTTP.
