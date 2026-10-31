@@ -11,6 +11,7 @@ from app.db.database import get_db
 # The registry's only read of an old catalog table, for the group slugs. It goes when the old catalog goes.
 from app.db.models import DBModelAccessGroup, DBRegion
 from app.registry.api.dry_run import alias_plans, deployment_plans
+from app.registry.api.proxy_models import _import_first
 from app.registry.api.sync import _save
 from app.registry.api.routes import Refused, _find_proxy, _lock_proxies, _split_key, refuse, router
 from app.registry.models import (
@@ -262,6 +263,10 @@ def set_alias(
     db: Session = Depends(get_db),
 ):
     region = _find_proxy(db, proxy)
+    # The first registry write to a proxy adopt-imports it, so the full alias map keeps the live aliases.
+    # Every check below needs the imported deployments, so none runs before it.
+    if not dry_run:
+        _import_first(db, [region], [])
     # The alias guard of a rename or a delete reads the aliases under the same lock. The lock also makes
     # alias creates on one proxy run one after the other, so two creates of one alias cannot both insert.
     _lock_proxies(db, [region.id])
@@ -307,6 +312,9 @@ def delete_alias(
     db: Session = Depends(get_db),
 ):
     region = _find_proxy(db, proxy)
+    # The import reads the live aliases, so it comes before the lookup: the alias can exist only on the proxy.
+    if not dry_run:
+        _import_first(db, [region], [])
     row = db.query(DBRegistryAlias).filter_by(region_id=region.id, alias=alias).one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="Alias not found")

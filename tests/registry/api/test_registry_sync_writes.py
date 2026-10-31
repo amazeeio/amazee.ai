@@ -4,7 +4,7 @@ import pytest
 from cryptography.fernet import Fernet
 
 from app.registry.config import CREDENTIAL_KEYS_ENV
-from app.registry.models import DBRegistryModelRegion, DBRegistrySyncRun, DBRegistrySyncStep
+from app.registry.models import DBRegistryModelRegion, DBRegistryProxy, DBRegistrySyncRun, DBRegistrySyncStep
 from tests.registry.api.conftest import EU_URL, US_URL, auth, live_row, ok
 
 PROXIES = "/registry/proxies"
@@ -205,3 +205,40 @@ def test_the_write_body_shows_the_saved_changed_at(client, admin_token, registry
     assert deployment["changed_at"] is not None
     model = detail["result"] if managed else detail
     assert all(d["changed_at"] for d in model["deployments"] if d["proxy"] == "local-us1")
+
+
+def _forget_adoption(db, us, live_proxies):
+    db.get(DBRegistryProxy, us["us"].id).adopted_at = None
+    db.commit()
+    live_proxies.by_url[US_URL]["aliases"] = {"old": "gpt-4o"}
+
+
+def test_an_alias_write_on_a_proxy_that_was_never_adopted_adopts_it_first(
+    client, admin_token, registry_db, us, live_proxies
+):
+    _forget_adoption(registry_db, us, live_proxies)
+
+    body = ok(client.put("/registry/aliases/local-us1/chat", json={"target": "gpt-4o"}, headers=auth(admin_token)), 202)
+
+    assert live_proxies.writes == [(US_URL, "set_alias_map", {"old": "gpt-4o", "chat": "gpt-4o"})]
+    steps = registry_db.query(DBRegistrySyncStep).filter_by(run_id=body["sync_run_id"]).all()
+    assert [(s.action, s.status) for s in steps] == [("write_alias_map", "ok")]
+
+
+def test_an_alias_delete_can_remove_a_live_alias_that_the_adopt_import_reads(
+    client, admin_token, registry_db, us, live_proxies
+):
+    _forget_adoption(registry_db, us, live_proxies)
+
+    ok(client.delete("/registry/aliases/local-us1/old", headers=auth(admin_token)), 202)
+
+    assert live_proxies.writes == [(US_URL, "set_alias_map", {})]
+
+
+def test_an_alias_dry_run_imports_nothing(client, admin_token, registry_db, us, live_proxies):
+    _forget_adoption(registry_db, us, live_proxies)
+
+    ok(client.put("/registry/aliases/local-us1/chat?dry_run=true", json={"target": "gpt-4o"}, headers=auth(admin_token)))
+
+    registry_db.expire_all()
+    assert registry_db.get(DBRegistryProxy, us["us"].id).adopted_at is None
