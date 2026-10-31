@@ -31,6 +31,8 @@ from app.registry.versions import active_regions, fetch_release_lists
 logger = logging.getLogger(__name__)
 
 STEP = "support-check"
+# The check of one new proxy. Its own name, so it never stands in for a missed daily check.
+PROXY_STEP = "support-check-proxy"
 PRICE_LIST_PATH = "/public/litellm_model_cost_map"
 
 
@@ -212,9 +214,12 @@ def check_proxy_support(db: Session, region: DBRegion) -> dict:
         if version:
             fetch_release_lists(db, {version}, datetime.now(UTC))
             db.commit()
-        return _check_support(db, [region])
+        stats = _check_support(db, [region])
+        if region.name in stats["unreachable"]:
+            raise RuntimeError(f"the price list of {region.name} could not be read: {stats['unreachable'][region.name]}")
+        return stats
 
-    return record_run(db, STEP, work, extra={"region": region.name})
+    return record_run(db, PROXY_STEP, work, extra={"region": region.name})
 
 
 def _check_support(db: Session, regions: list[DBRegion] | None = None) -> dict:

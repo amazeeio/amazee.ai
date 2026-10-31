@@ -54,6 +54,7 @@ from app.registry.schemas import (
     RegistryRunResponse,
     RegistrySyncStarted,
 )
+from app.registry.support import PROXY_STEP as PROXY_SUPPORT_STEP
 from app.registry.support import Availability, refresh_region_available
 
 # The job runs daily, so two days with no `ok` run means a run was missed.
@@ -267,8 +268,9 @@ def list_runs(
         .filter(DBRegistryRun.status == "ok", DBRegistryRun.started_at >= datetime.now(UTC) - STALE_AFTER)
         .distinct()
     }
-    # The import runs only when a proxy needs it, not daily, so an old import is never a missed run.
-    fresh.add(IMPORT_STEP)
+    # The import and the one-proxy support check run only when a proxy needs them, not daily, so an old one is
+    # never a missed run.
+    fresh |= {IMPORT_STEP, PROXY_SUPPORT_STEP}
     # A run row is inserted when its step starts, so the id order is the start order.
     return [
         RegistryRunResponse.model_validate(run).model_copy(update={"stale": run.step not in fresh})
