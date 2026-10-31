@@ -175,3 +175,22 @@ def test_a_retry_adopts_the_proxy_so_the_alias_step_can_pass(client, admin_token
     registry_db.refresh(retry)
     assert retry.status == "ok"
     assert live_proxies.writes == [(US_URL, "set_alias_map", {"chat": "gpt-4o"})]
+
+
+def test_a_run_that_stopped_before_any_step_can_be_retried_whole(client, admin_token, registry_db, us, live_proxies):
+    # A model DELETE saved its run, and the process stopped before the run took a step; the daily job marked it.
+    deleted = {"deployment_id": "us-gpt", "model": "openai/gpt-4o", "model_name": "gpt-4o", "litellm_model": "openai/gpt-4o"}
+    run = create_run(registry_db, "write", {str(us["us"].id): _entry(deleted=[deleted])})
+    run.status, run.error = "failed", "the run did not finish; the process that ran it stopped"
+    registry_db.commit()
+
+    ok(client.post(f"{RUNS}/{run.id}/retry", headers=auth(admin_token)), 202)
+
+    assert live_proxies.writes == [(US_URL, "delete_model", "us-gpt")]
+
+
+def test_an_ok_run_with_no_step_still_cannot_be_retried(client, admin_token, registry_db, us):
+    run = _run(registry_db, {str(us["us"].id): _entry()})
+
+    assert run.status == "ok"
+    assert client.post(f"{RUNS}/{run.id}/retry", headers=auth(admin_token)).status_code == 409

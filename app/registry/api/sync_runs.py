@@ -137,9 +137,14 @@ def retry_sync_run(
     steps = _steps(db, run_id)
     if run.status not in ("ok", "failed"):
         refuse([RegistryProblem(message="The sync run has not finished", status=409)])
-    if not any(step.status == "failed" for step in steps):
+    if any(step.status == "failed" for step in steps):
+        scope = retry_scope(run, steps)
+    elif run.status == "failed":
+        # The run stopped before it recorded a failed step, for example when its process stopped, so nothing
+        # tells which part is missing: the retry takes the whole saved scope, a removed deployment included.
+        scope = dict(run.scope)
+    else:
         refuse([RegistryProblem(message="The sync run has no failed step", status=409)])
-    scope = retry_scope(run, steps)
     if not dry_run:
         # As the repair: a proxy that became readable gets its adopt import, so a blocked alias step can pass.
         _import_first(db, db.query(DBRegion).filter(DBRegion.id.in_([int(key) for key in scope])).all(), [])
