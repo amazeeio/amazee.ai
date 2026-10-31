@@ -35,7 +35,7 @@ from app.registry.models import (
     DBRegistryProvider,
     DBRegistryProxy,
 )
-from app.registry.planner import MANAGED_BY, alias_entry
+from app.registry.planner import alias_entry
 from app.registry.runs import record_run
 
 logger = logging.getLogger(__name__)
@@ -129,11 +129,9 @@ def import_deployments(
         if info.get("id") in known:
             stats["kept"] += 1
             continue
-        # A create whose read-back failed left its row with no id; the live deployment is that row. Only a
-        # deployment with the sync's marker can be it, as in the sync's own read-back.
-        row = None
-        if info.get("managed_by") == MANAGED_BY:
-            row = unbound.pop((dep.get("model_name") or params.get("model") or "", params.get("model") or ""), None)
+        # A create whose read-back failed, or a deployment made by hand, matches an enabled row with no id. That row
+        # takes it over: a second row would make every repair fail, and the sync overwrites hand edits anyway.
+        row = unbound.pop((dep.get("model_name") or params.get("model") or "", params.get("model") or ""), None)
         if row is not None and info.get("id"):
             row.litellm_deployment_id = info["id"]
             row.model_info = without_secrets(info)

@@ -495,10 +495,8 @@ def _created(dep):
     return {**dep, "model_info": {**dep["model_info"], "managed_by": MANAGED_BY}}
 
 
-@pytest.mark.parametrize("enabled, marked", [(False, True), (True, False)])
-def test_an_adopt_import_links_only_an_enabled_row_to_a_deployment_the_sync_made(
-    registry_db, proxy_region, enabled, marked
-):
+@pytest.mark.parametrize("enabled, marked", [(False, True), (False, False), (True, False)])
+def test_an_adopt_import_links_only_an_enabled_row(registry_db, proxy_region, enabled, marked):
     from tests.registry.conftest import add_model
 
     llama = add_model(registry_db, "deepinfra", "meta-llama/Llama-3")
@@ -512,7 +510,12 @@ def test_an_adopt_import_links_only_an_enabled_row_to_a_deployment_the_sync_made
     stats = import_deployments(registry_db, proxy_region, [live], None, {}, adopt=True)
     registry_db.commit()
 
-    # A disabled row or a hand-made deployment is no pair: a link would let the next repair delete it.
-    assert stats["linked"] == 0
     rows = registry_db.query(DBRegistryModelRegion).filter_by(model_id=llama.id).order_by(DBRegistryModelRegion.id).all()
-    assert [r.litellm_deployment_id for r in rows] == [None, "dep-3"]
+    if enabled:
+        # A hand-made deployment with the row's name and model is that row: a second row would fail every repair.
+        assert stats["linked"] == 1
+        assert [r.litellm_deployment_id for r in rows] == ["dep-3"]
+    else:
+        # A disabled row has no live deployment: a link would let the next repair delete it.
+        assert stats["linked"] == 0
+        assert [r.litellm_deployment_id for r in rows] == [None, "dep-3"]
