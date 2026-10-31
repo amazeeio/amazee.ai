@@ -1,11 +1,13 @@
 import copy
 import inspect
+import json
 
 import httpx
 import pytest
 
 from app.registry.litellm import (
     ProxyClient,
+    ProxyWriter,
     mantle_region,
     normalize_provider,
     parse_key,
@@ -285,3 +287,58 @@ def test_without_alias_copies_drops_a_self_alias_copy():
     first, second = _row("claude-x", "1"), _row("claude-x", "1")
 
     assert without_alias_copies([first, second], {"claude-x"}) == ([first], ["claude-x"])
+
+
+def _writer(handler) -> ProxyWriter:
+    client = ProxyWriter("http://proxy", "sk-test")
+    client._client.close()
+    client._client = httpx.Client(base_url="http://proxy", transport=httpx.MockTransport(handler))
+    return client
+
+
+@pytest.mark.parametrize(
+    "call, method, path, body",
+    [
+        (lambda w: w.create_model({"model_name": "m"}), "POST", "/model/new", {"model_name": "m"}),
+        (
+            lambda w: w.update_model("dep-1", {"model_name": "m2"}),
+            "PATCH", "/model/dep-1/update", {"model_name": "m2"},
+        ),
+        (lambda w: w.delete_model("dep-1"), "POST", "/model/delete", {"id": "dep-1"}),
+        (
+            lambda w: w.set_alias_map({"chat": "gpt-4o"}),
+            "POST", "/config/update", {"router_settings": {"model_group_alias": {"chat": "gpt-4o"}}},
+        ),
+        (
+            lambda w: w.create_credential("c1", {"api_key": "sk-v"}, {"x": 1}),
+            "POST", "/credentials",
+            {"credential_name": "c1", "credential_values": {"api_key": "sk-v"}, "credential_info": {"x": 1}},
+        ),
+        (
+            lambda w: w.update_credential("AWS Bedrock", {"api_key": "sk-v"}, {}),
+            "PATCH", "/credentials/AWS%20Bedrock",
+            {"credential_name": "AWS Bedrock", "credential_values": {"api_key": "sk-v"}, "credential_info": {}},
+        ),
+        (lambda w: w.delete_credential("AWS Bedrock"), "DELETE", "/credentials/AWS%20Bedrock", None),
+    ],
+)
+def test_proxy_writer_sends_each_call(call, method, path, body):
+    sent = []
+
+    def handler(request):
+        sent.append((request.method, request.url.raw_path.decode(), json.loads(request.content) if request.content else None))
+        return httpx.Response(200, json={"ok": True})
+
+    with _writer(handler) as writer:
+        assert call(writer) == {"ok": True}
+    assert sent == [(method, path, body)]
+
+
+def test_proxy_writer_returns_none_for_an_empty_answer():
+    with _writer(lambda request: httpx.Response(200)) as writer:
+        assert writer.delete_credential("c1") is None
+
+
+def test_proxy_writer_raises_on_an_error_answer():
+    with _writer(lambda request: httpx.Response(500, json={"error": "x"})) as writer, pytest.raises(httpx.HTTPStatusError):
+        writer.create_model({"model_name": "m"})
