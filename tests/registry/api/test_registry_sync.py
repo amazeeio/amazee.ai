@@ -166,7 +166,7 @@ def test_an_update_sends_only_the_changed_fields(registry_db, us, live_proxies):
     gpt.model_name = "gpt-renamed"
     registry_db.commit()
 
-    run, steps = _run(registry_db, us, deployments=[gpt.id])
+    _run(registry_db, us, deployments=[gpt.id])
 
     assert live_proxies.writes == [(US_URL, "update_model", "us-gpt", {"model_name": "gpt-renamed"})]
     # The live params that the registry does not store stay on the proxy.
@@ -262,7 +262,7 @@ def test_a_proxy_that_the_registry_does_not_manage_gets_nothing(registry_db, us,
 def test_an_empty_alias_map_never_deletes_live_aliases(registry_db, us, live_proxies):
     live_proxies.by_url[US_URL]["aliases"] = {"chat": "gpt-4o"}
 
-    run, [(action, status, message)] = _run(registry_db, us, aliases=True)
+    _, [(action, status, message)] = _run(registry_db, us, aliases=True)
 
     assert (action, status) == ("write_alias_map", "failed")
     assert message.startswith(DELETES_EVERY_ALIAS)
@@ -298,7 +298,7 @@ def test_a_row_deleted_during_its_create_has_the_new_deployment_deleted(registry
 
     live_proxies.hooks["create_model"] = delete_row
 
-    run, [(action, status, message)] = _run(registry_db, us, deployments=[new_id])
+    _, [(action, status, message)] = _run(registry_db, us, deployments=[new_id])
 
     assert _actions(live_proxies) == ["create_model", "delete_model"]
     assert live_proxies.writes[1][2] == "new-1"
@@ -582,7 +582,7 @@ def test_an_ok_step_keeps_its_notes_as_its_message(registry_db, us, live_proxies
     ))
     registry_db.commit()
 
-    run, [(action, status, message)] = _run(registry_db, us, deployments=[new.id])
+    _, [(action, status, message)] = _run(registry_db, us, deployments=[new.id])
 
     # The run detail shows why the create sent no price, as the dry run does.
     assert (action, status, message) == ("create_model", "ok", PROVISIONED_ONLY)

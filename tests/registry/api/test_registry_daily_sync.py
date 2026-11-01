@@ -65,7 +65,8 @@ def test_the_daily_step_repairs_a_hand_edit_and_records_it(registry_db, us, live
         "sync_run_id": run.id,
     }
     gpt = registry_db.query(DBRegistryModelRegion).filter_by(litellm_deployment_id="us-gpt").one()
-    assert gpt.changed_at == gpt.synced_at is not None
+    assert gpt.synced_at is not None
+    assert gpt.changed_at == gpt.synced_at
     assert {run.status for run in registry_db.query(DBRegistryRun).filter_by(step="registry-sync")} == {"ok"}
 
 

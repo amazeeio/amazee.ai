@@ -174,7 +174,8 @@ def test_credential_writes_on_an_unmanaged_proxy_keep_their_status(
     managed_proxies.clear()
 
     ok(_create(client, admin_token), 201)
-    assert client.delete("/registry/credentials/Open AI", headers=auth(admin_token)).status_code == 204
+    deleted = client.delete("/registry/credentials/Open AI", headers=auth(admin_token))
+    assert deleted.status_code == 204
     assert live_proxies.writes == []
 
 

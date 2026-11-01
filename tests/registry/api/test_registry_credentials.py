@@ -157,8 +157,9 @@ def test_a_dry_run_saves_nothing(client, admin_token, registry_db, before):
 
 
 def test_unknown_credential_gives_404(client, admin_token, writable):
-    assert client.patch(f"{CREDENTIALS}/nope", json={"proxies": []}, headers=auth(admin_token)).status_code == 404
-    assert client.delete(f"{CREDENTIALS}/nope", headers=auth(admin_token)).status_code == 404
+    patched = client.patch(f"{CREDENTIALS}/nope", json={"proxies": []}, headers=auth(admin_token))
+    deleted = client.delete(f"{CREDENTIALS}/nope", headers=auth(admin_token))
+    assert patched.status_code == deleted.status_code == 404
 
 
 @pytest.mark.parametrize("body", [
