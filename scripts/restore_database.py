@@ -389,6 +389,27 @@ def recreate_target_db(config):
         )
 
 
+RESET_PUBLIC_SCHEMA_SQL = "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+
+
+def reset_public_schema(config):
+    """Empty the public schema without dropping the database.
+
+    pg_restore --clean only drops objects listed in the dump, so tables added
+    by newer migrations (and their FKs) would survive and block the restore.
+    psql -c runs both statements in one transaction: if the user can't drop
+    the schema, nothing changes and we abort before touching data.
+    """
+    print("  Resetting public schema...")
+    cmd = ["psql", "--dbname", config["url"], "-c", RESET_PUBLIC_SCHEMA_SQL]
+    try:
+        run_pg_tool(cmd, config)
+    except subprocess.CalledProcessError as e:
+        raise SystemExit(
+            sanitize(f"  Failed to reset public schema: {e.stderr or e}", config)
+        )
+
+
 def apply_restore(config, dump_dir, restore_mode="target"):
     """Apply the database restore from a pg_dump directory-format archive.
 
@@ -401,6 +422,11 @@ def apply_restore(config, dump_dir, restore_mode="target"):
       Recreates the configured local target database (to ensure it is clean
       and avoids foreign key constraint errors) and runs pg_restore directly
       into the target database without --create.
+
+    If restore_mode is 'in-place':
+      Same as 'target' but never drops or creates the database: it resets
+      the public schema, then restores into the existing database. For
+      Lagoon DBaaS, where the database user has no CREATEDB.
     """
     db_name = config["database"]
 
@@ -427,8 +453,13 @@ def apply_restore(config, dump_dir, restore_mode="target"):
             dump_dir,
         ]
     else:
-        # Recreate the target database to ensure constraint-free restore
-        recreate_target_db(config)
+        # Recreate the target database to ensure constraint-free restore.
+        # in-place can't (no CREATEDB: the drop works, the create fails and
+        # leaves no database), so it resets the public schema instead.
+        if restore_mode == "target":
+            recreate_target_db(config)
+        else:
+            reset_public_schema(config)
 
         cmd = [
             "pg_restore",
@@ -447,14 +478,24 @@ def apply_restore(config, dump_dir, restore_mode="target"):
     try:
         run_pg_tool(cmd, config, capture=False)
     except subprocess.CalledProcessError as e:
+        if restore_mode == "in-place":
+            # No --create: this user can't recreate a dropped database.
+            recovery = (
+                f"    psql \"$DATABASE_URL\" -c '{RESET_PUBLIC_SCHEMA_SQL}'\n"
+                "    pg_restore --no-owner --no-privileges --exit-on-error "
+                '-d "$DATABASE_URL" <safety_backup>.dump'
+            )
+        else:
+            recovery = (
+                "    pg_restore --clean --create --if-exists --no-owner "
+                "--no-privileges \\\n"
+                '      -d "<maintenance DATABASE_URL, path=/postgres>" '
+                "<safety_backup>.dump"
+            )
         raise SystemExit(
             f"  pg_restore failed: {sanitize(e.stderr or e, config)}\n"
             "  The target database may have been dropped or partially "
-            "restored. Recover from the safety backup with:\n"
-            "    pg_restore --clean --create --if-exists --no-owner "
-            "--no-privileges \\\n"
-            '      -d "<maintenance DATABASE_URL, path=/postgres>" '
-            "<safety_backup>.dump"
+            f"restored. Recover from the safety backup with:\n{recovery}"
         )
 
     print("  Restore complete.")
@@ -502,9 +543,9 @@ def main():
     )
     parser.add_argument(
         "--restore-mode",
-        choices=["target", "as-is"],
+        choices=["target", "as-is", "in-place"],
         default="target",
-        help="Whether to restore directly into the configured local target database ('target') or recreate the original database name from the dump ('as-is')",
+        help="Whether to restore directly into the configured local target database ('target'), recreate the original database name from the dump ('as-is'), or restore into the existing database without dropping it ('in-place', use on Lagoon where the user has no CREATEDB)",
     )
     parser.add_argument(
         "--yes",
@@ -596,7 +637,7 @@ def main():
         # Determine restore mode (target vs as-is)
         restore_mode = args.restore_mode
         if not args.yes:
-            if source_db and source_db != target_db:
+            if source_db and source_db != target_db and restore_mode != "in-place":
                 print(
                     "\nWARNING: The backup source database name differs from your locally-configured target database."
                 )
@@ -618,9 +659,14 @@ def main():
                     else:
                         print("Invalid choice. Please enter 1 or 2.")
             else:
-                print(
-                    "\nWARNING: This will DROP the existing database and restore from backup."
-                )
+                if restore_mode == "in-place":
+                    print(
+                        "\nWARNING: This will REPLACE all objects in the existing database with the backup."
+                    )
+                else:
+                    print(
+                        "\nWARNING: This will DROP the existing database and restore from backup."
+                    )
                 if not args.no_backup:
                     print(
                         "A safety backup of the current database will be created first."
@@ -694,16 +740,17 @@ def main():
                     "-tAc",
                     "SELECT 1 FROM pg_database WHERE datname=:'active_db'",
                 ]
-                db_exists = False
-                try:
-                    res = run_pg_tool(check_cmd, config)
-                    db_exists = res.stdout.strip() == "1"
-                except Exception:
-                    print(
-                        "  Warning: Could not verify whether the target database exists. Assuming it does not exist and skipping safety backup.",
-                        file=sys.stderr,
-                    )
-                    db_exists = False
+                # in-place restores into the DB we're connected to, so it exists.
+                db_exists = restore_mode == "in-place"
+                if not db_exists:
+                    try:
+                        res = run_pg_tool(check_cmd, config)
+                        db_exists = res.stdout.strip() == "1"
+                    except Exception:
+                        print(
+                            "  Warning: Could not verify whether the target database exists. Assuming it does not exist and skipping safety backup.",
+                            file=sys.stderr,
+                        )
 
                 if db_exists:
                     backup_current_database(backup_config, safety_backup_path)
