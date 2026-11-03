@@ -48,3 +48,23 @@ def test_detect_database_name(mock_run_pg_tool):
 
         detected = detect_database_name("/mock/dump", config)
         assert detected == "my_detected_db", f"Failed for header: {header}"
+
+
+@patch("scripts.restore_database.recreate_target_db")
+@patch("scripts.restore_database.run_pg_tool")
+def test_apply_restore_in_place_never_drops_or_creates(mock_run_pg_tool, mock_recreate):
+    from scripts.restore_database import apply_restore
+
+    config = {
+        "database": "my_db",
+        "url": "postgres://host/my_db",
+        "maintenance_url": "postgres://host/postgres",
+    }
+    apply_restore(config, "/mock/dump", restore_mode="in-place")
+
+    mock_recreate.assert_not_called()
+    cmd = mock_run_pg_tool.call_args.args[0]
+    assert cmd[0] == "pg_restore"
+    assert "--clean" in cmd
+    assert "--create" not in cmd
+    assert cmd[cmd.index("--dbname") + 1] == "postgres://host/my_db"

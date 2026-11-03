@@ -401,6 +401,11 @@ def apply_restore(config, dump_dir, restore_mode="target"):
       Recreates the configured local target database (to ensure it is clean
       and avoids foreign key constraint errors) and runs pg_restore directly
       into the target database without --create.
+
+    If restore_mode is 'in-place':
+      Same as 'target' but never drops or creates the database: pg_restore
+      --clean replaces the objects inside the existing database. For Lagoon
+      DBaaS, where the database user has no CREATEDB.
     """
     db_name = config["database"]
 
@@ -427,8 +432,11 @@ def apply_restore(config, dump_dir, restore_mode="target"):
             dump_dir,
         ]
     else:
-        # Recreate the target database to ensure constraint-free restore
-        recreate_target_db(config)
+        # Recreate the target database to ensure constraint-free restore.
+        # in-place skips this: dropping works for the owner, but without
+        # CREATEDB the create fails and leaves no database at all.
+        if restore_mode == "target":
+            recreate_target_db(config)
 
         cmd = [
             "pg_restore",
@@ -502,9 +510,9 @@ def main():
     )
     parser.add_argument(
         "--restore-mode",
-        choices=["target", "as-is"],
+        choices=["target", "as-is", "in-place"],
         default="target",
-        help="Whether to restore directly into the configured local target database ('target') or recreate the original database name from the dump ('as-is')",
+        help="Whether to restore directly into the configured local target database ('target'), recreate the original database name from the dump ('as-is'), or restore into the existing database without dropping it ('in-place', use on Lagoon where the user has no CREATEDB)",
     )
     parser.add_argument(
         "--yes",
@@ -596,7 +604,7 @@ def main():
         # Determine restore mode (target vs as-is)
         restore_mode = args.restore_mode
         if not args.yes:
-            if source_db and source_db != target_db:
+            if source_db and source_db != target_db and restore_mode != "in-place":
                 print(
                     "\nWARNING: The backup source database name differs from your locally-configured target database."
                 )
@@ -618,9 +626,14 @@ def main():
                     else:
                         print("Invalid choice. Please enter 1 or 2.")
             else:
-                print(
-                    "\nWARNING: This will DROP the existing database and restore from backup."
-                )
+                if restore_mode == "in-place":
+                    print(
+                        "\nWARNING: This will REPLACE all objects in the existing database with the backup."
+                    )
+                else:
+                    print(
+                        "\nWARNING: This will DROP the existing database and restore from backup."
+                    )
                 if not args.no_backup:
                     print(
                         "A safety backup of the current database will be created first."
@@ -694,16 +707,17 @@ def main():
                     "-tAc",
                     "SELECT 1 FROM pg_database WHERE datname=:'active_db'",
                 ]
-                db_exists = False
-                try:
-                    res = run_pg_tool(check_cmd, config)
-                    db_exists = res.stdout.strip() == "1"
-                except Exception:
-                    print(
-                        "  Warning: Could not verify whether the target database exists. Assuming it does not exist and skipping safety backup.",
-                        file=sys.stderr,
-                    )
-                    db_exists = False
+                # in-place restores into the DB we're connected to, so it exists.
+                db_exists = restore_mode == "in-place"
+                if not db_exists:
+                    try:
+                        res = run_pg_tool(check_cmd, config)
+                        db_exists = res.stdout.strip() == "1"
+                    except Exception:
+                        print(
+                            "  Warning: Could not verify whether the target database exists. Assuming it does not exist and skipping safety backup.",
+                            file=sys.stderr,
+                        )
 
                 if db_exists:
                     backup_current_database(backup_config, safety_backup_path)
