@@ -8,21 +8,26 @@ Lagoon backups are .tar.gz files containing a pg_dump directory-format archive:
 This script:
   1. (Optionally) takes a pre-restore safety backup with `pg_dump -Fc`.
   2. Extracts the .tar.gz (and the nested .tar) to a temp directory.
-  3. Applies the dump with
-     `pg_restore -Fd --create --clean --if-exists --no-owner --no-privileges
-                 --no-tablespaces --exit-on-error`
-     connected to the `postgres` maintenance database. `--create --clean`
-     replays the source DB's own `CREATE DATABASE` from `toc.dat`, so the
-     target is recreated with the source's encoding and collation rather
-     than the cluster's defaults. `--no-owner` and `--no-tablespaces` strip
-     out OWNER/TABLESPACE clauses so the restore does not depend on the
-     source's roles or tablespaces existing on the target cluster.
+  3. Applies the dump with `pg_restore -Fd --clean --if-exists --no-owner
+     --no-privileges --no-tablespaces --exit-on-error`, in one of three modes
+     (--restore-mode):
+       - target (default): drops and recreates the configured database, then
+         restores into it.
+       - as-is: connects to the `postgres` maintenance database and adds
+         `--create`, so the source DB's own `CREATE DATABASE` (encoding,
+         collation) is replayed from `toc.dat`.
+       - in-place: never drops or creates the database. Resets the `public`
+         schema, then restores into the existing database in a single
+         transaction. Use on Lagoon, where the DB user has no CREATEDB.
+     `--no-owner` and `--no-tablespaces` strip out OWNER/TABLESPACE clauses so
+     the restore does not depend on the source's roles or tablespaces.
 
 Requires the postgres client tools (pg_dump, pg_restore, psql) on PATH. In
 Lagoon these are provided by the `cli` container image.
 
-The connecting role needs CREATEDB (to recreate the target database) and
-must be able to connect to the `postgres` maintenance database.
+target and as-is need a role with CREATEDB that can connect to the `postgres`
+maintenance database. in-place only needs to own the target database's
+`public` schema.
 
 IMPORTANT: Only use this with backups from trusted sources (e.g. Lagoon).
 
@@ -389,7 +394,11 @@ def recreate_target_db(config):
         )
 
 
-RESET_PUBLIC_SCHEMA_SQL = "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+# lock_timeout: the backend and cron jobs stay connected during a restore, and
+# DROP SCHEMA would otherwise wait forever on any lock they hold.
+RESET_PUBLIC_SCHEMA_SQL = (
+    "SET lock_timeout = '10s'; DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+)
 
 
 def reset_public_schema(config):
@@ -474,6 +483,9 @@ def apply_restore(config, dump_dir, restore_mode="target"):
             config["url"],
             dump_dir,
         ]
+        if restore_mode == "in-place":
+            # All or nothing: a failure leaves the empty schema, not half the tables.
+            cmd.insert(-3, "--single-transaction")
 
     try:
         run_pg_tool(cmd, config, capture=False)
@@ -481,8 +493,9 @@ def apply_restore(config, dump_dir, restore_mode="target"):
         if restore_mode == "in-place":
             # No --create: this user can't recreate a dropped database.
             recovery = (
-                f"    psql \"$DATABASE_URL\" -c '{RESET_PUBLIC_SCHEMA_SQL}'\n"
+                f'    psql "$DATABASE_URL" -c "{RESET_PUBLIC_SCHEMA_SQL}"\n'
                 "    pg_restore --no-owner --no-privileges --exit-on-error "
+                "--single-transaction "
                 '-d "$DATABASE_URL" <safety_backup>.dump'
             )
         else:
