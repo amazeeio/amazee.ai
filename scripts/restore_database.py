@@ -389,6 +389,27 @@ def recreate_target_db(config):
         )
 
 
+RESET_PUBLIC_SCHEMA_SQL = "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+
+
+def reset_public_schema(config):
+    """Empty the public schema without dropping the database.
+
+    pg_restore --clean only drops objects listed in the dump, so tables added
+    by newer migrations (and their FKs) would survive and block the restore.
+    psql -c runs both statements in one transaction: if the user can't drop
+    the schema, nothing changes and we abort before touching data.
+    """
+    print("  Resetting public schema...")
+    cmd = ["psql", "--dbname", config["url"], "-c", RESET_PUBLIC_SCHEMA_SQL]
+    try:
+        run_pg_tool(cmd, config)
+    except subprocess.CalledProcessError as e:
+        raise SystemExit(
+            sanitize(f"  Failed to reset public schema: {e.stderr or e}", config)
+        )
+
+
 def apply_restore(config, dump_dir, restore_mode="target"):
     """Apply the database restore from a pg_dump directory-format archive.
 
@@ -403,9 +424,9 @@ def apply_restore(config, dump_dir, restore_mode="target"):
       into the target database without --create.
 
     If restore_mode is 'in-place':
-      Same as 'target' but never drops or creates the database: pg_restore
-      --clean replaces the objects inside the existing database. For Lagoon
-      DBaaS, where the database user has no CREATEDB.
+      Same as 'target' but never drops or creates the database: it resets
+      the public schema, then restores into the existing database. For
+      Lagoon DBaaS, where the database user has no CREATEDB.
     """
     db_name = config["database"]
 
@@ -433,10 +454,12 @@ def apply_restore(config, dump_dir, restore_mode="target"):
         ]
     else:
         # Recreate the target database to ensure constraint-free restore.
-        # in-place skips this: dropping works for the owner, but without
-        # CREATEDB the create fails and leaves no database at all.
+        # in-place can't (no CREATEDB: the drop works, the create fails and
+        # leaves no database), so it resets the public schema instead.
         if restore_mode == "target":
             recreate_target_db(config)
+        else:
+            reset_public_schema(config)
 
         cmd = [
             "pg_restore",
@@ -455,14 +478,24 @@ def apply_restore(config, dump_dir, restore_mode="target"):
     try:
         run_pg_tool(cmd, config, capture=False)
     except subprocess.CalledProcessError as e:
+        if restore_mode == "in-place":
+            # No --create: this user can't recreate a dropped database.
+            recovery = (
+                f"    psql \"$DATABASE_URL\" -c '{RESET_PUBLIC_SCHEMA_SQL}'\n"
+                "    pg_restore --no-owner --no-privileges --exit-on-error "
+                '-d "$DATABASE_URL" <safety_backup>.dump'
+            )
+        else:
+            recovery = (
+                "    pg_restore --clean --create --if-exists --no-owner "
+                "--no-privileges \\\n"
+                '      -d "<maintenance DATABASE_URL, path=/postgres>" '
+                "<safety_backup>.dump"
+            )
         raise SystemExit(
             f"  pg_restore failed: {sanitize(e.stderr or e, config)}\n"
             "  The target database may have been dropped or partially "
-            "restored. Recover from the safety backup with:\n"
-            "    pg_restore --clean --create --if-exists --no-owner "
-            "--no-privileges \\\n"
-            '      -d "<maintenance DATABASE_URL, path=/postgres>" '
-            "<safety_backup>.dump"
+            f"restored. Recover from the safety backup with:\n{recovery}"
         )
 
     print("  Restore complete.")
