@@ -1548,7 +1548,9 @@ class SkippedRegion(BaseModel):
 class ApplyConfigResponse(BaseModel):
     dry_run: bool
     changes: List[ApplyChange] = Field(default_factory=list)
-    # catalog model_ids present in the DB but not in the payload (and not pruned)
+    # catalog model_ids present in the DB but not in the payload. Leaves out
+    # pruned models (inactive globally) unless one still has an active
+    # deployment in a managed region.
     unmanaged_models: List[str] = Field(default_factory=list)
     # group slugs present in the DB but not in the payload (never auto-pruned)
     unmanaged_access_groups: List[str] = Field(default_factory=list)

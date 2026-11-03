@@ -637,9 +637,14 @@ async def apply_model_config(
                         )
                     )
                     syncs.add((model.id, assoc.region_id))
-        elif model.is_active_globally:
-            # Already pruned (inactive, not deleted): nothing left to act on,
-            # so listing it would nag on every apply after a successful prune.
+        elif model.is_active_globally or any(
+            a.is_active and a.region_id in managed_ids
+            for a in db.query(DBModelRegion).filter_by(model_id=model.id)
+        ):
+            # A fully pruned model (inactive, no live managed row) is left out,
+            # or it would nag on every apply. One still live in a managed region
+            # (pruned while that region was unmanaged) is kept: a prune run
+            # deactivates it.
             unmanaged_models.append(model.model_id)
 
     # A deployment whose last sync failed never diffs again, so re-running the
