@@ -2,9 +2,9 @@ import json
 
 import pytest
 
-from app.registry.models import DBRegistryAlias
+from app.registry.models import DBRegistryAlias, DBRegistryProxy
 from app.registry.planner import DELETES_EVERY_ALIAS, REMOVES_LIVE_ALIAS
-from tests.registry.api.conftest import EU_URL, US_URL, auth, ok
+from tests.registry.api.conftest import CHECKED_AT, EU_URL, US_URL, auth, ok
 
 ALIASES = "/registry/aliases"
 
@@ -16,6 +16,9 @@ def aliases(registry_db, deployed):
         DBRegistryAlias(region_id=deployed["us"].id, alias="chat", target="claude-x", hidden=True),
         DBRegistryAlias(region_id=deployed["eu"].id, alias="embed", target="gpt-4o"),
     ])
+    # The adopt import read the live aliases, so the plans show only the alias problems.
+    for proxy in registry_db.query(DBRegistryProxy):
+        proxy.adopted_at = CHECKED_AT
     registry_db.commit()
 
 
@@ -157,6 +160,7 @@ def test_put_dry_run_plans_the_full_alias_map(client, admin_token, aliases, live
 
     assert body["steps"] == [{
         "proxy": "local-us1", "action": "write_alias_map", "model": None, "model_name": None, "deployment_id": None,
+        "credential": None, "blocked": False,
         "payload": {"zeta": "gpt-4o", "chat": {"model": "claude-x", "hidden": True}, "new": "gpt-4o"},
         "changes": {
             "chat": {"from": None, "to": {"model": "claude-x", "hidden": True}},
@@ -186,3 +190,12 @@ def test_delete_dry_run_of_the_last_alias_warns(client, admin_token, aliases, li
     assert (step["action"], step["payload"]) == ("write_alias_map", {})
     # The deleted alias gets no problem of its own; the other live alias does.
     assert step["problems"] == [DELETES_EVERY_ALIAS, REMOVES_LIVE_ALIAS.format("other")]
+
+
+def test_alias_dry_run_on_a_proxy_that_was_never_adopted_is_blocked(client, admin_token, deployed, live_proxies):
+    body = ok(_put(client, admin_token, "local-us1/new", {"target": "gpt-4o"}, "?dry_run=true"))
+
+    [step] = body["steps"]
+    assert step["problems"][0].startswith("the adopt import has not read the live aliases")
+    assert "a write to a registry-managed proxy that it can read imports the proxy first" in step["problems"][0]
+    assert step["blocked"] is True

@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings
-from pydantic import ConfigDict, Field, field_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 import os
 
 
@@ -197,6 +197,9 @@ class Settings(BaseSettings):
     # elsewhere (ren2) must never be listed — their absence here is what stops
     # the catalog from overwriting or deleting their models.
     CATALOG_MANAGED_REGIONS: str = os.getenv("CATALOG_MANAGED_REGIONS", "")
+    # Allow-list of region names the model registry may write to. Empty by
+    # default. A region must never be in both lists, or two writers fight.
+    REGISTRY_MANAGED_REGIONS: str = os.getenv("REGISTRY_MANAGED_REGIONS", "")
 
     model_config = ConfigDict(env_file=".env", extra="ignore")
     main_route: str = os.getenv("LAGOON_ROUTE", "http://localhost:8800")
@@ -240,12 +243,31 @@ class Settings(BaseSettings):
                 "Dedicated default limit values must be numeric when set."
             ) from exc
 
+    @model_validator(mode="after")
+    def refuse_shared_managed_regions(self):
+        # Local manages every region in both, so the lists mean nothing there.
+        if self.ENV_SUFFIX != "local":
+            shared = region_names(self.CATALOG_MANAGED_REGIONS) & region_names(
+                self.REGISTRY_MANAGED_REGIONS
+            )
+            if shared:
+                raise ValueError(
+                    "CATALOG_MANAGED_REGIONS and REGISTRY_MANAGED_REGIONS share "
+                    f"{', '.join(sorted(shared))}; a region has one writer only."
+                )
+        return self
+
     def model_post_init(self, values):
         # Add Lagoon routes to CORS origins if available
         lagoon_routes = os.getenv("LAGOON_ROUTES", "").split(",")
         self.CORS_ORIGINS.extend(
             [route.strip() for route in lagoon_routes if route.strip()]
         )
+
+
+def region_names(value: str) -> set[str]:
+    """The names in a comma-separated region list."""
+    return {r.strip() for r in value.split(",") if r.strip()}
 
 
 settings = Settings()
@@ -263,6 +285,4 @@ def catalog_manages(region_name: str) -> bool:
     # single value an operator can set that opens every region on prod.
     if settings.ENV_SUFFIX == "local":
         return True
-    return region_name in {
-        r.strip() for r in settings.CATALOG_MANAGED_REGIONS.split(",") if r.strip()
-    }
+    return region_name in region_names(settings.CATALOG_MANAGED_REGIONS)

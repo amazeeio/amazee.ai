@@ -1,13 +1,15 @@
-"""One-time import of a proxy's live deployments into the registry.
+"""Import of a proxy's live deployments into the registry.
 
 The API adds planned deployments to a proxy only after this import. A second
-import is refused: it would overwrite registry decisions with proxy state.
+plain import is refused: it would overwrite registry decisions with proxy state.
+The adopt mode only adds what the registry does not have yet, so it can run again.
 """
 
 import logging
 from collections.abc import Set as AbstractSet
 from datetime import UTC, date, datetime
 
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.db.models import DBRegion
@@ -23,6 +25,9 @@ from app.registry.litellm import (
 )
 from app.registry.models import (
     DBRegistryAccessGroup,
+    DBRegistryAlias,
+    DBRegistryCredential,
+    DBRegistryCredentialRegion,
     DBRegistryModel,
     DBRegistryModelRegion,
     DBRegistryModelPrice,
@@ -30,6 +35,7 @@ from app.registry.models import (
     DBRegistryProvider,
     DBRegistryProxy,
 )
+from app.registry.planner import alias_entry
 from app.registry.runs import record_run
 
 logger = logging.getLogger(__name__)
@@ -96,17 +102,41 @@ def import_deployments(
     credential_regions: dict[str, str],
     aliases: AbstractSet[str] = frozenset(),
     today: date | None = None,
+    adopt: bool = False,
 ) -> dict:
+    """Add the live deployments. With `adopt`, keep every deployment the registry already holds."""
     proxy = db.get(DBRegistryProxy, region.id)
-    if proxy is not None and proxy.imported_at is not None:
+    if not adopt and proxy is not None and proxy.imported_at is not None:
         raise AlreadyImported(f"region {region.name} was imported at {proxy.imported_at}")
     today = today or date.today()
 
     kept, copies = without_alias_copies(deployments, aliases)
     stats = {"deployments": len(deployments), "imported": 0, "skipped": [], "aliases": copies}
+    known, unbound = set(), {}
+    if adopt:
+        stats["kept"] = stats["linked"] = 0
+        for row in db.query(DBRegistryModelRegion).filter(DBRegistryModelRegion.region_id == region.id).order_by(
+            DBRegistryModelRegion.id
+        ):
+            if row.litellm_deployment_id is not None:
+                known.add(row.litellm_deployment_id)
+            elif row.enabled:
+                # A disabled row has no live deployment: a link would make the next repair delete it.
+                unbound.setdefault((row.model_name, row.litellm_model), row)
     for dep in kept:
         params = dep.get("litellm_params") or {}
         info = dep.get("model_info") or {}
+        if info.get("id") in known:
+            stats["kept"] += 1
+            continue
+        # A create whose read-back failed, or a deployment made by hand, matches an enabled row with no id. That row
+        # takes it over: a second row would make every repair fail, and the sync overwrites hand edits anyway.
+        row = unbound.pop((dep.get("model_name") or params.get("model") or "", params.get("model") or ""), None)
+        if row is not None and info.get("id"):
+            row.litellm_deployment_id = info["id"]
+            row.model_info = without_secrets(info)
+            stats["linked"] += 1
+            continue
         litellm_model = params.get("model") or ""
         provider_name, source_model = registry_provider_and_model(params, info)
         split = split_model(source_model, provider_name) if provider_name else None
@@ -165,22 +195,79 @@ def import_deployments(
         proxy = DBRegistryProxy(region_id=region.id)
         db.add(proxy)
     proxy.litellm_version = version
-    # The adopt-mode import must merge these with the stored regions, not replace them: an admin can set them.
-    proxy.cloud_regions = _proxy_cloud_regions(deployments, credential_regions)
-    proxy.imported_at = datetime.now(UTC)
+    found = _proxy_cloud_regions(deployments, credential_regions)
+    # An admin can set a region, so a stored value wins and the adopt mode only adds new providers.
+    proxy.cloud_regions = {**found, **(proxy.cloud_regions or {})} if adopt else found
+    now = datetime.now(UTC)
+    if proxy.imported_at is None:
+        proxy.imported_at = now
+    if adopt and proxy.adopted_at is None:
+        proxy.adopted_at = now
     return stats
 
 
-def import_proxy(db: Session, region: DBRegion) -> dict:
+def adopt_aliases(db: Session, region: DBRegion, alias_map: dict) -> int:
+    """Add each live alias that the registry does not have, with its target and hidden flag. Rows stay."""
+    added = 0
+    for alias, value in alias_map.items():
+        entry = alias_entry(value)
+        if not isinstance(alias, str) or entry is None or not isinstance(entry[0], str):
+            continue
+        result = db.execute(
+            insert(DBRegistryAlias)
+            .values(region_id=region.id, alias=alias, target=entry[0], hidden=entry[1])
+            .on_conflict_do_nothing(index_elements=["region_id", "alias"])
+        )
+        added += result.rowcount
+    return added
+
+
+def adopt_credentials(db: Session, region: DBRegion, infos: dict[str, dict]) -> int:
+    """Add a credential row with no values and no provider for each live credential name, and link the proxy.
+
+    The sync never pushes a credential with no values. Rule 6 takes its provider from the deployments that use it.
+    """
+    # ponytail: one row per credential name; a name with other values on another proxy shares the row.
+    added = 0
+    for name, info in sorted(infos.items()):
+        # ON CONFLICT, so two imports at the same time cannot both insert one name.
+        result = db.execute(
+            insert(DBRegistryCredential)
+            .values(name=name, provider=None, values_encrypted=None, credential_info=info)
+            .on_conflict_do_nothing(index_elements=["name"])
+        )
+        added += result.rowcount
+        credential_id = db.query(DBRegistryCredential.id).filter_by(name=name).scalar()
+        db.execute(
+            insert(DBRegistryCredentialRegion)
+            .values(credential_id=credential_id, region_id=region.id)
+            .on_conflict_do_nothing()
+        )
+    return added
+
+
+def import_proxy(db: Session, region: DBRegion, adopt: bool = False) -> dict:
     """Read one region's proxy and import it, in one transaction."""
-    return record_run(db, STEP, lambda: _import(db, region), extra={"region": region.name})
+    extra = {"region": region.name, **({"adopt": True} if adopt else {})}
+    return record_run(db, STEP, lambda: _import(db, region, adopt), extra=extra)
 
 
-def _import(db: Session, region: DBRegion) -> dict:
+def _import(db: Session, region: DBRegion, adopt: bool = False) -> dict:
+    # Every read comes first, so no lock is held during HTTP.
     with ProxyClient(region.litellm_api_url, region.litellm_api_key) as client:
         deployments = client.model_info()
         version = client.version()
         credential_regions = client.credential_regions()
         # No fallback on error: `/model/info` lists each alias again, with the target's id.
-        aliases = set(client.alias_map())
-    return import_deployments(db, region, deployments, version, credential_regions, aliases=aliases)
+        alias_map = client.alias_map()
+        infos = client.credential_infos() if adopt else {}
+    if not adopt:
+        return import_deployments(db, region, deployments, version, credential_regions, aliases=set(alias_map))
+    # Two adopt imports of one proxy run one after the other, so each deployment is added one time.
+    db.query(DBRegistryProxy).filter_by(region_id=region.id).populate_existing().with_for_update().one_or_none()
+    stats = import_deployments(
+        db, region, deployments, version, credential_regions, aliases=set(alias_map), adopt=True
+    )
+    stats["aliases_added"] = adopt_aliases(db, region, alias_map)
+    stats["credentials_added"] = adopt_credentials(db, region, infos)
+    return stats

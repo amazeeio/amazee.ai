@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Daily registry job: proxy versions, the model list, model families, source plugins, EOL dates, model status, then what each proxy can price and knows, then a record of what changed."""
+"""Daily registry job: proxy versions, the model list, model families, source plugins, EOL dates, model status, then what each proxy can price and knows, then a record of what changed, then the repair of each registry-managed proxy."""
 
 import logging
 import os
@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.locking import release_lock, try_acquire_lock
 from app.db.database import engine
+from app.registry.api.sync import run_registry_sync
 from app.registry.discovery import run_discovery
 from app.registry.eol import run_eol
 from app.registry.family import run_family
@@ -39,8 +40,10 @@ STEPS = (
     # After every source: it chooses among the status texts they stored.
     ("model status", run_status),
     ("support check", run_support_check),
-    # Last, so it records what every step before it wrote.
+    # After every step that changes a model, so it records what they wrote.
     ("model history", run_history),
+    # Last: it pushes the registry state that every step before it wrote.
+    ("registry sync", run_registry_sync),
 )
 
 

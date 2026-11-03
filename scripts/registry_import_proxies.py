@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""One-time import of live proxy deployments into the model registry.
+"""Import of live proxy deployments into the model registry.
 
-Usage: python scripts/registry_import_proxies.py [REGION_NAME ...]
+Usage: python scripts/registry_import_proxies.py [--adopt] [REGION_NAME ...]
 With no names it imports every active region that is not imported yet.
 A region that was imported before is refused.
+With --adopt it adds only what the registry does not have, and it keeps every row;
+with no names it then reads every active region.
+A plain import reads no aliases and no credentials and sets no adopted_at, so the first
+write to a registry-managed, readable proxy, or the daily registry-sync step, adopt-imports
+the proxy again.
 """
 
 import argparse
@@ -29,6 +34,7 @@ logger = logging.getLogger(__name__)
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("regions", nargs="*", help="region names; default: all not imported")
+    parser.add_argument("--adopt", action="store_true", help="add only what the registry does not have")
     args = parser.parse_args()
 
     db = sessionmaker(autocommit=False, autoflush=False, bind=engine)()
@@ -37,7 +43,7 @@ def main():
         query = db.query(DBRegion).filter(DBRegion.is_active.is_(True))
         if args.regions:
             query = query.filter(DBRegion.name.in_(args.regions))
-        else:
+        elif not args.adopt:
             imported = db.query(DBRegistryProxy.region_id).filter(
                 DBRegistryProxy.imported_at.isnot(None)
             )
@@ -49,7 +55,7 @@ def main():
             failed = True
         for region in regions:
             try:
-                logger.info("Imported %s: %s", region.name, import_proxy(db, region))
+                logger.info("Imported %s: %s", region.name, import_proxy(db, region, adopt=args.adopt))
             except AlreadyImported as e:
                 logger.error("%s", e)
                 failed = True

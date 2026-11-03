@@ -11,7 +11,7 @@ from app.registry.models import (
     DBRegistryProxy,
 )
 from app.registry.rules import NO_PRICE
-from tests.registry.api.conftest import EU_URL, UNSUPPORTED, auth, messages, model, ok, support_row
+from tests.registry.api.conftest import EU_URL, UNSUPPORTED, auth, credential, messages, model, ok, support_row
 from tests.registry.api.conftest import deployment_state as _state
 from tests.registry.conftest import add_model
 
@@ -25,6 +25,8 @@ def setup(registry_db, writable):
     beta = registry_db.query(DBRegistryAccessGroup).filter_by(slug="beta").one()
     us_gpt = registry_db.query(DBRegistryModelRegion).filter_by(litellm_deployment_id="us-gpt").one()
     registry_db.add(DBRegistryModelRegionGroup(model_region_id=us_gpt.id, access_group_id=beta.id))
+    for name in ("cred-us", "Open AI"):
+        credential(registry_db, name, proxies=writable.values())
     registry_db.commit()
     return writable
 
@@ -78,12 +80,12 @@ def test_rollout_creates_and_updates_in_body_order(client, admin_token, registry
 
 
 def test_rollout_accepts_a_credential_name_with_a_space(client, admin_token, registry_db, setup):
-    ok(_post(client, admin_token, {"models": ["openai/gpt-old"], "proxies": {"local-us1": "AWS Bedrock"}}))
+    ok(_post(client, admin_token, {"models": ["openai/gpt-old"], "proxies": {"local-us1": "Open AI"}}))
 
     deployment = registry_db.query(DBRegistryModelRegion).filter_by(
         model_id=model(registry_db, "openai", "gpt-old").id
     ).one()
-    assert deployment.litellm_params == {"litellm_credential_name": "AWS Bedrock"}
+    assert deployment.litellm_params == {"litellm_credential_name": "Open AI"}
 
 
 @pytest.mark.parametrize("query", ["", "?force=true"])
@@ -261,7 +263,8 @@ def test_rollout_query_count_does_not_grow_with_the_pairs(client, admin_token, r
     event.listen(engine, "before_cursor_execute", count)
     try:
         # One created pair and one updated pair (gpt-4o is disabled on the EU proxy).
-        one = run({"models": ["openai/gpt-a", "openai/gpt-4o"], "proxies": {"local-eu1": None}, "groups": ["alpha"]})
+        # Both calls name a credential, so both run the credential checks.
+        one = run({"models": ["openai/gpt-a", "openai/gpt-4o"], "proxies": {"local-eu1": "cred-us"}, "groups": ["alpha"]})
         many = run({
             "models": ["openai/gpt-b", "openai/gpt-old", "openai/gpt-c", "openai/gpt-d"], "proxies": BOTH,
             "groups": ["alpha"],
@@ -273,19 +276,23 @@ def test_rollout_query_count_does_not_grow_with_the_pairs(client, admin_token, r
     assert one == many > 0
 
 
-def test_rollout_to_a_proxy_that_was_never_imported_gets_409(client, admin_token, registry_db, setup):
-    registry_db.get(DBRegistryProxy, setup["eu"].id).imported_at = None
+def test_rollout_dry_run_to_a_proxy_that_was_never_imported_gets_409(client, admin_token, registry_db, setup):
+    eu_proxy = registry_db.get(DBRegistryProxy, setup["eu"].id)
+    eu_proxy.imported_at = eu_proxy.adopted_at = None
     registry_db.commit()
     before = _state(registry_db)
 
-    response = _post(client, admin_token, {"models": ["openai/gpt-old"], "proxies": BOTH})
+    # A write imports the proxy first; a dry run saves nothing, so it cannot.
+    response = _post(client, admin_token, {"models": ["openai/gpt-old"], "proxies": BOTH}, "?dry_run=true")
     assert response.status_code == 409
-    assert response.json()["detail"] == "Import the proxy local-eu1 first"
+    assert response.json()["detail"] == "Import the proxy local-eu1 first with POST /registry/proxies/local-eu1/import"
 
     # An unknown model is listed too, and its 422 outweighs the 409.
-    response = _post(client, admin_token, {"models": ["openai/gpt-old", "openai/nope"], "proxies": BOTH})
+    response = _post(
+        client, admin_token, {"models": ["openai/gpt-old", "openai/nope"], "proxies": BOTH}, "?dry_run=true"
+    )
     assert response.status_code == 422
-    assert messages(response) == ["Import the proxy local-eu1 first", "Unknown model openai/nope"]
+    assert messages(response) == ["Import the proxy local-eu1 first with POST /registry/proxies/local-eu1/import", "Unknown model openai/nope"]
     assert _state(registry_db) == before
 
 
@@ -342,3 +349,40 @@ def test_rollout_reads_no_proxy(client, admin_token, setup, live_proxies):
     ok(_post(client, admin_token, {"models": ["openai/gpt-old"], "proxies": BOTH}))
 
     assert live_proxies.calls == []
+
+
+def test_rollout_refuses_an_unknown_credential(client, admin_token, registry_db, setup):
+    before = _state(registry_db)
+    response = _post(client, admin_token, {"models": ["openai/gpt-old", "openai/gpt-4o"], "proxies": {"local-us1": "nope"}})
+
+    assert response.status_code == 422
+    # One problem for the proxy, not one per model.
+    assert messages(response) == ["Unknown credential nope"]
+    assert _state(registry_db) == before
+
+
+def test_rollout_checks_rule_6_only_where_it_writes_the_credential(client, admin_token, registry_db, setup):
+    credential(registry_db, "AWS Keys", provider="bedrock", proxies=setup.values())
+    registry_db.commit()
+
+    # gpt-4o already runs on local-us1 and keeps its own credential; gpt-old is new and gets AWS Keys.
+    response = _post(
+        client, admin_token, {"models": ["openai/gpt-4o", "openai/gpt-old"], "proxies": {"local-us1": "AWS Keys"}},
+        "?force=true",
+    )
+
+    assert messages(response) == ["the credential AWS Keys is for bedrock, not openai"]
+    assert response.json()["problems"][0]["model"] == "openai/gpt-old"
+
+
+def test_a_refused_rollout_does_not_import_the_proxy_first(client, admin_token, registry_db, setup, live_proxies):
+    eu_proxy = registry_db.get(DBRegistryProxy, setup["eu"].id)
+    eu_proxy.imported_at = eu_proxy.adopted_at = None
+    registry_db.commit()
+
+    response = _post(client, admin_token, {"models": ["openai/nope"], "proxies": {"local-eu1": None}})
+
+    assert messages(response) == ["Unknown model openai/nope"]
+    assert live_proxies.calls == []
+    registry_db.expire_all()
+    assert registry_db.get(DBRegistryProxy, setup["eu"].id).imported_at is None

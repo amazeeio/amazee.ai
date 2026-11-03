@@ -3,11 +3,11 @@ from datetime import date
 import httpx
 import pytest
 
-from app.registry.api.dry_run import ProxyPlan, deployment_plans, plan_steps, read_live
+from app.registry.api.dry_run import ProxyPlan, credential_plans, deployment_plans, plan_steps, read_live
 from app.registry.litellm import ProxyClient
 from app.registry.models import DBRegistryCloudAvailability, DBRegistryModelRegion
-from app.registry.planner import DEPLOYMENT_FIELDS, Deployment, LiveProxy
-from tests.registry.api.conftest import EU_URL, US_URL, live_row
+from app.registry.planner import DEPLOYMENT_FIELDS, MANAGED_BY, NO_CREDENTIAL, Deployment, LiveProxy
+from tests.registry.api.conftest import EU_URL, US_URL, credential, live_row
 
 _REQUEST = httpx.Request("GET", f"{US_URL}/model/info")
 
@@ -66,7 +66,7 @@ def test_read_live_reads_a_bad_params_or_info_value_as_empty(live_proxies):
 
     # The alias copy is still removed, the id still matches, and the bad row is not the same deployment as `odd`.
     assert [(s["action"], s["deployment_id"], s["problems"]) for s in steps] == [
-        ("delete_model", "us-gpt", []), ("create_model", None, []),
+        ("delete_model", "us-gpt", []), ("create_model", None, [NO_CREDENTIAL.format("openai")]),
     ]
 
 
@@ -111,6 +111,7 @@ def test_plan_steps_gives_a_read_step_for_a_proxy_that_fails(live_proxies):
 
     assert steps[0] == {
         "proxy": "local-eu1", "action": "read_proxy", "problems": ["the proxy could not be read: ConnectError"],
+        "blocked": True,
     }
     assert [(s["proxy"], s["action"]) for s in steps[1:]] == [("local-us1", "create_model")]
     assert "sk-test" not in repr(plans)
@@ -124,7 +125,10 @@ def test_plan_steps_does_not_read_a_proxy_with_no_url_or_an_inactive_one(live_pr
     steps = plan_steps([ProxyPlan("local-us1", url, "sk-test", active=active)])
 
     assert steps == [
-        {"proxy": "local-us1", "action": "read_proxy", "problems": [f"the proxy could not be read: {reason}"]}
+        {
+            "proxy": "local-us1", "action": "read_proxy", "problems": [f"the proxy could not be read: {reason}"],
+            "blocked": True,
+        }
     ]
     assert live_proxies.calls == []
 
@@ -153,12 +157,31 @@ def test_deployment_plans_give_one_plan_per_proxy(registry_db, deployed):
 
     assert set(plans) == {"local-eu1", "local-us1"}
     assert (plans["local-us1"].url, plans["local-us1"].key) == (US_URL, "sk-test")
+    eu_row = registry_db.query(DBRegistryModelRegion).filter_by(litellm_deployment_id="eu-gpt").one()
     assert plans["local-eu1"].deployments == [Deployment(
         model="openai/gpt-4o", model_name="gpt-4o", litellm_model="openai/gpt-4o", deployment_id="eu-gpt",
-        keep=False,
+        keep=False, price={"input_cost_per_token": 2.5e-06}, row_id=eu_row.id, recreate=True,
     )]
     assert [d.deployment_id for d in plans["local-us1"].deployments] == ["us-claude", "us-gpt"]
-    assert all(d.keep and d.price is None for d in plans["local-us1"].deployments)
+    assert all(d.keep for d in plans["local-us1"].deployments)
+    # The ids that the registry holds on each proxy.
+    assert (plans["local-eu1"].known_ids, plans["local-us1"].known_ids) == ({"eu-gpt"}, {"us-claude", "us-gpt"})
+
+
+def test_deployment_plans_mark_only_registry_rows_for_a_new_create(registry_db, deployed):
+    claude = registry_db.query(DBRegistryModelRegion).filter_by(litellm_deployment_id="us-claude").one()
+    gpt = registry_db.query(DBRegistryModelRegion).filter_by(litellm_deployment_id="us-gpt").one()
+    claude.model_info = {"id": "us-claude", "db_model": True}
+    gpt.model_info = {"id": "us-gpt", "managed_by": MANAGED_BY}
+    registry_db.commit()
+
+    [plan] = deployment_plans(registry_db, [claude, gpt], DEPLOYMENT_FIELDS)
+    [removed] = deployment_plans(registry_db, [claude], DEPLOYMENT_FIELDS, removed=True)
+
+    assert [(d.recreate, d.params) for d in plan.deployments] == [
+        (False, {"litellm_credential_name": "AWS Bedrock"}), (True, {}),
+    ]
+    assert removed.deployments[0].row_id is None
 
 
 def test_deployment_plans_live_only_and_removed(registry_db, deployed):
@@ -195,3 +218,33 @@ def test_deployment_plans_find_a_provisioned_only_bedrock_variant(registry_db, d
     [plan] = deployment_plans(registry_db, [claude], frozenset({"prices"}))
 
     assert plan.deployments[0].provisioned_only is True
+
+
+def test_credential_plans_and_providers(registry_db, deployed, live_proxies):
+    row = credential(registry_db, "AWS Keys", provider="bedrock_mantle", proxies=[deployed["us"]])
+    row.values_encrypted = "token"
+    row.credential_info = {"aws_region_name": "us-east-1"}
+    credential(registry_db, "adopted", proxies=deployed.values())
+    registry_db.commit()
+
+    [plan] = credential_plans(registry_db, "AWS Keys", [deployed["us"].id])
+    plans = {p.proxy: p for p in deployment_plans(registry_db, _rows(registry_db), DEPLOYMENT_FIELDS)}
+    [gone] = credential_plans(registry_db, "nope", [deployed["eu"].id], keep=False)
+    live_proxies.by_url[US_URL] = {"credentials": []}
+
+    assert plan.credentials[0].has_values and plan.credentials[0].info == {"aws_region_name": "us-east-1"}
+    # A credential with no provider counts for none; bedrock_mantle maps to bedrock.
+    assert (plans["local-us1"].credential_providers, plans["local-eu1"].credential_providers) == ({"bedrock"}, set())
+    assert (gone.proxy, gone.credentials[0].keep, gone.credentials[0].has_values) == ("local-eu1", False, False)
+    [step] = plan_steps([plan])
+    assert (step["action"], step["credential"], step["payload"]) == (
+        "create_credential", "AWS Keys", {"credential_name": "AWS Keys", "credential_info": {"aws_region_name": "us-east-1"}},
+    )
+
+
+def test_a_credential_with_no_provider_counts_for_the_providers_of_its_users(registry_db, writable):
+    # AWS Bedrock came from the adopt import; the bedrock claude-x deployment on local-us1 uses it.
+    plans = {p.proxy: p for p in deployment_plans(registry_db, _rows(registry_db), DEPLOYMENT_FIELDS)}
+
+    assert plans["local-us1"].credential_providers == {"bedrock"}
+    assert plans["local-eu1"].credential_providers == {"bedrock"}

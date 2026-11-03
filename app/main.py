@@ -26,8 +26,9 @@ from app.middleware.audit import AuditLogMiddleware
 from app.middleware.auth import AuthMiddleware
 from app.middleware.caching import CacheControlMiddleware
 from app.middleware.prometheus import PrometheusMiddleware
-from app.registry.api.routes import Refused, refusal_response, router as registry_router
+from app.registry.api.routes import Refused, refusal_response, router as registry_router, validation_response
 from fastapi import Depends, FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.openapi.docs import (
@@ -229,6 +230,7 @@ app.include_router(admin_models.router)
 app.include_router(access_groups.router)
 app.include_router(registry_router)
 app.add_exception_handler(Refused, refusal_response)
+app.add_exception_handler(RequestValidationError, validation_response)
 
 
 @app.get("/", include_in_schema=False)

@@ -1,5 +1,7 @@
 import os
 
+from app.core.config import region_names, settings
+
 # The same list our proxies download from `main` when they start, so the
 # registry knows a model as soon as a restarted proxy can price it.
 LITELLM_LIST_URL = os.getenv(
@@ -50,3 +52,27 @@ MIN_KEPT_RATIO = 0.5
 # LiteLLM's list as a source of EOL dates. A plugin with a higher `eol_date`
 # priority beats it.
 LITELLM_EOL_PRIORITY = 50
+
+
+def registry_manages(region_name: str) -> bool:
+    """True if the registry sync may write to this region's LiteLLM proxy.
+
+    Read at call time, so a test or an env-var change takes effect at once.
+    The rule is the same as catalog_manages(): local manages every region.
+    """
+    if settings.ENV_SUFFIX == "local":
+        return True
+    return region_name in region_names(settings.REGISTRY_MANAGED_REGIONS)
+
+# The env var that holds the Fernet keys for credential values, comma
+# separated. The first key encrypts; every key decrypts, so a rotation can
+# put a new key first and keep the old one until each value is written again.
+CREDENTIAL_KEYS_ENV = "REGISTRY_CREDENTIAL_KEYS"
+
+# How long a sync run started by a write waits for another run on the same proxy.
+SYNC_LOCK_WAIT_SECONDS = float(os.getenv("REGISTRY_SYNC_LOCK_WAIT_SECONDS", "60"))
+# The first key of the per-proxy advisory lock of the sync; the region id is the second.
+# The old catalog's alias lock uses 743_291_648, so this one must differ.
+SYNC_LOCK_NAMESPACE = 518_406_271
+# A sync run that is pending or running for longer than this is marked failed by the daily step.
+SYNC_STUCK_MINUTES = float(os.getenv("REGISTRY_SYNC_STUCK_MINUTES", "60"))

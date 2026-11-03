@@ -278,6 +278,7 @@ def test_model_detail(client, admin_token, deployed, registry_db):
         "prices": {},
         "access_groups": ["team-a", "team-b"],
         "credential": "AWS Bedrock",
+        "synced_at": None, "changed_at": None, "sync_error": None, "stale_cost_fields": None,
         # The deployed string has the `us.` geo prefix, so the geo price beats the cloud region price.
         "price": {
             "scope_kind": "geo", "scope": "us", "prices": {"input_cost_per_token": 3.3e-06}, "source": "litellm",
@@ -344,3 +345,26 @@ def test_model_routes_new_and_eol_are_not_model_keys(client, admin_token, models
     detail = client.get("/registry/models/new/x", headers=auth(admin_token))
     assert detail.status_code == 200, detail.text
     assert (detail.json()["provider"], detail.json()["model_id"]) == ("new", "x")
+
+
+def test_a_provisioned_only_deployment_shows_no_price_that_the_sync_does_not_write(
+    client, admin_token, deployed, registry_db
+):
+    claude = model(registry_db, "bedrock", "anthropic.claude-x-v1:0")
+    deployment = registry_db.query(DBRegistryModelRegion).filter_by(model_id=claude.id).one()
+    deployment.litellm_model = "bedrock/anthropic.claude-x-v1:0"
+    registry_db.add_all([
+        DBRegistryModelPrice(
+            model_id=claude.id, scope_kind="base", scope="", prices={"input_cost_per_token": 3e-06},
+            source="litellm", last_seen=TODAY,
+        ),
+        DBRegistryCloudAvailability(
+            provider="bedrock", model_id="anthropic.claude-x-v1:0", cloud_region="us-east-1",
+            source="bedrock_community", call_types=["PROVISIONED"], last_seen=TODAY,
+        ),
+    ])
+    registry_db.commit()
+
+    detail = client.get("/registry/models/bedrock/anthropic.claude-x-v1:0", headers=auth(admin_token)).json()
+
+    assert [d["price"] for d in detail["deployments"]] == [None]

@@ -293,7 +293,7 @@ def test_failed_step_writes_no_history_and_no_events(registry_db):
     assert registry_db.query(DBRegistryEvent).count() == 0
 
 
-def test_daily_job_runs_history_last():
+def test_daily_job_runs_history_right_before_the_registry_sync():
     from scripts import trigger_registry_daily_job
 
-    assert trigger_registry_daily_job.STEPS[-1][1] is run_history
+    assert trigger_registry_daily_job.STEPS[-2][1] is run_history

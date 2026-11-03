@@ -1,18 +1,21 @@
-"""The endpoints for models on proxies, on the registry router.
+"""The endpoints for models on proxies, and the proxy import, on the registry router.
 
-A write changes only the registry tables. Only a dry run reads the proxies that it touches.
+A write changes the registry tables, and it reads a proxy only to import it the first time. A dry run reads
+the proxies that it touches. The sync module pushes a write to a registry-managed proxy.
 """
 
+import logging
 from collections import defaultdict
 from datetime import date
 
-from fastapi import Depends, HTTPException, Query, Response
+from fastapi import BackgroundTasks, Depends, HTTPException, Query, Response
 from sqlalchemy import tuple_
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.db.models import DBRegion
-from app.registry.api.dry_run import _save, deployment_plans
+from app.registry.api.dry_run import deployment_plans, short_reason
+from app.registry.api.sync import _region_reason, _save
 from app.registry.api.routes import (
     _deployment_responses,
     _find_model,
@@ -20,23 +23,31 @@ from app.registry.api.routes import (
     _lock_proxies,
     _model_query,
     _split_key,
+    Refused,
     refuse,
     router,
 )
+from app.registry.importer import _import, import_proxy
 from app.registry.models import (
     DBRegistryAccessGroup,
     DBRegistryAlias,
+    DBRegistryCredential,
+    DBRegistryCredentialRegion,
     DBRegistryModel,
     DBRegistryModelPrice,
     DBRegistryModelRegion,
     DBRegistryModelRegionGroup,
+    DBRegistryModelSupport,
     DBRegistryProvider,
     DBRegistryProxy,
 )
-from app.registry.planner import DEPLOYMENT_FIELDS
+from app.registry.config import registry_manages
+from app.registry.planner import CANNOT_CLEAR_CREDENTIAL, DEPLOYMENT_FIELDS
 from app.registry.rules import (
     backend_problem,
+    credential_provider,
     default_backend,
+    user_providers,
     enable_problems,
     geo_problem,
     removal_problem,
@@ -49,8 +60,12 @@ from app.registry.schemas import (
     RegistryProxyModelUpdate,
     RegistryRollout,
     RegistryRolloutEntry,
+    RegistrySyncStarted,
 )
-from app.registry.support import Availability
+from app.registry.support import Availability, check_proxy_support
+
+
+logger = logging.getLogger(__name__)
 
 
 def _import_problems(proxies, names: dict[int, str]) -> list[RegistryProblem]:
@@ -60,9 +75,61 @@ def _import_problems(proxies, names: dict[int, str]) -> list[RegistryProblem]:
     The other checks would also read the deployments as they are before the import.
     """
     return [
-        RegistryProblem(message=f"Import the proxy {name} first", proxy=name, status=409)
+        RegistryProblem(
+            message=f"Import the proxy {name} first with POST /registry/proxies/{name}/import", proxy=name, status=409
+        )
         for name in sorted(names[proxy.region_id] for proxy in proxies if proxy.imported_at is None)
     ]
+
+
+def _import_failed(proxy: str, exc: Exception, automatic: bool = True) -> RegistryProblem:
+    kind = "automatic import" if automatic else "import"
+    return RegistryProblem(message=f"The {kind} of {proxy} failed: {short_reason(exc)}", proxy=proxy, status=409)
+
+
+def _import_first(db: Session, regions, early: list[RegistryProblem]) -> None:
+    """Adopt-import each proxy that the adopt import never read, before the write locks it.
+
+    A proxy that was never imported is always imported, because the write needs its deployments. A plain-imported
+    proxy is adopted only when the sync writes to it and can read it; otherwise its writes go on as before, and
+    the blocked alias step is the guard.
+
+    Each import commits the request session, so the `early` problems, which need no import, refuse the write
+    first. With no import to run, they join the full refusal later. Credential names and group slugs are not
+    early problems: the adopt import creates them from the live proxy. The import reads the proxy, so it runs
+    before any lock.
+    """
+    regions = {region.id: region for region in regions}
+    waiting = [
+        region_id
+        for region_id, imported_at in db.query(DBRegistryProxy.region_id, DBRegistryProxy.imported_at)
+        .filter(DBRegistryProxy.region_id.in_(regions), DBRegistryProxy.adopted_at.is_(None))
+        .order_by(DBRegistryProxy.region_id)
+        # The same managed-and-readable rule as the sync of each region.
+        if imported_at is None or _region_reason(regions[region_id]) is None
+    ]
+    if waiting:
+        refuse(early)
+    for region_id in waiting:
+        region = regions[region_id]
+        name = region.name
+        try:
+            import_proxy(db, region, adopt=True)
+        except Exception as exc:
+            raise Refused([_import_failed(name, exc)]) from None
+        _check_new_proxy(db, region)
+
+
+def _check_new_proxy(db: Session, region: DBRegion) -> None:
+    """Run the support check of a proxy that has no support result yet, so its first create can pass rule 4."""
+    if db.query(DBRegistryModelSupport.model_id).filter_by(region_id=region.id).first():
+        return
+    name = region.name
+    try:
+        check_proxy_support(db, region)
+    except Exception:
+        # The write then gets "support is unknown", as before; the daily check runs again.
+        logger.exception("The support check of %s failed", name)
 
 
 def _group_ids(db: Session, slugs: list[str], problems: list[RegistryProblem]) -> dict[str, int]:
@@ -80,6 +147,53 @@ def _group_ids(db: Session, slugs: list[str], problems: list[RegistryProblem]) -
     )
     problems += [RegistryProblem(message=f"Unknown access group {slug}") for slug in sorted(set(slugs) - found.keys())]
     return found
+
+
+def _credential_problems(db: Session, wanted: list[tuple[str, int, str, str, str | None]]) -> list[RegistryProblem]:
+    """Unknown credentials, credentials not on the proxy, and rule 6, for each
+    (credential name, region id, proxy name, model key, model provider), in a fixed number of queries.
+    A null model provider skips rule 6.
+
+    FOR KEY SHARE makes a credential DELETE wait for this write, or the write sees the credential as unknown.
+    The sorted order keeps the lock order the same in every call.
+    """
+    names = sorted({name for name, *_ in wanted})
+    if not names:
+        return []
+    rows = {
+        row.name: row
+        for row in db.query(DBRegistryCredential)
+        .filter(DBRegistryCredential.name.in_(names))
+        .order_by(DBRegistryCredential.name)
+        .with_for_update(read=True, key_share=True)
+    }
+    links = set(
+        db.query(DBRegistryCredentialRegion.credential_id, DBRegistryCredentialRegion.region_id).filter(
+            DBRegistryCredentialRegion.credential_id.in_([row.id for row in rows.values()])
+        )
+    )
+    # A credential from the adopt import has no provider, so it gets the providers of its users, on any proxy.
+    providers = {name: {credential_provider(row.provider)} for name, row in rows.items() if row.provider}
+    for name, found in user_providers(db, [name for name, row in rows.items() if not row.provider]).items():
+        providers.setdefault(name, set()).update(found)
+
+    problems = []
+    for name, region_id, proxy, key, provider in wanted:
+        row = rows.get(name)
+        if row is None:
+            problems.append(RegistryProblem(message=f"Unknown credential {name}", proxy=proxy))
+            continue
+        if (row.id, region_id) not in links:
+            problems.append(RegistryProblem(
+                message=f"The credential {name} is not on the proxy {proxy}", proxy=proxy, status=409
+            ))
+        allowed = providers.get(name)
+        if provider and allowed and credential_provider(provider) not in allowed:
+            problems.append(RegistryProblem(
+                message=f"the credential {name} is for {', '.join(sorted(allowed))}, not {provider}",
+                proxy=proxy, model=key,
+            ))
+    return problems
 
 
 def _alias_names(db: Session, region_ids) -> set[tuple[int, str]]:
@@ -169,13 +283,19 @@ def _add_deployment(
 
 @router.put(
     "/proxies/{proxy}/models/{key:path}",
-    response_model=list[RegistryModelDeploymentResponse] | RegistryDryRun[list[RegistryModelDeploymentResponse]],
-    responses={201: {"model": list[RegistryModelDeploymentResponse], "description": "The deployment is created"}},
+    response_model=list[RegistryModelDeploymentResponse]
+    | RegistryDryRun[list[RegistryModelDeploymentResponse]]
+    | RegistrySyncStarted[list[RegistryModelDeploymentResponse]],
+    responses={
+        201: {"model": list[RegistryModelDeploymentResponse], "description": "The deployment is created"},
+        202: {"model": RegistrySyncStarted[list[RegistryModelDeploymentResponse]], "description": "A sync run started"},
+    },
 )
 def set_proxy_model(
     proxy: str,
     key: str,
     response: Response,
+    background: BackgroundTasks,
     body: RegistryProxyModelUpdate | None = None,
     dry_run: bool = Query(False),
     force: bool = Query(False),
@@ -183,10 +303,12 @@ def set_proxy_model(
 ):
     region = _find_proxy(db, proxy)
     model, provider = _find_model(db, key)
+    changes = (body or RegistryProxyModelUpdate()).model_dump(exclude_unset=True)
+    if not dry_run:
+        _import_first(db, [region], [])
     proxy_row = _lock_proxies(db, [region.id])[region.id]
     refuse(_import_problems([proxy_row], {region.id: region.name}))
     cloud_regions = proxy_row.cloud_regions or {}
-    changes = (body or RegistryProxyModelUpdate()).model_dump(exclude_unset=True)
     problems: list[RegistryProblem] = []
     group_ids = _group_ids(db, changes["groups"], problems) if "groups" in changes else None
     deployments = _deployments(db, model, region.id)
@@ -221,6 +343,8 @@ def set_proxy_model(
         enabled = changes.get("enabled", True)
         if enabled:
             check_enable(availability, [(backend, {})])
+        if changes.get("credential"):
+            problems += _credential_problems(db, [(changes["credential"], region.id, region.name, key, provider)])
         refuse(problems)
         deployments = [_add_deployment(db, model, region.id, name, backend, changes.get("credential"), enabled)]
         db.flush()
@@ -265,6 +389,13 @@ def set_proxy_model(
                     add(problem)
         if checked:
             check_enable(Availability(db), checked)
+        # The sync never creates a live deployment again, and a PATCH keeps the old credential name.
+        if "credential" in changes and changes["credential"] is None and registry_manages(region.name) and any(
+            d.litellm_deployment_id and (d.litellm_params or {}).get("litellm_credential_name") for d in deployments
+        ):
+            add(CANNOT_CLEAR_CREDENTIAL, 409)
+        if changes.get("credential"):
+            problems += _credential_problems(db, [(changes["credential"], region.id, region.name, key, provider)])
         refuse(problems)
 
         for deployment in deployments:
@@ -286,28 +417,38 @@ def set_proxy_model(
         )
     db.flush()
     # The model's deployments on the proxy, in the shape of the model detail.
-    result = _deployment_responses(
-        db, prices, provider, [(d, region.name) for d in _deployments(db, model, region.id)]
-    )
+    def result():
+        return _deployment_responses(
+            db, prices, provider, model.model_id, [(d, region.name) for d in _deployments(db, model, region.id)]
+        )
+
     return _save(
-        db, dry_run, result, response=response, plan=lambda: deployment_plans(db, deployments, DEPLOYMENT_FIELDS)
+        db, dry_run, result, response=response, background=background,
+        plan=lambda: deployment_plans(db, deployments, DEPLOYMENT_FIELDS),
     )
 
 
 @router.delete(
     "/proxies/{proxy}/models/{key:path}",
-    response_model=RegistryDryRun[None],
-    responses={204: {"description": "The model's deployments on the proxy are deleted"}},
+    response_model=RegistryDryRun[None] | RegistrySyncStarted[None],
+    responses={
+        204: {"description": "The model's deployments on the proxy are deleted"},
+        202: {"model": RegistrySyncStarted[None], "description": "A sync run started"},
+    },
 )
 def remove_proxy_model(
     proxy: str,
     key: str,
+    response: Response,
+    background: BackgroundTasks,
     dry_run: bool = Query(False),
     force: bool = Query(False),
     db: Session = Depends(get_db),
 ):
     region = _find_proxy(db, proxy)
     model, _ = _find_model(db, key)
+    if not dry_run:
+        _import_first(db, [region], [])
     refuse(_import_problems(_lock_proxies(db, [region.id]).values(), {region.id: region.name}))
     deployments = _deployments(db, model, region.id)
     if not deployments:
@@ -323,16 +464,22 @@ def remove_proxy_model(
     db.query(DBRegistryModelRegion).filter(DBRegistryModelRegion.id.in_(ids)).delete(synchronize_session=False)
     # The rows were loaded before the delete, so the plan still reads their attributes.
     return _save(
-        db, dry_run, Response(status_code=204),
+        db, dry_run, Response(status_code=204), response=response, background=background,
         plan=lambda: deployment_plans(db, deployments, DEPLOYMENT_FIELDS, removed=True),
     )
 
 
 @router.post(
-    "/rollouts", response_model=list[RegistryRolloutEntry] | RegistryDryRun[list[RegistryRolloutEntry]]
+    "/rollouts",
+    response_model=list[RegistryRolloutEntry]
+    | RegistryDryRun[list[RegistryRolloutEntry]]
+    | RegistrySyncStarted[list[RegistryRolloutEntry]],
+    responses={202: {"model": RegistrySyncStarted[list[RegistryRolloutEntry]], "description": "A sync run started"}},
 )
 def roll_out(
     body: RegistryRollout,
+    response: Response,
+    background: BackgroundTasks,
     dry_run: bool = Query(False),
     force: bool = Query(False),
     db: Session = Depends(get_db),
@@ -348,9 +495,6 @@ def roll_out(
         RegistryProblem(message=f"Unknown proxy {name}", proxy=name) for name in body.proxies if name not in regions
     ]
     region_ids = [region.id for region in regions.values()]
-    proxies = _lock_proxies(db, region_ids)
-    # One proxy that is not imported refuses the whole call: the admin imports it, then runs the rollout again.
-    problems += _import_problems(proxies.values(), {region.id: region.name for region in regions.values()})
     keys = list(dict.fromkeys(body.models))
     idents = {_split_key(key) for key in keys}
     models = {
@@ -359,7 +503,13 @@ def roll_out(
             tuple_(DBRegistryProvider.name, DBRegistryModel.model_id).in_(idents)
         )
     }
-    problems += [RegistryProblem(message=f"Unknown model {key}", model=key) for key in keys if key not in models]
+    unknown_models = [RegistryProblem(message=f"Unknown model {key}", model=key) for key in keys if key not in models]
+    if not dry_run:
+        _import_first(db, regions.values(), [*problems, *unknown_models])
+    proxies = _lock_proxies(db, region_ids)
+    # One proxy that is not imported refuses the whole call: the admin imports it, then runs the rollout again.
+    problems += _import_problems(proxies.values(), {region.id: region.name for region in regions.values()})
+    problems += unknown_models
     # The rules below need a known model on a known, imported proxy for each pair.
     refuse(problems)
     group_ids = _group_ids(db, body.groups, problems)
@@ -386,7 +536,7 @@ def roll_out(
     owners = _name_owners(db, region_ids, [model.model_id for model, _ in models.values()])
 
     # Every check runs before the first write, so a 4xx changes nothing.
-    entries, pairs = [], []
+    entries, pairs, credentials = [], [], []
     for key in keys:
         model, provider = models[key]
         for name in body.proxies:
@@ -428,6 +578,10 @@ def roll_out(
                 proxy=name, model=key, action=action, model_name=model_name, litellm_model=backend,
             ))
             pairs.append((model, region_id, existing))
+            if body.proxies[name]:
+                # Rule 6 only where the rollout writes the credential; a deployment that exists keeps its own.
+                credentials.append((body.proxies[name], region_id, name, key, None if existing else provider))
+    problems += _credential_problems(db, credentials)
     refuse(problems)
 
     targets = []
@@ -449,4 +603,25 @@ def roll_out(
         for group_id in group_ids.values()
         if (deployment.id, group_id) not in links
     )
-    return _save(db, dry_run, entries, plan=lambda: deployment_plans(db, targets, DEPLOYMENT_FIELDS))
+    return _save(
+        db, dry_run, entries, response=response, background=background,
+        plan=lambda: deployment_plans(db, targets, DEPLOYMENT_FIELDS),
+    )
+
+
+@router.post("/proxies/{proxy}/import", response_model=dict | RegistryDryRun[dict])
+def import_proxy_now(proxy: str, dry_run: bool = Query(False), db: Session = Depends(get_db)):
+    """Adopt-import the proxy: add what the registry does not have and keep every row."""
+    region = _find_proxy(db, proxy)
+    name = region.name
+    try:
+        if dry_run:
+            stats = _import(db, region, adopt=True)
+            db.rollback()
+            return RegistryDryRun(result=stats, steps=[])
+        stats = import_proxy(db, region, adopt=True)
+    except Exception as exc:
+        db.rollback()
+        raise Refused([_import_failed(name, exc, automatic=False)]) from None
+    _check_new_proxy(db, region)
+    return stats
