@@ -685,17 +685,18 @@ async def create_token(
         user_id = current_user.id
 
     raw_token = generate_api_token()
-    # The plain token is still written so that a code rollback can authenticate it.
     db_token = DBAPIToken(
         name=token_create.name,
-        token=raw_token,
         token_hash=hash_api_token(raw_token),
         user_id=user_id,
     )
     db.add(db_token)
     db.commit()
     db.refresh(db_token)
-    return db_token
+    # Only the hash is stored, so the clear token is returned this one time.
+    return APIToken(
+        **APITokenResponse.model_validate(db_token).model_dump(), token=raw_token
+    )
 
 
 @router.get("/token", response_model=List[APITokenResponse])
