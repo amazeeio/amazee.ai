@@ -116,6 +116,7 @@ class DBAPIToken(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String)
     token = Column(String, unique=True, index=True)
+    token_hash = Column(String, unique=True, index=True)
     created_at = Column(DateTime(timezone=True), default=func.now())
     last_used_at = Column(DateTime(timezone=True), nullable=True)
     user_id = Column(Integer, ForeignKey("users.id"))
