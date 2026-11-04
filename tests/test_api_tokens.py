@@ -1,4 +1,13 @@
+import importlib
+
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+from sqlalchemy import inspect, text
+
+from app.core.security import hash_api_token
 from app.db.models import DBAPIToken
+
+TOKEN_HASH_MIGRATION = "app.migrations.versions.20261104_100000_d5b3f7a9e146_add_api_token_hash"
 
 
 def test_create_api_token(client, test_token, test_user):
@@ -108,3 +117,26 @@ def test_list_api_tokens_unauthenticated(client):
 
     assert response.status_code == 401
     assert "Could not validate credentials" in response.json()["detail"]
+
+
+def test_token_hash_migration_backfills_existing_tokens(db, test_user):
+    migration = importlib.import_module(TOKEN_HASH_MIGRATION)
+    connection = db.connection()
+    try:
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.downgrade()
+            connection.execute(
+                text("INSERT INTO api_tokens (name, token, user_id) VALUES ('legacy', 'legacy-token-abc', :user_id)"),
+                {"user_id": test_user.id},
+            )
+
+            migration.upgrade()
+
+            stored = connection.execute(
+                text("SELECT token_hash FROM api_tokens WHERE token = 'legacy-token-abc'")
+            ).scalar_one()
+            assert stored == hash_api_token("legacy-token-abc")
+            indexes = inspect(connection).get_indexes("api_tokens")
+            assert any(i["column_names"] == ["token_hash"] and i["unique"] for i in indexes)
+    finally:
+        db.rollback()
