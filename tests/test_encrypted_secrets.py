@@ -12,6 +12,8 @@ from app.core.crypto import EncryptedString, fernet
 from app.db.models import DBPrivateAIKey, DBRegion
 from tests.conftest import engine
 
+ENCRYPT_MIGRATION = "app.migrations.versions.20261104_120000_e8c1a4d6f273_encrypt_db_secrets"
+
 
 @pytest.fixture
 def column():
@@ -175,7 +177,7 @@ def test_private_ai_keys_response_is_plain(client, admin_token, db, test_region)
 
 
 def test_encrypt_secrets_migration_is_idempotent(db, test_region):
-    migration = importlib.import_module("app.migrations.versions.20261104_120000_e8c1a4d6f273_encrypt_db_secrets")
+    migration = importlib.import_module(ENCRYPT_MIGRATION)
     key = _seed_key(db, test_region)
     empty_region = DBRegion(name="empty-key-region", litellm_api_url="http://llm", litellm_api_key="", is_active=True)
     db.add(empty_region)
@@ -218,3 +220,30 @@ def test_encrypt_secrets_migration_is_idempotent(db, test_region):
                 assert raw_values() == plain
     finally:
         db.rollback()
+
+
+def test_encrypt_secrets_migration_skips_changed_rows(db, test_region, monkeypatch):
+    migration = importlib.import_module(ENCRYPT_MIGRATION)
+    key_id = _seed_key(db, test_region).id
+    db.execute(text("UPDATE ai_tokens SET litellm_token = 'plain-token' WHERE id = :id"), {"id": key_id})
+    db.commit()
+    pod_value = fernet().encrypt(b"pod-token").decode()
+    encrypt = migration._encrypt
+
+    def encrypt_after_pod_write(value):
+        if value == "plain-token":
+            # A running pod rewrites the row between the backfill read and its UPDATE.
+            with engine.begin() as other:
+                other.execute(
+                    text("UPDATE ai_tokens SET litellm_token = :value WHERE id = :id"),
+                    {"value": pod_value, "id": key_id},
+                )
+        return encrypt(value)
+
+    monkeypatch.setattr(migration, "_encrypt", encrypt_after_pod_write)
+    with engine.connect() as connection:
+        context = MigrationContext.configure(connection)
+        with context.begin_transaction(), Operations.context(context):
+            migration.upgrade()
+
+    assert _raw(db, "SELECT litellm_token FROM ai_tokens WHERE id = :id", id=key_id)[0] == pod_value
