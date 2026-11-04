@@ -17,6 +17,10 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # A database created from the models and stamped at head never had the column.
+    columns = {c["name"] for c in sa.inspect(op.get_bind()).get_columns("api_tokens")}
+    if "token" not in columns:
+        return
     # A rolled-back release can write tokens without a hash; hash them before the plain value goes.
     op.execute(
         "UPDATE api_tokens "
