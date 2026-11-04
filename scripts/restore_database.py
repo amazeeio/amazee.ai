@@ -26,8 +26,8 @@ Requires the postgres client tools (pg_dump, pg_restore, psql) on PATH. In
 Lagoon these are provided by the `cli` container image.
 
 target and as-is need a role with CREATEDB that can connect to the `postgres`
-maintenance database. in-place only needs to own the target database's
-`public` schema.
+maintenance database. in-place needs to own the target database's `public`
+schema and have CREATE permission on the target database (not CREATEDB).
 
 IMPORTANT: Only use this with backups from trusted sources (e.g. Lagoon).
 
