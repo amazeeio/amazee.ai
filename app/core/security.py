@@ -215,9 +215,11 @@ async def get_current_user_from_auth(
     try:
         db_token = (
             db.query(DBAPIToken)
-            .filter(DBAPIToken.token == token_to_try)
+            .filter(DBAPIToken.token_hash == hash_api_token(token_to_try))
             .options(joinedload(DBAPIToken.owner).joinedload(DBUser.team))
             .first()
+            if token_to_try
+            else None
         )
         if db_token:
             # Update last used timestamp
