@@ -45,12 +45,15 @@ helm repo update
 
 #### 2. Deploy the Complete Stack
 
+`backend.encryptionKey` is required. Generate a Fernet key with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
+
 ```bash
 # Deploy the complete application (Helm will create the namespace automatically)
 helm install amazee-ai-app oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
   --namespace amazee-ai \
   --create-namespace \
-  --version 0.0.1
+  --version 0.0.1 \
+  --set backend.encryptionKey="<fernet-key>"
 ```
 
 #### 3. Deploy Individual Components
@@ -68,7 +71,8 @@ helm install frontend oci://ghcr.io/amazeeio/amazee.ai/frontend \
 helm install backend oci://ghcr.io/amazeeio/amazee.ai/backend \
   --namespace amazee-ai \
   --create-namespace \
-  --version 0.0.1
+  --version 0.0.1 \
+  --set encryptionKey="<fernet-key>"
 ```
 
 **PostgreSQL Only (using Bitnami):**
@@ -92,7 +96,8 @@ helm install amazee-ai . -n amazee-ai --create-namespace
 **Deploy Only Backend (requires PostgreSQL):**
 ```bash
 helm install backend ./charts/backend -n amazee-ai \
-  --set database.url="postgresql://postgres:password@amazee-ai-postgresql:5432/postgres_service"
+  --set database.url="postgresql://postgres:password@amazee-ai-postgresql:5432/postgres_service" \
+  --set encryptionKey="<fernet-key>"
 ```
 
 **Deploy Only Frontend:**
@@ -105,7 +110,8 @@ helm install frontend ./charts/frontend -n amazee-ai \
 ```bash
 helm install amazee-ai . -n amazee-ai --create-namespace \
   --set postgresql.enabled=false \
-  --set backend.database.url="postgresql://user:pass@external-host:5432/db"
+  --set backend.database.url="postgresql://user:pass@external-host:5432/db" \
+  --set backend.encryptionKey="<fernet-key>"
 ```
 
 #### 4. Local deployment with kind
@@ -163,7 +169,8 @@ helm install amazee-ai-app oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
   --namespace amazee-ai \
   --create-namespace \
   --version 0.0.1 \
-  --values values.yaml
+  --values values.yaml \
+  --set backend.encryptionKey="<fernet-key>"
 
 # For local deployment
 helm install amazee-ai . -n amazee-ai --create-namespace --values values.yaml
@@ -180,14 +187,16 @@ helm install amazee-ai-app oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
   --set frontend.enabled=true \
   --set backend.enabled=true \
   --set postgresql.enabled=false \
-  --set postgresql.auth.postgresPassword="your-password"
+  --set postgresql.auth.postgresPassword="your-password" \
+  --set backend.encryptionKey="<fernet-key>"
 
 # For local deployment
 helm install amazee-ai . -n amazee-ai --create-namespace \
   --set frontend.enabled=true \
   --set backend.enabled=true \
   --set postgresql.enabled=false \
-  --set postgresql.auth.postgresPassword="your-password"
+  --set postgresql.auth.postgresPassword="your-password" \
+  --set backend.encryptionKey="<fernet-key>"
 ```
 
 ## Parameters
