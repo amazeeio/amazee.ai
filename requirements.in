@@ -6,6 +6,7 @@ sqlalchemy==2.0.55  # 2.1 defaults postgresql:// to psycopg 3; we ship psycopg2
 pydantic==2.14.2
 pydantic-settings==2.16.2
 python-jose[cryptography]==3.5.0
+cryptography==50.0.1
 passlib[bcrypt]==1.7.4
 bcrypt==4.3.0
 python-multipart==0.0.32
