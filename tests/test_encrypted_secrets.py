@@ -1,4 +1,8 @@
+import importlib
+
 import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from cryptography.fernet import Fernet
 from pydantic import ValidationError
 from sqlalchemy import text
@@ -149,3 +153,46 @@ def test_private_ai_keys_response_is_plain(client, admin_token, db, test_region)
     (returned,) = [k for k in response.json() if k["id"] == key.id]
     assert returned["litellm_token"] == "sk-plain-token"
     assert returned["database_password"] == "db-plain-password"
+
+
+def test_encrypt_secrets_migration_is_idempotent(db, test_region):
+    migration = importlib.import_module("app.migrations.versions.20261104_120000_e8c1a4d6f273_encrypt_db_secrets")
+    key = _seed_key(db, test_region)
+    empty_region = DBRegion(name="empty-key-region", litellm_api_url="http://llm", litellm_api_key="", is_active=True)
+    db.add(empty_region)
+    db.commit()
+    db.execute(
+        text("UPDATE regions SET litellm_api_key = 'plain-api-key', postgres_admin_password = 'plain-pg' WHERE id = :id"),
+        {"id": test_region.id},
+    )
+    db.execute(
+        text("UPDATE ai_tokens SET litellm_token = 'plain-token', database_password = NULL WHERE id = :id"),
+        {"id": key.id},
+    )
+    plain = ("plain-api-key", "plain-pg", "plain-token", None, "")
+
+    def raw_values():
+        region = _raw(db, "SELECT litellm_api_key, postgres_admin_password FROM regions WHERE id = :id", id=test_region.id)
+        token = _raw(db, "SELECT litellm_token, database_password FROM ai_tokens WHERE id = :id", id=key.id)
+        empty = _raw(db, "SELECT litellm_api_key FROM regions WHERE id = :id", id=empty_region.id)
+        return (*region, *token, *empty)
+
+    connection = db.connection()
+    try:
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.upgrade()
+            encrypted = raw_values()
+            for value, expected in zip(encrypted, plain):
+                if expected:
+                    assert value != expected
+                    assert fernet().decrypt(value.encode()).decode() == expected
+                else:
+                    assert value == expected
+
+            migration.upgrade()
+            assert raw_values() == encrypted
+
+            migration.downgrade()
+            assert raw_values() == plain
+    finally:
+        db.rollback()
