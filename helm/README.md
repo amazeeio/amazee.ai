@@ -210,6 +210,7 @@ helm install amazee-ai . -n amazee-ai --create-namespace \
 | `backend.image.pullPolicy` | Backend image pull policy | `IfNotPresent` |
 | `backend.database.url` | Database connection URL (auto-generated if empty) | `""` |
 | `backend.secretKey` | JWT signing secret (`AMAZEEAI_JWT_SECRET`). **Required**, no default. | `""` |
+| `backend.encryptionKey` | Fernet keys for the secret DB columns (`AMAZEEAI_ENCRYPTION_KEY`), comma separated, newest first. **Required**, no default. | `""` |
 | `backend.awsAccessKeyId` | AWS access key ID | `your_aws_access_key` |
 | `backend.awsSecretAccessKey` | AWS secret access key | `your_aws_secret_key` |
 | `backend.enableMetrics` | Enable metrics collection | `true` |
