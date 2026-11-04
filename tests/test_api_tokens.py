@@ -140,3 +140,27 @@ def test_token_hash_migration_backfills_existing_tokens(db, test_user):
             assert any(i["column_names"] == ["token_hash"] and i["unique"] for i in indexes)
     finally:
         db.rollback()
+
+
+def test_create_api_token_stores_hash(client, test_token, db):
+    response = client.post(
+        "/auth/token",
+        headers={"Authorization": f"Bearer {test_token}"},
+        json={"name": "Hashed Token"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    stored = db.query(DBAPIToken).filter(DBAPIToken.id == data["id"]).one()
+    assert stored.token_hash == hash_api_token(data["token"])
+
+    response = client.get("/auth/token", headers={"Authorization": f"Bearer {data['token']}"})
+    assert response.status_code == 200
+
+
+def test_api_token_authenticates_by_hash(client, test_user, db):
+    db.add(DBAPIToken(name="hash only", token=None, token_hash=hash_api_token("raw-abc"), user_id=test_user.id))
+    db.commit()
+
+    assert client.get("/auth/token", headers={"Authorization": "Bearer raw-abc"}).status_code == 200
+    assert client.get("/auth/token", headers={"Authorization": "Bearer wrong-token"}).status_code == 401
