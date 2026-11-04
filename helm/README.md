@@ -88,7 +88,7 @@ helm install postgresql bitnami/postgresql \
 
 #### 1. Deploy All Services Together
 ```bash
-helm install amazee-ai . -n amazee-ai --create-namespace
+helm install amazee-ai . -n amazee-ai --create-namespace --set backend.encryptionKey="<fernet-key>"
 ```
 
 #### 2. Deploy Individual Services
@@ -118,7 +118,7 @@ helm install amazee-ai . -n amazee-ai --create-namespace \
 ```bash
 kind create cluster --name amazee-ai-local
 # Pull the charts etc, and set the backend URL to localhost
-helm install amazee-ai oci://ghcr.io/amazeeio/amazee.ai/amazee-ai --namespace amazee-ai --create-namespace --set frontend.apiUrl="http://localhost:8800"
+helm install amazee-ai oci://ghcr.io/amazeeio/amazee.ai/amazee-ai --namespace amazee-ai --create-namespace --set frontend.apiUrl="http://localhost:8800" --set backend.encryptionKey="<fernet-key>"
 # Wait for all pods to initialise fully, then forward ports
 k port-forward deployment/amazee-ai-frontend 3000:3000 -n amazee-ai
 k port-forward deployment/amazee-ai-cbackend 8800:8800 -n amazee-ai
@@ -173,7 +173,7 @@ helm install amazee-ai-app oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
   --set backend.encryptionKey="<fernet-key>"
 
 # For local deployment
-helm install amazee-ai . -n amazee-ai --create-namespace --values values.yaml
+helm install amazee-ai . -n amazee-ai --create-namespace --values values.yaml --set backend.encryptionKey="<fernet-key>"
 ```
 
 ### Using Command Line Overrides
