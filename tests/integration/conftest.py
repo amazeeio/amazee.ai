@@ -215,6 +215,13 @@ async def wait_for_key_spend(litellm_url, token, timeout=30, interval=0.5):
     )
 
 
+def litellm_version(litellm_url):
+    """Proxy version as an int tuple, e.g. (1, 108, 0). /health/readiness only
+    reports it when the proxy's DB is connected, so read the OpenAPI info."""
+    raw = httpx.get(f"{litellm_url}/openapi.json", timeout=30).json()["info"]["version"]
+    return tuple(int(p) for p in raw.split(".")[:3])
+
+
 def completion(litellm_url, token, model=MOCK_MODEL, timeout=30):
     """One mock completion through the real proxy with a generated key."""
     return httpx.post(
