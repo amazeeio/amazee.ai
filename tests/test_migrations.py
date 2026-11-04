@@ -93,4 +93,16 @@ def test_delete_stripe_webhook_secret_keeps_other_rows(db):
         db.rollback()
 
 
+def test_drop_api_token_plain_skips_when_column_is_absent(db):
+    migration = importlib.import_module(
+        "app.migrations.versions.20261104_130000_a3e7c5f1d924_drop_api_token_plain"
+    )
+    connection = db.connection()
+    try:
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.upgrade()
+    finally:
+        db.rollback()
+
+
 # End of file
