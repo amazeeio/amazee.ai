@@ -512,16 +512,17 @@ async def test_hard_delete_removes_api_tokens(mock_litellm, db: Session, test_te
     db.add(user)
     db.commit()
 
-    api_token = DBAPIToken(name="my-token", token="tok-abc123", user_id=user.id)
+    api_token = DBAPIToken(name="my-token", user_id=user.id)
     db.add(api_token)
 
     soft_delete_team_for_test(
         db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
     )
+    api_token_id = api_token.id
 
     await hard_delete_expired_teams(db)
 
-    remaining = db.query(DBAPIToken).filter(DBAPIToken.token == "tok-abc123").first()
+    remaining = db.query(DBAPIToken).filter(DBAPIToken.id == api_token_id).first()
     assert remaining is None
 
 

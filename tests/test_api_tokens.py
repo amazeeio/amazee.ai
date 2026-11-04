@@ -1,5 +1,7 @@
 import importlib
 
+import sqlalchemy as sa
+from alembic import op
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import inspect, text
@@ -31,7 +33,7 @@ def test_list_api_tokens(client, test_token, test_user, db):
     """Test listing API tokens"""
     # Create a test token in the database
     test_api_token = DBAPIToken(
-        name="Test Token", token="test-token-123", user_id=test_user.id
+        name="Test Token", user_id=test_user.id
     )
     db.add(test_api_token)
     db.commit()
@@ -56,7 +58,7 @@ def test_delete_api_token(client, test_token, test_user, db):
     """Test deleting an API token"""
     # Create a test token in the database
     test_api_token = DBAPIToken(
-        name="Test Token", token="test-token-123", user_id=test_user.id
+        name="Test Token", user_id=test_user.id
     )
     db.add(test_api_token)
     db.commit()
@@ -88,7 +90,7 @@ def test_delete_other_users_token(client, test_token, test_admin, db):
     """Test that a user cannot delete another user's token"""
     # Create a token owned by the admin
     admin_token = DBAPIToken(
-        name="Admin Token", token="admin-token-123", user_id=test_admin.id
+        name="Admin Token", user_id=test_admin.id
     )
     db.add(admin_token)
     db.commit()
@@ -124,6 +126,8 @@ def test_token_hash_migration_backfills_existing_tokens(db, test_user):
     connection = db.connection()
     try:
         with Operations.context(MigrationContext.configure(connection)):
+            # The model no longer maps the plain column, so the test schema lacks it.
+            op.add_column("api_tokens", sa.Column("token", sa.String(), nullable=True))
             migration.downgrade()
             connection.execute(
                 text("INSERT INTO api_tokens (name, token, user_id) VALUES ('legacy', 'legacy-token-abc', :user_id)"),
@@ -159,7 +163,7 @@ def test_create_api_token_stores_hash(client, test_token, db):
 
 
 def test_api_token_authenticates_by_hash(client, test_user, db):
-    db.add(DBAPIToken(name="hash only", token=None, token_hash=hash_api_token("raw-abc"), user_id=test_user.id))
+    db.add(DBAPIToken(name="hash only", token_hash=hash_api_token("raw-abc"), user_id=test_user.id))
     db.commit()
 
     assert client.get("/auth/token", headers={"Authorization": "Bearer raw-abc"}).status_code == 200
