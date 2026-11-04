@@ -22,10 +22,12 @@ from tests.integration.conftest import (
     LITELLM_A_URL,
     LITELLM_MASTER_KEY,
     completion,
+    litellm_version,
     wait_for_key_spend,
 )
 
 BASE_MODEL = "gpt-4o-mini"  # long-lived cost-map entry with vision + tools
+CROSS_PROVIDER_FIX = (1, 108, 0)  # first version seen pricing cross-provider base_model spend
 
 
 @pytest.mark.asyncio
@@ -139,18 +141,22 @@ async def test_explicit_pricing_and_capabilities_without_base_model(
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason="LiteLLM's cost lookup drops a base_model entry whose provider differs "
-    "from the deployment's: /model/info shows a price but spend stays $0. The "
-    "catalog must price these via litellm_params (amazeeai-model-catalog#133).",
-)
-async def test_cross_provider_base_model_does_not_price_spend(
-    db, litellm_region, make_team, make_key
+async def test_cross_provider_base_model_prices_spend(
+    request, db, litellm_region, make_team, make_key
 ):
     """Production shape is bedrock backend + vertex_ai/deepinfra base, but
     bedrock mock_response never prices even a native model, so an openai
     backend stands in: the provider filter is the same code path."""
+    if litellm_version(LITELLM_A_URL) < CROSS_PROVIDER_FIX:
+        request.applymarker(
+            pytest.mark.xfail(
+                strict=True,
+                reason="LiteLLM < 1.108 drops a base_model entry whose provider "
+                "differs from the deployment's: /model/info shows a price but spend "
+                "stays $0. The catalog must price these via litellm_params "
+                "(amazeeai-model-catalog#133).",
+            )
+        )
     name = f"xprov-base-test-{uuid4().hex[:8]}"
     model = DBModel(
         model_id=name,
