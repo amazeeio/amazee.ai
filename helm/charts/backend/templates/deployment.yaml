@@ -44,6 +44,11 @@ spec:
                 secretKeyRef:
                   name: {{ include "backend.fullname" . }}-secret
                   key: secret-key
+            - name: AMAZEEAI_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "backend.fullname" . }}-secret
+                  key: encryption-key
             - name: ENABLE_METRICS
               valueFrom:
                 configMapKeyRef:
