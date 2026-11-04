@@ -45,9 +45,10 @@ def _convert_secrets(convert) -> None:
                         continue
                     new_value = convert(value)
                     if new_value is not None:
+                        # Skip a row that a running pod changed since the read; it wrote it encrypted.
                         connection.execute(
-                            sa.text(f"UPDATE {table} SET {column} = :value WHERE id = :id"),
-                            {"value": new_value, "id": row.id},
+                            sa.text(f"UPDATE {table} SET {column} = :value WHERE id = :id AND {column} = :old"),
+                            {"value": new_value, "id": row.id, "old": value},
                         )
             last_id = rows[-1].id
 
