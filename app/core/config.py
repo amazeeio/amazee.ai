@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, MultiFernet
 from pydantic import ConfigDict, Field, field_validator
 import os
 
@@ -235,14 +235,10 @@ class Settings(BaseSettings):
             "separated, newest first. Generate one with: python -c \"from "
             "cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
         )
-        keys = encryption_keys(value)
-        if not keys:
-            raise ValueError(message)
-        for key in keys:
-            try:
-                Fernet(key)
-            except ValueError as exc:
-                raise ValueError(message) from exc
+        try:
+            MultiFernet([Fernet(key) for key in encryption_keys(value)])
+        except ValueError as exc:
+            raise ValueError(message) from exc
         return value
 
     @field_validator(
