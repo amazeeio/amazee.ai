@@ -71,7 +71,9 @@ def test_apply_restore_in_place_never_drops_or_creates(mock_run_pg_tool, mock_re
     assert reset[0] == "psql"
     assert reset[reset.index("--dbname") + 1] == "postgres://host/my_db"
     assert "DROP SCHEMA public CASCADE" in reset[-1]
+    assert reset[-1].startswith("SET lock_timeout")
     assert restore[0] == "pg_restore"
+    assert "--single-transaction" in restore
     assert "--create" not in restore
     assert restore[restore.index("--dbname") + 1] == "postgres://host/my_db"
 
@@ -90,6 +92,7 @@ def test_apply_restore_in_place_recovery_hint_has_no_create(mock_run_pg_tool):
         apply_restore(CONFIG, "/mock/dump", restore_mode="in-place")
     assert "--create" not in str(exc.value)
     assert "/postgres" not in str(exc.value)
+    assert "--single-transaction" in str(exc.value)
 
 
 def _run_main(tmp_path, argv, backup_side_effect=None):
