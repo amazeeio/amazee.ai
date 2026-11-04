@@ -391,29 +391,15 @@ def test_provisioned_key_token_mismatch_returns_502(
     db.add(key_team)
     db.commit()
     db.refresh(key_team)
-    db.add(
-        DBPrivateAIKey(
-            name="pre-seeded-key-3",
-            litellm_token="token-a",
-            litellm_api_url="http://test-llm",
-            database_name="db",
-            database_host="host",
-            database_username="u",
-            database_password="p",
-            region_id=test_region.id,
-            team_id=key_team.id,
-        )
-    )
-    db.commit()
+    seeded = _seed_key(db, "pre-seeded-key-3", "token-a", test_region.id, key_team.id)
 
     mock_response = MagicMock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"llm": {"token": "token-b"}, "vectorDb": {"database": "db"}}
-    mock_http = AsyncMock()
-    mock_http.__aenter__ = AsyncMock(return_value=mock_http)
-    mock_http.__aexit__ = AsyncMock(return_value=False)
-    mock_http.post = AsyncMock(return_value=mock_response)
-    mock_client_cls.return_value = mock_http
+    mock_response.json.return_value = {
+        "llm": {"token": "token-b"},
+        "vectorDb": {"database": seeded.database_name},
+    }
+    mock_client_cls.return_value = _moad_client(AsyncMock(return_value=mock_response))
 
     response = _post_key(drupal_client, token, test_region.id)
 
