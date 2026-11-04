@@ -1526,18 +1526,28 @@ async def _provision_via_moad(
             detail="Key provisioning returned an invalid response.",
         )
 
+    database_name = (data.get("vectorDb") or {}).get("database")
+    if not database_name:
+        logger.error("moad provision-key response missing vectorDb.database: %s", data)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Key provisioning returned an invalid response.",
+        )
+
     # Look up the key that moad just created via /internal/provision-key so we
     # return a fully populated PrivateAIKey (with id, team_id, region, etc.).
     # This also ensures the key is visible via GET /private-ai-keys.
+    # litellm_token is encrypted at rest, so SQL cannot match it; find the row
+    # by its plain, unique database_name and compare the token after decryption.
     db_key = (
         db.query(DBPrivateAIKey)
-        .filter(DBPrivateAIKey.litellm_token == litellm_token)
+        .filter(DBPrivateAIKey.database_name == database_name)
         .first()
     )
 
-    if not db_key:
+    if not db_key or db_key.litellm_token != litellm_token:
         logger.error(
-            "Could not find newly provisioned key by litellm_token after moad call"
+            "Could not find newly provisioned key by database_name after moad call"
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
