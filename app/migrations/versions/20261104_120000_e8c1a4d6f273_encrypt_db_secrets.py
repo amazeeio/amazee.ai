@@ -26,31 +26,35 @@ BATCH_SIZE = 1000
 
 
 def _convert_secrets(convert) -> None:
-    connection = op.get_bind()
-    for table, columns in SECRET_COLUMNS.items():
-        last_id = 0
-        while True:
-            rows = connection.execute(
-                sa.text(
-                    f"SELECT id, {', '.join(columns)} FROM {table} "
-                    "WHERE id > :last ORDER BY id LIMIT :limit"
-                ),
-                {"last": last_id, "limit": BATCH_SIZE},
-            ).fetchall()
-            if not rows:
-                break
-            for row in rows:
-                for column, value in zip(columns, row[1:]):
-                    if not value:
-                        continue
-                    new_value = convert(value)
-                    if new_value is not None:
+    # Autocommit keeps row locks short on large tables; the conversion is
+    # idempotent, so a run that stops halfway is safe to repeat.
+    with op.get_context().autocommit_block():
+        connection = op.get_bind()
+        for table, columns in SECRET_COLUMNS.items():
+            last_id = 0
+            while True:
+                rows = connection.execute(
+                    sa.text(
+                        f"SELECT id, {', '.join(columns)} FROM {table} "
+                        "WHERE id > :last ORDER BY id LIMIT :limit"
+                    ),
+                    {"last": last_id, "limit": BATCH_SIZE},
+                ).fetchall()
+                if not rows:
+                    break
+                for index, column in enumerate(columns, start=1):
+                    updates = [
+                        {"value": new_value, "id": row.id, "old": row[index]}
+                        for row in rows
+                        if row[index] and (new_value := convert(row[index])) is not None
+                    ]
+                    if updates:
                         # Skip a row that a running pod changed since the read; it wrote it encrypted.
                         connection.execute(
                             sa.text(f"UPDATE {table} SET {column} = :value WHERE id = :id AND {column} = :old"),
-                            {"value": new_value, "id": row.id, "old": value},
+                            updates,
                         )
-            last_id = rows[-1].id
+                last_id = rows[-1].id
 
 
 def _decrypt(value: str) -> str | None:

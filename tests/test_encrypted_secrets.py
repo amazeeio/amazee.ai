@@ -10,6 +10,7 @@ from sqlalchemy import text
 from app.core.config import Settings, settings
 from app.core.crypto import EncryptedString, fernet
 from app.db.models import DBPrivateAIKey, DBRegion
+from tests.conftest import engine
 
 
 @pytest.fixture
@@ -187,6 +188,8 @@ def test_encrypt_secrets_migration_is_idempotent(db, test_region):
         text("UPDATE ai_tokens SET litellm_token = 'plain-token', database_password = NULL WHERE id = :id"),
         {"id": key.id},
     )
+    # The migration commits on its own connection, so it must see the seed rows.
+    db.commit()
     plain = ("plain-api-key", "plain-pg", "plain-token", None, "")
 
     def raw_values():
@@ -195,22 +198,23 @@ def test_encrypt_secrets_migration_is_idempotent(db, test_region):
         empty = _raw(db, "SELECT litellm_api_key FROM regions WHERE id = :id", id=empty_region.id)
         return (*region, *token, *empty)
 
-    connection = db.connection()
     try:
-        with Operations.context(MigrationContext.configure(connection)):
-            migration.upgrade()
-            encrypted = raw_values()
-            for value, expected in zip(encrypted, plain):
-                if expected:
-                    assert value != expected
-                    assert fernet().decrypt(value.encode()).decode() == expected
-                else:
-                    assert value == expected
+        with engine.connect() as connection:
+            context = MigrationContext.configure(connection)
+            with context.begin_transaction(), Operations.context(context):
+                migration.upgrade()
+                encrypted = raw_values()
+                for value, expected in zip(encrypted, plain):
+                    if expected:
+                        assert value != expected
+                        assert fernet().decrypt(value.encode()).decode() == expected
+                    else:
+                        assert value == expected
 
-            migration.upgrade()
-            assert raw_values() == encrypted
+                migration.upgrade()
+                assert raw_values() == encrypted
 
-            migration.downgrade()
-            assert raw_values() == plain
+                migration.downgrade()
+                assert raw_values() == plain
     finally:
         db.rollback()
