@@ -245,14 +245,14 @@ Note: Spend enforcement in LiteLLM is evaluated on spend updates, so the blockin
 
 ## ♻️ Team Lifecycle & Hard Delete
 
-Teams go through a three-stage lifecycle managed by background workers.
+Teams go through a three-stage lifecycle. Teams are never soft-deleted automatically for inactivity; only an explicit soft-delete starts the countdown to hard delete.
 
 ### Stages
 
 | Stage | Trigger | What happens |
 |---|---|---|
 | **Active** | Team created | Normal operation |
-| **Soft-deleted** | >76 days inactive (no API activity) + 14-day grace after warning email; or manual `POST /teams/{id}/soft-delete` | `deleted_at` set; all LiteLLM keys expired (`duration=0d`); users deactivated. POOL teams are exempt from automatic soft-delete. |
+| **Soft-deleted** | Manual `POST /teams/{id}/soft-delete` | `deleted_at` set; all LiteLLM keys expired (`duration=0d`); users deactivated. |
 | **Hard-deleted** | `deleted_at` is ≥ `TEAM_HARD_DELETE_RETENTION_DAYS` days ago (default 90, minimum 30) | All data permanently removed (GDPR requirement) |
 
 ### Hard-delete cascade order
