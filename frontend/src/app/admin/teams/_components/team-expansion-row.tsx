@@ -59,8 +59,6 @@ export function TeamExpansionRow({
   const {
     removeUserFromTeam,
     isRemovingUser,
-    extendTrial,
-    isExtendingTrial,
     restoreTeam,
     isRestoring,
     deleteTeam,
@@ -350,16 +348,6 @@ export function TeamExpansionRow({
                               >
                                 Edit Team
                               </Button>
-                              <Button
-                                variant="outline"
-                                onClick={() => extendTrial(expandedTeam.id)}
-                                disabled={isExtendingTrial}
-                              >
-                                {isExtendingTrial ? (
-                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                ) : null}{" "}
-                                Extend Trial
-                              </Button>
                               {(!expandedTeam.users ||
                                 expandedTeam.users.length === 0) && (
                                 <DeleteConfirmationDialog
@@ -477,8 +465,8 @@ export function TeamExpansionRow({
                           {teamBudgetLimit
                             ? `$${teamBudgetLimit.max_value.toFixed(2)} (${teamBudgetLimit.limited_by})`
                             : "Not set"}{" "}
-                          — Budget is enforced at the team level and
-                          overrides individual key budgets. Edit it in the{" "}
+                          — Budget is enforced at the team level and overrides
+                          individual key budgets. Edit it in the{" "}
                           <strong>Limits</strong> tab.
                         </span>
                       </div>

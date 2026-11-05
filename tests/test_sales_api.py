@@ -140,7 +140,6 @@ def test_list_teams_for_sales_success(
         "budget_type": "periodic",
         "regions": [test_region.name],
         "total_spend": 25.50,
-        "trial_status": "30 days left",
         "last_payment": None,
     }
 
@@ -159,78 +158,6 @@ def test_list_teams_for_sales_success(
     team_data = data["teams"][0]
     team_data.pop("created_at", None)
     assert team_data == validation_data
-
-
-@patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
-def test_always_free_team_trial_status(
-    mock_get_info,
-    client,
-    admin_token,
-    test_always_free_team,
-    test_region,
-    test_ai_key,
-    db,
-):
-    """Test that always-free teams show correct trial status."""
-    db.commit()
-
-    # Mock LiteLLM service
-    mock_get_info.return_value = {"info": {"spend": 0.0}}
-
-    response = client.get(
-        "/teams/sales/list-teams", headers={"Authorization": f"Bearer {admin_token}"}
-    )
-
-    assert response.status_code == 200
-    data = response.json()
-    team_data = data["teams"][0]
-    assert team_data["trial_status"] == "Always Free"
-
-
-@patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
-def test_paid_team_trial_status(
-    mock_get_info,
-    client,
-    admin_token,
-    test_paid_team,
-    test_region,
-    test_ai_key,
-    db,
-):
-    """Test that teams with payment history show correct trial status."""
-    db.commit()
-
-    # Mock LiteLLM service
-    mock_get_info.return_value = {"info": {"spend": 0.0}}
-
-    response = client.get(
-        "/teams/sales/list-teams", headers={"Authorization": f"Bearer {admin_token}"}
-    )
-
-    assert response.status_code == 200
-    data = response.json()
-    assert "teams" in data
-    team_data = data["teams"][0]
-    assert team_data["trial_status"] == "25 days left"
-
-
-@patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
-def test_team_trial_status_from_creation_date(
-    mock_get_info, client, admin_token, test_team, test_region, test_ai_key, db
-):
-    """Test team trial status is derived from its creation date."""
-    # Mock LiteLLM service
-    mock_get_info.return_value = {"info": {"spend": 0.0}}
-
-    response = client.get(
-        "/teams/sales/list-teams", headers={"Authorization": f"Bearer {admin_token}"}
-    )
-
-    assert response.status_code == 200
-    data = response.json()
-    assert "teams" in data
-    team_data = data["teams"][0]
-    assert team_data["trial_status"] == "30 days left"
 
 
 @patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
@@ -302,28 +229,6 @@ def test_litellm_service_error_handling(
 
 
 @patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
-def test_expired_trial_status(
-    mock_get_info, client, admin_token, test_team, test_region, test_ai_key, db
-):
-    """Test that expired trials show correct status."""
-    # Update team to be older than 30 days so the trial shows as expired
-    test_team.created_at = datetime.now(UTC) - timedelta(days=35)
-    db.commit()
-
-    # Mock LiteLLM service
-    mock_get_info.return_value = {"info": {"spend": 0.0}}
-
-    response = client.get(
-        "/teams/sales/list-teams", headers={"Authorization": f"Bearer {admin_token}"}
-    )
-
-    assert response.status_code == 200
-    data = response.json()
-    team_data = data["teams"][0]
-    assert team_data["trial_status"] == "Expired"
-
-
-@patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
 def test_list_teams_for_sales_includes_user_owned_keys(
     mock_get_info,
     client,
@@ -366,75 +271,6 @@ def test_list_teams_for_sales_includes_user_owned_keys(
     # Should include region from both keys
     assert len(team_data["regions"]) == 1
     assert team_data["regions"][0] == region_name
-
-
-@patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
-def test_team_with_15_days_remaining(
-    mock_get_info, client, admin_token, test_team, test_region, test_ai_key, db
-):
-    """Test that teams with 15 days remaining show correct format."""
-    # Update team to be 15 days old
-    test_team.created_at = datetime.now(UTC) - timedelta(days=15)
-    db.commit()
-
-    # Mock LiteLLM service
-    mock_get_info.return_value = {"info": {"spend": 0.0}}
-
-    response = client.get(
-        "/teams/sales/list-teams", headers={"Authorization": f"Bearer {admin_token}"}
-    )
-
-    assert response.status_code == 200
-    data = response.json()
-    team_data = data["teams"][0]
-    # Should show exact days remaining, not "In Progress"
-    assert team_data["trial_status"] == "15 days left"
-
-
-@patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
-def test_team_with_7_days_remaining(
-    mock_get_info, client, admin_token, test_team, test_region, test_ai_key, db
-):
-    """Test that teams with 7 days remaining show correct format."""
-    # Update team to be 23 days old (7 days remaining)
-    test_team.created_at = datetime.now(UTC) - timedelta(days=23)
-    db.commit()
-
-    # Mock LiteLLM service
-    mock_get_info.return_value = {"info": {"spend": 0.0}}
-
-    response = client.get(
-        "/teams/sales/list-teams", headers={"Authorization": f"Bearer {admin_token}"}
-    )
-
-    assert response.status_code == 200
-    data = response.json()
-    team_data = data["teams"][0]
-    # Should show exact days remaining
-    assert team_data["trial_status"] == "7 days left"
-
-
-@patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
-def test_team_with_last_payment_days_calculation(
-    mock_get_info, client, admin_token, test_team, test_region, test_ai_key, db
-):
-    """Test that teams with last_payment calculate days remaining from payment date."""
-    # Set last_payment to 10 days ago (so 20 days remaining from payment)
-    test_team.last_payment = datetime.now(UTC) - timedelta(days=10)
-    db.commit()
-
-    # Mock LiteLLM service
-    mock_get_info.return_value = {"info": {"spend": 0.0}}
-
-    response = client.get(
-        "/teams/sales/list-teams", headers={"Authorization": f"Bearer {admin_token}"}
-    )
-
-    assert response.status_code == 200
-    data = response.json()
-    team_data = data["teams"][0]
-    # Should calculate from last_payment date (30 - 10 = 20 days remaining)
-    assert team_data["trial_status"] == "20 days left"
 
 
 @patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
