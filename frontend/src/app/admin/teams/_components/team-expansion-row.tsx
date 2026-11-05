@@ -327,16 +327,20 @@ export function TeamExpansionRow({
                               >
                                 Edit Team
                               </Button>
-                              <Button
-                                variant="outline"
-                                onClick={() => refreshPoolKeys(expandedTeam.id)}
-                                disabled={isRefreshingPoolKeys}
-                              >
-                                {isRefreshingPoolKeys ? (
-                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                ) : null}{" "}
-                                Refresh Pool Keys
-                              </Button>
+                              {expandedTeam.budget_type === "pool" && (
+                                <Button
+                                  variant="outline"
+                                  onClick={() =>
+                                    refreshPoolKeys(expandedTeam.id)
+                                  }
+                                  disabled={isRefreshingPoolKeys}
+                                >
+                                  {isRefreshingPoolKeys ? (
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                  ) : null}{" "}
+                                  Refresh Pool Keys
+                                </Button>
+                              )}
                               {(!expandedTeam.users ||
                                 expandedTeam.users.length === 0) && (
                                 <DeleteConfirmationDialog

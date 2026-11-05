@@ -8,6 +8,7 @@ from app.db.models import (
     DBLimitedResource,
     DBPoolPurchase,
     DBPeriodicBudgetLedgerEntry,
+    DBPeriodicPayment,
 )
 from app.schemas.models import BudgetType
 from datetime import datetime, UTC, timedelta
@@ -221,8 +222,14 @@ async def test_monitor_teams_basic_metrics(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "age_days, always_free, expect_zero",
-    [(31, False, True), (29, False, False), (31, True, False)],
+    "age_days, always_free, paid, expect_zero",
+    [
+        (31, False, None, True),
+        (29, False, None, False),
+        (31, True, None, False),
+        (31, False, "last_payment", False),
+        (31, False, "topup", False),
+    ],
 )
 @patch("app.core.worker.LimitService")
 @patch("app.core.worker.SESService")
@@ -233,21 +240,37 @@ async def test_monitor_teams_unpaid_periodic_team_free_credit_ends(
     mock_limit_service,
     age_days,
     always_free,
+    paid,
     expect_zero,
     db,
     test_team,
     test_region,
 ):
     """
-    Given: An unpaid PERIODIC team aged age_days
+    Given: A PERIODIC team aged age_days, paid or not
     When: monitor_teams runs
-    Then: Past SIGNUP_CREDIT_DAYS (and not always-free) its keys go to $0 with
-          no budget_duration. Keys are never expired and no email is sent.
+    Then: Only a never-paid, not always-free team past SIGNUP_CREDIT_DAYS gets
+          its keys set to $0 with no budget_duration. Paid credit is never
+          zeroed, keys are never expired and no email is sent.
     """
     test_team.budget_type = BudgetType.PERIODIC
     test_team.created_at = datetime.now(UTC) - timedelta(days=age_days)
-    test_team.last_payment = None
+    test_team.last_payment = (
+        datetime.now(UTC) - timedelta(days=40) if paid == "last_payment" else None
+    )
     test_team.is_always_free = always_free
+    if paid == "topup":
+        db.add(
+            DBPeriodicPayment(
+                team_id=test_team.id,
+                stripe_payment_id="pi_free_credit_topup",
+                amount_cents=1000,
+                currency="usd",
+                payment_type="topup",
+                status="completed",
+                payment_date=datetime.now(UTC) - timedelta(days=40),
+            )
+        )
     db.add(
         DBPrivateAIKey(
             name="Periodic Key",

@@ -1770,14 +1770,25 @@ async def monitor_teams(db: Session):
                 # Also emits the team_freshness_days metric
                 team_freshness = _monitor_team_freshness(team, db)
 
-                # An unpaid PERIODIC team's keys start with DEFAULT_MAX_SPEND on
-                # a 30d LiteLLM reset. After SIGNUP_CREDIT_DAYS that free credit
-                # ends: keys go to $0 but stay alive, so the team can still buy.
+                # A never-paid PERIODIC team's keys start with DEFAULT_MAX_SPEND
+                # on a 30d LiteLLM reset. After SIGNUP_CREDIT_DAYS that free
+                # credit ends: keys go to $0 but stay alive, so the team can
+                # still buy. Any payment or ledger credit puts the team under
+                # the billing rules instead, so paid credit is never zeroed.
                 free_credit_over = (
                     team.budget_type != BudgetType.POOL
                     and not team.is_always_free
                     and not is_anonymous_trial_team(team)
+                    and team.last_payment is None
                     and team_freshness >= settings.SIGNUP_CREDIT_DAYS
+                    and db.query(DBPeriodicPayment.id)
+                    .filter(DBPeriodicPayment.team_id == team.id)
+                    .first()
+                    is None
+                    and db.query(DBPeriodicBudgetLedgerEntry.id)
+                    .filter(DBPeriodicBudgetLedgerEntry.team_id == team.id)
+                    .first()
+                    is None
                 )
 
                 # Get all keys for the team grouped by region
