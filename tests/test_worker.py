@@ -2799,3 +2799,40 @@ async def test_monitor_teams_does_not_retire_anonymous_trial_team(
     db.refresh(trial_team)
     assert trial_team.retention_warning_sent_at is None
     assert trial_team.deleted_at is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("warned_days_ago", [None, 30])
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+async def test_monitor_teams_never_retires_inactive_regular_team(
+    mock_litellm,
+    mock_ses,
+    mock_limit_service,
+    warned_days_ago,
+    db,
+    test_team,
+    test_team_user,
+):
+    """
+    Given: A regular team inactive for 400 days, never warned or warned long ago
+    When: monitor_teams runs
+    Then: It is not soft-deleted, its users stay active and no email is sent
+    """
+    test_team.created_at = datetime.now(UTC) - timedelta(days=400)
+    if warned_days_ago is not None:
+        test_team.retention_warning_sent_at = datetime.now(UTC) - timedelta(
+            days=warned_days_ago
+        )
+    db.commit()
+    mock_limit_service.return_value.set_team_limits = Mock()
+
+    await monitor_teams(db)
+
+    db.refresh(test_team)
+    db.refresh(test_team_user)
+    assert test_team.deleted_at is None
+    assert test_team_user.is_active is True
+    mock_ses.return_value.send_email.assert_not_called()
