@@ -37,7 +37,6 @@ from app.services.litellm import (
     hash_litellm_token,
     membership_spend_by_user,
 )
-from app.services.ses import SESService
 from app.core.team_service import (
     get_team_keys_by_region,
     get_team_info_or_recreate,
@@ -76,10 +75,6 @@ from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
-FIRST_EMAIL_DAYS_LEFT = 7
-SECOND_EMAIL_DAYS_LEFT = 5
-TRIAL_OVER_DAYS = 30
-
 # A key is created with a 30-day expiry and the billing cycle is the only thing
 # that renews it. This is key expiry, not a LiteLLM budget cycle.
 KEY_EXPIRY_EXTENSION = "31d"
@@ -92,12 +87,6 @@ SUBSCRIPTION_BUDGET_TYPES = frozenset({BudgetType.PERIODIC, BudgetType.POOL})
 team_freshness_days = Gauge(
     "team_freshness_days",
     "Freshness of teams in days (since creation, or since last payment)",
-    ["team_id", "team_name"],
-)
-
-team_expired_metric = Counter(
-    "team_expired_total",
-    "Total number of teams that have expired",
     ["team_id", "team_name"],
 )
 
@@ -1269,7 +1258,6 @@ async def reconcile_team_keys(
     db: Session,
     team: DBTeam,
     keys_by_region: Dict[DBRegion, List[DBPrivateAIKey]],
-    expire_keys: bool,
     key_state_cache: Optional["RegionKeyStateCache"] = None,
 ) -> float:
     """
@@ -1286,7 +1274,6 @@ async def reconcile_team_keys(
     Args:
         team: The team to monitor keys for
         keys_by_region: Dictionary mapping regions to lists of keys
-        expire_keys: Whether to expire keys (set duration to 0)
         key_state_cache: Shared snapshot cache. Callers reconciling more than
             one team must pass a single instance so each region is listed once
             per TTL window; when omitted a private cache is used.
@@ -1349,21 +1336,7 @@ async def reconcile_team_keys(
                     else:
                         service_key_total += current_spend
 
-                    if expire_keys:
-                        logger.info(
-                            f"Key {key.id} expiring, setting duration to 0 days"
-                        )
-                        pending_writes.append(
-                            (
-                                key.id,
-                                partial(
-                                    litellm_service.update_key_duration,
-                                    key.litellm_token,
-                                    "0d",
-                                ),
-                            )
-                        )
-                    elif not gate_locked and (is_pool or key.id in cap_map):
+                    if not gate_locked and (is_pool or key.id in cap_map):
                         # Only keys whose cycle the ledger owns: every POOL key,
                         # and any key with a cap row. A PERIODIC key without a
                         # cap row still relies on LiteLLM's own budget cycle
@@ -1521,90 +1494,6 @@ def _monitor_team_freshness(team: DBTeam, db: Optional[Session] = None) -> int:
     return team_freshness
 
 
-def _send_expiry_notification(
-    db: Session,
-    team: DBTeam,
-    should_send_notifications: bool,
-    days_remaining: int,
-    ses_service: Optional[SESService],
-):
-    # Check for notification conditions for teams still in the trial (only if not recently monitored)
-    if should_send_notifications:
-        # Find the admin email for the team
-        try:
-            admin_email = get_team_admin_email(db, team)
-        except ValueError:
-            logger.warning(
-                f"No admin user found for team {team.name} (ID: {team.id}), skipping email notifications"
-            )
-            admin_email = None
-
-        if (
-            days_remaining == FIRST_EMAIL_DAYS_LEFT
-            or days_remaining == SECOND_EMAIL_DAYS_LEFT
-        ):
-            logger.info(
-                f"Team {team.name} (ID: {team.id}) is approaching expiration in {days_remaining} days"
-            )
-            # Send expiration notification email
-            try:
-                if admin_email and ses_service:
-                    template_data = {
-                        "name": team.name,
-                        "days_remaining": days_remaining,
-                    }
-                    ses_service.send_email(
-                        to_addresses=[admin_email],
-                        template_name="team-expiring",
-                        template_data=template_data,
-                    )
-                    logger.info(
-                        f"Sent expiration notification email to team {team.name} (ID: {team.id})"
-                    )
-                elif admin_email and not ses_service:
-                    logger.warning(
-                        f"SES service not available, skipping expiration notification email for team {team.name} (ID: {team.id})"
-                    )
-                else:
-                    logger.warning(
-                        f"No email found for team {team.name} (ID: {team.id})"
-                    )
-            except Exception as e:
-                logger.error(
-                    f"Failed to send expiration notification email to team {team.name}: {str(e)}"
-                )
-        elif days_remaining == 0:
-            # Send expired email
-            try:
-                if admin_email and ses_service:
-                    template_data = {
-                        "name": team.name,
-                    }
-                    ses_service.send_email(
-                        to_addresses=[admin_email],
-                        template_name="trial-expired",
-                        template_data=template_data,
-                    )
-                    logger.info(
-                        f"Sent expired email to team {team.name} (ID: {team.id})"
-                    )
-                elif admin_email and not ses_service:
-                    logger.warning(
-                        f"SES service not available, skipping expired email for team {team.name} (ID: {team.id})"
-                    )
-                else:
-                    logger.warning(
-                        f"No email found for team {team.name} (ID: {team.id})"
-                    )
-            except Exception as e:
-                logger.error(
-                    f"Failed to send expired email to team {team.name}: {str(e)}"
-                )
-        elif days_remaining <= 0:
-            # Post expired metric
-            team_expired_metric.labels(team_id=str(team.id), team_name=team.name).inc()
-
-
 @monitor_teams_duration.time()
 async def monitor_teams(db: Session):
     """
@@ -1622,12 +1511,6 @@ async def monitor_teams(db: Session):
 
         # Track current active team labels
         current_team_labels = set()
-        try:
-            # Initialize SES service
-            ses_service = SESService()
-        except Exception as e:
-            logger.error(f"Error initializing SES service: {str(e)}")
-            ses_service = None
 
         logger.info(f"Found {len(teams)} teams to track")
         # Shared across every team so each region is bulk-listed once per TTL
@@ -1638,60 +1521,17 @@ async def monitor_teams(db: Session):
                 team_label = (str(team.id), team.name)
                 current_team_labels.add(team_label)
 
-                # Handle trial expiry notifications and key expiry
-                is_pool_team = team.budget_type == BudgetType.POOL
-
-                # Check if team was monitored within 24 hours
-                should_send_notifications = settings.ENABLE_LIMITS
-                if team.last_monitored:
-                    hours_since_monitored = (
-                        current_time - team.last_monitored.replace(tzinfo=UTC)
-                    ).total_seconds() / 3600
-                    should_send_notifications = hours_since_monitored >= 24
-
-                # Always compute freshness to emit team_freshness_days metrics for all teams.
-                # POOL teams have their own lifecycle and are excluded from trial notifications.
-                team_freshness = _monitor_team_freshness(team, db)
-                days_remaining = TRIAL_OVER_DAYS - team_freshness
-                if not is_pool_team and not is_anonymous_trial_team(team):
-                    _send_expiry_notification(
-                        db,
-                        team,
-                        should_send_notifications,
-                        days_remaining,
-                        ses_service,
-                    )
+                # Emit the team_freshness_days metric
+                _monitor_team_freshness(team, db)
 
                 # Get all keys for the team grouped by region
                 keys_by_region = get_team_keys_by_region(db, team.id)
-                expire_keys = False
-
-                # POOL teams are always exempt from trial expiration.
-                #
-                # The anonymous-trial team is exempt too. Its freshness ran
-                # out long ago and never renews, so leaving it in scope expires
-                # every trial key in every region on each run. Per-user budget
-                # limits are enforced separately by monitor_trial_users.
-                #
-                # Note the two unrelated meanings of "trial" here:
-                # days_remaining is a real member's 30-day trial.
-                if (
-                    not is_pool_team
-                    and not is_anonymous_trial_team(team)
-                    and days_remaining <= 0
-                    and should_send_notifications
-                ):
-                    logger.info(
-                        f"Team {team.id} has {days_remaining} days remaining, expiring keys"
-                    )
-                    expire_keys = True
 
                 # Monitor keys and get total spend (also repairs drifted key caps)
                 team_total = await reconcile_team_keys(
                     db,
                     team,
                     keys_by_region,
-                    expire_keys,
                     key_state_cache=key_state_cache,
                 )
 
@@ -1733,10 +1573,6 @@ async def monitor_teams(db: Session):
 
                 # Ensure all limits are correct - will not override MANUAL limits
                 set_team_and_user_limits(db, team)
-
-                # Update last_monitored timestamp only if notifications were sent
-                if should_send_notifications:
-                    team.last_monitored = current_time
             except Exception as error:
                 logger.error(
                     f"Unable to process team {team.id} due to {str(error)}, continuing with next team."

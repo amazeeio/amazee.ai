@@ -107,24 +107,6 @@ export function useTeams(
     },
   });
 
-  const extendTrialMutation = useMutation({
-    mutationFn: async (id: string | number) => {
-      const response = await post(`/teams/${id}/extend-trial`, {});
-      return response.json();
-    },
-    onSuccess: (_, id) => {
-      queryClient.invalidateQueries({ queryKey: ["team", id.toString()] });
-      toast({ title: "Success", description: "Trial extended successfully" });
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
-
   const mergeTeamsMutation = useMutation({
     mutationFn: async (data: {
       targetTeamId: string | number;
@@ -240,8 +222,6 @@ export function useTeams(
     isDeleting: deleteTeamMutation.isPending,
     restoreTeam: restoreTeamMutation.mutate,
     isRestoring: restoreTeamMutation.isPending,
-    extendTrial: extendTrialMutation.mutate,
-    isExtendingTrial: extendTrialMutation.isPending,
     mergeTeams: mergeTeamsMutation.mutate,
     isMerging: mergeTeamsMutation.isPending,
     addUserToTeam: addUserToTeamMutation.mutate,
