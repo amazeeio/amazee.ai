@@ -220,6 +220,66 @@ async def test_monitor_teams_basic_metrics(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "age_days, always_free, expect_zero",
+    [(31, False, True), (29, False, False), (31, True, False)],
+)
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.LiteLLMService")
+async def test_monitor_teams_unpaid_periodic_team_free_credit_ends(
+    mock_litellm,
+    mock_ses,
+    mock_limit_service,
+    age_days,
+    always_free,
+    expect_zero,
+    db,
+    test_team,
+    test_region,
+):
+    """
+    Given: An unpaid PERIODIC team aged age_days
+    When: monitor_teams runs
+    Then: Past SIGNUP_CREDIT_DAYS (and not always-free) its keys go to $0 with
+          no budget_duration. Keys are never expired and no email is sent.
+    """
+    test_team.budget_type = BudgetType.PERIODIC
+    test_team.created_at = datetime.now(UTC) - timedelta(days=age_days)
+    test_team.last_payment = None
+    test_team.is_always_free = always_free
+    db.add(
+        DBPrivateAIKey(
+            name="Periodic Key",
+            litellm_token="periodic_token",
+            region=test_region,
+            team_id=test_team.id,
+        )
+    )
+    db.commit()
+
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock(
+        return_value={
+            "info": {"spend": 1.0, "max_budget": 27.0, "budget_duration": "30d"}
+        }
+    )
+    mock_instance.update_key_budget = AsyncMock()
+    mock_instance.update_key_duration = AsyncMock()
+
+    await monitor_teams(db)
+
+    mock_instance.update_key_duration.assert_not_called()
+    mock_ses.return_value.send_email.assert_not_called()
+    if expect_zero:
+        mock_instance.update_key_budget.assert_awaited_once_with(
+            "periodic_token", max_budget=0, clear_budget_duration=True
+        )
+    else:
+        mock_instance.update_key_budget.assert_not_called()
+
+
+@pytest.mark.asyncio
 @patch("app.core.worker.LimitService")
 @patch("app.core.worker.SESService")
 @patch("app.core.worker.LiteLLMService")
@@ -234,11 +294,10 @@ async def test_monitor_teams_pool_team_with_purchase_not_expired(
     test_team_key_creator,
 ):
     """
-    Test that pool teams with purchases are NOT treated as expired trials.
+    Test that a pool team past SIGNUP_CREDIT_DAYS keeps its keys alive.
 
-    Regression test: pool teams had their keys expired by monitor_teams because
-    The expire_keys logic only checked days_remaining (past 30-day trial),
-    incorrectly treating paying pool teams as expired trials.
+    Regression test: pool teams once had their keys expired by monitor_teams
+    because the old 30-day trial treated paying pool teams as expired trials.
     """
     # Setup: pool team, 31 days old (past trial), but with a pool purchase
     test_team.created_at = datetime.now(UTC) - timedelta(days=31)
@@ -525,14 +584,9 @@ async def test_monitor_teams_metrics_always_emitted(
     mock_litellm, mock_ses, mock_limit_service, db, test_team
 ):
     """
-    Test that metrics are always emitted regardless of last_monitored status.
+    Test that monitor_teams emits team_freshness_days.
     """
-    # Setup test team with recent monitoring
     test_team.created_at = datetime.now(UTC) - timedelta(days=15)
-    expected_last_monitored = datetime.now(UTC) - timedelta(
-        hours=12
-    )  # Recently monitored
-    test_team.last_monitored = expected_last_monitored
     db.add(test_team)
     db.commit()
 
@@ -543,18 +597,13 @@ async def test_monitor_teams_metrics_always_emitted(
     # Run monitoring
     await monitor_teams(db)
 
-    # Verify metrics are still emitted even though team was recently monitored
+    # Verify the freshness metric is emitted
     assert (
         team_freshness_days.labels(
             team_id=str(test_team.id), team_name=test_team.name
         )._value.get()
         == 15
     )
-
-    # Verify last_monitored was not updated (no notifications sent)
-    db.refresh(test_team)
-    # Use approximate comparison due to timestamp precision differences
-    assert abs((test_team.last_monitored - expected_last_monitored).total_seconds()) < 1
 
     # Verify limit service was called
     mock_limit_service.assert_called_with(db)
@@ -2273,17 +2322,17 @@ async def test_run_key_writes_empty_is_noop():
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LiteLLMService")
-async def test_reconcile_team_keys_repair_writes_are_batched(
+async def test_reconcile_team_keys_repairs_every_drifted_key(
     mock_litellm, db, test_team, test_region
 ):
     """
     Given: A pool team with several keys whose caps drifted
     When: reconcile_team_keys runs
-    Then: Every key gets a repair write, issued through the batched path
+    Then: Every key gets a repair write
     """
     from app.services.litellm import LiteLLMService as _Svc
 
-    tokens = [f"sk-expire-{i}" for i in range(5)]
+    tokens = [f"sk-drift-{i}" for i in range(5)]
     for i, tok in enumerate(tokens):
         db.add(
             DBPrivateAIKey(
@@ -2318,8 +2367,10 @@ async def test_reconcile_team_keys_repair_writes_are_batched(
     assert team_total == 5.0
     # One repair write per key
     assert mock_instance.update_key_budget.await_count == 5
-    expired = sorted(c.args[0] for c in mock_instance.update_key_budget.await_args_list)
-    assert expired == sorted(tokens)
+    repaired = sorted(
+        c.args[0] for c in mock_instance.update_key_budget.await_args_list
+    )
+    assert repaired == sorted(tokens)
 
 
 @pytest.mark.asyncio

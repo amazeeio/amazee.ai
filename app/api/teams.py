@@ -15,11 +15,13 @@ from app.core.security import (
     get_role_min_system_admin,
 )
 from app.core.team_service import (
+    get_team_keys_by_region,
     is_past_hard_delete_cutoff,
     restore_soft_deleted_team,
     soft_delete_team,
 )
 from app.core.litellm_user_sync import sync_add_user_to_team, sync_remove_user_from_team
+from app.core.pool_budget_service import key_cap_map
 from app.core.worker import generate_pricing_url, get_team_admin_email
 from app.db.database import get_db
 from app.db.models import (
@@ -34,6 +36,7 @@ from app.db.models import (
 )
 from app.schemas.limits import OwnerType
 from app.schemas.models import (
+    BudgetType,
     SalesTeam,
     SalesTeamsResponse,
     Team,
@@ -504,6 +507,47 @@ async def delete_team(team_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     return {"message": "Team deleted successfully"}
+
+
+@router.post(
+    "/{team_id}/refresh-pool-keys", dependencies=[Depends(get_role_min_system_admin)]
+)
+async def refresh_pool_keys(team_id: int, db: Session = Depends(get_db)):
+    """
+    Admin repair for a POOL team's keys (issue #631): unblock them, clear stale
+    per-key caps (explicit DBSpendCap caps are kept), clear budget_duration and
+    extend key life to POOL_PURCHASE_EXPIRY_DAYS. The team-level pool budget
+    keeps governing spend. Only accessible by system admin users.
+    """
+    db_team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if not db_team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    if db_team.budget_type != BudgetType.POOL:
+        raise HTTPException(status_code=400, detail="Team is not a pool team")
+
+    for region, keys in get_team_keys_by_region(db, team_id).items():
+        litellm_service = LiteLLMService(
+            api_url=region.litellm_api_url, api_key=region.litellm_api_key
+        )
+        cap_map = key_cap_map(db, region.id, [k.id for k in keys])
+        for key in keys:
+            try:
+                configured_cap = cap_map.get(key.id)
+                await litellm_service.update_key_budget(
+                    litellm_token=key.litellm_token,
+                    max_budget=configured_cap,
+                    clear_max_budget=configured_cap is None,
+                    clear_budget_duration=True,
+                    blocked=False,
+                )
+                await litellm_service.update_key_duration(
+                    litellm_token=key.litellm_token,
+                    duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
+                )
+            except Exception as e:
+                logger.error(f"Failed to refresh key {key.id} via LiteLLM: {str(e)}")
+
+    return {"message": "Pool keys refreshed"}
 
 
 @router.post("/{team_id}/restore", dependencies=[Depends(get_role_min_system_admin)])

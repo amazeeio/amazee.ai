@@ -2623,3 +2623,53 @@ def test_update_team_admin_email_ignores_its_own_row(client, admin_token, test_t
     )
     assert response.status_code == 200, response.text
     assert response.json()["admin_email"] == "moved@example.com"
+
+
+def test_extend_trial_endpoint_is_gone(client, admin_token, test_team):
+    """The 30-day trial is gone, so its admin endpoint must stay gone too."""
+    response = client.post(
+        f"/teams/{test_team.id}/extend-trial",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code in (404, 405)
+
+
+@patch("app.api.teams.LiteLLMService")
+def test_refresh_pool_keys(
+    mock_litellm, client, admin_token, test_team, test_region, db
+):
+    """A pool team's keys are unblocked, uncapped and extended; non-pool is refused."""
+    mock_instance = mock_litellm.return_value
+    mock_instance.update_key_budget = AsyncMock()
+    mock_instance.update_key_duration = AsyncMock()
+    db.add(
+        DBPrivateAIKey(
+            name="Pool Key",
+            litellm_token="pool-refresh-token",
+            region=test_region,
+            team_id=test_team.id,
+        )
+    )
+    test_team.budget_type = BudgetType.PERIODIC
+    db.commit()
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    response = client.post(f"/teams/{test_team.id}/refresh-pool-keys", headers=headers)
+    assert response.status_code == 400
+    mock_instance.update_key_budget.assert_not_called()
+
+    test_team.budget_type = BudgetType.POOL
+    db.commit()
+    response = client.post(f"/teams/{test_team.id}/refresh-pool-keys", headers=headers)
+    assert response.status_code == 200
+    mock_instance.update_key_budget.assert_awaited_once_with(
+        litellm_token="pool-refresh-token",
+        max_budget=None,
+        clear_max_budget=True,
+        clear_budget_duration=True,
+        blocked=False,
+    )
+    mock_instance.update_key_duration.assert_awaited_once_with(
+        litellm_token="pool-refresh-token",
+        duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
+    )

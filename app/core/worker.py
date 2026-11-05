@@ -1281,6 +1281,7 @@ async def reconcile_team_keys(
     team: DBTeam,
     keys_by_region: Dict[DBRegion, List[DBPrivateAIKey]],
     key_state_cache: Optional["RegionKeyStateCache"] = None,
+    zero_budget: bool = False,
 ) -> float:
     """
     Monitor spend for all keys in a team across different regions and repair drifted key caps.
@@ -1299,6 +1300,8 @@ async def reconcile_team_keys(
         key_state_cache: Shared snapshot cache. Callers reconciling more than
             one team must pass a single instance so each region is listed once
             per TTL window; when omitted a private cache is used.
+        zero_budget: Set every key's max_budget to 0 (and clear its
+            budget_duration so LiteLLM never resets it). Keys stay alive.
 
     Returns:
         float: Total spend across all keys for the team
@@ -1327,9 +1330,7 @@ async def reconcile_team_keys(
             gate_locked = team_gate_locked(db, team, region.id)
 
             # Writes are queued here and run concurrently in batches of
-            # KEY_WRITE_BATCH. Issuing them inline costs one round-trip per key,
-            # which is ~34 minutes for the 11.5k-key trial team on the daily
-            # expiry run.
+            # KEY_WRITE_BATCH. Issuing them inline costs one round-trip per key.
             pending_writes: list[tuple[int, Callable[[], Awaitable[None]]]] = []
 
             # Check spend for each key in this region
@@ -1358,7 +1359,25 @@ async def reconcile_team_keys(
                     else:
                         service_key_total += current_spend
 
-                    if not gate_locked and (is_pool or key.id in cap_map):
+                    if zero_budget:
+                        if info.get("budget_duration") is not None or not (
+                            _same_budget_amount(info.get("max_budget"), 0)
+                        ):
+                            logger.info(
+                                f"Key {key.id} free credit over, max_budget -> 0"
+                            )
+                            pending_writes.append(
+                                (
+                                    key.id,
+                                    partial(
+                                        litellm_service.update_key_budget,
+                                        key.litellm_token,
+                                        max_budget=0,
+                                        clear_budget_duration=True,
+                                    ),
+                                )
+                            )
+                    elif not gate_locked and (is_pool or key.id in cap_map):
                         # Only keys whose cycle the ledger owns: every POOL key,
                         # and any key with a cap row. A PERIODIC key without a
                         # cap row still relies on LiteLLM's own budget cycle
@@ -1717,9 +1736,9 @@ async def monitor_teams(db: Session):
     """
     Daily monitoring task for teams that:
     1. Posts age metrics for teams (since creation, or since last payment)
-    2. Sends notifications for teams approaching expiration (25-30 days)
-    3. Posts metrics for expired teams (>30 days)
-    4. Monitors key spend and notifies if approaching limits
+    2. Applies the team retention policy
+    3. Sets an unpaid PERIODIC team's keys to $0 after SIGNUP_CREDIT_DAYS
+    4. Reconciles keys (spend, drifted caps) and team/user limits
     """
     logger.info("Monitoring teams")
     try:
@@ -1748,8 +1767,18 @@ async def monitor_teams(db: Session):
                 # Check team retention policy first (soft-delete handles key expiration internally)
                 await _check_team_retention_policy(db, team, current_time, ses_service)
 
-                # Emit the team_freshness_days metric
-                _monitor_team_freshness(team, db)
+                # Also emits the team_freshness_days metric
+                team_freshness = _monitor_team_freshness(team, db)
+
+                # An unpaid PERIODIC team's keys start with DEFAULT_MAX_SPEND on
+                # a 30d LiteLLM reset. After SIGNUP_CREDIT_DAYS that free credit
+                # ends: keys go to $0 but stay alive, so the team can still buy.
+                free_credit_over = (
+                    team.budget_type != BudgetType.POOL
+                    and not team.is_always_free
+                    and not is_anonymous_trial_team(team)
+                    and team_freshness >= settings.SIGNUP_CREDIT_DAYS
+                )
 
                 # Get all keys for the team grouped by region
                 keys_by_region = get_team_keys_by_region(db, team.id)
@@ -1760,6 +1789,7 @@ async def monitor_teams(db: Session):
                     team,
                     keys_by_region,
                     key_state_cache=key_state_cache,
+                    zero_budget=free_credit_over,
                 )
 
                 # Set the total spend metric for the team (always emit metrics)
