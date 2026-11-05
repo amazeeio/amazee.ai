@@ -247,6 +247,8 @@ Note: Spend enforcement in LiteLLM is evaluated on spend updates, so the blockin
 
 Teams go through a three-stage lifecycle. Teams are never soft-deleted automatically for inactivity; only an explicit soft-delete starts the countdown to hard delete.
 
+Accepted risk: keys and logins of an abandoned team stay live until someone soft-deletes the team or revokes the keys. Backend login activity does not reflect moad usage, so it cannot drive an automatic cutoff. Use `team_freshness_days` and per-key spend to spot stale teams.
+
 ### Stages
 
 | Stage | Trigger | What happens |
