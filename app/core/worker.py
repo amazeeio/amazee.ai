@@ -43,9 +43,7 @@ from app.core.team_service import (
     get_team_info_or_recreate,
     get_team_region_litellm_keys,
     hard_delete_cutoff,
-    hard_delete_retention_days,
     is_anonymous_trial_team,
-    soft_delete_team,
 )
 from app.core.limit_service import LimitService
 from app.core.litellm_user_sync import team_role_for_litellm
@@ -163,25 +161,6 @@ KEY_WRITE_BATCH = max(1, int(os.getenv("KEY_WRITE_BATCH", "500")))
 # takes. Set to 0 to re-list on every team.
 REGION_SNAPSHOT_TTL_SECONDS = max(
     0.0, float(os.getenv("REGION_SNAPSHOT_TTL_SECONDS", "600"))
-)
-
-# Retention metrics
-team_retention_warning_sent_total = Counter(
-    "team_retention_warning_sent_total",
-    "Total number of retention warnings sent to teams",
-    ["team_id", "team_name"],
-)
-
-team_retention_deleted_total = Counter(
-    "team_retention_deleted_total",
-    "Total number of teams deleted due to retention policy",
-    ["team_id", "team_name"],
-)
-
-team_days_since_activity = Gauge(
-    "team_days_since_activity",
-    "Days since last activity for each team",
-    ["team_id", "team_name"],
 )
 
 team_total_spend = Gauge(
@@ -1392,9 +1371,7 @@ async def reconcile_team_keys(
                         expected_max = cap_map.get(key.id)
                         current_duration = info.get("budget_duration")
                         current_max = info.get("max_budget")
-                        max_drifted = not _same_budget_amount(
-                            current_max, expected_max
-                        )
+                        max_drifted = not _same_budget_amount(current_max, expected_max)
 
                         if current_duration is not None or max_drifted:
                             logger.info(
@@ -1411,9 +1388,7 @@ async def reconcile_team_keys(
                             budget_kwargs = {"clear_budget_duration": True}
                             if max_drifted:
                                 budget_kwargs["max_budget"] = expected_max
-                                budget_kwargs["clear_max_budget"] = (
-                                    expected_max is None
-                                )
+                                budget_kwargs["clear_max_budget"] = expected_max is None
                             pending_writes.append(
                                 (
                                     key.id,
@@ -1546,202 +1521,6 @@ def _monitor_team_freshness(team: DBTeam, db: Optional[Session] = None) -> int:
     return team_freshness
 
 
-def _calculate_last_team_activity(db: Session, team: DBTeam) -> Optional[datetime]:
-    """
-    Calculate the last activity date for a team based on:
-    - Most recent key updated_at (indicates usage)
-    - Most recent user created_at
-    - Most recent key created_at
-
-    Args:
-        db: Database session
-        team: The team to check
-
-    Returns:
-        The most recent activity date, or None if no activity found
-    """
-    activity_dates = []
-
-    # Check most recent key update (usage indicator)
-    recent_key_update = (
-        db.query(DBPrivateAIKey)
-        .filter(
-            DBPrivateAIKey.team_id == team.id, DBPrivateAIKey.updated_at.isnot(None)
-        )
-        .order_by(DBPrivateAIKey.updated_at.desc())
-        .first()
-    )
-
-    if recent_key_update:
-        activity_dates.append(recent_key_update.updated_at)
-
-    # Check most recent user creation
-    recent_user = (
-        db.query(DBUser)
-        .filter(DBUser.team_id == team.id)
-        .order_by(DBUser.created_at.desc())
-        .first()
-    )
-
-    if recent_user:
-        activity_dates.append(recent_user.created_at)
-
-    # Check most recent key creation
-    recent_key_creation = (
-        db.query(DBPrivateAIKey)
-        .filter(DBPrivateAIKey.team_id == team.id)
-        .order_by(DBPrivateAIKey.created_at.desc())
-        .first()
-    )
-
-    if recent_key_creation:
-        activity_dates.append(recent_key_creation.created_at)
-
-    # Return the most recent activity date
-    return max(activity_dates) if activity_dates else None
-
-
-async def _check_team_retention_policy(
-    db: Session, team: DBTeam, current_time: datetime, ses_service: Optional[SESService]
-) -> None:
-    """
-    Check and apply team retention policy for inactive teams.
-
-    Uses centralized soft_delete_team() service function for consistency.
-
-    Args:
-        db: Database session
-        team: The team to check
-        current_time: Current timestamp
-        ses_service: SES service instance for sending emails
-    """
-    # POOL teams are always considered active per product policy.
-    # They are excluded from inactivity-based retention checks.
-    if team.budget_type == BudgetType.POOL:
-        return
-
-    # So is the anonymous-trial team. Activity is measured from its newest key,
-    # so a long enough lull in signups would soft-delete the team that owns
-    # every trial key, and the hard-delete job would then remove them all.
-    if is_anonymous_trial_team(team):
-        return
-
-    # Check team retention policy (only for non-deleted teams)
-    if team.deleted_at:
-        return  # Team already soft-deleted, skip retention check
-
-    last_activity = _calculate_last_team_activity(db, team)
-
-    if last_activity:
-        days_since_activity = (current_time - last_activity.replace(tzinfo=UTC)).days
-    else:
-        # No activity found, use team creation date
-        days_since_activity = (current_time - team.created_at.replace(tzinfo=UTC)).days
-
-    # Emit activity metric
-    team_days_since_activity.labels(team_id=str(team.id), team_name=team.name).set(
-        days_since_activity
-    )
-
-    # Check if team should get a warning (>76 days inactive AND no warning sent)
-    should_get_warning = days_since_activity > 76 and not team.retention_warning_sent_at
-
-    # Check if team should be deleted (warning was sent AND 14+ days have passed)
-    should_delete = team.retention_warning_sent_at is not None
-    if should_delete:
-        days_since_warning = (
-            current_time - team.retention_warning_sent_at.replace(tzinfo=UTC)
-        ).days
-        should_delete = days_since_warning >= 14
-
-    if should_delete:
-        logger.info(
-            f"Team {team.id} ({team.name}) has been inactive for {days_since_activity} days and warning was sent {days_since_warning} days ago, soft-deleting team"
-        )
-
-        # Use centralized soft_delete_team service function
-        await soft_delete_team(db, team, current_time)
-
-        # Emit deletion metric
-        team_retention_deleted_total.labels(
-            team_id=str(team.id), team_name=team.name
-        ).inc()
-
-        logger.info(
-            f"Soft-deleted team {team.id} ({team.name}) due to {days_since_activity} days of inactivity and 14+ days since warning"
-        )
-        return
-
-    elif should_get_warning:
-        logger.info(
-            f"Team {team.id} ({team.name}) has been inactive for {days_since_activity} days, sending retention warning"
-        )
-        _send_retention_warning(db, team, ses_service)
-    elif days_since_activity <= 76 and team.retention_warning_sent_at:
-        # Team has become active again (within 76 days), reset warning timestamp
-        logger.info(
-            f"Team {team.id} ({team.name}) has become active again, resetting retention warning timestamp"
-        )
-        team.retention_warning_sent_at = None
-        db.commit()
-
-
-def _send_retention_warning(
-    db: Session, team: DBTeam, ses_service: Optional[SESService]
-) -> None:
-    """
-    Send retention warning email to team admin.
-
-    Args:
-        db: Database session
-        team: The team to send warning to
-        ses_service: SES service instance
-    """
-    if not ses_service:
-        logger.warning(
-            f"Cannot send retention warning for team {team.id} - SES service not available"
-        )
-        return
-
-    try:
-        # Send retention warning email
-        soft_delete_date = (datetime.now(UTC) + timedelta(days=14)).strftime(
-            "%b %d, %Y"
-        )
-        template_data = {
-            "name": team.name,
-            "soft_delete_date": soft_delete_date,
-            "retention_days": hard_delete_retention_days(),
-        }
-
-        success = ses_service.send_email(
-            to_addresses=[team.admin_email],
-            template_name="team-retention-warning",
-            template_data=template_data,
-        )
-
-        if success:
-            # Update warning sent timestamp
-            team.retention_warning_sent_at = datetime.now(UTC)
-            db.commit()
-
-            # Emit metrics
-            team_retention_warning_sent_total.labels(
-                team_id=str(team.id), team_name=team.name
-            ).inc()
-
-            logger.info(f"Sent retention warning email to team {team.id} ({team.name})")
-        else:
-            logger.error(
-                f"Failed to send retention warning email to team {team.id} ({team.name})"
-            )
-
-    except Exception as e:
-        logger.error(
-            f"Error sending retention warning email to team {team.id}: {str(e)}"
-        )
-
-
 def _send_expiry_notification(
     db: Session,
     team: DBTeam,
@@ -1859,10 +1638,7 @@ async def monitor_teams(db: Session):
                 team_label = (str(team.id), team.name)
                 current_team_labels.add(team_label)
 
-                # Check team retention policy first (soft-delete handles key expiration internally)
-                await _check_team_retention_policy(db, team, current_time, ses_service)
-
-                # Now handle trial expiry notifications and key expiry (after retention checks)
+                # Handle trial expiry notifications and key expiry
                 is_pool_team = team.budget_type == BudgetType.POOL
 
                 # Check if team was monitored within 24 hours
@@ -2144,9 +1920,7 @@ async def hard_delete_expired_teams(db: Session):
                         message = f"Key {key.id} has database {key.database_name} but no region owns its host, so no admin credentials exist to drop it; will retry"
                         logger.error(message)
                         raise RuntimeError(message)
-                    manager = postgres_manager_for_key(
-                        key, key_region, regions_by_host
-                    )
+                    manager = postgres_manager_for_key(key, key_region, regions_by_host)
                     try:
                         await manager.delete_database(
                             key.database_name, key.database_username
@@ -2163,9 +1937,7 @@ async def hard_delete_expired_teams(db: Session):
                 # Delete keys from database
                 # Collect key IDs first so we can clean up spend_caps that reference them
                 team_key_ids = (
-                    db.execute(
-                        select(DBPrivateAIKey.id).filter(team_keys_filter)
-                    )
+                    db.execute(select(DBPrivateAIKey.id).filter(team_keys_filter))
                     .scalars()
                     .all()
                 )
