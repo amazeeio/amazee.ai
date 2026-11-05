@@ -6,7 +6,7 @@ updates:
       include: scope
     directory: /
     schedule:
-      interval: monthly
+      interval: weekly
     groups:
       github-actions:
         patterns:
@@ -20,7 +20,7 @@ updates:
       include: scope
     directory: /
     schedule:
-      interval: monthly
+      interval: weekly
     groups:
       docker:
         patterns:
@@ -34,7 +34,7 @@ updates:
       include: scope
     directory: /
     schedule:
-      interval: monthly
+      interval: weekly
     groups:
       pip:
         patterns:
@@ -48,7 +48,7 @@ updates:
       include: scope
     directory: /frontend
     schedule:
-      interval: monthly
+      interval: weekly
     groups:
       npm:
         patterns:
