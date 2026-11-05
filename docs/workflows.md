@@ -36,7 +36,7 @@ Temporary hosted environments for evaluating Drupal modules and themes.
     1.  Polydock requests a key for the ephemeral environment.
     2.  System generates a real team/user record associated with the demo's email.
     3.  A "default" key is generated for that team/user.
-*   **Lifecycle**: These accounts are treated as "Trial" accounts. They expire after **30 days** unless a product is added or trial is extended.
+*   **Lifecycle**: Same as any `PERIODIC` team: see [Free credit](#7-free-credit-for-unpaid-periodic-teams).
 
 ### 1.3 Main Production Workflow (Drupal AI Provider)
 The standard path for site builders and production environments.
@@ -63,8 +63,8 @@ The central management interface (`frontend/`) for all amazee.ai resources.
 
 ### 2.2 Team & Admin Operations
 *   **Team Creation**: `POST /teams` (Admin only).
-*   **Trial Extension**: `POST /teams/{team_id}/extend-trial` (Admin only).
-    *   Resets limits to defaults and updates `last_payment` date.
+*   **Refresh Pool Keys**: `POST /teams/{team_id}/refresh-pool-keys` (Admin only, `POOL` teams).
+    *   Unblocks the team's keys, clears stale per-key caps (explicit spend caps are kept) and extends key life to `POOL_PURCHASE_EXPIRY_DAYS`.
 *   **Audit Logs**: `GET /audit/logs` (Admin only).
     *   Provides a searchable history of system actions, filtered by user, resource, or event type.
 
@@ -145,16 +145,14 @@ Limits are managed via the `LimitService` (`app/core/limit_service.py`). They fo
 
 ---
 
-## 7. Trial & Expiry Logic
+## 7. Free credit for unpaid PERIODIC teams
 
-The system calculates "Trial Status" for teams to determine if they should still have access.
+A new `PERIODIC` team's keys start with `DEFAULT_MAX_SPEND` ($27).
 
-*   **Trial Duration**: 30 days.
-*   **Logic Location**: `_calculate_trial_status` in `app/api/teams.py`.
-*   **Statuses**:
-    *   `Always Free`: Team has `is_always_free = True`.
-    *   `Expired`: More than 30 days since `last_payment` or `created_at`.
-    *   `{X} days left`: Remaining time in the 30-day window.
+*   **Duration**: `SIGNUP_CREDIT_DAYS` (env var, default 30) since `last_payment`, or `created_at` if there is none.
+*   **After that**: `monitor_teams` sets the team's keys to `max_budget = 0` with no `budget_duration`. Keys are not expired, so the team can still buy credit.
+*   **Exempt**: `POOL` teams, `is_always_free` teams and the anonymous trial team.
+*   **Logic Location**: `monitor_teams` and `reconcile_team_keys(zero_budget=...)` in `app/core/worker.py`.
 
 ---
 

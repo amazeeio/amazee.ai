@@ -107,6 +107,23 @@ export function useTeams(
     },
   });
 
+  const refreshPoolKeysMutation = useMutation({
+    mutationFn: async (id: string | number) => {
+      const response = await post(`/teams/${id}/refresh-pool-keys`, {});
+      return response.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Success", description: "Pool keys refreshed" });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   const mergeTeamsMutation = useMutation({
     mutationFn: async (data: {
       targetTeamId: string | number;
@@ -222,6 +239,8 @@ export function useTeams(
     isDeleting: deleteTeamMutation.isPending,
     restoreTeam: restoreTeamMutation.mutate,
     isRestoring: restoreTeamMutation.isPending,
+    refreshPoolKeys: refreshPoolKeysMutation.mutate,
+    isRefreshingPoolKeys: refreshPoolKeysMutation.isPending,
     mergeTeams: mergeTeamsMutation.mutate,
     isMerging: mergeTeamsMutation.isPending,
     addUserToTeam: addUserToTeamMutation.mutate,

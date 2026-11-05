@@ -59,6 +59,8 @@ export function TeamExpansionRow({
   const {
     removeUserFromTeam,
     isRemovingUser,
+    refreshPoolKeys,
+    isRefreshingPoolKeys,
     restoreTeam,
     isRestoring,
     deleteTeam,
@@ -171,16 +173,6 @@ export function TeamExpansionRow({
     enabled: isExpanded && teamAIKeys.length > 0 && regions.length > 0,
   });
 
-  const isTeamExpired = (team: Team): boolean => {
-    if (team.is_always_free) return false;
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    const createdAt = new Date(team.created_at);
-    if (createdAt >= thirtyDaysAgo) return false;
-    if (!team.last_payment) return true;
-    return new Date(team.last_payment) < thirtyDaysAgo;
-  };
-
   const teamBudgetLimit = teamLimits.find(
     (l) => l.resource === "max_budget" && l.limit_type === "data_plane",
   );
@@ -267,19 +259,6 @@ export function TeamExpansionRow({
                                 : "Disabled"}
                             </Badge>
                           </div>
-                          {isTeamExpired(expandedTeam) && (
-                            <div>
-                              <p className="text-sm font-medium text-muted-foreground">
-                                Expiration Status
-                              </p>
-                              <Badge
-                                variant="destructive"
-                                className="bg-red-600 hover:bg-red-700"
-                              >
-                                Expired
-                              </Badge>
-                            </div>
-                          )}
                           {expandedTeam.is_always_free && (
                             <div>
                               <p className="text-sm font-medium text-muted-foreground">
@@ -347,6 +326,16 @@ export function TeamExpansionRow({
                                 onClick={() => onEdit(expandedTeam)}
                               >
                                 Edit Team
+                              </Button>
+                              <Button
+                                variant="outline"
+                                onClick={() => refreshPoolKeys(expandedTeam.id)}
+                                disabled={isRefreshingPoolKeys}
+                              >
+                                {isRefreshingPoolKeys ? (
+                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                ) : null}{" "}
+                                Refresh Pool Keys
                               </Button>
                               {(!expandedTeam.users ||
                                 expandedTeam.users.length === 0) && (
