@@ -149,7 +149,8 @@ Limits are managed via the `LimitService` (`app/core/limit_service.py`). They fo
 
 A new `PERIODIC` team's keys start with `DEFAULT_MAX_SPEND` ($27).
 
-*   **Duration**: `SIGNUP_CREDIT_DAYS` (env var, default 30) since `last_payment`, or `created_at` if there is none.
+*   **Applies to**: teams that never paid (no `last_payment`, no periodic payment, no ledger credit).
+*   **Duration**: `SIGNUP_CREDIT_DAYS` (env var, default 30) since `created_at`.
 *   **After that**: `monitor_teams` sets the team's keys to `max_budget = 0` with no `budget_duration`. Keys are not expired, so the team can still buy credit.
 *   **Exempt**: `POOL` teams, `is_always_free` teams and the anonymous trial team.
 *   **Logic Location**: `monitor_teams` and `reconcile_team_keys(zero_budget=...)` in `app/core/worker.py`.

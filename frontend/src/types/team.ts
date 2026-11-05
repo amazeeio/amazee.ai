@@ -5,6 +5,7 @@ export interface TeamUser extends User {
 }
 
 export interface Team {
+  budget_type?: "periodic" | "pool";
   id: string;
   name: string;
   admin_email: string;
