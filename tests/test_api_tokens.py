@@ -10,6 +10,7 @@ from app.core.security import hash_api_token
 from app.db.models import DBAPIToken
 
 TOKEN_HASH_MIGRATION = "app.migrations.versions.20261104_100000_d5b3f7a9e146_add_api_token_hash"
+DROP_TOKEN_MIGRATION = "app.migrations.versions.20261104_130000_a3e7c5f1d924_drop_api_token_plain"
 
 
 def test_create_api_token(client, test_token, test_user):
@@ -168,3 +169,25 @@ def test_api_token_authenticates_by_hash(client, test_user, db):
 
     assert client.get("/auth/token", headers={"Authorization": "Bearer raw-abc"}).status_code == 200
     assert client.get("/auth/token", headers={"Authorization": "Bearer wrong-token"}).status_code == 401
+
+
+def test_drop_token_migration_hashes_missing_rows(db, test_user):
+    migration = importlib.import_module(DROP_TOKEN_MIGRATION)
+    connection = db.connection()
+    try:
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.downgrade()
+            token_id = connection.execute(
+                text("INSERT INTO api_tokens (name, token, user_id) VALUES ('rolled back', 'raw-unhashed', :user_id) RETURNING id"),
+                {"user_id": test_user.id},
+            ).scalar_one()
+
+            migration.upgrade()
+
+            stored = connection.execute(
+                text("SELECT token_hash FROM api_tokens WHERE id = :id"), {"id": token_id}
+            ).scalar_one()
+            assert stored == hash_api_token("raw-unhashed")
+            assert "token" not in {c["name"] for c in inspect(connection).get_columns("api_tokens")}
+    finally:
+        db.rollback()
