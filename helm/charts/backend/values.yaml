@@ -17,6 +17,7 @@ database:
 
 # Application configuration
 secretKey: ""  # JWT signing secret (AMAZEEAI_JWT_SECRET). REQUIRED, no default — deploy fails if unset.
+encryptionKey: ""  # Fernet keys for the secret DB columns (AMAZEEAI_ENCRYPTION_KEY), comma separated, newest first. REQUIRED, no default — deploy fails if unset.
 awsAccessKeyId: "your_aws_access_key"
 awsSecretAccessKey: "your_aws_secret_key"
 enableMetrics: "true"

@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings
+from cryptography.fernet import Fernet, MultiFernet
 from pydantic import ConfigDict, Field, field_validator
 import os
 
@@ -16,6 +17,10 @@ class Settings(BaseSettings):
     # the real signing key. Required: startup fails if the secret is unset.
     SECRET_KEY: str = Field(validation_alias="AMAZEEAI_JWT_SECRET")
     ALGORITHM: str = "HS256"
+
+    # Fernet keys for the secret DB columns, comma separated, newest first.
+    # Required: startup fails if it is unset.
+    AMAZEEAI_ENCRYPTION_KEY: str
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60  # Increase to 60 minutes
 
     # CORS settings
@@ -222,6 +227,20 @@ class Settings(BaseSettings):
             )
         return value
 
+    @field_validator("AMAZEEAI_ENCRYPTION_KEY")
+    @classmethod
+    def validate_encryption_key(cls, value):
+        message = (
+            "AMAZEEAI_ENCRYPTION_KEY must hold one or more Fernet keys, comma "
+            "separated, newest first. Generate one with: python -c \"from "
+            "cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+        )
+        try:
+            MultiFernet([Fernet(key) for key in encryption_keys(value)])
+        except ValueError as exc:
+            raise ValueError(message) from exc
+        return value
+
     @field_validator(
         "DEDICATED_DEFAULT_USER_COUNT",
         "DEDICATED_DEFAULT_SERVICE_KEYS",
@@ -246,6 +265,10 @@ class Settings(BaseSettings):
         self.CORS_ORIGINS.extend(
             [route.strip() for route in lagoon_routes if route.strip()]
         )
+
+
+def encryption_keys(value: str) -> list[str]:
+    return [part.strip() for part in value.split(",") if part.strip()]
 
 
 settings = Settings()
