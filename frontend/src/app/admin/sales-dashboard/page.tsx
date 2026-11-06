@@ -44,7 +44,6 @@ interface Team {
   is_always_free: boolean;
   regions: string[];
   total_spend: number;
-  trial_status: string;
 }
 
 type SortField =
@@ -52,7 +51,6 @@ type SortField =
   | "name"
   | "created_at"
   | "last_payment"
-  | "trial_status"
   | "regions"
   | "total_spend"
   | null;
@@ -80,11 +78,6 @@ export default function SalesDashboardPage() {
       return data.teams;
     },
   });
-
-  // Calculate trial time remaining
-  const getTrialTimeRemaining = useCallback((team: Team): string => {
-    return team.trial_status;
-  }, []);
 
   // Get unique regions for a team
   const getTeamRegions = useCallback((team: Team): string[] => {
@@ -213,7 +206,6 @@ export default function SalesDashboardPage() {
   const filterColumns = [
     { value: "admin_email", label: "Team Email", type: "text" },
     { value: "name", label: "Team Name", type: "text" },
-    { value: "trial_status", label: "Trial Status", type: "select" },
     { value: "regions", label: "Regions", type: "select" },
   ];
 
@@ -254,12 +246,6 @@ export default function SalesDashboardPage() {
   // Get options for select-type filters
   const getFilterOptions = (column: string) => {
     switch (column) {
-      case "trial_status":
-        return [
-          { value: "Always Free", label: "Always Free" },
-          { value: "In Progress", label: "In Progress" },
-          { value: "Expired", label: "Expired" },
-        ];
       case "regions":
         // Get unique regions from all teams
         const allRegions = new Set<string>();
@@ -345,14 +331,6 @@ export default function SalesDashboardPage() {
             case "name":
               teamValue = team.name.toLowerCase();
               break;
-            case "trial_status":
-              const trialStatus = getTrialTimeRemaining(team);
-              if (trialStatus.includes("days left")) {
-                teamValue = "In Progress";
-              } else {
-                teamValue = trialStatus;
-              }
-              break;
             case "regions":
               const teamRegions = getTeamRegions(team);
               teamValue =
@@ -387,7 +365,7 @@ export default function SalesDashboardPage() {
         });
       });
     },
-    [filters, getTrialTimeRemaining, getTeamRegions],
+    [filters, getTeamRegions],
   );
 
   // Filtered and sorted teams
@@ -416,10 +394,6 @@ export default function SalesDashboardPage() {
             aValue = a.last_payment ? new Date(a.last_payment).getTime() : 0;
             bValue = b.last_payment ? new Date(b.last_payment).getTime() : 0;
             break;
-          case "trial_status":
-            aValue = getTrialTimeRemaining(a);
-            bValue = getTrialTimeRemaining(b);
-            break;
           case "regions":
             aValue = getTeamRegions(a).length;
             bValue = getTeamRegions(b).length;
@@ -445,7 +419,6 @@ export default function SalesDashboardPage() {
     teams,
     sortField,
     sortDirection,
-    getTrialTimeRemaining,
     getTeamRegions,
     getTeamTotalSpend,
     applyFilters,
@@ -668,16 +641,6 @@ export default function SalesDashboardPage() {
                 </TableHead>
                 <TableHead
                   className="cursor-pointer hover:bg-gray-50 w-28"
-                  onClick={() => handleSort("trial_status")}
-                >
-                  <div className="flex items-center gap-2">
-                    <Calendar className="h-4 w-4" />
-                    Trial Status
-                    {getSortIcon("trial_status")}
-                  </div>
-                </TableHead>
-                <TableHead
-                  className="cursor-pointer hover:bg-gray-50 w-28"
                   onClick={() => handleSort("regions")}
                 >
                   <div className="flex items-center gap-2">
@@ -701,7 +664,7 @@ export default function SalesDashboardPage() {
             <TableBody>
               {paginatedData.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="text-center py-6">
+                  <TableCell colSpan={7} className="text-center py-6">
                     No teams found matching your filters.
                   </TableCell>
                 </TableRow>
@@ -722,63 +685,6 @@ export default function SalesDashboardPage() {
                     </TableCell>
                     <TableCell className="py-2 text-xs">
                       {formatDate(team.last_payment)}
-                    </TableCell>
-                    <TableCell className="py-2">
-                      {(() => {
-                        const trialStatus = getTrialTimeRemaining(team);
-                        let badgeVariant:
-                          | "default"
-                          | "secondary"
-                          | "destructive"
-                          | "outline" = "outline";
-                        let customStyle = {};
-
-                        if (trialStatus === "Always Free") {
-                          badgeVariant = "secondary";
-                        } else if (trialStatus === "Expired") {
-                          badgeVariant = "destructive";
-                          customStyle = {
-                            backgroundColor: "#991b1b",
-                            color: "white",
-                          }; // dark red
-                        } else if (trialStatus === "In Progress") {
-                          badgeVariant = "outline";
-                          customStyle = {
-                            backgroundColor: "#fef3c7",
-                            color: "#92400e",
-                          }; // amber/yellow
-                        } else if (trialStatus.includes("days left")) {
-                          // Extract the number of days
-                          const daysMatch = trialStatus.match(/(\d+)/);
-                          if (daysMatch) {
-                            const days = parseInt(daysMatch[1], 10);
-                            // Calculate color gradient: 30 days = green, 0 days = red
-                            // Use a 30-day scale instead of 7-day for better gradient
-                            const ratio = Math.max(0, Math.min(1, days / 30));
-
-                            // Green to red gradient: green (34, 197, 94) to red (239, 68, 68)
-                            const red = Math.round(34 + 205 * (1 - ratio)); // 34-239 range
-                            const green = Math.round(197 - 129 * (1 - ratio)); // 197-68 range
-                            const blue = Math.round(94 - 26 * (1 - ratio)); // 94-68 range
-
-                            customStyle = {
-                              backgroundColor: `rgb(${red}, ${green}, ${blue})`,
-                              color: "white",
-                              fontWeight: "bold",
-                            };
-                          }
-                        }
-
-                        return (
-                          <Badge
-                            variant={badgeVariant}
-                            style={customStyle}
-                            className="text-xs px-1.5 py-0.5"
-                          >
-                            {trialStatus}
-                          </Badge>
-                        );
-                      })()}
                     </TableCell>
                     <TableCell className="py-2">
                       {(() => {

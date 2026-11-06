@@ -192,15 +192,6 @@ export default function TeamsPage() {
     );
   };
 
-  const isTeamExpired = (team: Team): boolean => {
-    if (team.is_always_free) return false;
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    return !team.last_payment
-      ? new Date(team.created_at) < thirtyDaysAgo
-      : new Date(team.last_payment) < thirtyDaysAgo;
-  };
-
   return (
     <div className="container mx-auto py-10">
       <div className="space-y-4">
@@ -330,11 +321,6 @@ export default function TeamsPage() {
                                 >
                                   {team.is_active ? "Active" : "Inactive"}
                                 </span>
-                                {isTeamExpired(team) && (
-                                  <span className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-red-600 text-white">
-                                    Expired
-                                  </span>
-                                )}
                               </>
                             )}
                           </div>

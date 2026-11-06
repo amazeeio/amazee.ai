@@ -107,14 +107,13 @@ export function useTeams(
     },
   });
 
-  const extendTrialMutation = useMutation({
+  const refreshPoolKeysMutation = useMutation({
     mutationFn: async (id: string | number) => {
-      const response = await post(`/teams/${id}/extend-trial`, {});
+      const response = await post(`/teams/${id}/refresh-pool-keys`, {});
       return response.json();
     },
-    onSuccess: (_, id) => {
-      queryClient.invalidateQueries({ queryKey: ["team", id.toString()] });
-      toast({ title: "Success", description: "Trial extended successfully" });
+    onSuccess: () => {
+      toast({ title: "Success", description: "Pool keys refreshed" });
     },
     onError: (error: Error) => {
       toast({
@@ -240,8 +239,8 @@ export function useTeams(
     isDeleting: deleteTeamMutation.isPending,
     restoreTeam: restoreTeamMutation.mutate,
     isRestoring: restoreTeamMutation.isPending,
-    extendTrial: extendTrialMutation.mutate,
-    isExtendingTrial: extendTrialMutation.isPending,
+    refreshPoolKeys: refreshPoolKeysMutation.mutate,
+    isRefreshingPoolKeys: refreshPoolKeysMutation.isPending,
     mergeTeams: mergeTeamsMutation.mutate,
     isMerging: mergeTeamsMutation.isPending,
     addUserToTeam: addUserToTeamMutation.mutate,

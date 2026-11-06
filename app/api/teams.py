@@ -5,9 +5,7 @@ from typing import List, Optional
 from app.api.private_ai_keys import delete_private_ai_key
 from app.core.config import settings
 from app.core.limit_service import (
-    DEFAULT_KEY_DURATION,
     DEFAULT_MAX_SPEND,
-    DEFAULT_RPM_PER_KEY,
     LimitService,
 )
 from app.core.security import (
@@ -512,108 +510,44 @@ async def delete_team(team_id: int, db: Session = Depends(get_db)):
 
 
 @router.post(
-    "/{team_id}/extend-trial", dependencies=[Depends(get_role_min_system_admin)]
+    "/{team_id}/refresh-pool-keys", dependencies=[Depends(get_role_min_system_admin)]
 )
-async def extend_team_trial(team_id: int, db: Session = Depends(get_db)):
+async def refresh_pool_keys(team_id: int, db: Session = Depends(get_db)):
     """
-    Extend a team's trial period. This will:
-    1. Update the team's last payment date to now
-    2. Reset all resource limits to default values
-    3. Send a trial extension email notification
-
-    Only accessible by system admin users.
+    Admin repair for a POOL team's keys (issue #631): unblock them, clear stale
+    per-key caps (explicit DBSpendCap caps are kept), clear budget_duration and
+    extend key life to POOL_PURCHASE_EXPIRY_DAYS. The team-level pool budget
+    keeps governing spend. Only accessible by system admin users.
     """
-    # Check if team exists
     db_team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
     if not db_team:
         raise HTTPException(status_code=404, detail="Team not found")
+    if db_team.budget_type != BudgetType.POOL:
+        raise HTTPException(status_code=400, detail="Team is not a pool team")
 
-    # Update the last payment date to now
-    db_team.last_payment = datetime.now(UTC)
-    db.commit()
-
-    # Get all keys for the team grouped by region
-    keys_by_region = get_team_keys_by_region(db, team_id)
-
-    # Pool/top-up teams must not be forced onto the short DEFAULT_KEY_DURATION
-    # trial window or a per-key budget cap. Their key life should track the
-    # pool purchase horizon and their spend is governed by the team-level pool
-    # budget. Stamping DEFAULT_KEY_DURATION here previously expired paid,
-    # in-credit keys mid-period (issue #631).
-    #
-    # Detect pool teams by budget_type, NOT by the purchase gate: an ungated
-    # pool team (require_purchase_for_requests=False) is still a pool team and
-    # must be protected too. requires_pool_purchase_gate would let such teams
-    # fall into the trial branch.
-    is_pool_team = db_team.budget_type == BudgetType.POOL
-
-    # Update keys for each region
-    for region, keys in keys_by_region.items():
-        # Initialize LiteLLM service for this region
+    for region, keys in get_team_keys_by_region(db, team_id).items():
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
-
-        # Explicit operator per-key caps (DBSpendCap) for this region's keys, so
-        # the pool branch clears only *stale* caps left by the old trial path
-        # and preserves deliberate key caps.
-        cap_map: dict[int, float] = {}
-        if is_pool_team:
-            cap_map = key_cap_map(db, region.id, [k.id for k in keys])
-
-        # Update each key's duration and budget via LiteLLM
+        cap_map = key_cap_map(db, region.id, [k.id for k in keys])
         for key in keys:
             try:
-                if is_pool_team:
-                    # Extend key life to the pool horizon and clear any stale
-                    # per-key budget so the team-level pool governs spend,
-                    # unless an explicit operator key cap is configured, which
-                    # is preserved. Without clearing, a key capped by an older
-                    # trial path stays stuck at DEFAULT_MAX_SPEND while the
-                    # pool still has credit. The key never keeps a LiteLLM
-                    # budget_duration: the ledger owns the cap cycle.
-                    configured_cap = cap_map.get(key.id)
-                    await litellm_service.update_key_budget(
-                        litellm_token=key.litellm_token,
-                        max_budget=configured_cap,
-                        clear_max_budget=configured_cap is None,
-                        clear_budget_duration=True,
-                        blocked=False,
-                    )
-                    await litellm_service.update_key_duration(
-                        litellm_token=key.litellm_token,
-                        duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
-                    )
-                else:
-                    await litellm_service.set_key_restrictions(
-                        litellm_token=key.litellm_token,
-                        duration=f"{DEFAULT_KEY_DURATION}d",
-                        budget_duration=f"{DEFAULT_KEY_DURATION}d",
-                        budget_amount=DEFAULT_MAX_SPEND,
-                        rpm_limit=DEFAULT_RPM_PER_KEY,
-                    )
+                configured_cap = cap_map.get(key.id)
+                await litellm_service.update_key_budget(
+                    litellm_token=key.litellm_token,
+                    max_budget=configured_cap,
+                    clear_max_budget=configured_cap is None,
+                    clear_budget_duration=True,
+                    blocked=False,
+                )
+                await litellm_service.update_key_duration(
+                    litellm_token=key.litellm_token,
+                    duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
+                )
             except Exception as e:
-                logger.error(f"Failed to update key {key.id} via LiteLLM: {str(e)}")
-                # Continue with other keys even if one fails
+                logger.error(f"Failed to refresh key {key.id} via LiteLLM: {str(e)}")
 
-    # Send trial extension email
-    try:
-        ses_service = SESService()
-        template_data = {
-            "name": db_team.name,
-        }
-        ses_service.send_email(
-            to_addresses=[db_team.admin_email],
-            template_name="trial-extended",
-            template_data=template_data,
-        )
-    except Exception as e:
-        logger.error(
-            f"Failed to send trial extension email to team {db_team.name}: {str(e)}"
-        )
-        # Don't fail the request if email fails
-
-    return {"message": "Team trial extended successfully"}
+    return {"message": "Pool keys refreshed"}
 
 
 @router.post("/{team_id}/restore", dependencies=[Depends(get_role_min_system_admin)])
@@ -782,9 +716,6 @@ async def list_teams_for_sales(db: Session = Depends(get_db)):
                 )
                 db.add(team_metrics)
 
-            # Calculate trial status
-            trial_status = _calculate_trial_status(team)
-
             sales_team = SalesTeam(
                 id=team.id,
                 name=team.name,
@@ -795,7 +726,6 @@ async def list_teams_for_sales(db: Session = Depends(get_db)):
                 budget_type=team.budget_type,
                 regions=regions,
                 total_spend=round(total_spend, 4),
-                trial_status=trial_status,
             )
 
             sales_teams.append(sales_team)
@@ -818,33 +748,6 @@ async def list_teams_for_sales(db: Session = Depends(get_db)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve sales data: {str(e)}",
         )
-
-
-def _calculate_trial_status(team: DBTeam) -> str:
-    """
-    Calculate trial status based on team creation and last payment.
-    """
-    if team.is_always_free:
-        return "Always Free"
-
-    # Calculate days until expiry
-    trial_period_days = 30
-    if team.last_payment:
-        days_since_last_payment = (
-            datetime.now(UTC) - team.last_payment.replace(tzinfo=UTC)
-        ).days
-        days_remaining = trial_period_days - days_since_last_payment
-    else:
-        days_since_creation = (
-            datetime.now(UTC) - team.created_at.replace(tzinfo=UTC)
-        ).days
-        days_remaining = trial_period_days - days_since_creation
-
-    if days_remaining <= 0:
-        return "Expired"
-    else:
-        # Always show days remaining for active trials
-        return f"{days_remaining} days left"
 
 
 def _check_key_name_conflicts(
