@@ -1973,13 +1973,13 @@ async def test_reconcile_team_keys_defaultdict_initialization(
 
 
 @pytest.mark.asyncio
-@patch("app.core.worker._check_team_retention_policy", new_callable=AsyncMock)
+@patch("app.core.worker._monitor_team_freshness")
 @patch("app.core.worker.SESService")
 @patch("app.core.worker.reconcile_team_keys", new_callable=AsyncMock)
 async def test_monitor_teams_handles_individual_team_errors_gracefully(
     mock_reconcile,
     mock_ses,
-    mock_retention,
+    mock_freshness,
     db,
     test_team,
 ):
@@ -1998,28 +1998,28 @@ async def test_monitor_teams_handles_individual_team_errors_gracefully(
     mock_reconcile.return_value = 0.0
     mock_ses.return_value = None
 
-    # The retention check is the first per-team step, so a failure there aborts
-    # that team before reconcile_team_keys runs.
-    mock_retention.side_effect = [Exception("Test error for team 1"), None]
+    # Freshness is computed before reconcile_team_keys, so a failure there aborts
+    # that team before reconcile runs.
+    mock_freshness.side_effect = [Exception("Test error for team 1"), 0]
 
     # Act
     await monitor_teams(db)
 
     # Assert
     # Both teams should have been processed (first one failed, second succeeded)
-    assert mock_retention.call_count == 2
+    assert mock_freshness.call_count == 2
     # The reconcile_team_keys should have been called for the second team only
     assert mock_reconcile.call_count == 1
 
 
 @pytest.mark.asyncio
-@patch("app.core.worker._check_team_retention_policy", new_callable=AsyncMock)
+@patch("app.core.worker._monitor_team_freshness")
 @patch("app.core.worker.SESService")
 @patch("app.core.worker.reconcile_team_keys", new_callable=AsyncMock)
 async def test_monitor_teams_records_failure_metric_on_error(
     mock_reconcile,
     mock_ses,
-    mock_retention,
+    mock_freshness,
     db,
     test_team,
 ):
@@ -2032,7 +2032,7 @@ async def test_monitor_teams_records_failure_metric_on_error(
     """
     mock_reconcile.return_value = 0.0
     mock_ses.return_value = None
-    mock_retention.side_effect = Exception("Test error")
+    mock_freshness.side_effect = Exception("Test error")
 
     # The metric is a process-wide counter, so compare against its current value.
     metric = team_monitoring_failed_metric.labels(
@@ -2046,18 +2046,18 @@ async def test_monitor_teams_records_failure_metric_on_error(
     await monitor_teams(db)
 
     # Assert
-    assert mock_retention.call_count == 1
+    assert mock_freshness.call_count == 1
     assert metric._value.get() == before + 1
 
 
 @pytest.mark.asyncio
-@patch("app.core.worker._check_team_retention_policy", new_callable=AsyncMock)
+@patch("app.core.worker._monitor_team_freshness")
 @patch("app.core.worker.SESService")
 @patch("app.core.worker.reconcile_team_keys", new_callable=AsyncMock)
 async def test_monitor_teams_continues_processing_after_error(
     mock_reconcile,
     mock_ses,
-    mock_retention,
+    mock_freshness,
     db,
     test_team,
 ):
@@ -2082,21 +2082,20 @@ async def test_monitor_teams_continues_processing_after_error(
     mock_reconcile.return_value = 0.0
     mock_ses.return_value = None
 
-    # Fail the retention check of the second team only
-    def side_effect(*args, **kwargs):
-        team = args[1]  # Second argument is the team
+    # Fail the freshness check of the second team only
+    def side_effect(team, *args, **kwargs):
         if team.id == teams[1].id:
             raise Exception("Test error for second team")
-        return None
+        return 0
 
-    mock_retention.side_effect = side_effect
+    mock_freshness.side_effect = side_effect
 
     # Act
     await monitor_teams(db)
 
     # Assert
     # All teams should have been processed
-    assert mock_retention.call_count == 4  # test_team + 3 new teams
+    assert mock_freshness.call_count == 4  # test_team + 3 new teams
     # reconcile_team_keys should have been called for all teams except the failing one
     assert mock_reconcile.call_count == 3  # 4 teams - 1 failing = 3 successful
 
@@ -2800,3 +2799,40 @@ async def test_monitor_teams_does_not_retire_anonymous_trial_team(
     db.refresh(trial_team)
     assert trial_team.retention_warning_sent_at is None
     assert trial_team.deleted_at is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("warned_days_ago", [None, 30])
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+async def test_monitor_teams_never_retires_inactive_regular_team(
+    mock_litellm,
+    mock_ses,
+    mock_limit_service,
+    warned_days_ago,
+    db,
+    test_team,
+    test_team_user,
+):
+    """
+    Given: A regular team inactive for 400 days, never warned or warned long ago
+    When: monitor_teams runs
+    Then: It is not soft-deleted, its users stay active and no email is sent
+    """
+    test_team.created_at = datetime.now(UTC) - timedelta(days=400)
+    if warned_days_ago is not None:
+        test_team.retention_warning_sent_at = datetime.now(UTC) - timedelta(
+            days=warned_days_ago
+        )
+    db.commit()
+    mock_limit_service.return_value.set_team_limits = Mock()
+
+    await monitor_teams(db)
+
+    db.refresh(test_team)
+    db.refresh(test_team_user)
+    assert test_team.deleted_at is None
+    assert test_team_user.is_active is True
+    mock_ses.return_value.send_email.assert_not_called()
