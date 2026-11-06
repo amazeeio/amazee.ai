@@ -34,6 +34,7 @@ from app.core.security import (
     create_access_token,
     get_current_user_from_auth,
     get_password_hash,
+    hash_api_token,
     verify_password,
 )
 from app.core.limit_service import (
@@ -683,8 +684,13 @@ async def create_token(
         # Create token for the current user
         user_id = current_user.id
 
+    raw_token = generate_api_token()
+    # The plain token is still written so that a code rollback can authenticate it.
     db_token = DBAPIToken(
-        name=token_create.name, token=generate_api_token(), user_id=user_id
+        name=token_create.name,
+        token=raw_token,
+        token_hash=hash_api_token(raw_token),
+        user_id=user_id,
     )
     db.add(db_token)
     db.commit()

@@ -46,10 +46,14 @@ def admin_user(db):
 
 @pytest.fixture
 def admin_token(db, admin_user):
+    from app.core.security import hash_api_token
     from app.db.models import DBAPIToken
 
     api_token = DBAPIToken(
-        name="moad", token="moad-admin-token-123", user_id=admin_user.id
+        name="moad",
+        token="moad-admin-token-123",
+        token_hash=hash_api_token("moad-admin-token-123"),
+        user_id=admin_user.id,
     )
     db.add(api_token)
     db.commit()
