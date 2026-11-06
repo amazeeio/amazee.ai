@@ -311,6 +311,22 @@ def test_apply_prune_deactivates_absent_models(mock_svc, client, admin_token, db
     db.refresh(alias)
     assert alias.is_active_globally is False
 
+    # A later apply without prune must not re-report the pruned model.
+    pruned["prune"] = False
+    res = _apply(client, admin_token, pruned)
+    assert res.status_code == 200
+    assert res.json()["unmanaged_models"] == []
+
+    # Pruned while its region was unmanaged: the row stayed live. Once the
+    # region is managed, it must be reported again so a prune can remove it.
+    assoc = db.query(DBModelRegion).filter_by(model_id=alias.id).one()
+    assoc.is_active = True
+    assoc.sync_status = "synced"
+    db.commit()
+    res = _apply(client, admin_token, pruned)
+    assert res.status_code == 200
+    assert res.json()["unmanaged_models"] == ["chat"]
+
 
 @patch("app.services.model_sync.LiteLLMService")
 def test_apply_prune_blocked_before_eol(mock_svc, client, admin_token, db, test_region):

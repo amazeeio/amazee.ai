@@ -101,7 +101,7 @@ describe("useConfig store", () => {
       PASSWORDLESS_SIGN_IN: false,
     });
     expect(state.loading).toBe(false);
-    expect(state.error).toBe("Failed to fetch");
+    expect(state.error).toBe("fetch failed");
   });
 
   it("should handle HTTP error response", async () => {

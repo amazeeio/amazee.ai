@@ -14,6 +14,10 @@ RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 COPY app app/
 COPY scripts scripts/
 
+# Lagoon dotenv: builds DATABASE_URL from POSTGRES_*. In base so the cli
+# pod (used for DB restores) gets it too, not just backend.
+COPY .lagoon.env .
+
 ENV PYTHONPATH=/app
 
 # ---------- cli ----------
@@ -49,9 +53,6 @@ CMD ["/bin/docker-sleep"]
 # (no --target) builds the backend image, preserving pre-refactor
 # behaviour for CI scripts, IDE integrations, and ad-hoc dev builds.
 FROM base AS backend
-
-# Copy Lagoon environment variables
-COPY .lagoon.env .
 
 # Script to initialize the database and start the server
 RUN mkdir -p /app/logs && \

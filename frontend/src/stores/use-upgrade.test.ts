@@ -175,7 +175,7 @@ describe("useUpgrade store", () => {
 
       const state = useUpgrade.getState();
       expect(state.user).toBe(null);
-      expect(state.error).toBe("Failed to fetch");
+      expect(state.error).toBe("fetch failed");
       expect(state.isValidatingToken).toBe(false);
     });
 
@@ -193,7 +193,7 @@ describe("useUpgrade store", () => {
 
       const state = useUpgrade.getState();
       expect(state.user).toBe(null);
-      expect(state.error).toBe("Failed to fetch");
+      expect(state.error).toBe("fetch failed");
       expect(state.isValidatingToken).toBe(false);
     });
   });
