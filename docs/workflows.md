@@ -151,9 +151,11 @@ A new `PERIODIC` team's keys start with `DEFAULT_MAX_SPEND` ($27).
 
 *   **Applies to**: teams that never paid (no `last_payment`, no periodic payment, no ledger credit).
 *   **Duration**: `SIGNUP_CREDIT_DAYS` (env var, default 30) since `created_at`.
-*   **After that**: `monitor_teams` sets the team's keys to `max_budget = 0` with no `budget_duration`. Keys are not expired, so the team can still buy credit.
+*   **After that**: `monitor_teams` sets the team's keys to `max_budget = 0` with no `budget_duration`, and key creation gives new keys `max_budget = 0`. Keys are not expired, so the team can still buy credit.
+*   **Buying credit**: a periodic top-up restores the team's zeroed keys in that region (explicit key caps stay the cap).
 *   **Exempt**: `POOL` teams, `is_always_free` teams and the anonymous trial team.
-*   **Logic Location**: `monitor_teams` and `reconcile_team_keys(zero_budget=...)` in `app/core/worker.py`.
+*   **Why**: a team bootstrapped in LiteLLM already gets a lifetime team budget of `DEFAULT_MAX_SPEND` (no `budget_duration`). The key cutoff covers teams without that cap: teams with no LiteLLM team budget (created before the bootstrap) and teams whose team budget was reset onto a cycle (for example via `clear_team_budget`). Without it their keys keep $27 that LiteLLM resets every 30 days.
+*   **Logic Location**: `periodic_free_credit_over` in `app/core/team_service.py`, used by `monitor_teams` / `reconcile_team_keys(zero_budget=...)` in `app/core/worker.py`, key creation in `app/api/private_ai_keys.py` and the top-up restore in `app/api/budgets.py`.
 
 ---
 
