@@ -153,6 +153,7 @@ def test_create_api_token_stores_hash(client, test_token, db):
 
     stored = db.query(DBAPIToken).filter(DBAPIToken.id == data["id"]).one()
     assert stored.token_hash == hash_api_token(data["token"])
+    assert stored.token == data["token"]
 
     response = client.get("/auth/token", headers={"Authorization": f"Bearer {data['token']}"})
     assert response.status_code == 200
