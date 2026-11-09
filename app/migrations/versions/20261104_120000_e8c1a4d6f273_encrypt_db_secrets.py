@@ -1,7 +1,7 @@
 """encrypt db secrets
 
 Revision ID: e8c1a4d6f273
-Revises: f2d9b6c3a581
+Revises: 64640a2c1b9d
 Create Date: 2026-11-04 12:00:00.000000
 """
 
@@ -14,7 +14,7 @@ from app.core.crypto import fernet
 
 # revision identifiers, used by Alembic.
 revision = "e8c1a4d6f273"
-down_revision = "f2d9b6c3a581"
+down_revision = "64640a2c1b9d"
 branch_labels = None
 depends_on = None
 
