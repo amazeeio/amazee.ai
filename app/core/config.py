@@ -71,11 +71,11 @@ class Settings(BaseSettings):
     # Cap per reaper run. Each deletion is an HTTP call plus a DROP DATABASE,
     # so a first run against a large backlog is spread over several nights
     # rather than held open for hours.
+    AI_TRIAL_REAP_BATCH_SIZE: int = int(os.getenv("AI_TRIAL_REAP_BATCH_SIZE", "500"))
     # A PERIODIC team that never paid keeps its starting key budget
     # (DEFAULT_MAX_SPEND) for this many days, then monitor_teams sets its keys
     # to $0. Keys stay alive so the team can still buy credit.
     SIGNUP_CREDIT_DAYS: int = int(os.getenv("SIGNUP_CREDIT_DAYS", "30"))
-    AI_TRIAL_REAP_BATCH_SIZE: int = int(os.getenv("AI_TRIAL_REAP_BATCH_SIZE", "500"))
     HUBSPOT_TOKEN: str = os.getenv("HUBSPOT_TOKEN", "")
     HUBSPOT_MARKETING_UPDATES_PROPERTY: str = os.getenv(
         "HUBSPOT_MARKETING_UPDATES_PROPERTY", "receive_marketing_updates"
