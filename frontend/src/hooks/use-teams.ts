@@ -110,9 +110,18 @@ export function useTeams(
   const refreshPoolKeysMutation = useMutation({
     mutationFn: async (id: string | number) => {
       const response = await post(`/teams/${id}/refresh-pool-keys`, {});
-      return response.json();
+      return (await response.json()) as { failed_keys?: number };
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
+      const failed = data?.failed_keys ?? 0;
+      if (failed > 0) {
+        toast({
+          title: "Error",
+          description: `${failed} key(s) could not be refreshed in LiteLLM`,
+          variant: "destructive",
+        });
+        return;
+      }
       toast({ title: "Success", description: "Pool keys refreshed" });
     },
     onError: (error: Error) => {

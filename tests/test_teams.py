@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from app.core.config import settings
 from app.core.limit_service import LimitService, setup_default_limits
 from app.core.security import get_password_hash
@@ -2673,3 +2675,114 @@ def test_refresh_pool_keys(
         litellm_token="pool-refresh-token",
         duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
     )
+
+
+@pytest.mark.parametrize("token_fixture", [None, "test_token", "team_admin_token"])
+@patch("app.api.teams.LiteLLMService")
+def test_refresh_pool_keys_requires_system_admin(
+    mock_litellm, token_fixture, request, client, test_team, test_region, db
+):
+    """Only system admins may refresh pool keys: it unblocks and uncaps keys."""
+    mock_instance = mock_litellm.return_value
+    mock_instance.update_key_budget = AsyncMock()
+    mock_instance.update_key_duration = AsyncMock()
+    test_team.budget_type = BudgetType.POOL
+    db.add(
+        DBPrivateAIKey(
+            name="Pool Key",
+            litellm_token="pool-refresh-token",
+            region=test_region,
+            team_id=test_team.id,
+        )
+    )
+    db.commit()
+    headers = (
+        {"Authorization": f"Bearer {request.getfixturevalue(token_fixture)}"}
+        if token_fixture
+        else {}
+    )
+
+    response = client.post(f"/teams/{test_team.id}/refresh-pool-keys", headers=headers)
+
+    assert response.status_code in (401, 403), response.text
+    mock_instance.update_key_budget.assert_not_called()
+    mock_instance.update_key_duration.assert_not_called()
+
+
+@patch("app.api.teams.LiteLLMService")
+def test_refresh_pool_keys_keeps_explicit_key_caps(
+    mock_litellm, client, admin_token, test_team, test_region, db
+):
+    """A key with a DBSpendCap row keeps its cap; a key without one is uncapped."""
+    mock_instance = mock_litellm.return_value
+    mock_instance.update_key_budget = AsyncMock()
+    mock_instance.update_key_duration = AsyncMock()
+    test_team.budget_type = BudgetType.POOL
+    uncapped = DBPrivateAIKey(
+        name="Uncapped",
+        litellm_token="uncapped-token",
+        region=test_region,
+        team_id=test_team.id,
+    )
+    capped = DBPrivateAIKey(
+        name="Capped",
+        litellm_token="capped-token",
+        region=test_region,
+        team_id=test_team.id,
+    )
+    db.add_all([uncapped, capped])
+    db.flush()
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            key_id=capped.id,
+            max_budget=7.0,
+        )
+    )
+    db.commit()
+
+    response = client.post(
+        f"/teams/{test_team.id}/refresh-pool-keys",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["failed_keys"] == 0
+    calls = {
+        c.kwargs["litellm_token"]: c.kwargs
+        for c in mock_instance.update_key_budget.await_args_list
+    }
+    assert calls["uncapped-token"]["max_budget"] is None
+    assert calls["uncapped-token"]["clear_max_budget"] is True
+    assert calls["capped-token"]["max_budget"] == 7.0
+    assert calls["capped-token"]["clear_max_budget"] is False
+
+
+@patch("app.api.teams.LiteLLMService")
+def test_refresh_pool_keys_reports_failed_keys(
+    mock_litellm, client, admin_token, test_team, test_region, db
+):
+    """A LiteLLM failure is counted so the admin UI can show it."""
+    mock_instance = mock_litellm.return_value
+    mock_instance.update_key_budget = AsyncMock(side_effect=Exception("boom"))
+    mock_instance.update_key_duration = AsyncMock()
+    test_team.budget_type = BudgetType.POOL
+    db.add(
+        DBPrivateAIKey(
+            name="Pool Key",
+            litellm_token="pool-refresh-token",
+            region=test_region,
+            team_id=test_team.id,
+        )
+    )
+    db.commit()
+
+    response = client.post(
+        f"/teams/{test_team.id}/refresh-pool-keys",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["failed_keys"] == 1

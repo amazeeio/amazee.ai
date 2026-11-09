@@ -525,6 +525,7 @@ async def refresh_pool_keys(team_id: int, db: Session = Depends(get_db)):
     if db_team.budget_type != BudgetType.POOL:
         raise HTTPException(status_code=400, detail="Team is not a pool team")
 
+    failed_keys = 0
     for region, keys in get_team_keys_by_region(db, team_id).items():
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
@@ -545,9 +546,10 @@ async def refresh_pool_keys(team_id: int, db: Session = Depends(get_db)):
                     duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
                 )
             except Exception as e:
+                failed_keys += 1
                 logger.error(f"Failed to refresh key {key.id} via LiteLLM: {str(e)}")
 
-    return {"message": "Pool keys refreshed"}
+    return {"message": "Pool keys refreshed", "failed_keys": failed_keys}
 
 
 @router.post("/{team_id}/restore", dependencies=[Depends(get_role_min_system_admin)])
