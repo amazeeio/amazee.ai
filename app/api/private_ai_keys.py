@@ -56,7 +56,10 @@ from app.core.limit_service import (
     DEFAULT_RPM_PER_KEY,
 )
 from app.core.pool_budget_service import pool_team_has_ever_purchased
-from app.core.team_service import is_anonymous_trial_team
+from app.core.team_service import (
+    is_anonymous_trial_team,
+    periodic_free_credit_over,
+)
 
 router = APIRouter(tags=["private-ai-keys"])
 
@@ -589,6 +592,12 @@ async def create_llm_token(
             days_left_in_period, max_max_spend, max_rpm_limit = (
                 limit_service.get_token_restrictions(owner.team_id or team_id)
             )
+            if periodic_free_credit_over(db, effective_team):
+                # Same cutoff monitor_teams applies to existing keys: the key
+                # starts at $0 with no LiteLLM reset, so deleting and
+                # recreating a key cannot renew the free credit.
+                days_left_in_period = None
+                max_max_spend = 0.0
     else:  # Super system users...
         days_left_in_period = DEFAULT_KEY_DURATION
         max_max_spend = DEFAULT_MAX_SPEND

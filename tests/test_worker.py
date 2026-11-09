@@ -10,6 +10,7 @@ from app.db.models import (
     DBPeriodicBudgetLedgerEntry,
     DBPeriodicPayment,
 )
+from app.core.config import settings
 from app.schemas.models import BudgetType
 from datetime import datetime, UTC, timedelta
 from app.core.worker import (
@@ -220,15 +221,30 @@ async def test_monitor_teams_basic_metrics(
     mock_limit_instance.set_team_limits.assert_called()
 
 
+_FRESH_KEY = {"spend": 1.0, "max_budget": 27.0, "budget_duration": "30d"}
+_ZERO = "zero"  # exactly one write: max_budget 0, budget_duration cleared
+_NONE = "none"  # no budget write at all
+_NO_ZERO = "no_zero"  # writes allowed, but none sets max_budget 0
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "age_days, always_free, paid, expect_zero",
+    "age_days, variant, key_info, expected",
     [
-        (31, False, None, True),
-        (29, False, None, False),
-        (31, True, None, False),
-        (31, False, "last_payment", False),
-        (31, False, "topup", False),
+        (31, None, _FRESH_KEY, _ZERO),
+        (29, None, _FRESH_KEY, _NONE),
+        (31, "always_free", _FRESH_KEY, _NONE),
+        (31, "last_payment", _FRESH_KEY, _NONE),
+        (31, "topup", _FRESH_KEY, _NONE),
+        (31, "ledger", _FRESH_KEY, _NONE),
+        (31, "anonymous_trial", _FRESH_KEY, _NONE),
+        (31, "pool", _FRESH_KEY, _NO_ZERO),
+        # Already zeroed: no write on every daily run
+        (31, None, {"spend": 1.0, "max_budget": 0, "budget_duration": None}, _NONE),
+        # Zeroed but LiteLLM would still reset it: clear the duration
+        (31, None, {"spend": 1.0, "max_budget": 0, "budget_duration": "30d"}, _ZERO),
+        # SIGNUP_CREDIT_DAYS is read from settings, not hard-coded
+        (15, "signup_credit_days_10", _FRESH_KEY, _ZERO),
     ],
 )
 @patch("app.core.worker.LimitService")
@@ -239,27 +255,35 @@ async def test_monitor_teams_unpaid_periodic_team_free_credit_ends(
     mock_ses,
     mock_limit_service,
     age_days,
-    always_free,
-    paid,
-    expect_zero,
+    variant,
+    key_info,
+    expected,
     db,
     test_team,
     test_region,
+    monkeypatch,
 ):
     """
-    Given: A PERIODIC team aged age_days, paid or not
+    Given: A team aged age_days, paid or not, with a key in key_info state
     When: monitor_teams runs
-    Then: Only a never-paid, not always-free team past SIGNUP_CREDIT_DAYS gets
-          its keys set to $0 with no budget_duration. Paid credit is never
-          zeroed, keys are never expired and no email is sent.
+    Then: Only a never-paid, not always-free, non-trial PERIODIC team past
+          SIGNUP_CREDIT_DAYS gets its keys set to $0 with no budget_duration.
+          Paid credit is never zeroed, keys are never expired and no email is
+          sent.
     """
-    test_team.budget_type = BudgetType.PERIODIC
+    test_team.budget_type = (
+        BudgetType.POOL if variant == "pool" else BudgetType.PERIODIC
+    )
     test_team.created_at = datetime.now(UTC) - timedelta(days=age_days)
     test_team.last_payment = (
-        datetime.now(UTC) - timedelta(days=40) if paid == "last_payment" else None
+        datetime.now(UTC) - timedelta(days=40) if variant == "last_payment" else None
     )
-    test_team.is_always_free = always_free
-    if paid == "topup":
+    test_team.is_always_free = variant == "always_free"
+    if variant == "anonymous_trial":
+        test_team.admin_email = settings.AI_TRIAL_TEAM_EMAIL
+    if variant == "signup_credit_days_10":
+        monkeypatch.setattr(settings, "SIGNUP_CREDIT_DAYS", 10)
+    if variant == "topup":
         db.add(
             DBPeriodicPayment(
                 team_id=test_team.id,
@@ -269,6 +293,18 @@ async def test_monitor_teams_unpaid_periodic_team_free_credit_ends(
                 payment_type="topup",
                 status="completed",
                 payment_date=datetime.now(UTC) - timedelta(days=40),
+            )
+        )
+    if variant == "ledger":
+        db.add(
+            DBPeriodicBudgetLedgerEntry(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                entry_type="topup",
+                amount_cents=1000,
+                consumed_cents=1000,
+                is_active=False,
+                purchased_at=datetime.now(UTC) - timedelta(days=40),
             )
         )
     db.add(
@@ -282,11 +318,7 @@ async def test_monitor_teams_unpaid_periodic_team_free_credit_ends(
     db.commit()
 
     mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock(
-        return_value={
-            "info": {"spend": 1.0, "max_budget": 27.0, "budget_duration": "30d"}
-        }
-    )
+    mock_instance.get_key_info = AsyncMock(return_value={"info": dict(key_info)})
     mock_instance.update_key_budget = AsyncMock()
     mock_instance.update_key_duration = AsyncMock()
 
@@ -294,12 +326,15 @@ async def test_monitor_teams_unpaid_periodic_team_free_credit_ends(
 
     mock_instance.update_key_duration.assert_not_called()
     mock_ses.return_value.send_email.assert_not_called()
-    if expect_zero:
+    if expected == _ZERO:
         mock_instance.update_key_budget.assert_awaited_once_with(
             "periodic_token", max_budget=0, clear_budget_duration=True
         )
-    else:
+    elif expected == _NONE:
         mock_instance.update_key_budget.assert_not_called()
+    else:
+        for call in mock_instance.update_key_budget.await_args_list:
+            assert call.kwargs.get("max_budget") != 0
 
 
 @pytest.mark.asyncio
@@ -365,6 +400,7 @@ async def test_monitor_teams_pool_team_with_purchase_not_expired(
         }
     )
     mock_litellm_instance.update_key_duration = AsyncMock()
+    mock_litellm_instance.update_key_budget = AsyncMock()
 
     # Setup mock limit service
     mock_limit_instance = mock_limit_service.return_value
@@ -373,8 +409,10 @@ async def test_monitor_teams_pool_team_with_purchase_not_expired(
     # Run monitoring
     await monitor_teams(db)
 
-    # Key should NOT have been expired
+    # Key should NOT have been expired or zeroed by the free-credit cutoff
     mock_litellm_instance.update_key_duration.assert_not_called()
+    for call in mock_litellm_instance.update_key_budget.await_args_list:
+        assert call.kwargs.get("max_budget") != 0
 
 
 @pytest.mark.asyncio

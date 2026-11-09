@@ -255,6 +255,114 @@ def test_create_periodic_topup_success(client, admin_token, db, test_team, test_
     mock_instance.update_team_budget.assert_awaited_once()
 
 
+def _post_periodic_topup(client, admin_token, test_team, test_region):
+    return client.post(
+        f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase/periodic",
+        json={
+            "amount_cents": 5000,
+            "currency": "usd",
+            "purchased_at": "2026-03-13T10:00:00Z",
+            "stripe_payment_id": f"cs_periodic_{int(time.time() * 1000000)}",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+
+def test_create_periodic_topup_restores_keys_zeroed_by_free_credit_cutoff(
+    client, admin_token, db, test_team, test_region
+):
+    """
+    Given: A never-paid PERIODIC team past SIGNUP_CREDIT_DAYS, keys at $0
+    When: The team buys a top-up
+    Then: Each key gets its budget back (an explicit cap stays the cap) and its
+          spend is reset, so the team can spend the credit it bought.
+    """
+    test_team.budget_type = "periodic"
+    test_team.last_payment = None
+    test_team.is_always_free = False
+    test_team.created_at = datetime.now(UTC) - timedelta(
+        days=settings.SIGNUP_CREDIT_DAYS + 5
+    )
+    uncapped = DBPrivateAIKey(
+        name="Uncapped",
+        litellm_token="zeroed-uncapped",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    capped = DBPrivateAIKey(
+        name="Capped",
+        litellm_token="zeroed-capped",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add_all([uncapped, capped])
+    db.flush()
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            key_id=capped.id,
+            max_budget=7.0,
+        )
+    )
+    db.commit()
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            return_value={"team_info": {"spend": 27.0}}
+        )
+        mock_instance.update_team_budget = AsyncMock()
+        mock_instance.update_key_budget = AsyncMock()
+
+        response = _post_periodic_topup(client, admin_token, test_team, test_region)
+
+    assert response.status_code == 201, response.text
+    calls = {
+        c.kwargs["litellm_token"]: c.kwargs
+        for c in mock_instance.update_key_budget.await_args_list
+    }
+    assert set(calls) == {"zeroed-uncapped", "zeroed-capped"}
+    assert calls["zeroed-uncapped"]["max_budget"] > 0
+    assert calls["zeroed-uncapped"]["budget_duration"] is not None
+    assert calls["zeroed-uncapped"]["spend"] == 0.0
+    assert calls["zeroed-capped"]["max_budget"] == 7.0
+    assert calls["zeroed-capped"]["clear_budget_duration"] is True
+    assert calls["zeroed-capped"]["spend"] == 0.0
+
+
+def test_create_periodic_topup_leaves_keys_of_team_in_free_credit(
+    client, admin_token, db, test_team, test_region
+):
+    """A team still inside SIGNUP_CREDIT_DAYS was never zeroed: no key writes."""
+    test_team.budget_type = "periodic"
+    test_team.last_payment = None
+    test_team.created_at = datetime.now(UTC) - timedelta(days=1)
+    db.add(
+        DBPrivateAIKey(
+            name="Fresh",
+            litellm_token="fresh-key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+        )
+    )
+    db.commit()
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            return_value={"team_info": {"spend": 1.0}}
+        )
+        mock_instance.update_team_budget = AsyncMock()
+        mock_instance.update_key_budget = AsyncMock()
+
+        response = _post_periodic_topup(client, admin_token, test_team, test_region)
+
+    assert response.status_code == 201, response.text
+    mock_instance.update_key_budget.assert_not_called()
+
+
 def test_create_periodic_topup_region_not_assigned_rejected(
     client, admin_token, db, test_team, test_region
 ):
