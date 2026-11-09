@@ -25,6 +25,16 @@ def test_settings_reject_malformed_encryption_key(monkeypatch):
         Settings(_env_file=None)
 
 
+def test_settings_errors_hide_the_encryption_key(monkeypatch):
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AMAZEEAI_ENCRYPTION_KEY", f"{key},bad")
+    with pytest.raises(ValidationError) as exc:
+        Settings(_env_file=None)
+    # Pydantic shortens a long input to its first and last 24 characters.
+    for part in (key, key[:24], key[-24:]):
+        assert part not in str(exc.value)
+
+
 def test_encrypted_string_round_trip(column):
     stored = column.process_bind_param("sk-secret", None)
     assert stored != "sk-secret"

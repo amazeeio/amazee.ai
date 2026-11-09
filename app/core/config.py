@@ -1,6 +1,6 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from cryptography.fernet import Fernet, MultiFernet
-from pydantic import ConfigDict, Field, field_validator
+from pydantic import Field, field_validator
 import os
 
 
@@ -203,7 +203,7 @@ class Settings(BaseSettings):
     # the catalog from overwriting or deleting their models.
     CATALOG_MANAGED_REGIONS: str = os.getenv("CATALOG_MANAGED_REGIONS", "")
 
-    model_config = ConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
     main_route: str = os.getenv("LAGOON_ROUTE", "http://localhost:8800")
     frontend_route: str = os.getenv("FRONTEND_ROUTE", "http://localhost:3000")
 
