@@ -146,6 +146,31 @@ def test_token_hash_migration_backfills_existing_tokens(db, test_user):
         db.rollback()
 
 
+def test_hash_unhashed_tokens_migration_fills_missing_hashes(db, test_user):
+    migration = importlib.import_module(
+        "app.migrations.versions.20261104_113000_64640a2c1b9d_hash_unhashed_api_tokens"
+    )
+    connection = db.connection()
+    try:
+        with Operations.context(MigrationContext.configure(connection)):
+            # Without the plain column the migration has nothing to do.
+            migration.upgrade()
+            op.add_column("api_tokens", sa.Column("token", sa.String(), nullable=True))
+            connection.execute(
+                text("INSERT INTO api_tokens (name, token, user_id) VALUES ('old release', 'raw-unhashed', :user_id)"),
+                {"user_id": test_user.id},
+            )
+
+            migration.upgrade()
+
+            stored = connection.execute(
+                text("SELECT token_hash FROM api_tokens WHERE token = 'raw-unhashed'")
+            ).scalar_one()
+            assert stored == hash_api_token("raw-unhashed")
+    finally:
+        db.rollback()
+
+
 def test_create_api_token_stores_hash(client, test_token, db):
     response = client.post(
         "/auth/token",
