@@ -43,6 +43,7 @@ from app.core.team_service import (
     get_team_region_litellm_keys,
     hard_delete_cutoff,
     is_anonymous_trial_team,
+    periodic_free_credit_over,
 )
 from app.core.limit_service import LimitService
 from app.core.litellm_user_sync import team_role_for_litellm
@@ -1540,29 +1541,13 @@ async def monitor_teams(db: Session):
                 team_label = (str(team.id), team.name)
                 current_team_labels.add(team_label)
 
-                # Also emits the team_freshness_days metric
-                team_freshness = _monitor_team_freshness(team, db)
+                # Emits the team_freshness_days metric
+                _monitor_team_freshness(team, db)
 
-                # A never-paid PERIODIC team's keys start with DEFAULT_MAX_SPEND
-                # on a 30d LiteLLM reset. After SIGNUP_CREDIT_DAYS that free
-                # credit ends: keys go to $0 but stay alive, so the team can
-                # still buy. Any payment or ledger credit puts the team under
-                # the billing rules instead, so paid credit is never zeroed.
-                free_credit_over = (
-                    team.budget_type != BudgetType.POOL
-                    and not team.is_always_free
-                    and not is_anonymous_trial_team(team)
-                    and team.last_payment is None
-                    and team_freshness >= settings.SIGNUP_CREDIT_DAYS
-                    and db.query(DBPeriodicPayment.id)
-                    .filter(DBPeriodicPayment.team_id == team.id)
-                    .first()
-                    is None
-                    and db.query(DBPeriodicBudgetLedgerEntry.id)
-                    .filter(DBPeriodicBudgetLedgerEntry.team_id == team.id)
-                    .first()
-                    is None
-                )
+                # A never-paid PERIODIC team's free credit ends after
+                # SIGNUP_CREDIT_DAYS: keys go to $0 but stay alive, so the
+                # team can still buy.
+                free_credit_over = periodic_free_credit_over(db, team)
 
                 # Get all keys for the team grouped by region
                 keys_by_region = get_team_keys_by_region(db, team.id)
