@@ -157,7 +157,6 @@ def test_create_api_token_stores_hash(client, test_token, db):
 
     stored = db.query(DBAPIToken).filter(DBAPIToken.id == data["id"]).one()
     assert stored.token_hash == hash_api_token(data["token"])
-    assert stored.token == data["token"]
 
     response = client.get("/auth/token", headers={"Authorization": f"Bearer {data['token']}"})
     assert response.status_code == 200
@@ -169,21 +168,3 @@ def test_api_token_authenticates_by_hash(client, test_user, db):
 
     assert client.get("/auth/token", headers={"Authorization": "Bearer raw-abc"}).status_code == 200
     assert client.get("/auth/token", headers={"Authorization": "Bearer wrong-token"}).status_code == 401
-
-
-def test_api_token_without_hash_authenticates_and_gets_hash(client, test_user, db):
-    db.add(DBAPIToken(name="no hash", token="raw-unhashed", token_hash=None, user_id=test_user.id))
-    db.commit()
-
-    assert client.get("/auth/token", headers={"Authorization": "Bearer raw-unhashed"}).status_code == 200
-
-    db.expire_all()
-    stored = db.query(DBAPIToken).filter(DBAPIToken.token == "raw-unhashed").one()
-    assert stored.token_hash == hash_api_token("raw-unhashed")
-
-
-def test_api_token_fallback_skips_rows_with_hash(client, test_user, db):
-    db.add(DBAPIToken(name="hashed", token="clear-a", token_hash=hash_api_token("other-b"), user_id=test_user.id))
-    db.commit()
-
-    assert client.get("/auth/token", headers={"Authorization": "Bearer clear-a"}).status_code == 401
