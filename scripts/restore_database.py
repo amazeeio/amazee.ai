@@ -32,7 +32,7 @@ schema and have CREATE permission on the target database (not CREATEDB).
 IMPORTANT: Only use this with backups from trusted sources (e.g. Lagoon).
 
 The target needs the source environment's key in AMAZEEAI_ENCRYPTION_KEY
-(newest first), or the restored secrets read as ciphertext.
+(newest first), or reads of the restored secrets fail.
 
 Usage:
     python scripts/restore_database.py /path/to/backup.tar.gz

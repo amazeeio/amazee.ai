@@ -51,6 +51,14 @@ def test_encrypted_string_reads_plain_value(column):
     assert column.process_result_value("plain-value", None) == "plain-value"
 
 
+def test_encrypted_string_rejects_token_from_other_key(column):
+    token = Fernet(Fernet.generate_key()).encrypt(b"foreign-secret").decode()
+    with pytest.raises(RuntimeError, match="AMAZEEAI_ENCRYPTION_KEY") as exc:
+        column.process_result_value(token, None)
+    assert token not in str(exc.value)
+    assert "gAAAAA" not in str(exc.value)
+
+
 def test_encrypted_string_decrypts_after_key_rotation(column, monkeypatch):
     old, new = Fernet.generate_key().decode(), Fernet.generate_key().decode()
     old_token = Fernet(old).encrypt(b"rotated-secret").decode()

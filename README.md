@@ -294,7 +294,7 @@ python scripts/trigger_hard_delete_job.py
 
 If you have a database dump, you can restore it into your local PostgreSQL service following these steps:
 
-Set `AMAZEEAI_ENCRYPTION_KEY` to the source environment's key (newest first), or the restored secrets read as ciphertext.
+Set `AMAZEEAI_ENCRYPTION_KEY` to the source environment's key (newest first), or reads of the restored secrets fail.
 
 1. **Extract the dump**:
    ```bash

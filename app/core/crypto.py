@@ -29,5 +29,11 @@ class EncryptedString(TypeDecorator):
         try:
             return fernet().decrypt(value.encode()).decode()
         except InvalidToken:
-            # Rows written before encryption are still plain text; a later release removes this fallback.
+            # Rows written before encryption are still plain text.
+            # A Fernet token (starts with gAAAAA) that does not decrypt means a wrong or missing key: fail, do not return ciphertext.
+            if value.startswith("gAAAAA"):
+                raise RuntimeError(
+                    "A stored secret cannot be decrypted with the configured AMAZEEAI_ENCRYPTION_KEY. "
+                    "Add the key that encrypted it."
+                ) from None
             return value
