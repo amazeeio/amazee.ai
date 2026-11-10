@@ -68,6 +68,12 @@ def _encrypt(value: str) -> str | None:
     # A value that already decrypts is skipped, so a second run changes nothing.
     if _decrypt(value) is not None:
         return None
+    if value.startswith("gAAAAA"):
+        # Encrypted again, the model decrypts one layer and returns the inner ciphertext as the secret.
+        raise RuntimeError(
+            "Cannot encrypt a stored secret: it is a Fernet token that the configured "
+            "AMAZEEAI_ENCRYPTION_KEY cannot decrypt. Add the key that encrypted it."
+        )
     return fernet().encrypt(value.encode()).decode()
 
 

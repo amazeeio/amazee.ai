@@ -247,3 +247,20 @@ def test_encrypt_secrets_migration_skips_changed_rows(db, test_region, monkeypat
             migration.upgrade()
 
     assert _raw(db, "SELECT litellm_token FROM ai_tokens WHERE id = :id", id=key_id)[0] == pod_value
+
+
+def test_encrypt_secrets_migration_rejects_token_from_other_key(db, test_region):
+    migration = importlib.import_module(ENCRYPT_MIGRATION)
+    key_id = _seed_key(db, test_region).id
+    foreign = Fernet(Fernet.generate_key()).encrypt(b"foreign-token").decode()
+    db.execute(text("UPDATE ai_tokens SET litellm_token = :value WHERE id = :id"), {"value": foreign, "id": key_id})
+    db.commit()
+
+    with pytest.raises(RuntimeError, match="AMAZEEAI_ENCRYPTION_KEY") as exc:
+        with engine.connect() as connection:
+            context = MigrationContext.configure(connection)
+            with context.begin_transaction(), Operations.context(context):
+                migration.upgrade()
+
+    assert foreign not in str(exc.value)
+    assert _raw(db, "SELECT litellm_token FROM ai_tokens WHERE id = :id", id=key_id)[0] == foreign
