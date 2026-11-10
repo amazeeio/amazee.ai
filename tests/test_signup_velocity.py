@@ -103,8 +103,11 @@ def test_prune_removes_only_old_rows(db, monkeypatch):
     assert row.resource_type == "signup_events"
     assert row.user_id is None
     assert row.resource_id is None
+    assert row.request_source is None
     assert row.details["rows_deleted"] == 1
     assert row.details["retention_days"] == 7
-    datetime.fromisoformat(row.details["cutoff"])
+    cutoff = datetime.fromisoformat(row.details["cutoff"])
+    assert cutoff.utcoffset() == timedelta(0)
+    assert abs(cutoff - (now - timedelta(days=7))) < timedelta(seconds=5)
     # Only these keys, so no IP address or email gets into the row.
     assert set(row.details) == {"rows_deleted", "cutoff", "retention_days"}
