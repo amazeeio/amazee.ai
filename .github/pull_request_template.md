@@ -1,6 +1,6 @@
 ## Ticket
 
-TKF-
+<!-- Replace this line with the Jira ticket key, for example TKF-123. -->
 
 ## Security requirements
 
