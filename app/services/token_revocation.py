@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.email import normalize_email_for_lookup
-from app.db.models import DBRevokedToken, DBUser
+from app.db.models import DBAuditLog, DBRevokedToken, DBUser
 
 logger = logging.getLogger(__name__)
 
@@ -86,13 +86,29 @@ def prune_revoked_tokens(db: Session) -> int:
     """Delete denylist rows for tokens that have expired. Returns rows removed.
 
     An expired token fails validation on its own, so keeping its row only grows
-    the table. Runs from the daily cron.
+    the table. Runs from the daily cron. Each run keeps a lasting record of the
+    cleanup as one audit_logs row, also when it deletes nothing.
     """
     cutoff = datetime.now(UTC) - timedelta(days=settings.REVOKED_TOKENS_RETENTION_DAYS)
     deleted = (
         db.query(DBRevokedToken)
         .filter(DBRevokedToken.expires_at < cutoff)
         .delete(synchronize_session=False)
+    )
+    db.add(
+        DBAuditLog(
+            user_id=None,
+            event_type="WORKER",
+            resource_type="revoked_tokens",
+            resource_id=None,
+            action="revoked_tokens.prune",
+            details={
+                "rows_deleted": deleted,
+                "cutoff": cutoff.isoformat(),
+                "retention_days": settings.REVOKED_TOKENS_RETENTION_DAYS,
+            },
+            request_source=None,
+        )
     )
     db.commit()
     logger.info("Pruned %d revoked_tokens rows expired before %s", deleted, cutoff)

@@ -8,7 +8,7 @@ from jose import jwt
 
 from app.core.config import settings
 from app.core.security import create_access_token
-from app.db.models import DBRevokedToken
+from app.db.models import DBAuditLog, DBRevokedToken
 from app.services.token_revocation import (
     prune_revoked_tokens,
     revoke_access_token,
@@ -294,3 +294,13 @@ def test_prune_removes_only_rows_past_retention(db, test_user, expired):
 
     assert deleted == (1 if expired else 0)
     assert db.query(DBRevokedToken).count() == (0 if expired else 1)
+
+    audit_rows = db.query(DBAuditLog).all()
+    assert len(audit_rows) == 1
+    row = audit_rows[0]
+    assert row.action == "revoked_tokens.prune"
+    assert row.user_id is None
+    assert row.details["rows_deleted"] == deleted
+    assert row.details["retention_days"] == settings.REVOKED_TOKENS_RETENTION_DAYS
+    # Only these keys, so no jti or user id gets into the row.
+    assert set(row.details) == {"rows_deleted", "cutoff", "retention_days"}
