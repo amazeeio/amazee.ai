@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.core.config import settings
-from app.db.models import DBSignupEvent
+from app.db.models import DBAuditLog, DBSignupEvent
 from app.services.signup_velocity import (
     client_ip,
     enforce_signup_velocity,
@@ -94,3 +94,17 @@ def test_prune_removes_only_old_rows(db, monkeypatch):
     remaining = db.query(DBSignupEvent).all()
     assert len(remaining) == 1
     assert remaining[0].ip_address == "1.1.1.1"
+
+    audit_rows = db.query(DBAuditLog).all()
+    assert len(audit_rows) == 1
+    row = audit_rows[0]
+    assert row.action == "signup_events.prune"
+    assert row.event_type == "WORKER"
+    assert row.resource_type == "signup_events"
+    assert row.user_id is None
+    assert row.resource_id is None
+    assert row.details["rows_deleted"] == 1
+    assert row.details["retention_days"] == 7
+    datetime.fromisoformat(row.details["cutoff"])
+    # Only these keys, so no IP address or email gets into the row.
+    assert set(row.details) == {"rows_deleted", "cutoff", "retention_days"}
