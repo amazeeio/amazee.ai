@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from app.core.config import settings
 from app.core.limit_service import LimitService, setup_default_limits
 from app.core.security import get_password_hash
@@ -949,175 +951,6 @@ def test_cannot_remove_last_team_admin(client, team_admin_token, test_team_admin
     )
     assert response.status_code == 400
     assert "last team admin" in response.json()["detail"].lower()
-
-
-@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
-@patch("app.api.teams.SESService")
-def test_extend_team_trial_success(
-    mock_ses_class, mock_litellm_post, client, admin_token, test_team, test_region, db
-):
-    """Test successfully extending a team's trial period"""
-    # Mock SES service
-    mock_ses_instance = MagicMock()
-    mock_ses_class.return_value = mock_ses_instance
-
-    # Ensure team is attached to session
-    db.add(test_team)
-    db.commit()
-
-    # Mock LiteLLM API response
-    mock_litellm_post.return_value.status_code = 200
-    mock_litellm_post.return_value.json.return_value = {"key": "test-private-key-123"}
-    mock_litellm_post.return_value.raise_for_status = MagicMock()
-
-    # Create a test key for the team
-    test_key = DBPrivateAIKey(
-        name="Test Key",
-        database_name="test_db",
-        database_username="test_user",
-        database_password="test_pass",
-        team_id=test_team.id,
-        region_id=test_region.id,
-        litellm_token="test-private-key-123",
-        created_at=datetime.now(UTC),
-    )
-    db.add(test_key)
-    db.commit()
-
-    # Extend the team's trial
-    response = client.post(
-        f"/teams/{test_team.id}/extend-trial",
-        headers={"Authorization": f"Bearer {admin_token}"},
-    )
-    assert response.status_code == 200
-    assert response.json()["message"] == "Team trial extended successfully"
-
-    # Verify the team's last payment was updated
-    updated_team = db.query(DBTeam).filter(DBTeam.id == test_team.id).first()
-    assert updated_team.last_payment is not None
-    assert (
-        datetime.now(UTC) - updated_team.last_payment
-    ).total_seconds() < 5  # Within last 5 seconds
-
-    # Verify LiteLLM API was called to update key restrictions
-    mock_litellm_post.assert_called_with(
-        f"{test_region.litellm_api_url}/key/update",
-        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
-        json={
-            "key": test_key.litellm_token,
-            "duration": "30d",
-            "budget_duration": "30d",
-            "max_budget": 27.0,
-            "rpm_limit": 500,
-        },
-    )
-
-    # Verify email was sent
-    mock_ses_instance.send_email.assert_called_once()
-    call_args = mock_ses_instance.send_email.call_args[1]
-    assert call_args["to_addresses"] == [test_team.admin_email]
-    assert call_args["template_name"] == "trial-extended"
-    assert call_args["template_data"]["name"] == test_team.name
-
-
-@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
-@patch("app.api.teams.SESService")
-def test_extend_team_trial_litellm_error(
-    mock_ses_class, mock_litellm_post, client, admin_token, test_team, test_region, db
-):
-    """Test extending a team's trial when LiteLLM API fails"""
-    # Mock SES service
-    mock_ses_instance = MagicMock()
-    mock_ses_class.return_value = mock_ses_instance
-
-    # Ensure team is attached to session
-    db.add(test_team)
-    db.commit()
-
-    # Mock LiteLLM API error
-    mock_litellm_post.return_value.status_code = 500
-    mock_litellm_post.return_value.raise_for_status = MagicMock(
-        side_effect=Exception("API Error")
-    )
-
-    # Create a test key for the team
-    test_key = DBPrivateAIKey(
-        name="Test Key",
-        database_name="test_db",
-        database_username="test_user",
-        database_password="test_pass",
-        team_id=test_team.id,
-        region_id=test_region.id,
-        litellm_token="test-private-key-123",
-        created_at=datetime.now(UTC),
-    )
-    db.add(test_key)
-    db.commit()
-
-    # Extend the team's trial
-    response = client.post(
-        f"/teams/{test_team.id}/extend-trial",
-        headers={"Authorization": f"Bearer {admin_token}"},
-    )
-    assert response.status_code == 200  # Should still succeed despite LiteLLM error
-    assert response.json()["message"] == "Team trial extended successfully"
-
-    # Verify the team's last payment was updated
-    updated_team = db.query(DBTeam).filter(DBTeam.id == test_team.id).first()
-    assert updated_team.last_payment is not None
-
-    # Verify email was still sent
-    mock_ses_instance.send_email.assert_called_once()
-
-
-@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
-@patch("app.api.teams.SESService")
-def test_extend_team_trial_email_error(
-    mock_ses_class, mock_litellm_post, client, admin_token, test_team, test_region, db
-):
-    """Test extending a team's trial when email sending fails"""
-    # Mock SES service with error
-    mock_ses_instance = MagicMock()
-    mock_ses_instance.send_email.side_effect = Exception("Email Error")
-    mock_ses_class.return_value = mock_ses_instance
-
-    # Ensure team is attached to session
-    db.add(test_team)
-    db.commit()
-
-    # Mock LiteLLM API success
-    mock_litellm_post.return_value.status_code = 200
-    mock_litellm_post.return_value.json.return_value = {"key": "test-private-key-123"}
-    mock_litellm_post.return_value.raise_for_status = MagicMock()
-
-    # Create a test key for the team
-    test_key = DBPrivateAIKey(
-        name="Test Key",
-        database_name="test_db",
-        database_username="test_user",
-        database_password="test_pass",
-        team_id=test_team.id,
-        region_id=test_region.id,
-        litellm_token="test-private-key-123",
-        created_at=datetime.now(UTC),
-    )
-    db.add(test_key)
-    db.commit()
-
-    # Extend the team's trial
-    response = client.post(
-        f"/teams/{test_team.id}/extend-trial",
-        headers={"Authorization": f"Bearer {admin_token}"},
-    )
-    assert response.status_code == 200  # Should still succeed despite email error
-    assert response.json()["message"] == "Team trial extended successfully"
-
-    # Verify the team's last payment was updated
-    updated_team = db.query(DBTeam).filter(DBTeam.id == test_team.id).first()
-    assert updated_team.last_payment is not None
-
-    # Verify LiteLLM API was called
-    mock_litellm_post.assert_called()
 
 
 @patch("app.api.teams.SESService")
@@ -2792,3 +2625,164 @@ def test_update_team_admin_email_ignores_its_own_row(client, admin_token, test_t
     )
     assert response.status_code == 200, response.text
     assert response.json()["admin_email"] == "moved@example.com"
+
+
+def test_extend_trial_endpoint_is_gone(client, admin_token, test_team):
+    """The 30-day trial is gone, so its admin endpoint must stay gone too."""
+    response = client.post(
+        f"/teams/{test_team.id}/extend-trial",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code in (404, 405)
+
+
+@patch("app.api.teams.LiteLLMService")
+def test_refresh_pool_keys(
+    mock_litellm, client, admin_token, test_team, test_region, db
+):
+    """A pool team's keys are unblocked, uncapped and extended; non-pool is refused."""
+    mock_instance = mock_litellm.return_value
+    mock_instance.update_key_budget = AsyncMock()
+    mock_instance.update_key_duration = AsyncMock()
+    db.add(
+        DBPrivateAIKey(
+            name="Pool Key",
+            litellm_token="pool-refresh-token",
+            region=test_region,
+            team_id=test_team.id,
+        )
+    )
+    test_team.budget_type = BudgetType.PERIODIC
+    db.commit()
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    response = client.post(f"/teams/{test_team.id}/refresh-pool-keys", headers=headers)
+    assert response.status_code == 400
+    mock_instance.update_key_budget.assert_not_called()
+
+    test_team.budget_type = BudgetType.POOL
+    db.commit()
+    response = client.post(f"/teams/{test_team.id}/refresh-pool-keys", headers=headers)
+    assert response.status_code == 200
+    mock_instance.update_key_budget.assert_awaited_once_with(
+        litellm_token="pool-refresh-token",
+        max_budget=None,
+        clear_max_budget=True,
+        clear_budget_duration=True,
+        blocked=False,
+    )
+    mock_instance.update_key_duration.assert_awaited_once_with(
+        litellm_token="pool-refresh-token",
+        duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
+    )
+
+
+@pytest.mark.parametrize("token_fixture", [None, "test_token", "team_admin_token"])
+@patch("app.api.teams.LiteLLMService")
+def test_refresh_pool_keys_requires_system_admin(
+    mock_litellm, token_fixture, request, client, test_team, test_region, db
+):
+    """Only system admins may refresh pool keys: it unblocks and uncaps keys."""
+    mock_instance = mock_litellm.return_value
+    mock_instance.update_key_budget = AsyncMock()
+    mock_instance.update_key_duration = AsyncMock()
+    test_team.budget_type = BudgetType.POOL
+    db.add(
+        DBPrivateAIKey(
+            name="Pool Key",
+            litellm_token="pool-refresh-token",
+            region=test_region,
+            team_id=test_team.id,
+        )
+    )
+    db.commit()
+    headers = (
+        {"Authorization": f"Bearer {request.getfixturevalue(token_fixture)}"}
+        if token_fixture
+        else {}
+    )
+
+    response = client.post(f"/teams/{test_team.id}/refresh-pool-keys", headers=headers)
+
+    assert response.status_code in (401, 403), response.text
+    mock_instance.update_key_budget.assert_not_called()
+    mock_instance.update_key_duration.assert_not_called()
+
+
+@patch("app.api.teams.LiteLLMService")
+def test_refresh_pool_keys_keeps_explicit_key_caps(
+    mock_litellm, client, admin_token, test_team, test_region, db
+):
+    """A key with a DBSpendCap row keeps its cap; a key without one is uncapped."""
+    mock_instance = mock_litellm.return_value
+    mock_instance.update_key_budget = AsyncMock()
+    mock_instance.update_key_duration = AsyncMock()
+    test_team.budget_type = BudgetType.POOL
+    uncapped = DBPrivateAIKey(
+        name="Uncapped",
+        litellm_token="uncapped-token",
+        region=test_region,
+        team_id=test_team.id,
+    )
+    capped = DBPrivateAIKey(
+        name="Capped",
+        litellm_token="capped-token",
+        region=test_region,
+        team_id=test_team.id,
+    )
+    db.add_all([uncapped, capped])
+    db.flush()
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            key_id=capped.id,
+            max_budget=7.0,
+        )
+    )
+    db.commit()
+
+    response = client.post(
+        f"/teams/{test_team.id}/refresh-pool-keys",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["failed_keys"] == 0
+    calls = {
+        c.kwargs["litellm_token"]: c.kwargs
+        for c in mock_instance.update_key_budget.await_args_list
+    }
+    assert calls["uncapped-token"]["max_budget"] is None
+    assert calls["uncapped-token"]["clear_max_budget"] is True
+    assert calls["capped-token"]["max_budget"] == 7.0
+    assert calls["capped-token"]["clear_max_budget"] is False
+
+
+@patch("app.api.teams.LiteLLMService")
+def test_refresh_pool_keys_reports_failed_keys(
+    mock_litellm, client, admin_token, test_team, test_region, db
+):
+    """A LiteLLM failure is counted so the admin UI can show it."""
+    mock_instance = mock_litellm.return_value
+    mock_instance.update_key_budget = AsyncMock(side_effect=Exception("boom"))
+    mock_instance.update_key_duration = AsyncMock()
+    test_team.budget_type = BudgetType.POOL
+    db.add(
+        DBPrivateAIKey(
+            name="Pool Key",
+            litellm_token="pool-refresh-token",
+            region=test_region,
+            team_id=test_team.id,
+        )
+    )
+    db.commit()
+
+    response = client.post(
+        f"/teams/{test_team.id}/refresh-pool-keys",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["failed_keys"] == 1

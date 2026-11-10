@@ -7,8 +7,10 @@ from app.core.security import get_role_min_system_admin
 from app.core.team_service import (
     get_team_info_or_recreate,
     get_team_region_litellm_keys,
+    periodic_signup_credit_expired,
     propagate_team_budget_to_keys,
 )
+from app.core.limit_service import LimitService
 from app.db.database import get_db
 from app.db.models import (
     DBLimitedResource,
@@ -299,6 +301,65 @@ async def _sync_pool_key_effective_budgets(
     )
 
 
+async def _restore_zeroed_periodic_keys(
+    db: Session, *, team: DBTeam, region: DBRegion, service: LiteLLMService
+) -> list[str]:
+    """Undo the free-credit cutoff for a PERIODIC team's keys in a region.
+
+    monitor_teams sets a never-paid team's keys to max_budget 0 with no
+    budget_duration. Only keys LiteLLM reports in that state are touched, so a
+    retry or a top-up in another region still repairs keys a previous attempt
+    missed. A purchase ends that state, so each key goes back to what
+    key creation gives it: an explicit spend cap when one exists, otherwise the
+    team's key budget on a DEFAULT_KEY_DURATION reset. Spend is reset so old
+    free-credit spend does not keep the key at its cap. The LiteLLM team budget
+    still bounds total spend.
+    """
+    keys = get_team_region_litellm_keys(db, team_id=team.id, region_id=region.id)
+    if not keys:
+        return []
+    cap_map = key_cap_map(db, region.id, [k.id for k in keys])
+    key_duration, max_spend, _ = LimitService(db).get_token_restrictions(team.id)
+    semaphore = asyncio.Semaphore(10)
+
+    async def _restore(key: DBPrivateAIKey) -> str | None:
+        configured_cap = cap_map.get(key.id)
+        try:
+            async with semaphore:
+                key_info = await service.get_key_info(key.litellm_token)
+                info = key_info.get("info", key_info) or {}
+                current_max_budget = info.get("max_budget")
+                if (
+                    current_max_budget is None
+                    or float(current_max_budget) != 0
+                    or info.get("budget_duration") is not None
+                ):
+                    return None
+                if configured_cap is not None:
+                    await service.update_key_budget(
+                        litellm_token=key.litellm_token,
+                        max_budget=configured_cap,
+                        clear_budget_duration=True,
+                        spend=0.0,
+                    )
+                else:
+                    await service.update_key_budget(
+                        litellm_token=key.litellm_token,
+                        max_budget=max_spend,
+                        budget_duration=f"{key_duration}d",
+                        spend=0.0,
+                    )
+            return None
+        except Exception as exc:
+            return f"Key {key.id}: {str(exc)}"
+
+    return [
+        error
+        for error in await asyncio.gather(*[_restore(key) for key in keys])
+        if error is not None
+    ]
+
+
 @router.post(
     "/region/{region_id}/teams/{team_id}/purchase",
     response_model=PoolPurchaseResponse,
@@ -533,6 +594,11 @@ async def purchase_periodic_topup(
             detail="A purchase with this stripe_payment_id already exists",
         )
 
+    # Keys zeroed by the free-credit cutoff are found from their LiteLLM state,
+    # not from payment history: a retry after a failed restore, or a top-up in
+    # a second region, already has a payment row but still has $0 keys.
+    may_have_zeroed_keys = periodic_signup_credit_expired(team)
+
     try:
         # Reuse an existing payment record if a prior webhook already created one
         # for this stripe_payment_id (e.g. checkout.session.completed fired before
@@ -654,6 +720,12 @@ async def purchase_periodic_topup(
                 team_id=team.id,
                 region=region,
                 purchased_total=desired_remaining,
+            )
+            if key_sync_errors:
+                raise RuntimeError("; ".join(key_sync_errors))
+        elif may_have_zeroed_keys:
+            key_sync_errors = await _restore_zeroed_periodic_keys(
+                db, team=team, region=region, service=service
             )
             if key_sync_errors:
                 raise RuntimeError("; ".join(key_sync_errors))

@@ -31,17 +31,13 @@ Feature: amazee.ai Key and Team Management Workflows
     And my Drupal site should be successfully linked to my amazee.ai account
     And I should be able to create new named AI keys directly from the Drupal interface
 
-  Scenario: Trial status calculation for a new team
-    Given a new team has been created today
-    And "is_always_free" is set to "False"
-    When the system calculates the trial status via "_calculate_trial_status"
-    Then the status should be "30 days left"
-
-  Scenario: Trial expiry after 30 days
-    Given a team was created 31 days ago
+  Scenario: Free credit ends after SIGNUP_CREDIT_DAYS
+    Given a "PERIODIC" team was created 31 days ago
     And the team has no "last_payment" recorded
-    When the system calculates the trial status
-    Then the status should be "Expired"
+    And "is_always_free" is set to "False"
+    When "monitor_teams" runs
+    Then the team's keys should have a max budget of 0
+    And the team's keys should not be expired
 
   Rule: System Limits Enforcement
 

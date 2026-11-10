@@ -243,6 +243,17 @@ Limit controls and precedence:
 Note: Spend enforcement in LiteLLM is evaluated on spend updates, so the blocking request is typically the first request after crossing a cap.
 
 
+## 🎁 Free credit for unpaid PERIODIC teams
+
+There is no 30-day trial and no trial expiry. A new `PERIODIC` team's keys start with `DEFAULT_MAX_SPEND` ($27).
+
+- A team that never paid (no `last_payment`, no periodic payment, no ledger credit) keeps that credit for `SIGNUP_CREDIT_DAYS` (default 30) after `created_at`.
+- After that, the daily `monitor_teams` job sets the team's keys to `max_budget = 0` with no `budget_duration`, and new keys start at $0. Keys are not expired, so the team can still buy credit.
+- A periodic top-up restores the zeroed keys of that region straight away.
+- `POOL` teams, `is_always_free` teams and the anonymous trial team are exempt.
+- System admins can repair a `POOL` team's keys with `POST /teams/{id}/refresh-pool-keys` (replaces the removed `POST /teams/{id}/extend-trial`).
+
+
 ## ♻️ Team Lifecycle & Hard Delete
 
 Teams go through a three-stage lifecycle managed by background workers.
@@ -397,6 +408,7 @@ We follow a structured branching and deployment process to ensure stability acro
 - `DYNAMODB_REGION`: Optional, defaults to eu-central-2
 - `MOAD_API_KEY`: API key for MOAD service authentication
 - `PERIODIC_TOPUP_EXPIRY_DAYS`: Days before periodic top-up budget expires (default: 365)
+- `SIGNUP_CREDIT_DAYS`: Days a never-paid `PERIODIC` team keeps its starting key budget before its keys go to $0 (default: 30). See [Free credit for unpaid PERIODIC teams](#-free-credit-for-unpaid-periodic-teams).
 
 ### Frontend
 - `NEXT_PUBLIC_API_URL`: Backend API URL

@@ -1185,7 +1185,6 @@ class SalesTeam(BaseModel):
     budget_type: BudgetType
     regions: List[str]
     total_spend: float
-    trial_status: str
     model_config = ConfigDict(from_attributes=True)
 
 
