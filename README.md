@@ -393,6 +393,7 @@ We follow a structured branching and deployment process to ensure stability acro
 - `SECRET_KEY`: Application secret key
 - `AMAZEEAI_ENCRYPTION_KEY`: Encrypts the secret DB columns. One or more Fernet keys, comma separated, newest first. Required. Generate one with: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
   - Migration `e8c1a4d6f273` encrypts the existing secret values with this key. Run it with the same key as the backend pods.
+  - Migration `e8c1a4d6f273` runs at pod start. It stops when a stored secret is a Fernet token that the configured `AMAZEEAI_ENCRYPTION_KEY` cannot decrypt, so the rollout fails. The `regions` batches that finished stay encrypted, and a second run skips them. To fix it, add the key that encrypted the value to `AMAZEEAI_ENCRYPTION_KEY` (newest first) and redeploy.
   - Migration `a3e7c5f1d924` drops the clear `api_tokens.token` column. There is no way back.
   - Deploy the release with these migrations only after the release that reads encrypted values runs, and only after a DB snapshot.
   - The pre-deploy snapshot and older backups still hold the secrets and API tokens in clear text. Delete the pre-deploy snapshot after a 7-day rollback window. After the deploy, rotate the region `litellm_api_key` and `postgres_admin_password` values.
