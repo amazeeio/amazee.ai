@@ -2,9 +2,15 @@
 
 TKF-
 
+## Security requirements
+
+- Data that the change touches:
+- Who can use it:
+
 ## What changed
 
 ## Risk note
+
 - What can break:
 - Effect on availability:
 - Effect on backups and restore:
@@ -12,6 +18,7 @@ TKF-
 - Secure development rule skipped by judgment, and why (or "none"):
 
 ## Security checklist
+
 - [ ] Output is encoded.
 - [ ] Input is validated on the server.
 - [ ] No emails, names, IP addresses, prompts or secrets in the logs.
