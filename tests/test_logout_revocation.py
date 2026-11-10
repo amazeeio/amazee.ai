@@ -290,6 +290,7 @@ def test_prune_removes_only_rows_past_retention(db, test_user, expired):
     )
     db.commit()
 
+    now = datetime.now(UTC)
     deleted = prune_revoked_tokens(db)
 
     assert deleted == (1 if expired else 0)
@@ -299,8 +300,16 @@ def test_prune_removes_only_rows_past_retention(db, test_user, expired):
     assert len(audit_rows) == 1
     row = audit_rows[0]
     assert row.action == "revoked_tokens.prune"
+    assert row.event_type == "WORKER"
+    assert row.resource_type == "revoked_tokens"
     assert row.user_id is None
+    assert row.resource_id is None
+    assert row.request_source is None
     assert row.details["rows_deleted"] == deleted
     assert row.details["retention_days"] == settings.REVOKED_TOKENS_RETENTION_DAYS
+    cutoff = datetime.fromisoformat(row.details["cutoff"])
+    assert cutoff.utcoffset() == timedelta(0)
+    expected = now - timedelta(days=settings.REVOKED_TOKENS_RETENTION_DAYS)
+    assert abs(cutoff - expected) < timedelta(seconds=5)
     # Only these keys, so no jti or user id gets into the row.
     assert set(row.details) == {"rows_deleted", "cutoff", "retention_days"}
