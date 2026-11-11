@@ -5,6 +5,8 @@ client, and keeps no session record. Without a denylist, deleting the cookie at
 logout only affects the browser, so a copied token keeps working until its ``exp``
 (CWE-613). Every token now carries a unique ``jti``. Logout stores that id in the
 ``revoked_tokens`` table and the auth path refuses any id it finds there.
+``validate-jwt`` also writes a row for an expired token when it sends a new
+sign-in link, so the link is sent only once for each token.
 
 Postgres backs the denylist because this backend has no Redis, and the shared
 database keeps the answer the same on every pod.
@@ -42,9 +44,11 @@ def revoke_access_token(db: Session, token: str) -> bool:
     """Add the token's ``jti`` to the denylist. True if it is now revoked.
 
     The signature is verified but the expiry is not: an already-expired token is
-    rejected anyway, so it needs no row. Returns False when the token cannot be
-    trusted or carries no ``jti``, so the caller can stay quiet about it — logout
-    must not tell an anonymous caller whether a token was genuine.
+    rejected anyway, so it needs no row. Because logout writes no row for it,
+    validate-jwt can still send one sign-in link for that token. Returns False
+    when the token cannot be trusted or carries no ``jti``, so the caller can
+    stay quiet about it — logout must not tell an anonymous caller whether a
+    token was genuine.
     """
     try:
         payload = jwt.decode(
@@ -65,30 +69,49 @@ def revoke_access_token(db: Session, token: str) -> bool:
     if expires_at <= datetime.now(UTC):
         return True
 
-    if is_token_revoked(db, jti):
+    if add_revoked_token(db, payload):
+        logger.info("Revoked access token jti=%s", jti)
         return True
+    # If the row already exists, another logout of the same token wrote it first,
+    # which is the same outcome we wanted.
+    return is_token_revoked(db, jti)
 
-    user_id = _user_id_for_subject(db, payload.get("sub"))
-    db.add(DBRevokedToken(jti=jti, user_id=user_id, expires_at=expires_at))
+
+def add_revoked_token(db: Session, payload: dict) -> bool:
+    """Write the denylist row for a decoded token. True only if this call wrote it.
+
+    The caller makes sure that ``jti`` and ``exp`` are present. The unique index
+    on ``jti`` decides which of two racing calls wins.
+    """
+    db.add(
+        DBRevokedToken(
+            jti=payload["jti"],
+            user_id=_user_id_for_subject(db, payload.get("sub")),
+            expires_at=datetime.fromtimestamp(payload["exp"], tz=UTC),
+        )
+    )
     try:
         db.commit()
     except IntegrityError:
-        # Two logouts raced on the same token. The other one won, which is the
-        # same outcome we wanted.
         db.rollback()
-        return is_token_revoked(db, jti)
-
-    logger.info("Revoked access token jti=%s user_id=%s", jti, user_id)
+        return False
     return True
 
 
-def prune_revoked_tokens(db: Session) -> int:
-    """Delete denylist rows for tokens that have expired. Returns rows removed.
+def retention_cutoff() -> datetime:
+    """Rows for tokens that expired before this time are pruned."""
+    return datetime.now(UTC) - timedelta(days=settings.REVOKED_TOKENS_RETENTION_DAYS)
 
-    An expired token fails validation on its own, so keeping its row only grows
-    the table. Runs from the daily cron.
+
+def prune_revoked_tokens(db: Session) -> int:
+    """Delete denylist rows older than the retention window. Returns rows removed.
+
+    A row is kept for ``REVOKED_TOKENS_RETENTION_DAYS`` after its token expires,
+    because ``validate-jwt`` uses the row to send at most one sign-in link for each
+    expired token, and it refuses tokens older than that window. Runs from the
+    daily cron.
     """
-    cutoff = datetime.now(UTC) - timedelta(days=settings.REVOKED_TOKENS_RETENTION_DAYS)
+    cutoff = retention_cutoff()
     deleted = (
         db.query(DBRevokedToken)
         .filter(DBRevokedToken.expires_at < cutoff)

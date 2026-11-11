@@ -373,7 +373,8 @@ def _operation_tier(dependant) -> str:
     if role_tiers:
         return "user"
     authish = any(
-        ("current_user" in name)
+        # get_current_user returns None without credentials, so it allows anonymous calls.
+        ("current_user" in name and name != "get_current_user")
         or ("role_min" in name)
         or name.startswith("require_")
         or ("key_creator" in name)

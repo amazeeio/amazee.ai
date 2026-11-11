@@ -21,10 +21,11 @@ LOCK_NAME = "prune_revoked_tokens"
 
 
 def main():
-    """Drop denylist rows whose token has expired.
+    """Drop denylist rows older than the retention window.
 
-    An expired token already fails validation, so its row only makes the table
-    grow. Runs daily via the Lagoon cron, under the shared advisory lock so
+    A row stays for ``REVOKED_TOKENS_RETENTION_DAYS`` after its token expires,
+    because validate-jwt uses it to send at most one sign-in link for each expired
+    token. Runs daily via the Lagoon cron, under the shared advisory lock so
     overlapping runs do not clobber each other.
     """
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
