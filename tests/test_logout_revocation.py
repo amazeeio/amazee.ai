@@ -191,6 +191,7 @@ def test_expired_revoked_token_gets_no_recovery_email(mock_ses, client, db, test
     assert response.status_code == 401
     assert response.json()["detail"] == "Could not validate credentials"
     mock_ses.return_value.send_email.assert_not_called()
+    assert db.query(DBRevokedToken).count() == 1
 
 
 @patch("app.api.auth.SESService")
