@@ -844,6 +844,7 @@ async def validate_jwt(
                     )
                     db.commit()
                     raise
+                auth_logger.info("Sent a new sign-in link for an expired token")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Token expired. A new validation URL has been sent to your email.",

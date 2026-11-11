@@ -67,9 +67,12 @@ def revoke_access_token(db: Session, token: str) -> bool:
     if expires_at <= datetime.now(UTC):
         return True
 
+    if add_revoked_token(db, payload):
+        logger.info("Revoked access token jti=%s", jti)
+        return True
     # If the row already exists, another logout of the same token wrote it first,
     # which is the same outcome we wanted.
-    return add_revoked_token(db, payload) or is_token_revoked(db, jti)
+    return is_token_revoked(db, jti)
 
 
 def add_revoked_token(db: Session, payload: dict) -> bool:
@@ -78,12 +81,10 @@ def add_revoked_token(db: Session, payload: dict) -> bool:
     The caller makes sure that ``jti`` and ``exp`` are present. The unique index
     on ``jti`` decides which of two racing calls wins.
     """
-    jti = payload["jti"]
-    user_id = _user_id_for_subject(db, payload.get("sub"))
     db.add(
         DBRevokedToken(
-            jti=jti,
-            user_id=user_id,
+            jti=payload["jti"],
+            user_id=_user_id_for_subject(db, payload.get("sub")),
             expires_at=datetime.fromtimestamp(payload["exp"], tz=UTC),
         )
     )
@@ -92,8 +93,6 @@ def add_revoked_token(db: Session, payload: dict) -> bool:
     except IntegrityError:
         db.rollback()
         return False
-
-    logger.info("Revoked access token jti=%s user_id=%s", jti, user_id)
     return True
 
 
