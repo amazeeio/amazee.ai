@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import event
 
 from app.core.config import settings
 from app.db.models import DBAuditLog, DBSignupEvent
@@ -114,3 +115,26 @@ def test_prune_removes_only_old_rows(db, monkeypatch, expired):
     assert abs(cutoff - (now - timedelta(days=7))) < timedelta(seconds=5)
     # Only these keys, so no IP address or email gets into the row.
     assert set(row.details) == {"rows_deleted", "cutoff", "retention_days"}
+
+
+def test_prune_keeps_old_rows_when_the_audit_row_fails(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_EVENTS_RETENTION_DAYS", 7)
+    old = DBSignupEvent(ip_address="2.2.2.2", endpoint="t")
+    old.created_at = datetime.now(UTC) - timedelta(days=10)
+    db.add(old)
+    db.commit()
+
+    # Fails inside the flush that commit() runs, where a real insert error fails.
+    def fail_insert(*_):
+        raise RuntimeError("audit insert failed")
+
+    event.listen(DBAuditLog, "before_insert", fail_insert)
+    try:
+        with pytest.raises(RuntimeError, match="audit insert failed"):
+            prune_signup_events(db)
+    finally:
+        event.remove(DBAuditLog, "before_insert", fail_insert)
+    db.rollback()
+
+    assert db.query(DBSignupEvent).count() == 1
+    assert db.query(DBAuditLog).count() == 0

@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pytest
 from jose import jwt
+from sqlalchemy import event
 
 from app.core.config import settings
 from app.core.security import create_access_token
@@ -389,3 +390,30 @@ def test_prune_removes_only_rows_past_retention(db, test_user, expired):
     assert abs(cutoff - expected) < timedelta(seconds=5)
     # Only these keys, so no jti or user id gets into the row.
     assert set(row.details) == {"rows_deleted", "cutoff", "retention_days"}
+
+
+def test_prune_keeps_old_rows_when_the_audit_row_fails(db, test_user):
+    db.add(
+        DBRevokedToken(
+            jti="jti-under-test",
+            user_id=test_user.id,
+            expires_at=datetime.now(UTC)
+            - timedelta(days=settings.REVOKED_TOKENS_RETENTION_DAYS + 1),
+        )
+    )
+    db.commit()
+
+    # Fails inside the flush that commit() runs, where a real insert error fails.
+    def fail_insert(*_):
+        raise RuntimeError("audit insert failed")
+
+    event.listen(DBAuditLog, "before_insert", fail_insert)
+    try:
+        with pytest.raises(RuntimeError, match="audit insert failed"):
+            prune_revoked_tokens(db)
+    finally:
+        event.remove(DBAuditLog, "before_insert", fail_insert)
+    db.rollback()
+
+    assert db.query(DBRevokedToken).count() == 1
+    assert db.query(DBAuditLog).count() == 0
