@@ -9,8 +9,11 @@ import os
 import subprocess
 import sys
 
+from fastapi import Depends, FastAPI
+
 from app.core.rbac import require_private_ai_access, require_system_admin
 from app.core.roles import UserRole
+from app.core.security import get_current_user, get_current_user_from_auth
 from app.main import (
     _OPENAPI_TIERS,
     _TIER_RANK,
@@ -270,3 +273,22 @@ def test_every_route_requires_sign_in_unless_listed_as_public():
     public.discard(("GET", "/metrics"))
 
     assert public == PUBLIC_ROUTES
+
+
+def test_optional_user_dependency_does_not_count_as_sign_in():
+    probe = FastAPI()
+
+    @probe.get("/optional")
+    def optional(user=Depends(get_current_user)):
+        return None
+
+    @probe.get("/signed-in")
+    def signed_in(user=Depends(get_current_user_from_auth)):
+        return None
+
+    tiers = {
+        op.path: _operation_tier(op.dependant) for op in _iter_operations(probe.routes)
+    }
+
+    assert tiers["/optional"] == "public"
+    assert tiers["/signed-in"] != "public"
