@@ -44,9 +44,11 @@ def revoke_access_token(db: Session, token: str) -> bool:
     """Add the token's ``jti`` to the denylist. True if it is now revoked.
 
     The signature is verified but the expiry is not: an already-expired token is
-    rejected anyway, so it needs no row. Returns False when the token cannot be
-    trusted or carries no ``jti``, so the caller can stay quiet about it — logout
-    must not tell an anonymous caller whether a token was genuine.
+    rejected anyway, so it needs no row. Because logout writes no row for it,
+    validate-jwt can still send one sign-in link for that token. Returns False
+    when the token cannot be trusted or carries no ``jti``, so the caller can
+    stay quiet about it — logout must not tell an anonymous caller whether a
+    token was genuine.
     """
     try:
         payload = jwt.decode(
