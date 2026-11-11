@@ -38,6 +38,10 @@ def main():
             logger.info("Pruning old signup_events...")
             deleted = prune_signup_events(db)
             logger.info("✅ Pruned %d signup_events", deleted)
+        except Exception:
+            # release_lock commits, so drop the unfinished prune first.
+            db.rollback()
+            raise
         finally:
             release_lock(LOCK_NAME, db)
     except Exception as e:  # noqa: BLE001

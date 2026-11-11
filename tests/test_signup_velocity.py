@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy import event
 
 from app.core.config import settings
-from app.db.models import DBAuditLog, DBSignupEvent
+from app.db.models import DBAuditLog, DBSignupEvent, DBSystemSecret
 from app.services.signup_velocity import (
     client_ip,
     enforce_signup_velocity,
@@ -138,3 +138,29 @@ def test_prune_keeps_old_rows_when_the_audit_row_fails(db, monkeypatch):
 
     assert db.query(DBSignupEvent).count() == 1
     assert db.query(DBAuditLog).count() == 0
+
+
+def test_prune_script_rolls_back_and_releases_the_lock_on_failure(db, monkeypatch):
+    from scripts import trigger_prune_signup_events_job as job
+
+    monkeypatch.setattr(settings, "SIGNUP_EVENTS_RETENTION_DAYS", 7)
+    old = DBSignupEvent(ip_address="2.2.2.2", endpoint="t")
+    old.created_at = datetime.now(UTC) - timedelta(days=10)
+    db.add(old)
+    db.commit()
+
+    def fail_insert(*_):
+        raise RuntimeError("audit insert failed")
+
+    event.listen(DBAuditLog, "before_insert", fail_insert)
+    try:
+        with pytest.raises(SystemExit) as exit_info:
+            job.main()
+    finally:
+        event.remove(DBAuditLog, "before_insert", fail_insert)
+
+    assert exit_info.value.code == 1
+    assert db.query(DBSignupEvent).count() == 1
+    assert db.query(DBAuditLog).count() == 0
+    lock = db.query(DBSystemSecret).filter_by(key=f"lock_{job.LOCK_NAME}").one()
+    assert lock.value == "false"

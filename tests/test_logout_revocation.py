@@ -9,7 +9,7 @@ from sqlalchemy import event
 
 from app.core.config import settings
 from app.core.security import create_access_token
-from app.db.models import DBAuditLog, DBRevokedToken
+from app.db.models import DBAuditLog, DBRevokedToken, DBSystemSecret
 from app.services.token_revocation import (
     add_revoked_token,
     prune_revoked_tokens,
@@ -417,3 +417,33 @@ def test_prune_keeps_old_rows_when_the_audit_row_fails(db, test_user):
 
     assert db.query(DBRevokedToken).count() == 1
     assert db.query(DBAuditLog).count() == 0
+
+
+def test_prune_script_rolls_back_and_releases_the_lock_on_failure(db, test_user):
+    from scripts import trigger_prune_revoked_tokens_job as job
+
+    db.add(
+        DBRevokedToken(
+            jti="jti-under-test",
+            user_id=test_user.id,
+            expires_at=datetime.now(UTC)
+            - timedelta(days=settings.REVOKED_TOKENS_RETENTION_DAYS + 1),
+        )
+    )
+    db.commit()
+
+    def fail_insert(*_):
+        raise RuntimeError("audit insert failed")
+
+    event.listen(DBAuditLog, "before_insert", fail_insert)
+    try:
+        with pytest.raises(SystemExit) as exit_info:
+            job.main()
+    finally:
+        event.remove(DBAuditLog, "before_insert", fail_insert)
+
+    assert exit_info.value.code == 1
+    assert db.query(DBRevokedToken).count() == 1
+    assert db.query(DBAuditLog).count() == 0
+    lock = db.query(DBSystemSecret).filter_by(key=f"lock_{job.LOCK_NAME}").one()
+    assert lock.value == "false"
