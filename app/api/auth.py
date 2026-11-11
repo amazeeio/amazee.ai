@@ -770,7 +770,10 @@ async def validate_jwt(
 
     Returns:
     - If token is valid: A new access token with cookies set
-    - If token is expired: 401 with message about validation URL being sent
+    - If token is expired: 401 with a message that a new sign-in link was sent.
+      The link is sent only on the first call with that token, only if the token
+      has a jti, and only if it expired less than REVOKED_TOKENS_RETENTION_DAYS
+      ago. Otherwise the response is 401 "Could not validate credentials".
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
