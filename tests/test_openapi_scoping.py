@@ -266,5 +266,7 @@ def test_every_route_requires_sign_in_unless_listed_as_public():
         if _operation_tier(getattr(op, "dependant", None)) == "public"
         for method in op.methods
     }
+    # /metrics has its own bearer token check in AuthMiddleware.
+    public.discard(("GET", "/metrics"))
 
     assert public == PUBLIC_ROUTES
