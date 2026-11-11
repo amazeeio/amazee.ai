@@ -67,14 +67,9 @@ def revoke_access_token(db: Session, token: str) -> bool:
     if expires_at <= datetime.now(UTC):
         return True
 
-    if is_token_revoked(db, jti):
-        return True
-
-    if add_revoked_token(db, payload):
-        return True
-    # Two logouts raced on the same token. The other one won, which is the
-    # same outcome we wanted.
-    return is_token_revoked(db, jti)
+    # If the row already exists, another logout of the same token wrote it first,
+    # which is the same outcome we wanted.
+    return add_revoked_token(db, payload) or is_token_revoked(db, jti)
 
 
 def add_revoked_token(db: Session, payload: dict) -> bool:
