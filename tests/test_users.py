@@ -24,7 +24,7 @@ def test_create_user(client, test_admin, admin_token):
     response = client.post(
         "/users/",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={"email": "newuser@example.com", "password": "newpassword"},
+        json={"email": "newuser@example.com", "password": "newpassword123"},
     )
     assert response.status_code == 201
     user_data = response.json()
@@ -32,6 +32,29 @@ def test_create_user(client, test_admin, admin_token):
     assert user_data["is_admin"] is False
     assert user_data["receive_marketing_updates"] is False
     assert "id" in user_data
+
+
+def test_create_user_rejects_a_short_password(client, test_admin, admin_token):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    short = client.post(
+        "/users/",
+        headers=headers,
+        json={"email": "short@example.com", "password": "a" * 11},
+    )
+    assert short.status_code == 422
+
+    long_enough = client.post(
+        "/users/",
+        headers=headers,
+        json={"email": "short@example.com", "password": "a" * 12},
+    )
+    assert long_enough.status_code == 201
+
+    no_password = client.post(
+        "/users/", headers=headers, json={"email": "no-password@example.com"}
+    )
+    assert no_password.status_code == 201
 
 
 def test_create_user_duplicate_email(client, test_user, admin_token, db):
@@ -42,7 +65,11 @@ def test_create_user_duplicate_email(client, test_user, admin_token, db):
     response = client.post(
         "/users/",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={"email": test_user.email, "password": "newpassword", "is_admin": False},
+        json={
+            "email": test_user.email,
+            "password": "newpassword123",
+            "is_admin": False,
+        },
     )
     assert response.status_code == 400
     assert "Email already registered" in response.json()["detail"]
@@ -342,7 +369,7 @@ def test_create_user_by_team_admin(client, team_admin_token, test_team, db):
         headers={"Authorization": f"Bearer {team_admin_token}"},
         json={
             "email": "newteamuser@example.com",
-            "password": "newpassword",
+            "password": "newpassword123",
             "team_id": team_id,
         },
     )
@@ -1180,7 +1207,7 @@ def test_create_user_in_other_team_by_team_admin(client, team_admin_token, db):
         headers={"Authorization": f"Bearer {team_admin_token}"},
         json={
             "email": "newteamuser@example.com",
-            "password": "newpassword",
+            "password": "newpassword123",
             "team_id": team2.id,
         },
     )
@@ -1204,7 +1231,7 @@ def test_create_user_in_team_by_system_admin(client, admin_token, test_team, db)
         headers={"Authorization": f"Bearer {admin_token}"},
         json={
             "email": "newteamuser@example.com",
-            "password": "newpassword",
+            "password": "newpassword123",
             "team_id": team_id,
         },
     )
@@ -1230,7 +1257,7 @@ def test_create_read_only_user_by_team_admin(client, team_admin_token, test_team
         headers={"Authorization": f"Bearer {team_admin_token}"},
         json={
             "email": "newreadonly@example.com",
-            "password": "newpassword",
+            "password": "newpassword123",
             "team_id": team_id,
             "role": "read_only",
         },
@@ -1269,7 +1296,7 @@ def test_create_user_with_invalid_role_by_team_admin(
         headers={"Authorization": f"Bearer {team_admin_token}"},
         json={
             "email": "invalidrole@example.com",
-            "password": "newpassword",
+            "password": "newpassword123",
             "team_id": team_id,
             "role": "nonsense_role",
         },
@@ -1316,7 +1343,7 @@ def test_make_team_member_admin_by_team_admin(client, team_admin_token, admin_to
     response = client.post(
         "/users/",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={"email": "nonteamuser@example.com", "password": "newpassword"},
+        json={"email": "nonteamuser@example.com", "password": "newpassword123"},
     )
     assert response.status_code == 201
     user_data = response.json()
@@ -1417,7 +1444,7 @@ def test_create_user_with_limits_enabled(client, team_admin_token, test_team, db
         headers={"Authorization": f"Bearer {team_admin_token}"},
         json={
             "email": "user1@example.com",
-            "password": "newpassword",
+            "password": "newpassword123",
             "team_id": test_team.id,
         },
     )
@@ -1429,7 +1456,7 @@ def test_create_user_with_limits_enabled(client, team_admin_token, test_team, db
         headers={"Authorization": f"Bearer {team_admin_token}"},
         json={
             "email": "newteamuser@example.com",
-            "password": "newpassword",
+            "password": "newpassword123",
             "team_id": test_team.id,
         },
     )
@@ -1466,7 +1493,7 @@ def test_create_user_pool_team_has_no_user_limit(
         headers={"Authorization": f"Bearer {team_admin_token}"},
         json={
             "email": "pool-user-over-limit@example.com",
-            "password": "newpassword",
+            "password": "newpassword123",
             "team_id": test_team.id,
         },
     )
@@ -1496,7 +1523,7 @@ def test_create_user_creates_default_limits(client, admin_token, test_team, db):
         headers={"Authorization": f"Bearer {admin_token}"},
         json={
             "email": "newuser@example.com",
-            "password": "newpassword",
+            "password": "newpassword123",
             "team_id": test_team.id,
         },
     )
@@ -1577,7 +1604,7 @@ def test_register_user_creates_default_limits(client, db):
     # Register a new user
     response = client.post(
         "/auth/register",
-        json={"email": "newuser@example.com", "password": "newpassword"},
+        json={"email": "newuser@example.com", "password": "newpassword123"},
     )
 
     assert response.status_code == 200
@@ -1649,7 +1676,7 @@ def test_create_user_does_not_create_limits_when_disabled(
         headers={"Authorization": f"Bearer {admin_token}"},
         json={
             "email": "newuser@example.com",
-            "password": "newpassword",
+            "password": "newpassword123",
             "team_id": test_team.id,
         },
     )
@@ -1695,14 +1722,14 @@ def test_sign_in_creates_user_with_default_limits(client, db):
     # First register a user
     register_response = client.post(
         "/auth/register",
-        json={"email": "newuser@example.com", "password": "newpassword"},
+        json={"email": "newuser@example.com", "password": "newpassword123"},
     )
     assert register_response.status_code == 200
 
     # Then login with the user
     response = client.post(
         "/auth/login",
-        data={"username": "newuser@example.com", "password": "newpassword"},
+        data={"username": "newuser@example.com", "password": "newpassword123"},
     )
 
     assert response.status_code == 200
@@ -1864,7 +1891,7 @@ def test_delete_team_member_frees_the_seat(client, admin_token, db, test_team):
         headers={"Authorization": f"Bearer {admin_token}"},
         json={
             "email": "replacement@example.com",
-            "password": "newpassword",
+            "password": "newpassword123",
             "team_id": test_team.id,
         },
     )
@@ -1921,7 +1948,7 @@ def test_remove_user_from_team_frees_the_seat(client, admin_token, db, test_team
         headers={"Authorization": f"Bearer {admin_token}"},
         json={
             "email": "replacement-member@example.com",
-            "password": "newpassword",
+            "password": "newpassword123",
             "team_id": test_team.id,
         },
     )
