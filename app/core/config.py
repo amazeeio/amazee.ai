@@ -119,9 +119,8 @@ class Settings(BaseSettings):
         os.getenv("SIGNUP_EVENTS_RETENTION_DAYS", "7")
     )
     # --- Access token revocation (logout) ---
-    # How long a revoked_tokens row is kept after the token's own expiry. The row
-    # stops mattering once the token expires; the extra days only cover clock skew
-    # and leave a short audit trail.
+    # How long a revoked_tokens row stays after its token expires. It is also the
+    # longest time after expiry in which validate-jwt sends a new sign-in link.
     REVOKED_TOKENS_RETENTION_DAYS: int = int(
         os.getenv("REVOKED_TOKENS_RETENTION_DAYS", "2")
     )

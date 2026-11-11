@@ -131,6 +131,7 @@ export function CreateUserInTeamDialog({
                 <Input
                   id="user-password"
                   type="password"
+                  minLength={12}
                   value={newUserPassword}
                   onChange={(e) => setNewUserPassword(e.target.value)}
                   placeholder="••••••••"

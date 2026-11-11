@@ -17,7 +17,7 @@ def test_create_user_uppercase_email_is_stored_lowercase(
     response = client.post(
         "/users/",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={"email": email, "password": "password123"},
+        json={"email": email, "password": "password1234"},
     )
 
     assert response.status_code == 201
@@ -78,7 +78,7 @@ def test_update_email_to_existing_case_insensitive(
     response = client.post(
         "/users/",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={"email": other_email, "password": "password123"},
+        json={"email": other_email, "password": "password1234"},
     )
     assert response.status_code == 201
 

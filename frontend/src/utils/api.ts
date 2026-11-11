@@ -39,7 +39,7 @@ export async function fetchApi(endpoint: string, options: RequestInit = {}) {
     const error = await response
       .json()
       .catch(() => ({ message: response.statusText }));
-    throw new Error(error.detail || error.message || "API call failed");
+    throw new Error(errorMessage(error));
   }
 
   return response;
@@ -78,6 +78,17 @@ export async function del(endpoint: string, options: RequestInit = {}) {
   return fetchApi(endpoint, { ...options, method: "DELETE" });
 }
 
+// A 422 from request validation has a list of errors as its detail.
+function errorMessage(error: {
+  detail?: string | { msg: string }[];
+  message?: string;
+}): string {
+  const detail = Array.isArray(error.detail)
+    ? error.detail.map((e) => e.msg).join("; ")
+    : error.detail;
+  return detail || error.message || "API call failed";
+}
+
 // API functions that use Bearer token instead of cookies
 export async function fetchApiWithToken(
   endpoint: string,
@@ -111,7 +122,7 @@ export async function fetchApiWithToken(
     const error = await response
       .json()
       .catch(() => ({ message: response.statusText }));
-    throw new Error(error.detail || error.message || "API call failed");
+    throw new Error(errorMessage(error));
   }
 
   return response;

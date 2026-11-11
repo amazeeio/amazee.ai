@@ -179,6 +179,7 @@ export function CreateUserDialog({
             <label className="text-sm font-medium">Password</label>
             <Input
               type="password"
+              minLength={12}
               value={newUserPassword}
               onChange={(e) => setNewUserPassword(e.target.value)}
               placeholder="••••••••"
