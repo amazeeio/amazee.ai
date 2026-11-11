@@ -79,7 +79,6 @@ from app.services.disposable_domains import assert_email_domain_allowed
 from app.services.signup_velocity import enforce_signup_velocity
 from app.services.token_revocation import (
     add_revoked_token,
-    is_token_revoked,
     retention_cutoff,
     revoke_access_token,
 )
@@ -828,13 +827,12 @@ async def validate_jwt(
                 if payload["exp"] < retention_cutoff().timestamp():
                     raise credentials_exception
 
-                # A revoked token gets no recovery email either.
-                if is_token_revoked(db, jti):
-                    auth_logger.info("Refused to refresh a revoked expired token")
-                    raise credentials_exception
-
-                # Another call with this token already sent the link.
+                # A row already exists if logout revoked this token or another
+                # call already sent the link.
                 if not add_revoked_token(db, payload):
+                    auth_logger.info(
+                        "Refused a second sign-in link for an expired token"
+                    )
                     raise credentials_exception
 
                 try:
