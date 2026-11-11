@@ -17,6 +17,7 @@ from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime, UTC
 from sqlalchemy.sql import func
 from sqlalchemy import UniqueConstraint
+from app.core.crypto import EncryptedString
 from app.schemas.limits import LimitType, ResourceType, UnitType, OwnerType, LimitSource
 from app.schemas.models import BudgetType
 
@@ -85,9 +86,9 @@ class DBRegion(Base):
     postgres_host = Column(String)
     postgres_port = Column(Integer, default=5432)
     postgres_admin_user = Column(String)
-    postgres_admin_password = Column(String)
+    postgres_admin_password = Column(EncryptedString)
     litellm_api_url = Column(String)
-    litellm_api_key = Column(String)
+    litellm_api_key = Column(EncryptedString)
     is_active = Column(Boolean, default=True)
     is_dedicated = Column(Boolean, default=False)
     # Which market this region serves (US, US+CA, EU, DE, CH, UK, AU, ...) —
@@ -115,7 +116,6 @@ class DBAPIToken(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String)
-    token = Column(String, unique=True, index=True)
     token_hash = Column(String, unique=True, index=True)
     created_at = Column(DateTime(timezone=True), default=func.now())
     last_used_at = Column(DateTime(timezone=True), nullable=True)
@@ -381,8 +381,8 @@ class DBPrivateAIKey(Base):
     name = Column(String, nullable=True)  # User-friendly display name
     database_host = Column(String, nullable=True)
     database_username = Column(String)
-    database_password = Column(String, nullable=True)
-    litellm_token = Column(String, nullable=True)
+    database_password = Column(EncryptedString, nullable=True)
+    litellm_token = Column(EncryptedString, nullable=True)
     litellm_api_url = Column(String, nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"))
     region_id = Column(Integer, ForeignKey("regions.id"))

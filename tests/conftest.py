@@ -5,6 +5,8 @@ import os
 # validator in app/core/config.py ("my-secret-key", "test-secret-key"), or the
 # app will fail to start here. Keep the "-for-tests" suffix.
 os.environ["AMAZEEAI_JWT_SECRET"] = "test-secret-key-for-tests-0123456789abcdef"
+# A fixed Fernet key made one time for the tests; never used outside them.
+os.environ["AMAZEEAI_ENCRYPTION_KEY"] = "77OpMtRNz0ga6zwhVqp_SW10DVff3m2lo2b3FmD7DlU="
 # Unconditional (like the JWT secret above) so an ambient ENV_SUFFIX=production
 # leaking from the shell/CI can't silently disable the local-bearer path or the
 # Swagger route and break tests. Per-test prod checks set settings.ENV_SUFFIX

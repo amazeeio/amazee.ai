@@ -1,5 +1,6 @@
-from pydantic_settings import BaseSettings
-from pydantic import ConfigDict, Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from cryptography.fernet import Fernet, MultiFernet
+from pydantic import Field, field_validator
 import os
 
 
@@ -16,6 +17,10 @@ class Settings(BaseSettings):
     # the real signing key. Required: startup fails if the secret is unset.
     SECRET_KEY: str = Field(validation_alias="AMAZEEAI_JWT_SECRET")
     ALGORITHM: str = "HS256"
+
+    # Fernet keys for the secret DB columns, comma separated, newest first.
+    # Required: startup fails if it is unset.
+    AMAZEEAI_ENCRYPTION_KEY: str
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60  # Increase to 60 minutes
 
     # CORS settings
@@ -198,7 +203,7 @@ class Settings(BaseSettings):
     # the catalog from overwriting or deleting their models.
     CATALOG_MANAGED_REGIONS: str = os.getenv("CATALOG_MANAGED_REGIONS", "")
 
-    model_config = ConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
     main_route: str = os.getenv("LAGOON_ROUTE", "http://localhost:8800")
     frontend_route: str = os.getenv("FRONTEND_ROUTE", "http://localhost:3000")
 
@@ -220,6 +225,20 @@ class Settings(BaseSettings):
                 "AMAZEEAI_JWT_SECRET must be at least 32 characters "
                 "(e.g. `openssl rand -hex 32`)."
             )
+        return value
+
+    @field_validator("AMAZEEAI_ENCRYPTION_KEY")
+    @classmethod
+    def validate_encryption_key(cls, value):
+        message = (
+            "AMAZEEAI_ENCRYPTION_KEY must hold one or more Fernet keys, comma "
+            "separated, newest first. Generate one with: python -c \"from "
+            "cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+        )
+        try:
+            MultiFernet([Fernet(key) for key in encryption_keys(value)])
+        except ValueError as exc:
+            raise ValueError(message) from exc
         return value
 
     @field_validator(
@@ -246,6 +265,10 @@ class Settings(BaseSettings):
         self.CORS_ORIGINS.extend(
             [route.strip() for route in lagoon_routes if route.strip()]
         )
+
+
+def encryption_keys(value: str) -> list[str]:
+    return [part.strip() for part in value.split(",") if part.strip()]
 
 
 settings = Settings()

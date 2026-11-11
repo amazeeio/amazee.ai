@@ -79,7 +79,7 @@ def test_no_header_delegates_to_moad(
     # Use a distinct name from the POSTed key ("test-key") so the idempotency
     # check (which matches on name + region) does not short-circuit and the
     # full delegation path is exercised. This key is found afterwards via the
-    # litellm_token lookup that follows the moad call.
+    # database_name lookup that follows the moad call.
     pre_created_key = DBPrivateAIKey(
         name="pre-seeded-key",
         litellm_token=litellm_token,
@@ -95,7 +95,7 @@ def test_no_header_delegates_to_moad(
 
     mock_response = MagicMock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"llm": {"token": litellm_token}}
+    mock_response.json.return_value = {"llm": {"token": litellm_token}, "vectorDb": {"database": "db"}}
 
     mock_http = AsyncMock()
     mock_http.__aenter__ = AsyncMock(return_value=mock_http)
@@ -210,7 +210,7 @@ def test_teamless_non_admin_with_header_is_still_delegated(
 
     mock_response = MagicMock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"llm": {"token": litellm_token}}
+    mock_response.json.return_value = {"llm": {"token": litellm_token}, "vectorDb": {"database": "db"}}
 
     mock_http = AsyncMock()
     mock_http.__aenter__ = AsyncMock(return_value=mock_http)
@@ -360,7 +360,7 @@ def test_delegation_pins_user_to_key_team(
 
     mock_response = MagicMock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"llm": {"token": litellm_token}}
+    mock_response.json.return_value = {"llm": {"token": litellm_token}, "vectorDb": {"database": "db"}}
     mock_http = AsyncMock()
     mock_http.__aenter__ = AsyncMock(return_value=mock_http)
     mock_http.__aexit__ = AsyncMock(return_value=False)
@@ -373,6 +373,39 @@ def test_delegation_pins_user_to_key_team(
     # The user is now pinned to the key's team.
     db.refresh(user)
     assert user.team_id == moad_team.id
+
+
+@patch("app.api.private_ai_keys.settings")
+@patch("httpx.AsyncClient")
+def test_provisioned_key_token_mismatch_returns_502(
+    mock_client_cls, mock_settings, drupal_client, db, test_region
+):
+    """A key found by database_name whose token differs from moad's is not returned."""
+    mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+    mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+
+    user = _make_user(db)
+    token = _login(drupal_client, user)
+
+    key_team = DBTeam(name="key-team", admin_email=user.email, is_active=True)
+    db.add(key_team)
+    db.commit()
+    db.refresh(key_team)
+    seeded = _seed_key(db, "pre-seeded-key-3", "token-a", test_region.id, key_team.id)
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "llm": {"token": "token-b"},
+        "vectorDb": {"database": seeded.database_name},
+    }
+    mock_client_cls.return_value = _moad_client(AsyncMock(return_value=mock_response))
+
+    response = _post_key(drupal_client, token, test_region.id)
+
+    assert response.status_code == 502
+    db.refresh(user)
+    assert user.team_id != key_team.id
 
 
 # ---------------------------------------------------------------------------
@@ -546,7 +579,7 @@ async def test_concurrent_provisioning_calls_moad_once(mock_settings, db, test_r
             writer.close()
         response = MagicMock()
         response.status_code = 200
-        response.json.return_value = {"llm": {"token": litellm_token}}
+        response.json.return_value = {"llm": {"token": litellm_token}, "vectorDb": {"database": f"db-{litellm_token}"}}
         return response
 
     post = AsyncMock(side_effect=slow_provision)
@@ -665,7 +698,7 @@ async def test_different_region_does_not_contend(
 
     response = MagicMock()
     response.status_code = 200
-    response.json.return_value = {"llm": {"token": "drupal-key-other-region"}}
+    response.json.return_value = {"llm": {"token": "drupal-key-other-region"}, "vectorDb": {"database": "db-drupal-key-other-region"}}
     post = AsyncMock(return_value=response)
 
     holder = engine.connect()
@@ -710,7 +743,7 @@ async def test_name_bypass_still_provisions_under_lock(mock_settings, db, test_r
             writer.close()
         response = MagicMock()
         response.status_code = 200
-        response.json.return_value = {"llm": {"token": new_token}}
+        response.json.return_value = {"llm": {"token": new_token}, "vectorDb": {"database": "db-drupal-key-new"}}
         return response
 
     post = AsyncMock(side_effect=provision)

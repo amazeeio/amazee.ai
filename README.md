@@ -294,6 +294,8 @@ python scripts/trigger_hard_delete_job.py
 
 If you have a database dump, you can restore it into your local PostgreSQL service following these steps:
 
+Set `AMAZEEAI_ENCRYPTION_KEY` to the source environment's key (newest first), or reads of the restored secrets fail.
+
 1. **Extract the dump**:
    ```bash
    mkdir -p ./restore-data
@@ -389,6 +391,7 @@ We follow a structured branching and deployment process to ensure stability acro
 ### Backend
 - `DATABASE_URL`: PostgreSQL connection string
 - `SECRET_KEY`: Application secret key
+- `AMAZEEAI_ENCRYPTION_KEY`: Encrypts the secret DB columns. One or more Fernet keys, comma separated, newest first. Required. Generate one with: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
 - `DYNAMODB_ROLE_NAME`: role to assume for accessing DDB resources (created by terraform)
 - `SES_ROLE_NAME`: Role to assume for SES access (created by terraform)
 - `SES_SENDER_EMAIL`: Validated identity in SES from which emails are sent

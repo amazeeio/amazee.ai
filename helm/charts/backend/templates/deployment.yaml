@@ -16,11 +16,13 @@ spec:
   template:
     metadata:
       annotations:
-        # Every env var below comes from the ConfigMap by reference, so a
-        # `helm upgrade` that only changes a value leaves the pod template
-        # identical and the running pods keep the old value. Hashing the
-        # rendered ConfigMap into the template makes the change roll the pods.
+        # Every env var below comes from the ConfigMap or the Secret by
+        # reference, so a `helm upgrade` that only changes a value leaves the
+        # pod template identical and the running pods keep the old value.
+        # Hashing both rendered objects into the template makes the change
+        # roll the pods.
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
       labels:
         {{- include "backend.selectorLabels" . | nindent 8 }}
     spec:
@@ -44,6 +46,11 @@ spec:
                 secretKeyRef:
                   name: {{ include "backend.fullname" . }}-secret
                   key: secret-key
+            - name: AMAZEEAI_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "backend.fullname" . }}-secret
+                  key: encryption-key
             - name: ENABLE_METRICS
               valueFrom:
                 configMapKeyRef:

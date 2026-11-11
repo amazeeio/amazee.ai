@@ -221,17 +221,6 @@ async def get_current_user_from_auth(
             if token_to_try
             else None
         )
-        # The previous release writes rows without a hash during a rolling deploy
-        # or after a rollback, and the migration backfill does not run again.
-        if db_token is None and token_to_try:
-            db_token = (
-                db.query(DBAPIToken)
-                .filter(DBAPIToken.token == token_to_try, DBAPIToken.token_hash.is_(None))
-                .options(joinedload(DBAPIToken.owner).joinedload(DBUser.team))
-                .first()
-            )
-            if db_token:
-                db_token.token_hash = hash_api_token(token_to_try)
         if db_token:
             # Update last used timestamp
             db_token.last_used_at = datetime.now(UTC)
