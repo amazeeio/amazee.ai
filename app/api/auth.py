@@ -834,7 +834,8 @@ async def validate_jwt(
                 # call already sent the link.
                 if not add_revoked_token(db, payload):
                     auth_logger.info(
-                        "Refused a second sign-in link for an expired token"
+                        "Refused a sign-in link for an expired token that is "
+                        "already on the denylist"
                     )
                     raise credentials_exception
 
