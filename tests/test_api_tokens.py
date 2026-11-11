@@ -1,4 +1,16 @@
+import importlib
+
+import sqlalchemy as sa
+from alembic import op
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+from sqlalchemy import inspect, text
+
+from app.core.security import hash_api_token
 from app.db.models import DBAPIToken
+
+TOKEN_HASH_MIGRATION = "app.migrations.versions.20261104_100000_d5b3f7a9e146_add_api_token_hash"
+DROP_TOKEN_MIGRATION = "app.migrations.versions.20261104_130000_a3e7c5f1d924_drop_api_token_plain"
 
 
 def test_create_api_token(client, test_token, test_user):
@@ -22,7 +34,7 @@ def test_list_api_tokens(client, test_token, test_user, db):
     """Test listing API tokens"""
     # Create a test token in the database
     test_api_token = DBAPIToken(
-        name="Test Token", token="test-token-123", user_id=test_user.id
+        name="Test Token", user_id=test_user.id
     )
     db.add(test_api_token)
     db.commit()
@@ -47,7 +59,7 @@ def test_delete_api_token(client, test_token, test_user, db):
     """Test deleting an API token"""
     # Create a test token in the database
     test_api_token = DBAPIToken(
-        name="Test Token", token="test-token-123", user_id=test_user.id
+        name="Test Token", user_id=test_user.id
     )
     db.add(test_api_token)
     db.commit()
@@ -79,7 +91,7 @@ def test_delete_other_users_token(client, test_token, test_admin, db):
     """Test that a user cannot delete another user's token"""
     # Create a token owned by the admin
     admin_token = DBAPIToken(
-        name="Admin Token", token="admin-token-123", user_id=test_admin.id
+        name="Admin Token", user_id=test_admin.id
     )
     db.add(admin_token)
     db.commit()
@@ -108,3 +120,99 @@ def test_list_api_tokens_unauthenticated(client):
 
     assert response.status_code == 401
     assert "Could not validate credentials" in response.json()["detail"]
+
+
+def test_token_hash_migration_backfills_existing_tokens(db, test_user):
+    migration = importlib.import_module(TOKEN_HASH_MIGRATION)
+    connection = db.connection()
+    try:
+        with Operations.context(MigrationContext.configure(connection)):
+            # The model no longer maps the plain column, so the test schema lacks it.
+            op.add_column("api_tokens", sa.Column("token", sa.String(), nullable=True))
+            migration.downgrade()
+            connection.execute(
+                text("INSERT INTO api_tokens (name, token, user_id) VALUES ('legacy', 'legacy-token-abc', :user_id)"),
+                {"user_id": test_user.id},
+            )
+
+            migration.upgrade()
+
+            stored = connection.execute(
+                text("SELECT token_hash FROM api_tokens WHERE token = 'legacy-token-abc'")
+            ).scalar_one()
+            assert stored == hash_api_token("legacy-token-abc")
+            indexes = inspect(connection).get_indexes("api_tokens")
+            assert any(i["column_names"] == ["token_hash"] and i["unique"] for i in indexes)
+    finally:
+        db.rollback()
+
+
+def test_hash_unhashed_tokens_migration_fills_missing_hashes(db, test_user):
+    migration = importlib.import_module(
+        "app.migrations.versions.20261104_113000_64640a2c1b9d_hash_unhashed_api_tokens"
+    )
+    connection = db.connection()
+    try:
+        with Operations.context(MigrationContext.configure(connection)):
+            # Without the plain column the migration has nothing to do.
+            migration.upgrade()
+            op.add_column("api_tokens", sa.Column("token", sa.String(), nullable=True))
+            connection.execute(
+                text("INSERT INTO api_tokens (name, token, user_id) VALUES ('old release', 'raw-unhashed', :user_id)"),
+                {"user_id": test_user.id},
+            )
+
+            migration.upgrade()
+
+            stored = connection.execute(
+                text("SELECT token_hash FROM api_tokens WHERE token = 'raw-unhashed'")
+            ).scalar_one()
+            assert stored == hash_api_token("raw-unhashed")
+    finally:
+        db.rollback()
+
+
+def test_create_api_token_stores_hash(client, test_token, db):
+    response = client.post(
+        "/auth/token",
+        headers={"Authorization": f"Bearer {test_token}"},
+        json={"name": "Hashed Token"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    stored = db.query(DBAPIToken).filter(DBAPIToken.id == data["id"]).one()
+    assert stored.token_hash == hash_api_token(data["token"])
+
+    response = client.get("/auth/token", headers={"Authorization": f"Bearer {data['token']}"})
+    assert response.status_code == 200
+
+
+def test_api_token_authenticates_by_hash(client, test_user, db):
+    db.add(DBAPIToken(name="hash only", token_hash=hash_api_token("raw-abc"), user_id=test_user.id))
+    db.commit()
+
+    assert client.get("/auth/token", headers={"Authorization": "Bearer raw-abc"}).status_code == 200
+    assert client.get("/auth/token", headers={"Authorization": "Bearer wrong-token"}).status_code == 401
+
+
+def test_drop_token_migration_hashes_missing_rows(db, test_user):
+    migration = importlib.import_module(DROP_TOKEN_MIGRATION)
+    connection = db.connection()
+    try:
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.downgrade()
+            token_id = connection.execute(
+                text("INSERT INTO api_tokens (name, token, user_id) VALUES ('rolled back', 'raw-unhashed', :user_id) RETURNING id"),
+                {"user_id": test_user.id},
+            ).scalar_one()
+
+            migration.upgrade()
+
+            stored = connection.execute(
+                text("SELECT token_hash FROM api_tokens WHERE id = :id"), {"id": token_id}
+            ).scalar_one()
+            assert stored == hash_api_token("raw-unhashed")
+            assert "token" not in {c["name"] for c in inspect(connection).get_columns("api_tokens")}
+    finally:
+        db.rollback()

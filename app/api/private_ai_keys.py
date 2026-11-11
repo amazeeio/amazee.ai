@@ -1343,11 +1343,12 @@ async def _delegate_to_moad(
     ``POST /internal/provision-key`` (with its admin API token) to create
     the actual LiteLLM token + vector DB on this backend.
 
-    The moad response is used to extract the newly created LiteLLM token.
-    A fully populated key record (including ``id``, ``team_id``, region info,
-    etc.) is then loaded from the local DB using ``litellm_token`` so the
-    result matches the ``PrivateAIKey`` shape expected by the Drupal module
-    and remains visible via ``GET /private-ai-keys``.
+    The moad response is used to extract the newly created LiteLLM token and
+    vector DB name. A fully populated key record (including ``id``,
+    ``team_id``, region info, etc.) is then found in the local DB by
+    ``database_name``, and its ``litellm_token`` must match the response. So
+    the result matches the ``PrivateAIKey`` shape expected by the Drupal
+    module and remains visible via ``GET /private-ai-keys``.
     """
     if not settings.MOAD_DASHBOARD_API_URL or not settings.MOAD_DASHBOARD_API_TOKEN:
         logger.error(
@@ -1519,8 +1520,15 @@ async def _provision_via_moad(
         ) from exc
 
     litellm_token = data.get("llm", {}).get("token")
-    if not litellm_token:
-        logger.error("moad provision-key response missing llm.token: %s", data)
+    database_name = (data.get("vectorDb") or {}).get("database")
+    if not litellm_token or not database_name:
+        # The response holds the clear key and DB password, so log key names only.
+        logger.error(
+            "moad provision-key response missing llm.token or vectorDb.database; "
+            "keys: %s, vectorDb keys: %s",
+            sorted(data),
+            sorted(data.get("vectorDb") or {}),
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Key provisioning returned an invalid response.",
@@ -1529,15 +1537,17 @@ async def _provision_via_moad(
     # Look up the key that moad just created via /internal/provision-key so we
     # return a fully populated PrivateAIKey (with id, team_id, region, etc.).
     # This also ensures the key is visible via GET /private-ai-keys.
+    # litellm_token is encrypted at rest, so SQL cannot match it; find the row
+    # by its plain, unique database_name and compare the token after decryption.
     db_key = (
         db.query(DBPrivateAIKey)
-        .filter(DBPrivateAIKey.litellm_token == litellm_token)
+        .filter(DBPrivateAIKey.database_name == database_name)
         .first()
     )
 
-    if not db_key:
+    if not db_key or db_key.litellm_token != litellm_token:
         logger.error(
-            "Could not find newly provisioned key by litellm_token after moad call"
+            "Could not find newly provisioned key by database_name after moad call"
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

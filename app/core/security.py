@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from datetime import datetime, timedelta, UTC
 from typing import Optional
@@ -27,6 +28,13 @@ logger = logging.getLogger(__name__)
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def hash_api_token(token: str) -> str:
+    # API tokens are long random strings, so a fast unsalted hash is enough
+    # and keeps the lookup an indexed equality match.
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
 
 # Custom bearer scheme
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -207,9 +215,11 @@ async def get_current_user_from_auth(
     try:
         db_token = (
             db.query(DBAPIToken)
-            .filter(DBAPIToken.token == token_to_try)
+            .filter(DBAPIToken.token_hash == hash_api_token(token_to_try))
             .options(joinedload(DBAPIToken.owner).joinedload(DBUser.team))
             .first()
+            if token_to_try
+            else None
         )
         if db_token:
             # Update last used timestamp

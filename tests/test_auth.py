@@ -1,6 +1,8 @@
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 from app.api.auth import generate_validation_token
+from app.core.security import get_password_hash
+from app.db.models import DBUser
 
 
 @pytest.fixture
@@ -83,6 +85,38 @@ def test_register_existing_user(client, test_user):
     assert response.json()["detail"] == "Email already registered"
 
 
+def test_register_rejects_a_short_password(client):
+    short = client.post(
+        "/auth/register",
+        json={"email": "short@example.com", "password": "a" * 11},
+    )
+    assert short.status_code == 422
+
+    long_enough = client.post(
+        "/auth/register",
+        json={"email": "short@example.com", "password": "a" * 12},
+    )
+    assert long_enough.status_code == 200
+
+
+def test_login_works_with_an_existing_short_password(client, db):
+    db.add(
+        DBUser(
+            email="old-user@example.com",
+            hashed_password=get_password_hash("short-pw"),
+            is_active=True,
+            is_admin=False,
+        )
+    )
+    db.commit()
+
+    response = client.post(
+        "/auth/login",
+        data={"username": "old-user@example.com", "password": "short-pw"},
+    )
+    assert response.status_code == 200
+
+
 def test_update_password_for_user_with_password(client, test_user):
     # First login to get a token
     response = client.post(
@@ -112,6 +146,32 @@ def test_update_password_for_user_with_password(client, test_user):
     )
     assert response.status_code == 401
     assert "Incorrect email or password" in response.json()["detail"]
+
+
+def test_update_password_rejects_a_short_new_password(client, test_user):
+    response = client.post(
+        "/auth/login", data={"username": test_user.email, "password": "testpassword"}
+    )
+    assert response.status_code == 200
+    headers = {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+    short = client.put(
+        "/auth/me/update",
+        headers=headers,
+        json={"current_password": "testpassword", "new_password": "a" * 11},
+    )
+    assert short.status_code == 422
+    response = client.post(
+        "/auth/login", data={"username": test_user.email, "password": "testpassword"}
+    )
+    assert response.status_code == 200
+
+    long_enough = client.put(
+        "/auth/me/update",
+        headers=headers,
+        json={"current_password": "testpassword", "new_password": "a" * 12},
+    )
+    assert long_enough.status_code == 200
 
 
 def test_update_password_fails_without_current_password(client, test_user):

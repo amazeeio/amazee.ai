@@ -22,6 +22,9 @@ def lowercase_email(v: str) -> str:
 # Custom type for case-insensitive emails
 CaseInsensitiveEmailStr = Annotated[EmailStr, AfterValidator(lowercase_email)]
 
+# Applies only where a password is set, not at login, so existing passwords keep working.
+NewPassword = Annotated[str, Field(min_length=12)]
+
 
 class Token(BaseModel):
     access_token: str
@@ -46,7 +49,7 @@ class UserBase(BaseModel):
 
 
 class UserCreate(UserBase):
-    password: Optional[str] = None
+    password: Optional[NewPassword] = None
     team_id: Optional[int] = None
     role: Optional[str] = None
     receive_marketing_updates: Optional[bool] = None
@@ -58,7 +61,7 @@ class UserUpdate(BaseModel):
     is_admin: Optional[bool] = None
     receive_marketing_updates: Optional[bool] = None
     current_password: Optional[str] = None
-    new_password: Optional[str] = None
+    new_password: Optional[NewPassword] = None
 
 
 class AdminUserUpdate(BaseModel):
@@ -109,7 +112,6 @@ class APIToken(APITokenBase):
     created_at: datetime
     last_used_at: Optional[datetime] = None
     user_id: int
-    model_config = ConfigDict(from_attributes=True)
 
 
 class APITokenResponse(APITokenBase):

@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.core.security import create_access_token
 from app.db.models import DBAuditLog, DBRevokedToken
 from app.services.token_revocation import (
+    add_revoked_token,
     prune_revoked_tokens,
     revoke_access_token,
 )
@@ -190,14 +191,13 @@ def test_expired_revoked_token_gets_no_recovery_email(mock_ses, client, db, test
     assert response.status_code == 401
     assert response.json()["detail"] == "Could not validate credentials"
     mock_ses.return_value.send_email.assert_not_called()
+    assert db.query(DBRevokedToken).count() == 1
 
 
 @patch("app.api.auth.SESService")
-def test_expired_token_without_a_jti_still_gets_a_recovery_email(
-    mock_ses, client, test_user
-):
+def test_expired_token_without_a_jti_gets_no_email(mock_ses, client, test_user):
     mock_ses.return_value.send_email.return_value = True
-    # An old emailed link: it predates revocation, so recovery must still work.
+    # Without a jti the link cannot be limited to one send, so none is sent.
     legacy_expired = jwt.encode(
         {"sub": test_user.email, "exp": datetime.now(UTC) - timedelta(seconds=1)},
         settings.SECRET_KEY,
@@ -209,8 +209,84 @@ def test_expired_token_without_a_jti_still_gets_a_recovery_email(
     )
 
     assert response.status_code == 401
-    assert "validation URL has been sent" in response.json()["detail"]
+    assert response.json()["detail"] == "Could not validate credentials"
+    mock_ses.return_value.send_email.assert_not_called()
+
+
+def _validate(client, token):
+    return client.get(
+        "/auth/validate-jwt", headers={"Authorization": f"Bearer {token}"}
+    )
+
+
+@patch("app.api.auth.SESService")
+def test_second_call_with_the_same_expired_token_sends_no_email(
+    mock_ses, client, db, test_user
+):
+    mock_ses.return_value.send_email.return_value = True
+    expired = create_access_token(
+        data={"sub": test_user.email}, expires_delta=timedelta(seconds=-1)
+    )
+
+    first = _validate(client, expired)
+    second = _validate(client, expired)
+
+    assert first.status_code == 401
+    assert "validation URL has been sent" in first.json()["detail"]
+    assert second.status_code == 401
+    assert second.json()["detail"] == "Could not validate credentials"
     mock_ses.return_value.send_email.assert_called_once()
+    claims = _claims(expired)
+    row = db.query(DBRevokedToken).one()
+    assert row.jti == claims["jti"]
+    assert row.expires_at == datetime.fromtimestamp(claims["exp"], tz=UTC)
+
+
+@patch("app.api.auth.SESService")
+def test_expired_token_past_retention_gets_no_email(mock_ses, client, db, test_user):
+    mock_ses.return_value.send_email.return_value = True
+    expired = create_access_token(
+        data={"sub": test_user.email},
+        expires_delta=timedelta(days=-(settings.REVOKED_TOKENS_RETENTION_DAYS + 1)),
+    )
+
+    response = _validate(client, expired)
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Could not validate credentials"
+    mock_ses.return_value.send_email.assert_not_called()
+    assert db.query(DBRevokedToken).count() == 0
+
+
+@patch("app.api.auth.SESService")
+def test_failed_email_leaves_the_token_usable_for_a_retry(
+    mock_ses, client, db, test_user
+):
+    mock_ses.return_value.send_email.side_effect = [False, True]
+    expired = create_access_token(
+        data={"sub": test_user.email}, expires_delta=timedelta(seconds=-1)
+    )
+
+    failed = _validate(client, expired)
+    assert failed.status_code == 500
+    assert db.query(DBRevokedToken).count() == 0
+
+    retry = _validate(client, expired)
+    assert retry.status_code == 401
+    assert "validation URL has been sent" in retry.json()["detail"]
+    assert mock_ses.return_value.send_email.call_count == 2
+
+
+def test_add_revoked_token_reports_only_the_first_write(db, test_user):
+    claims = _claims(
+        create_access_token(
+            data={"sub": test_user.email}, expires_delta=timedelta(seconds=-1)
+        )
+    )
+
+    assert add_revoked_token(db, claims) is True
+    assert add_revoked_token(db, claims) is False
+    assert db.query(DBRevokedToken).count() == 1
 
 
 def test_logout_leaves_api_tokens_working(client, db, test_user, test_token):

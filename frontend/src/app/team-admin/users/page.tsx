@@ -233,6 +233,7 @@ export default function TeamUsersPage() {
                     <Input
                       id="password"
                       type="password"
+                      minLength={12}
                       value={newUserPassword}
                       onChange={(e) => setNewUserPassword(e.target.value)}
                       required

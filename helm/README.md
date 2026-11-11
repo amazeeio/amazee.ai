@@ -45,12 +45,15 @@ helm repo update
 
 #### 2. Deploy the Complete Stack
 
+`backend.encryptionKey` is required. Generate a Fernet key with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
+
 ```bash
 # Deploy the complete application (Helm will create the namespace automatically)
 helm install amazee-ai-app oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
   --namespace amazee-ai \
   --create-namespace \
-  --version 0.0.1
+  --version 0.0.1 \
+  --set backend.encryptionKey="<fernet-key>"
 ```
 
 #### 3. Deploy Individual Components
@@ -68,7 +71,8 @@ helm install frontend oci://ghcr.io/amazeeio/amazee.ai/frontend \
 helm install backend oci://ghcr.io/amazeeio/amazee.ai/backend \
   --namespace amazee-ai \
   --create-namespace \
-  --version 0.0.1
+  --version 0.0.1 \
+  --set encryptionKey="<fernet-key>"
 ```
 
 **PostgreSQL Only (using Bitnami):**
@@ -84,7 +88,7 @@ helm install postgresql bitnami/postgresql \
 
 #### 1. Deploy All Services Together
 ```bash
-helm install amazee-ai . -n amazee-ai --create-namespace
+helm install amazee-ai . -n amazee-ai --create-namespace --set backend.encryptionKey="<fernet-key>"
 ```
 
 #### 2. Deploy Individual Services
@@ -92,7 +96,8 @@ helm install amazee-ai . -n amazee-ai --create-namespace
 **Deploy Only Backend (requires PostgreSQL):**
 ```bash
 helm install backend ./charts/backend -n amazee-ai \
-  --set database.url="postgresql://postgres:password@amazee-ai-postgresql:5432/postgres_service"
+  --set database.url="postgresql://postgres:password@amazee-ai-postgresql:5432/postgres_service" \
+  --set encryptionKey="<fernet-key>"
 ```
 
 **Deploy Only Frontend:**
@@ -105,14 +110,15 @@ helm install frontend ./charts/frontend -n amazee-ai \
 ```bash
 helm install amazee-ai . -n amazee-ai --create-namespace \
   --set postgresql.enabled=false \
-  --set backend.database.url="postgresql://user:pass@external-host:5432/db"
+  --set backend.database.url="postgresql://user:pass@external-host:5432/db" \
+  --set backend.encryptionKey="<fernet-key>"
 ```
 
 #### 4. Local deployment with kind
 ```bash
 kind create cluster --name amazee-ai-local
 # Pull the charts etc, and set the backend URL to localhost
-helm install amazee-ai oci://ghcr.io/amazeeio/amazee.ai/amazee-ai --namespace amazee-ai --create-namespace --set frontend.apiUrl="http://localhost:8800"
+helm install amazee-ai oci://ghcr.io/amazeeio/amazee.ai/amazee-ai --namespace amazee-ai --create-namespace --set frontend.apiUrl="http://localhost:8800" --set backend.encryptionKey="<fernet-key>"
 # Wait for all pods to initialise fully, then forward ports
 k port-forward deployment/amazee-ai-frontend 3000:3000 -n amazee-ai
 k port-forward deployment/amazee-ai-cbackend 8800:8800 -n amazee-ai
@@ -163,10 +169,11 @@ helm install amazee-ai-app oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
   --namespace amazee-ai \
   --create-namespace \
   --version 0.0.1 \
-  --values values.yaml
+  --values values.yaml \
+  --set backend.encryptionKey="<fernet-key>"
 
 # For local deployment
-helm install amazee-ai . -n amazee-ai --create-namespace --values values.yaml
+helm install amazee-ai . -n amazee-ai --create-namespace --values values.yaml --set backend.encryptionKey="<fernet-key>"
 ```
 
 ### Using Command Line Overrides
@@ -180,14 +187,16 @@ helm install amazee-ai-app oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
   --set frontend.enabled=true \
   --set backend.enabled=true \
   --set postgresql.enabled=false \
-  --set postgresql.auth.postgresPassword="your-password"
+  --set postgresql.auth.postgresPassword="your-password" \
+  --set backend.encryptionKey="<fernet-key>"
 
 # For local deployment
 helm install amazee-ai . -n amazee-ai --create-namespace \
   --set frontend.enabled=true \
   --set backend.enabled=true \
   --set postgresql.enabled=false \
-  --set postgresql.auth.postgresPassword="your-password"
+  --set postgresql.auth.postgresPassword="your-password" \
+  --set backend.encryptionKey="<fernet-key>"
 ```
 
 ## Parameters
@@ -210,6 +219,7 @@ helm install amazee-ai . -n amazee-ai --create-namespace \
 | `backend.image.pullPolicy` | Backend image pull policy | `IfNotPresent` |
 | `backend.database.url` | Database connection URL (auto-generated if empty) | `""` |
 | `backend.secretKey` | JWT signing secret (`AMAZEEAI_JWT_SECRET`). **Required**, no default. | `""` |
+| `backend.encryptionKey` | Fernet keys for the secret DB columns (`AMAZEEAI_ENCRYPTION_KEY`), comma separated, newest first. **Required**, no default. | `""` |
 | `backend.awsAccessKeyId` | AWS access key ID | `your_aws_access_key` |
 | `backend.awsSecretAccessKey` | AWS secret access key | `your_aws_secret_key` |
 | `backend.enableMetrics` | Enable metrics collection | `true` |

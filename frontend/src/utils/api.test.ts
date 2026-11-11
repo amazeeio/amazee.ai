@@ -1,4 +1,6 @@
+import { http, HttpResponse } from "msw";
 import { describe, it, expect, vi } from "vitest";
+import { server } from "../test/mocks/server";
 import { get, post } from "./api";
 
 // Mock the config module to return a known API URL for testing
@@ -64,5 +66,25 @@ describe("API utilities with MSW", () => {
       status: "active",
       created_at: "2024-01-01T00:00:00Z",
     });
+  });
+
+  it("shows the validation messages of a 422 response as text", async () => {
+    server.use(
+      http.post("http://localhost:8800/auth/register", () =>
+        HttpResponse.json(
+          {
+            detail: [
+              { msg: "String should have at least 12 characters" },
+              { msg: "value is not a valid email address" },
+            ],
+          },
+          { status: 422 },
+        ),
+      ),
+    );
+
+    await expect(post("auth/register", {})).rejects.toThrow(
+      "String should have at least 12 characters; value is not a valid email address",
+    );
   });
 });
