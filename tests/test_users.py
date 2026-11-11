@@ -34,6 +34,29 @@ def test_create_user(client, test_admin, admin_token):
     assert "id" in user_data
 
 
+def test_create_user_rejects_a_short_password(client, test_admin, admin_token):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    short = client.post(
+        "/users/",
+        headers=headers,
+        json={"email": "short@example.com", "password": "a" * 11},
+    )
+    assert short.status_code == 422
+
+    long_enough = client.post(
+        "/users/",
+        headers=headers,
+        json={"email": "short@example.com", "password": "a" * 12},
+    )
+    assert long_enough.status_code == 201
+
+    no_password = client.post(
+        "/users/", headers=headers, json={"email": "no-password@example.com"}
+    )
+    assert no_password.status_code == 201
+
+
 def test_create_user_duplicate_email(client, test_user, admin_token, db):
     # Refresh test_user to ensure it's attached to the session
     test_user = db.merge(test_user)
