@@ -49,7 +49,7 @@ from app.core.limit_service import (
 from app.core.worker import generate_pricing_url
 
 from app.db.database import get_db
-from app.db.models import DBUser, DBAPIToken, DBRegion, DBTeam
+from app.db.models import DBUser, DBAPIToken, DBRegion, DBTeam, DBRevokedToken
 
 from app.services.litellm import LiteLLMService
 from app.services.dynamodb import DynamoDBService
@@ -77,7 +77,12 @@ from app.api.users import _create_user_in_db, get_user_by_email
 from app.core.email import normalize_email_for_lookup
 from app.services.disposable_domains import assert_email_domain_allowed
 from app.services.signup_velocity import enforce_signup_velocity
-from app.services.token_revocation import is_token_revoked, revoke_access_token
+from app.services.token_revocation import (
+    add_revoked_token,
+    is_token_revoked,
+    retention_cutoff,
+    revoke_access_token,
+)
 
 auth_logger = logging.getLogger(__name__)
 
@@ -813,14 +818,34 @@ async def validate_jwt(
                 if not email:
                     raise credentials_exception
 
-                # A revoked token gets no recovery email either. A token with no
-                # jti still does: it predates revocation, and this branch is how
-                # the holder of an old link gets a working one.
-                if is_token_revoked(db, payload.get("jti")):
+                # Tokens without a jti expired long ago, and without a jti the
+                # link cannot be limited to one send.
+                jti = payload.get("jti")
+                if not jti:
+                    raise credentials_exception
+
+                # The denylist row that limits the email exists only for this long.
+                if payload["exp"] < retention_cutoff().timestamp():
+                    raise credentials_exception
+
+                # A revoked token gets no recovery email either.
+                if is_token_revoked(db, jti):
                     auth_logger.info("Refused to refresh a revoked expired token")
                     raise credentials_exception
 
-                send_validation_url(email)
+                # Another call with this token already sent the link.
+                if not add_revoked_token(db, payload):
+                    raise credentials_exception
+
+                try:
+                    send_validation_url(email)
+                except Exception:
+                    # Remove the row so a failed send does not block a retry.
+                    db.query(DBRevokedToken).filter(DBRevokedToken.jti == jti).delete(
+                        synchronize_session=False
+                    )
+                    db.commit()
+                    raise
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Token expired. A new validation URL has been sent to your email.",

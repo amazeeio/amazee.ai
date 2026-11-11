@@ -193,11 +193,9 @@ def test_expired_revoked_token_gets_no_recovery_email(mock_ses, client, db, test
 
 
 @patch("app.api.auth.SESService")
-def test_expired_token_without_a_jti_still_gets_a_recovery_email(
-    mock_ses, client, test_user
-):
+def test_expired_token_without_a_jti_gets_no_email(mock_ses, client, test_user):
     mock_ses.return_value.send_email.return_value = True
-    # An old emailed link: it predates revocation, so recovery must still work.
+    # Without a jti the link cannot be limited to one send, so none is sent.
     legacy_expired = jwt.encode(
         {"sub": test_user.email, "exp": datetime.now(UTC) - timedelta(seconds=1)},
         settings.SECRET_KEY,
@@ -209,8 +207,8 @@ def test_expired_token_without_a_jti_still_gets_a_recovery_email(
     )
 
     assert response.status_code == 401
-    assert "validation URL has been sent" in response.json()["detail"]
-    mock_ses.return_value.send_email.assert_called_once()
+    assert response.json()["detail"] == "Could not validate credentials"
+    mock_ses.return_value.send_email.assert_not_called()
 
 
 def test_logout_leaves_api_tokens_working(client, db, test_user, test_token):

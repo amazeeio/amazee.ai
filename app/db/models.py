@@ -675,7 +675,7 @@ class DBRevokedToken(Base):
     The access token is a self-contained JWT, so a signed token stays valid until
     it expires and the server holds no session it could drop. Logout writes the
     token id here, and every JWT auth path rejects an id it finds. Rows are pruned
-    once the token has expired, because after that the token fails on its own.
+    ``REVOKED_TOKENS_RETENTION_DAYS`` after the token expires.
 
     ``user_id`` is a plain integer on purpose. A foreign key would block the
     hard-delete job while a denylist row still points at the user.
