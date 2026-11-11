@@ -152,7 +152,7 @@ jobs:
           for chart in */; do
             chart_name=$(basename "$chart")
             echo "Testing chart: $chart_name"
-            helm template "test-$chart_name" "$chart_name" --set secretKey="$AMAZEEAI_JWT_SECRET" > /dev/null
+            helm template "test-$chart_name" "$chart_name" --set secretKey="$AMAZEEAI_JWT_SECRET" --set encryptionKey=ci-lint-placeholder > /dev/null
             echo "✅ $chart_name chart template test passed"
           done
 
@@ -161,10 +161,10 @@ jobs:
           AMAZEEAI_JWT_SECRET: ${{ secrets.AMAZEEAI_JWT_SECRET }}
         run: |
           cd helm
-          helm lint . --strict --set backend.secretKey="$AMAZEEAI_JWT_SECRET"
+          helm lint . --strict --set backend.secretKey="$AMAZEEAI_JWT_SECRET" --set backend.encryptionKey=ci-lint-placeholder
           cd charts
           for chart in */; do
             chart_name=$(basename "$chart")
             echo "Linting chart: $chart_name"
-            helm lint "$chart_name" --strict --set secretKey="$AMAZEEAI_JWT_SECRET"
+            helm lint "$chart_name" --strict --set secretKey="$AMAZEEAI_JWT_SECRET" --set encryptionKey=ci-lint-placeholder
           done
