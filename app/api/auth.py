@@ -357,7 +357,7 @@ async def register(request: Request, user: UserCreate, db: Session = Depends(get
     Register a new user account.
 
     - **email**: Your email address
-    - **password**: A secure password (minimum 8 characters)
+    - **password**: A secure password (minimum 12 characters)
 
     After registration, you'll need to login to get an access token.
     """
