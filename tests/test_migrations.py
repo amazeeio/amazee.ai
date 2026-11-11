@@ -1,8 +1,13 @@
+import importlib
 import os
 from collections import defaultdict
 
 from alembic.config import Config
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from alembic.script import ScriptDirectory
+
+from app.db.models import DBSystemSecret
 
 # ponytail: the only fork we ever had (Feb 2025, merged by 20250219_merge_heads).
 # Grandfathered so the linearity test can guard everything after it.
@@ -68,6 +73,24 @@ def test_migration_history_is_linear():
         f"Merge revisions found: {merges}. Keep migration history linear — rebase "
         "onto the current head rather than merging two branches."
     )
+
+
+
+def test_delete_stripe_webhook_secret_keeps_other_rows(db):
+    migration = importlib.import_module(
+        "app.migrations.versions.20261104_110000_f2d9b6c3a581_delete_stripe_webhook_secret"
+    )
+    for key in ("stripe_webhook_secret", "AlwaysFreePricingTable", "lock_example"):
+        db.add(DBSystemSecret(key=key, value=f"value-{key}"))
+    db.flush()
+    connection = db.connection()
+    try:
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.upgrade()
+        keys = {row.key for row in db.query(DBSystemSecret.key)}
+        assert keys == {"AlwaysFreePricingTable", "lock_example"}
+    finally:
+        db.rollback()
 
 
 # End of file
