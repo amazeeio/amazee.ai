@@ -23,9 +23,10 @@ from jose import JWTError, jwt
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.audit import prune_audit_log
 from app.core.config import settings
 from app.core.email import normalize_email_for_lookup
-from app.db.models import DBAuditLog, DBRevokedToken, DBUser
+from app.db.models import DBRevokedToken, DBUser
 
 logger = logging.getLogger(__name__)
 
@@ -119,18 +120,11 @@ def prune_revoked_tokens(db: Session) -> int:
         .delete(synchronize_session=False)
     )
     db.add(
-        DBAuditLog(
-            user_id=None,
-            event_type="WORKER",
-            resource_type="revoked_tokens",
-            resource_id=None,
-            action="revoked_tokens.prune",
-            details={
-                "rows_deleted": deleted,
-                "cutoff": cutoff.isoformat(),
-                "retention_days": settings.REVOKED_TOKENS_RETENTION_DAYS,
-            },
-            request_source=None,
+        prune_audit_log(
+            table="revoked_tokens",
+            deleted=deleted,
+            cutoff=cutoff,
+            retention_days=settings.REVOKED_TOKENS_RETENTION_DAYS,
         )
     )
     db.commit()

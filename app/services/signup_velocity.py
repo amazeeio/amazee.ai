@@ -18,8 +18,9 @@ from typing import Optional
 from fastapi import HTTPException, Request, status
 from sqlalchemy.orm import Session
 
+from app.core.audit import prune_audit_log
 from app.core.config import settings
-from app.db.models import DBAuditLog, DBSignupEvent
+from app.db.models import DBSignupEvent
 
 logger = logging.getLogger(__name__)
 
@@ -107,18 +108,11 @@ def prune_signup_events(db: Session) -> int:
         .delete(synchronize_session=False)
     )
     db.add(
-        DBAuditLog(
-            user_id=None,
-            event_type="WORKER",
-            resource_type="signup_events",
-            resource_id=None,
-            action="signup_events.prune",
-            details={
-                "rows_deleted": deleted,
-                "cutoff": cutoff.isoformat(),
-                "retention_days": settings.SIGNUP_EVENTS_RETENTION_DAYS,
-            },
-            request_source=None,
+        prune_audit_log(
+            table="signup_events",
+            deleted=deleted,
+            cutoff=cutoff,
+            retention_days=settings.SIGNUP_EVENTS_RETENTION_DAYS,
         )
     )
     db.commit()
