@@ -228,6 +228,7 @@ helm install amazee-ai . -n amazee-ai --create-namespace \
 | `backend.sesSenderEmail` | SES sender email | `noreply@amazee.ai` |
 | `backend.enableLimits` | Enable resource limits | `true` |
 | `backend.envSuffix` | Environment suffix. Anything other than `local` disables the docs/openapi routes and local-bearer bypass; never set `local` in a deployed env. | `"production"` |
+| `backend.lagoonEnvironmentType` | Sets `LAGOON_ENVIRONMENT_TYPE`. `production` removes the localhost CORS origins; set `development` for a non-production install. | `"production"` |
 | `backend.forwardedAllowIps` | IPs/CIDRs uvicorn trusts `X-Forwarded-*` headers from (`FORWARDED_ALLOW_IPS`). Narrow to your ingress/Lagoon-router CIDR; never `"*"`. | RFC1918 ranges |
 | `backend.passwordlessSignIn` | Enable passwordless sign-in | `true` |
 | `backend.catalogManagedRegions` | Comma-separated amazee.ai region **names** the model catalog may write to and push at (`CATALOG_MANAGED_REGIONS`). Empty = the catalog touches nothing. Opt regions in one at a time; names must match `regions.name` in amazee.ai, not the k0rdent region name. | `""` |
