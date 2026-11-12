@@ -47,6 +47,8 @@ backend:
   # Anything other than "local" disables the docs/openapi routes and the
   # local-bearer bypass. Only docker-compose should ever set "local".
   envSuffix: "production"
+  # Sets CORS_ALLOW_LOCALHOST. "true" adds the localhost CORS origins; use it for a local install only.
+  corsAllowLocalhost: "false"
   passwordlessSignIn: "true"
   # Comma-separated amazee.ai region names the model catalog may write to and
   # push at. Empty = the catalog touches nothing; opt regions in one at a time.

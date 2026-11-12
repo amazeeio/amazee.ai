@@ -1,6 +1,11 @@
 import pytest
 
-from app.main import build_allowed_origins, default_origins, is_production_environment
+from app.main import (
+    allow_localhost_origins,
+    build_allowed_origins,
+    default_origins,
+    is_production_environment,
+)
 
 LAGOON_ROUTES = "https://api.amazee.ai,https://api.enterprise.mirantis.com"
 FRONTEND_ROUTE = "https://dashboard.amazee.ai/"
@@ -38,3 +43,28 @@ def test_is_production_environment(monkeypatch, value, expected):
         monkeypatch.setenv("LAGOON_ENVIRONMENT_TYPE", value)
 
     assert is_production_environment() is expected
+
+
+@pytest.mark.parametrize(
+    "flag, env_type, expected",
+    [
+        ("true", "production", True),
+        ("TRUE", "production", True),
+        ("false", "development", False),
+        ("yes", "development", False),
+        (None, "production", False),
+        (None, "development", True),
+        ("", "development", True),
+    ],
+)
+def test_allow_localhost_origins(monkeypatch, flag, env_type, expected):
+    for name, value in (
+        ("CORS_ALLOW_LOCALHOST", flag),
+        ("LAGOON_ENVIRONMENT_TYPE", env_type),
+    ):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+
+    assert allow_localhost_origins() is expected
