@@ -13,6 +13,7 @@ data:
   SES_SENDER_EMAIL: "{{ .Values.sesSenderEmail }}"
   ENABLE_LIMITS: "{{ .Values.enableLimits }}"
   ENV_SUFFIX: "{{ .Values.envSuffix }}"
+  CORS_ALLOW_LOCALHOST: "{{ .Values.corsAllowLocalhost }}"
   FORWARDED_ALLOW_IPS: "{{ .Values.forwardedAllowIps }}"
   PASSWORDLESS_SIGN_IN: "{{ .Values.passwordlessSignIn }}"
   CATALOG_MANAGED_REGIONS: "{{ .Values.catalogManagedRegions }}"
