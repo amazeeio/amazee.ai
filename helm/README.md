@@ -118,7 +118,7 @@ helm install amazee-ai . -n amazee-ai --create-namespace \
 ```bash
 kind create cluster --name amazee-ai-local
 # Pull the charts etc, and set the backend URL to localhost
-helm install amazee-ai oci://ghcr.io/amazeeio/amazee.ai/amazee-ai --namespace amazee-ai --create-namespace --set frontend.apiUrl="http://localhost:8800" --set backend.encryptionKey="<fernet-key>" --set backend.lagoonEnvironmentType=development
+helm install amazee-ai oci://ghcr.io/amazeeio/amazee.ai/amazee-ai --namespace amazee-ai --create-namespace --set frontend.apiUrl="http://localhost:8800" --set backend.encryptionKey="<fernet-key>" --set backend.corsAllowLocalhost=true
 # Wait for all pods to initialise fully, then forward ports
 k port-forward deployment/amazee-ai-frontend 3000:3000 -n amazee-ai
 k port-forward deployment/amazee-ai-cbackend 8800:8800 -n amazee-ai
@@ -228,7 +228,7 @@ helm install amazee-ai . -n amazee-ai --create-namespace \
 | `backend.sesSenderEmail` | SES sender email | `noreply@amazee.ai` |
 | `backend.enableLimits` | Enable resource limits | `true` |
 | `backend.envSuffix` | Environment suffix. Anything other than `local` disables the docs/openapi routes and local-bearer bypass; never set `local` in a deployed env. | `"production"` |
-| `backend.lagoonEnvironmentType` | Sets `LAGOON_ENVIRONMENT_TYPE`. `production` removes the localhost CORS origins; set `development` for a non-production install. | `"production"` |
+| `backend.corsAllowLocalhost` | Sets `CORS_ALLOW_LOCALHOST`. `true` adds the localhost CORS origins; use it for a local install only. | `"false"` |
 | `backend.forwardedAllowIps` | IPs/CIDRs uvicorn trusts `X-Forwarded-*` headers from (`FORWARDED_ALLOW_IPS`). Narrow to your ingress/Lagoon-router CIDR; never `"*"`. | RFC1918 ranges |
 | `backend.passwordlessSignIn` | Enable passwordless sign-in | `true` |
 | `backend.catalogManagedRegions` | Comma-separated amazee.ai region **names** the model catalog may write to and push at (`CATALOG_MANAGED_REGIONS`). Empty = the catalog touches nothing. Opt regions in one at a time; names must match `regions.name` in amazee.ai, not the k0rdent region name. | `""` |
