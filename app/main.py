@@ -153,10 +153,18 @@ def is_production_environment() -> bool:
     return os.getenv("LAGOON_ENVIRONMENT_TYPE") == "production"
 
 
+def allow_localhost_origins() -> bool:
+    # CORS_ALLOW_LOCALHOST decides when set, for hosts that Lagoon does not run; if not set, LAGOON_ENVIRONMENT_TYPE decides.
+    flag = os.getenv("CORS_ALLOW_LOCALHOST", "").strip()
+    if flag:
+        return flag.lower() == "true"
+    return not is_production_environment()
+
+
 allowed_origins = build_allowed_origins(
     os.getenv("LAGOON_ROUTES", ""),
     os.getenv("FRONTEND_ROUTE", ""),
-    production=is_production_environment(),
+    production=not allow_localhost_origins(),
 )
 
 # Add HTTPS redirect middleware first
