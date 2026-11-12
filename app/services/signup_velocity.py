@@ -18,6 +18,7 @@ from typing import Optional
 from fastapi import HTTPException, Request, status
 from sqlalchemy.orm import Session
 
+from app.core.audit import prune_audit_log
 from app.core.config import settings
 from app.db.models import DBSignupEvent
 
@@ -97,12 +98,22 @@ def prune_signup_events(db: Session) -> int:
     indefinitely without cleanup. Only recent rows matter for the velocity
     query, so anything older than SIGNUP_EVENTS_RETENTION_DAYS can be dropped.
     Intended to run from the daily cron alongside the disposable-domain refresh.
+    Each run keeps a lasting record of the cleanup as one audit_logs row, also
+    when it deletes nothing.
     """
     cutoff = datetime.now(UTC) - timedelta(days=settings.SIGNUP_EVENTS_RETENTION_DAYS)
     deleted = (
         db.query(DBSignupEvent)
         .filter(DBSignupEvent.created_at < cutoff)
         .delete(synchronize_session=False)
+    )
+    db.add(
+        prune_audit_log(
+            table="signup_events",
+            deleted=deleted,
+            cutoff=cutoff,
+            retention_days=settings.SIGNUP_EVENTS_RETENTION_DAYS,
+        )
     )
     db.commit()
     logger.info(

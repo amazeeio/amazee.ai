@@ -23,6 +23,7 @@ from jose import JWTError, jwt
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.audit import prune_audit_log
 from app.core.config import settings
 from app.core.email import normalize_email_for_lookup
 from app.db.models import DBRevokedToken, DBUser
@@ -109,13 +110,22 @@ def prune_revoked_tokens(db: Session) -> int:
     A row is kept for ``REVOKED_TOKENS_RETENTION_DAYS`` after its token expires,
     because ``validate-jwt`` uses the row to send at most one sign-in link for each
     expired token, and it refuses tokens older than that window. Runs from the
-    daily cron.
+    daily cron. Each run keeps a lasting record of the cleanup as one audit_logs
+    row, also when it deletes nothing.
     """
     cutoff = retention_cutoff()
     deleted = (
         db.query(DBRevokedToken)
         .filter(DBRevokedToken.expires_at < cutoff)
         .delete(synchronize_session=False)
+    )
+    db.add(
+        prune_audit_log(
+            table="revoked_tokens",
+            deleted=deleted,
+            cutoff=cutoff,
+            retention_days=settings.REVOKED_TOKENS_RETENTION_DAYS,
+        )
     )
     db.commit()
     logger.info("Pruned %d revoked_tokens rows expired before %s", deleted, cutoff)

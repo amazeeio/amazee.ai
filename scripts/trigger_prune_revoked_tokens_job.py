@@ -40,6 +40,10 @@ def main():
             logger.info("Pruning expired revoked_tokens...")
             deleted = prune_revoked_tokens(db)
             logger.info("✅ Pruned %d revoked_tokens", deleted)
+        except Exception:
+            # release_lock commits, so drop the unfinished prune first.
+            db.rollback()
+            raise
         finally:
             release_lock(LOCK_NAME, db)
     except Exception as e:  # noqa: BLE001
