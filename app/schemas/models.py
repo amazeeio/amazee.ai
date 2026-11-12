@@ -1118,7 +1118,6 @@ class Team(TeamBase):
     updated_at: Optional[datetime] = None
     last_payment: Optional[datetime] = None
     deleted_at: Optional[datetime] = None
-    retention_warning_sent_at: Optional[datetime] = None
     region_id: Optional[int] = None
     allowed_regions: List[RegionSummaryResponse] = []
     model_config = ConfigDict(from_attributes=True)
