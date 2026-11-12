@@ -13,7 +13,7 @@
     "test": "vitest"
   },
   "dependencies": {
-    "@hookform/resolvers": "^7.0.1",
+    "@hookform/resolvers": "^7.0.5",
     "@radix-ui/react-alert-dialog": "^1.2.1",
     "@radix-ui/react-avatar": "^1.3.1",
     "@radix-ui/react-collapsible": "^1.2.1",
@@ -28,7 +28,7 @@
     "@radix-ui/react-tabs": "^1.2.1",
     "@radix-ui/react-toast": "^1.3.1",
     "@radix-ui/react-tooltip": "^1.4.1",
-    "@tanstack/react-query": "^5.105.0",
+    "@tanstack/react-query": "^5.107.1",
     "axios": "^1.21.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -36,8 +36,8 @@
     "date-fns": "^4.1.0",
     "date-fns-tz": "^3.2.0",
     "lodash": "^4.18.1",
-    "lucide-react": "^1.52.0",
-    "next": "^16.4.3",
+    "lucide-react": "^1.70.0",
+    "next": "^16.4.5",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-error-boundary": "^6.1.6",
@@ -45,7 +45,7 @@
     "tailwind-merge": "^3.7.0",
     "tailwindcss-animate": "^1.0.7",
     "zod": "^4.6.7",
-    "zustand": "^5.0.16"
+    "zustand": "^5.1.0"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3",
@@ -59,12 +59,12 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@typescript-eslint/parser": "^8.72.1",
-    "@vitest/ui": "^5.0.5",
+    "@vitest/ui": "^5.1.0",
     "eslint": "^10",
     "eslint-config-next": "^16",
     "eslint-plugin-unused-imports": "^4.4.1",
     "jsdom": "^30.1.2",
-    "msw": "^3.0.2",
+    "msw": "^3.0.4",
     "postcss": "^8.5.18",
     "prettier": "^3.9.10",
     "tailwindcss": "^3.4.1",
