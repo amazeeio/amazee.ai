@@ -118,7 +118,7 @@ helm install amazee-ai . -n amazee-ai --create-namespace \
 ```bash
 kind create cluster --name amazee-ai-local
 # Pull the charts etc, and set the backend URL to localhost
-helm install amazee-ai oci://ghcr.io/amazeeio/amazee.ai/amazee-ai --namespace amazee-ai --create-namespace --set frontend.apiUrl="http://localhost:8800" --set backend.encryptionKey="<fernet-key>"
+helm install amazee-ai oci://ghcr.io/amazeeio/amazee.ai/amazee-ai --namespace amazee-ai --create-namespace --set frontend.apiUrl="http://localhost:8800" --set backend.encryptionKey="<fernet-key>" --set backend.lagoonEnvironmentType=development
 # Wait for all pods to initialise fully, then forward ports
 k port-forward deployment/amazee-ai-frontend 3000:3000 -n amazee-ai
 k port-forward deployment/amazee-ai-cbackend 8800:8800 -n amazee-ai
