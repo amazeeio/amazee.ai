@@ -5,9 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import event
 
 from app.core.config import settings
-from app.db.models import DBSignupEvent
+from app.db.models import DBAuditLog, DBSignupEvent, DBSystemSecret
 from app.services.signup_velocity import (
     client_ip,
     enforce_signup_velocity,
@@ -78,19 +79,88 @@ def test_velocity_no_ip_is_not_limited(db, monkeypatch):
     assert db.query(DBSignupEvent).count() == 0
 
 
-def test_prune_removes_only_old_rows(db, monkeypatch):
+@pytest.mark.parametrize("expired", [True, False])
+def test_prune_removes_only_old_rows(db, monkeypatch, expired):
     monkeypatch.setattr(settings, "SIGNUP_EVENTS_RETENTION_DAYS", 7)
     now = datetime.now(UTC)
     fresh = DBSignupEvent(ip_address="1.1.1.1", endpoint="t")
     fresh.created_at = now - timedelta(days=1)
-    old = DBSignupEvent(ip_address="2.2.2.2", endpoint="t")
-    old.created_at = now - timedelta(days=10)
-    db.add_all([fresh, old])
+    db.add(fresh)
+    if expired:
+        old = DBSignupEvent(ip_address="2.2.2.2", endpoint="t")
+        old.created_at = now - timedelta(days=10)
+        db.add(old)
     db.commit()
 
     deleted = prune_signup_events(db)
 
-    assert deleted == 1
+    assert deleted == (1 if expired else 0)
     remaining = db.query(DBSignupEvent).all()
     assert len(remaining) == 1
     assert remaining[0].ip_address == "1.1.1.1"
+
+    audit_rows = db.query(DBAuditLog).all()
+    assert len(audit_rows) == 1
+    row = audit_rows[0]
+    assert row.action == "signup_events.prune"
+    assert row.event_type == "WORKER"
+    assert row.resource_type == "signup_events"
+    assert row.user_id is None
+    assert row.resource_id is None
+    assert row.request_source is None
+    assert row.details["rows_deleted"] == deleted
+    assert row.details["retention_days"] == 7
+    cutoff = datetime.fromisoformat(row.details["cutoff"])
+    assert cutoff.utcoffset() == timedelta(0)
+    assert abs(cutoff - (now - timedelta(days=7))) < timedelta(seconds=5)
+    # Only these keys, so no IP address or email gets into the row.
+    assert set(row.details) == {"rows_deleted", "cutoff", "retention_days"}
+
+
+def test_prune_keeps_old_rows_when_the_audit_row_fails(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_EVENTS_RETENTION_DAYS", 7)
+    old = DBSignupEvent(ip_address="2.2.2.2", endpoint="t")
+    old.created_at = datetime.now(UTC) - timedelta(days=10)
+    db.add(old)
+    db.commit()
+
+    # Fails inside the flush that commit() runs, where a real insert error fails.
+    def fail_insert(*_):
+        raise RuntimeError("audit insert failed")
+
+    event.listen(DBAuditLog, "before_insert", fail_insert)
+    try:
+        with pytest.raises(RuntimeError, match="audit insert failed"):
+            prune_signup_events(db)
+    finally:
+        event.remove(DBAuditLog, "before_insert", fail_insert)
+    db.rollback()
+
+    assert db.query(DBSignupEvent).count() == 1
+    assert db.query(DBAuditLog).count() == 0
+
+
+def test_prune_script_rolls_back_and_releases_the_lock_on_failure(db, monkeypatch):
+    from scripts import trigger_prune_signup_events_job as job
+
+    monkeypatch.setattr(settings, "SIGNUP_EVENTS_RETENTION_DAYS", 7)
+    old = DBSignupEvent(ip_address="2.2.2.2", endpoint="t")
+    old.created_at = datetime.now(UTC) - timedelta(days=10)
+    db.add(old)
+    db.commit()
+
+    def fail_insert(*_):
+        raise RuntimeError("audit insert failed")
+
+    event.listen(DBAuditLog, "before_insert", fail_insert)
+    try:
+        with pytest.raises(SystemExit) as exit_info:
+            job.main()
+    finally:
+        event.remove(DBAuditLog, "before_insert", fail_insert)
+
+    assert exit_info.value.code == 1
+    assert db.query(DBSignupEvent).count() == 1
+    assert db.query(DBAuditLog).count() == 0
+    lock = db.query(DBSystemSecret).filter_by(key=f"lock_{job.LOCK_NAME}").one()
+    assert lock.value == "false"

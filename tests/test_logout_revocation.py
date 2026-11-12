@@ -5,10 +5,11 @@ from unittest.mock import patch
 
 import pytest
 from jose import jwt
+from sqlalchemy import event
 
 from app.core.config import settings
 from app.core.security import create_access_token
-from app.db.models import DBRevokedToken
+from app.db.models import DBAuditLog, DBRevokedToken, DBSystemSecret
 from app.services.token_revocation import (
     add_revoked_token,
     prune_revoked_tokens,
@@ -366,7 +367,83 @@ def test_prune_removes_only_rows_past_retention(db, test_user, expired):
     )
     db.commit()
 
+    now = datetime.now(UTC)
     deleted = prune_revoked_tokens(db)
 
     assert deleted == (1 if expired else 0)
     assert db.query(DBRevokedToken).count() == (0 if expired else 1)
+
+    audit_rows = db.query(DBAuditLog).all()
+    assert len(audit_rows) == 1
+    row = audit_rows[0]
+    assert row.action == "revoked_tokens.prune"
+    assert row.event_type == "WORKER"
+    assert row.resource_type == "revoked_tokens"
+    assert row.user_id is None
+    assert row.resource_id is None
+    assert row.request_source is None
+    assert row.details["rows_deleted"] == deleted
+    assert row.details["retention_days"] == settings.REVOKED_TOKENS_RETENTION_DAYS
+    cutoff = datetime.fromisoformat(row.details["cutoff"])
+    assert cutoff.utcoffset() == timedelta(0)
+    expected = now - timedelta(days=settings.REVOKED_TOKENS_RETENTION_DAYS)
+    assert abs(cutoff - expected) < timedelta(seconds=5)
+    # Only these keys, so no jti or user id gets into the row.
+    assert set(row.details) == {"rows_deleted", "cutoff", "retention_days"}
+
+
+def test_prune_keeps_old_rows_when_the_audit_row_fails(db, test_user):
+    db.add(
+        DBRevokedToken(
+            jti="jti-under-test",
+            user_id=test_user.id,
+            expires_at=datetime.now(UTC)
+            - timedelta(days=settings.REVOKED_TOKENS_RETENTION_DAYS + 1),
+        )
+    )
+    db.commit()
+
+    # Fails inside the flush that commit() runs, where a real insert error fails.
+    def fail_insert(*_):
+        raise RuntimeError("audit insert failed")
+
+    event.listen(DBAuditLog, "before_insert", fail_insert)
+    try:
+        with pytest.raises(RuntimeError, match="audit insert failed"):
+            prune_revoked_tokens(db)
+    finally:
+        event.remove(DBAuditLog, "before_insert", fail_insert)
+    db.rollback()
+
+    assert db.query(DBRevokedToken).count() == 1
+    assert db.query(DBAuditLog).count() == 0
+
+
+def test_prune_script_rolls_back_and_releases_the_lock_on_failure(db, test_user):
+    from scripts import trigger_prune_revoked_tokens_job as job
+
+    db.add(
+        DBRevokedToken(
+            jti="jti-under-test",
+            user_id=test_user.id,
+            expires_at=datetime.now(UTC)
+            - timedelta(days=settings.REVOKED_TOKENS_RETENTION_DAYS + 1),
+        )
+    )
+    db.commit()
+
+    def fail_insert(*_):
+        raise RuntimeError("audit insert failed")
+
+    event.listen(DBAuditLog, "before_insert", fail_insert)
+    try:
+        with pytest.raises(SystemExit) as exit_info:
+            job.main()
+    finally:
+        event.remove(DBAuditLog, "before_insert", fail_insert)
+
+    assert exit_info.value.code == 1
+    assert db.query(DBRevokedToken).count() == 1
+    assert db.query(DBAuditLog).count() == 0
+    lock = db.query(DBSystemSecret).filter_by(key=f"lock_{job.LOCK_NAME}").one()
+    assert lock.value == "false"
