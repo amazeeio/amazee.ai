@@ -148,11 +148,15 @@ def build_allowed_origins(
     return origins
 
 
-# Lagoon sets LAGOON_ENVIRONMENT_TYPE; it is "production" only on the production environment.
+def is_production_environment() -> bool:
+    # Lagoon sets LAGOON_ENVIRONMENT_TYPE; it is "production" only on the production environment.
+    return os.getenv("LAGOON_ENVIRONMENT_TYPE") == "production"
+
+
 allowed_origins = build_allowed_origins(
     os.getenv("LAGOON_ROUTES", ""),
     os.getenv("FRONTEND_ROUTE", ""),
-    production=os.getenv("LAGOON_ENVIRONMENT_TYPE") == "production",
+    production=is_production_environment(),
 )
 
 # Add HTTPS redirect middleware first
