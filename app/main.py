@@ -137,18 +137,27 @@ def _normalize_origin(url: str) -> str:
     return origin.rstrip("/")
 
 
-lagoon_routes = os.getenv("LAGOON_ROUTES", "").split(",")
-frontend_routes = os.getenv("FRONTEND_ROUTE", "").split(",")
-allowed_origins = default_origins + [
-    normalized
-    for route in lagoon_routes
-    if route.strip() and (normalized := _normalize_origin(route))
-]
-for route in frontend_routes:
-    if route.strip():
-        normalized = _normalize_origin(route)
-        if normalized:
-            allowed_origins.append(normalized)
+def build_allowed_origins(
+    lagoon_routes: str, frontend_routes: str, production: bool
+) -> list[str]:
+    # Localhost origins with credentials let any local page call the real API as the user.
+    origins = [] if production else list(default_origins)
+    for route in f"{lagoon_routes},{frontend_routes}".split(","):
+        if route.strip() and (normalized := _normalize_origin(route)):
+            origins.append(normalized)
+    return origins
+
+
+def is_production_environment() -> bool:
+    # Lagoon sets LAGOON_ENVIRONMENT_TYPE; it is "production" only on the production environment.
+    return os.getenv("LAGOON_ENVIRONMENT_TYPE") == "production"
+
+
+allowed_origins = build_allowed_origins(
+    os.getenv("LAGOON_ROUTES", ""),
+    os.getenv("FRONTEND_ROUTE", ""),
+    production=is_production_environment(),
+)
 
 # Add HTTPS redirect middleware first
 app.add_middleware(HTTPSRedirectMiddleware)
