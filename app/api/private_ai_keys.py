@@ -36,7 +36,7 @@ from app.db.models import (
     DBTeam,
     DBSpendCap,
 )
-from app.core.email import normalize_email_for_lookup
+from app.core.email import escape_like, normalize_email_for_lookup
 from app.services.litellm import INFERENCE_ONLY_ROUTES, LiteLLMService
 from app.core.security import (
     get_current_user_from_auth,
@@ -1422,22 +1422,22 @@ async def _provision_via_moad(
     # a duplicate key (its provision-key endpoint is deliberately
     # non-idempotent).
     #
-    # SECURITY: admin_email matching is scoped to this human’s identity (base
-    # form + moad tag variants), so cross-tenant collision is impossible.
+    # The email is escaped because '_' and '%' are valid in an email address,
+    # and unescaped they match the admin_email of other teams.
     # Guard on "@" so a malformed stored email (no @, bypassing validators)
     # skips this branch and degrades to moad delegation instead of crashing on
     # the unpack below.
     if existing_key is None and "@" in base_email:
         local, domain = base_email.split("@", 1)
-        tag_pattern = f"{local}+%@{domain}"
+        tag_pattern = f"{escape_like(local)}+%@{escape_like(domain)}"
         existing_key = (
             db.query(DBPrivateAIKey)
             .join(DBTeam, DBPrivateAIKey.team_id == DBTeam.id)
             .filter(
                 DBPrivateAIKey.region_id == private_ai_key.region_id,
                 DBTeam.deleted_at.is_(None),
-                (DBTeam.admin_email.ilike(base_email))
-                | (DBTeam.admin_email.ilike(tag_pattern)),
+                (DBTeam.admin_email.ilike(escape_like(base_email), escape="\\"))
+                | (DBTeam.admin_email.ilike(tag_pattern, escape="\\")),
             )
             .order_by(DBPrivateAIKey.created_at.desc())
             .first()

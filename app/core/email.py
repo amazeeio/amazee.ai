@@ -4,3 +4,7 @@ def normalize_email_for_lookup(email: str) -> str:
         local_part = parts[0].split("+")[0]
         return f"{local_part}@{parts[1]}"
     return email.lower()
+
+
+def escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
