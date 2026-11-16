@@ -2180,3 +2180,27 @@ def test_add_user_to_team_rejected_at_capacity(client, admin_token, db, test_tea
     db.expire_all()
     db.refresh(joiner)
     assert joiner.team_id is None
+
+
+def test_team_admin_cannot_add_user_to_team(client, db, team_admin_token, test_team):
+    """
+    GIVEN: A team-less user
+    WHEN: A team admin adds that user to their own team
+    THEN: A 403 is returned and the user stays out of the team
+    """
+    user = DBUser(email="teamless-target@example.com", role="read_only")
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    response = client.post(
+        f"/users/{user.id}/add-to-team",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"team_id": test_team.id},
+    )
+    assert response.status_code == 403
+    assert "Not authorized to perform this action" in response.json()["detail"]
+
+    db.expire_all()
+    db.refresh(user)
+    assert user.team_id is None
