@@ -224,13 +224,27 @@ def _active_subscription_entry(
 
 
 def _active_topup(
-    db: Session, team_id: int, region_id: int, now: datetime, *, oldest: bool
+    db: Session,
+    team_id: int,
+    region_id: int,
+    now: datetime,
+    *,
+    oldest: bool,
+    include_spent: bool = False,
 ) -> DBPeriodicBudgetLedgerEntry | None:
     """The oldest or newest still-valid top-up for a (team, region).
 
     Both ends are needed: the oldest opens the window and the newest closes it.
     See ``resolve_team_period_window`` for why they are not the same entry.
+    ``include_spent`` also matches an unexpired entry that FIFO used up, which
+    FIFO marks inactive although its spend still belongs to the window.
     """
+    valid = DBPeriodicBudgetLedgerEntry.is_active.is_(True)
+    if include_spent:
+        valid = valid | (
+            DBPeriodicBudgetLedgerEntry.consumed_cents
+            >= DBPeriodicBudgetLedgerEntry.amount_cents
+        )
     order = (
         DBPeriodicBudgetLedgerEntry.purchased_at.asc()
         if oldest
@@ -247,7 +261,7 @@ def _active_topup(
             DBPeriodicBudgetLedgerEntry.team_id == team_id,
             DBPeriodicBudgetLedgerEntry.region_id == region_id,
             DBPeriodicBudgetLedgerEntry.entry_type.in_(["topup", "topup_rollover"]),
-            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            valid,
             (
                 DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
                 | (DBPeriodicBudgetLedgerEntry.expires_at > now)
@@ -267,7 +281,7 @@ def _latest_active_topup(
 def _oldest_active_topup(
     db: Session, team_id: int, region_id: int, now: datetime
 ) -> DBPeriodicBudgetLedgerEntry | None:
-    return _active_topup(db, team_id, region_id, now, oldest=True)
+    return _active_topup(db, team_id, region_id, now, oldest=True, include_spent=True)
 
 
 def resolve_team_period_window(

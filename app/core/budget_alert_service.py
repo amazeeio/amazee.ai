@@ -67,6 +67,7 @@ from app.core.config import settings
 from app.core.pool_budget_service import pool_available_budget_for_team_region
 from app.core.spend_period_service import (
     TeamPeriodWindow,
+    _active_subscription_entry,
     compute_period_start,
     current_cycle_start,
     resolve_team_period_window,
@@ -409,13 +410,25 @@ def _unsettled_consumed_dollars(db: Session, team: DBTeam, region_id: int) -> fl
     Without the add-back the budget would drop by spend the numerator still
     counts, the same money subtracted once and added once, and the percentage
     would read high.
+
+    With no subscription, a top-up that FIFO used up is inactive but unexpired,
+    and the window still opens at it, so its consumption is added back too.
     """
+    counted = DBPeriodicBudgetLedgerEntry.is_active.is_(True)
+    if _active_subscription_entry(db, team.id, region_id, datetime.now(UTC)) is None:
+        counted = counted | (
+            DBPeriodicBudgetLedgerEntry.entry_type.in_(["topup", "topup_rollover"])
+            & (
+                DBPeriodicBudgetLedgerEntry.consumed_cents
+                >= DBPeriodicBudgetLedgerEntry.amount_cents
+            )
+        )
     consumed_cents = (
         db.query(func.coalesce(func.sum(DBPeriodicBudgetLedgerEntry.consumed_cents), 0))
         .filter(
             DBPeriodicBudgetLedgerEntry.team_id == team.id,
             DBPeriodicBudgetLedgerEntry.region_id == region_id,
-            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            counted,
             DBPeriodicBudgetLedgerEntry.consumed_cents > 0,
             (
                 DBPeriodicBudgetLedgerEntry.expires_at.is_(None)

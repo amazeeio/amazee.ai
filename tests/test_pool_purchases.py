@@ -2013,3 +2013,55 @@ def test_team_budget_clear_restores_settled_cap(
     _buy_then_spend_7993(client, admin_token, db, test_team, test_region)
 
     assert _clear_team_budget(client, admin_token, test_team, test_region) == 200.0
+
+
+def _alert_window_and_budget(db, team, region):
+    from app.core.budget_alert_service import _team_budget
+    from app.core.spend_period_service import resolve_team_period_window
+
+    db.refresh(team)
+    window = resolve_team_period_window(db, team, region.id)
+    return window.period_start, _team_budget(db, team, region.id)
+
+
+def test_alert_budget_keeps_a_used_up_topup_in_the_window(
+    client, admin_token, db, test_team, test_region
+):
+    """Buy $50, spend $50, buy $10: the alert reads $50 of $60, not $50 of $10."""
+    test_team.budget_type = "pool"
+    db.commit()
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(0.0, 50.0)
+        mock_instance.update_team_budget = AsyncMock()
+        _buy(client, admin_token, test_team, test_region, 5000, days_ago=2)
+        _buy(client, admin_token, test_team, test_region, 1000)
+    first = _topup_entries(db, test_team, test_region)[0]
+    assert first.is_active is False
+
+    window_start, budget = _alert_window_and_budget(db, test_team, test_region)
+
+    assert window_start == first.purchased_at
+    assert budget == 60.0
+
+
+def test_alert_budget_after_three_topups_leaves_true_room(
+    client, admin_token, db, test_team, test_region
+):
+    """T1 $50, spend $10, T2 $50, spend $60 more, T3 $10: $70 of $110, $40 room."""
+    test_team.budget_type = "pool"
+    db.commit()
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(0.0, 10.0, 70.0)
+        mock_instance.update_team_budget = AsyncMock()
+        _buy(client, admin_token, test_team, test_region, 5000, days_ago=3)
+        _buy(client, admin_token, test_team, test_region, 5000, days_ago=2)
+        _buy(client, admin_token, test_team, test_region, 1000, days_ago=1)
+    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 110.0
+    first = _topup_entries(db, test_team, test_region)[0]
+
+    window_start, budget = _alert_window_and_budget(db, test_team, test_region)
+
+    assert window_start == first.purchased_at
+    assert budget == 110.0
