@@ -637,6 +637,8 @@ async def settle_topup_spend(
         .first()
     )
 
+    spend_cents = 0
+    window_start: datetime | None = None
     if last_row is not None:
         baseline_cents = int(round(float(last_row.total_spend or 0) * 100))
         if not cycle_active and counter_cents >= baseline_cents:
@@ -645,10 +647,7 @@ async def settle_topup_spend(
         else:
             # The counter dropped (a recreated team) or a LiteLLM cycle can reset
             # it, so read the spend logs, which survive both.
-            logged = await service.get_team_spend_in_range(
-                lite_team_id, _as_utc(last_row.created_at), now
-            )
-            spend_cents = max(0, int(round(float(logged or 0) * 100)))
+            window_start = _as_utc(last_row.created_at)
             rule = "logs"
     else:
         latest = _latest_active_topup(
@@ -657,14 +656,11 @@ async def settle_topup_spend(
         # A legacy team has no snapshot. Start at its latest earlier purchase, so it
         # keeps the credit it already holds and only new spend is charged.
         window_start = _as_utc(latest.purchased_at) if latest is not None else None
-        if window_start is None or window_start >= now:
-            spend_cents = 0
-        else:
-            logged = await service.get_team_spend_in_range(
-                lite_team_id, window_start, now
-            )
-            spend_cents = max(0, int(round(float(logged or 0) * 100)))
         rule = "bootstrap"
+
+    if window_start is not None and window_start < now:
+        logged = await service.get_team_spend_in_range(lite_team_id, window_start, now)
+        spend_cents = max(0, int(round(float(logged or 0) * 100)))
 
     if spend_cents > 0:
         # A lapsed subscription entry can still be active; it paid for its own
