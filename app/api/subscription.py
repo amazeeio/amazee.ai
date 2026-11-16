@@ -123,20 +123,29 @@ def _current_period_spend_baseline_cents(
     return int(round(float(row[0]) * 100))
 
 
+# Snapshot sources whose counter was charged to the ledger when it was written.
+# A cycle capture row is only a report: it can read the counter after a debit.
+CHARGED_SNAPSHOT_SOURCES = (
+    "moad_subscription_deactivate",
+    "moad_subscription_deactivate_retry",
+    "topup_settlement",
+)
+
+
 def _latest_spend_snapshot(
     db: Session, *, team_id: int, region_id: int
 ) -> DBTeamSpendPeriod | None:
-    """The newest settled counter, by id and of any source.
+    """The newest counter already charged to the ledger, by id.
 
-    Every source holds a counter already charged to the ledger, so a retry
-    starts after it; this includes the top-up settlements written after a
-    cancellation and by the failed attempt itself.
+    This includes the top-up settlements written after a cancellation and by
+    the failed attempt itself, so a retry starts after them.
     """
     return (
         db.query(DBTeamSpendPeriod)
         .filter(
             DBTeamSpendPeriod.team_id == team_id,
             DBTeamSpendPeriod.region_id == region_id,
+            DBTeamSpendPeriod.source.in_(CHARGED_SNAPSHOT_SOURCES),
         )
         .order_by(DBTeamSpendPeriod.id.desc())
         .first()

@@ -2305,6 +2305,99 @@ def test_subscription_deactivate_retry_debits_spend_since_the_first_attempt(
     )
 
 
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_retry_ignores_a_cycle_capture_after_the_debit(
+    mock_litellm_class,
+    mock_capture,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """A cycle capture reads the counter after the debit, so it is no baseline:
+    debit at 10.00, capture at 12.00, retry at 15.00 charges 5.00."""
+    now = datetime.now(UTC)
+    period_start = now - timedelta(days=5)
+    period_end = now + timedelta(days=26)
+    # First cycle: no snapshot row exists before the cancellation.
+    sub_entry = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="subscription",
+        source_invoice_id="in_first_cycle_cancel",
+        amount_cents=10000,
+        consumed_cents=0,
+        purchased_at=period_start,
+        effective_period_start=period_start,
+        effective_period_end=period_end,
+        expires_at=period_end,
+        is_active=True,
+    )
+    topup = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="topup",
+        stripe_payment_id="pi_topup_retry_after_capture",
+        amount_cents=5000,
+        consumed_cents=0,
+        purchased_at=now - timedelta(days=1),
+        expires_at=now + timedelta(days=30),
+        is_active=True,
+    )
+    db.add_all([sub_entry, topup])
+    db.commit()
+
+    async def capture_at_12(*, db, team, region, period_start, period_end, **_):
+        db.add(
+            DBTeamSpendPeriod(
+                team_id=team.id,
+                region_id=region.id,
+                budget_type=team.budget_type,
+                period_start=period_start,
+                period_end=period_end,
+                total_spend=12.0,
+                source="moad_subscription_cycle",
+            )
+        )
+        db.commit()
+
+    mock_capture.side_effect = capture_at_12
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 10.0}})
+    mock_litellm.update_team_budget = AsyncMock(side_effect=Exception("litellm down"))
+    mock_litellm.set_key_restrictions = AsyncMock()
+    payload = {
+        "transaction_id": "txn_cancel_retry_after_capture",
+        "team_id": test_team.id,
+        "region_id": test_region.id,
+        "reason": "cancelled",
+    }
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    first = client.post(
+        "/billing/subscription/deactivate", headers=headers, json=payload
+    )
+    assert first.status_code == 502
+    db.refresh(sub_entry)
+    assert sub_entry.consumed_cents == 1000
+
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 15.0}})
+    mock_litellm.update_team_budget.side_effect = None
+    mock_litellm.update_team_budget.return_value = None
+    second = client.post(
+        "/billing/subscription/deactivate", headers=headers, json=payload
+    )
+
+    assert second.status_code == 200
+    db.refresh(topup)
+    assert topup.consumed_cents == 500
+
+
 @patch("app.api.subscription.LiteLLMService")
 def test_subscription_deactivate_retry_starts_after_the_newest_topup_settlement(
     mock_litellm_class,
