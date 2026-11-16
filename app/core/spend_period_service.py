@@ -612,22 +612,11 @@ async def settle_topup_spend(
     Only purchase-gated POOL teams settle: a purchase resets their key spend, so
     the spend view does not subtract the settled spend a second time.
     """
+    now = datetime.now(UTC)
     if not team.requires_pool_purchase_gate:
         return
-    has_subscription = (
-        db.query(DBPeriodicBudgetLedgerEntry.id)
-        .filter(
-            DBPeriodicBudgetLedgerEntry.team_id == team.id,
-            DBPeriodicBudgetLedgerEntry.region_id == region_id,
-            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
-            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
-        )
-        .first()
-    )
-    if has_subscription is not None:
+    if _active_subscription_entry(db, team.id, region_id, now) is not None:
         return
-
-    now = datetime.now(UTC)
     counter_cents = int(round(float(team_info.get("spend") or 0) * 100))
     cycle_active = bool(team_info.get("budget_duration"))
 
@@ -682,8 +671,14 @@ async def settle_topup_spend(
         rule = "bootstrap"
 
     if spend_cents > 0:
+        # A lapsed subscription entry can still be active; it paid for its own
+        # period, not for this spend.
         allocate_period_spend_fifo(
-            db, team_id=team.id, region_id=region_id, spend_cents=spend_cents
+            db,
+            team_id=team.id,
+            region_id=region_id,
+            spend_cents=spend_cents,
+            topups_only=True,
         )
 
     upsert_team_spend_period(

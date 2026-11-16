@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from sqlalchemy import case, func
+from sqlalchemy import case, func, true
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -27,7 +27,7 @@ class BudgetDriftResult:
 
 
 def _active_entries(
-    db: Session, team_id: int, region_id: int
+    db: Session, team_id: int, region_id: int, *, topups_only: bool = False
 ) -> list[DBPeriodicBudgetLedgerEntry]:
     now = datetime.now(UTC)
     return (
@@ -36,6 +36,9 @@ def _active_entries(
             DBPeriodicBudgetLedgerEntry.team_id == team_id,
             DBPeriodicBudgetLedgerEntry.region_id == region_id,
             DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            (DBPeriodicBudgetLedgerEntry.entry_type != ENTRY_TYPE_SUBSCRIPTION)
+            if topups_only
+            else true(),
             (
                 # Subscription entries are managed exclusively by
                 # expire_subscription_entries (is_active flag).  Their
@@ -190,11 +193,16 @@ def add_topup_entry(
 
 
 def allocate_period_spend_fifo(
-    db: Session, *, team_id: int, region_id: int, spend_cents: int
+    db: Session,
+    *,
+    team_id: int,
+    region_id: int,
+    spend_cents: int,
+    topups_only: bool = False,
 ) -> AllocationResult:
     remaining = max(0, int(spend_cents))
     allocated = 0
-    for entry in _active_entries(db, team_id, region_id):
+    for entry in _active_entries(db, team_id, region_id, topups_only=topups_only):
         if remaining <= 0:
             break
         free = max(0, entry.amount_cents - entry.consumed_cents)
