@@ -102,18 +102,20 @@ def email_identity_taken(db: Session, email: str) -> bool:
     """The moad key fallback treats the base email as the owner of every tagged
     team, so only a proven owner can hold a base email that already exists."""
     base = normalize_email_for_lookup(email)
-    user_match = func.lower(DBUser.email) == base
-    team_match = func.lower(DBTeam.admin_email) == base
-    if "@" in base:
-        local, domain = base.split("@", 1)
-        tagged = f"{escape_like(local)}+%@{escape_like(domain)}"
-        user_match = or_(user_match, DBUser.email.ilike(tagged, escape="\\"))
-        team_match = or_(team_match, DBTeam.admin_email.ilike(tagged, escape="\\"))
-    if db.query(DBUser.id).filter(user_match).first() is not None:
-        return True
-    return (
-        db.query(DBTeam.id).filter(DBTeam.deleted_at.is_(None), team_match).first()
-        is not None
+    local, domain = base.split("@", 1)
+    tagged = f"{escape_like(local)}+%@{escape_like(domain)}"
+    users_q = db.query(DBUser).filter(
+        or_(func.lower(DBUser.email) == base, DBUser.email.ilike(tagged, escape="\\"))
+    )
+    teams_q = db.query(DBTeam).filter(
+        DBTeam.deleted_at.is_(None),
+        or_(
+            func.lower(DBTeam.admin_email) == base,
+            DBTeam.admin_email.ilike(tagged, escape="\\"),
+        ),
+    )
+    return bool(
+        db.query(users_q.exists()).scalar() or db.query(teams_q.exists()).scalar()
     )
 
 
