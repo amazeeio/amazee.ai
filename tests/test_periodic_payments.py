@@ -1285,6 +1285,7 @@ def test_subscription_deactivate_preserves_active_topup_budget(
     mock_litellm.get_team_info = AsyncMock(
         return_value={"team_info": {"spend": 6.0, "max_budget": 22.0}}
     )
+    mock_litellm.get_team_spend_in_range = AsyncMock(return_value=0.0)
     mock_litellm.update_team_budget = AsyncMock()
     mock_litellm.set_key_restrictions = AsyncMock()
 
@@ -1313,6 +1314,67 @@ def test_subscription_deactivate_preserves_active_topup_budget(
     assert key_kwargs["duration"] is None
     assert key_kwargs["budget_duration"] is None
     assert key_kwargs["spend"] == 0.0
+
+
+@patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_without_period_settles_topup_spend(
+    mock_litellm_class,
+    mock_record_payment,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """With no open period, the spend since the last top-up is charged first."""
+    now = datetime.now(UTC)
+    db.add(
+        DBTeamSpendPeriod(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            budget_type="periodic",
+            period_start=now - timedelta(days=2),
+            period_end=now - timedelta(days=2),
+            source="topup_settlement",
+            total_spend=0.0,
+        )
+    )
+    entry = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="topup",
+        stripe_payment_id="pi_topup_settle_on_deactivate",
+        amount_cents=5000,
+        consumed_cents=0,
+        purchased_at=now - timedelta(days=2),
+        expires_at=now + timedelta(days=30),
+        is_active=True,
+    )
+    db.add(entry)
+    db.commit()
+
+    mock_record_payment.return_value = 655
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 30.0}})
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    response = client.post(
+        "/billing/subscription/deactivate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_deactivate_settles_topup",
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+            "reason": "cancelled",
+        },
+    )
+
+    assert response.status_code == 200
+    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 50.0
+    db.refresh(entry)
+    assert entry.consumed_cents == 3000
 
 
 @patch(

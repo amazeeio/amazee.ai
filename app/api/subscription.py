@@ -10,7 +10,10 @@ from app.core.periodic_budget_ledger_service import (
     compute_active_topup_remaining,
 )
 from app.core.security import get_role_min_system_admin
-from app.core.spend_period_service import upsert_team_spend_period
+from app.core.spend_period_service import (
+    settle_topup_spend,
+    upsert_team_spend_period,
+)
 from app.core.team_service import get_team_region_litellm_keys
 from app.core.worker import (
     _record_periodic_payment_direct,
@@ -417,6 +420,10 @@ async def subscription_deactivate(
         )
         lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
         current_team_spend: float | None = None
+        retry_of_failed_sync = (
+            existing is not None and existing.sync_status == "sync_failed"
+        )
+        already_settled = bool(active_subscription_period) or retry_of_failed_sync
         if active_subscription_period:
             # Debit mid-period spend against top-up entries so that
             # compute_active_topup_remaining reflects actual remaining balance.
@@ -498,7 +505,7 @@ async def subscription_deactivate(
                 )
             except Exception as exc:
                 _raise_settlement_failed(db, request, team.id, exc)
-        elif existing is not None and existing.sync_status == "sync_failed":
+        elif retry_of_failed_sync:
             # A retry of a half-done deactivation: the period is settled, but
             # the spend since the first attempt was never debited and would
             # come back as headroom in the projection below.
@@ -591,11 +598,6 @@ async def subscription_deactivate(
             row.is_active = False
         db.flush()
 
-        topup_remaining_dollars = (
-            compute_active_topup_remaining(db, team_id=team.id, region_id=region.id)
-            / 100.0
-        )
-
         if current_team_spend is None:
             try:
                 team_info_resp = await litellm_service.get_team_info(lite_team_id)
@@ -607,6 +609,25 @@ async def subscription_deactivate(
                     team.id,
                     exc,
                 )
+            if current_team_spend is not None and not already_settled:
+                # Nothing above charged the spend since the last top-up, and the
+                # projection below would hand it back as credit.
+                try:
+                    await settle_topup_spend(
+                        db,
+                        team=team,
+                        region_id=region.id,
+                        service=litellm_service,
+                        lite_team_id=lite_team_id,
+                        team_info=team_info,
+                    )
+                except Exception as exc:
+                    _raise_settlement_failed(db, request, team.id, exc)
+
+        topup_remaining_dollars = (
+            compute_active_topup_remaining(db, team_id=team.id, region_id=region.id)
+            / 100.0
+        )
         if topup_remaining_dollars <= 0:
             # No top-up left: block every key in the team, whatever the spend
             # counter says now or later.
