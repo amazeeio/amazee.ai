@@ -675,7 +675,7 @@ def _lock_region_or_404(db: Session, region_id: int) -> DBRegion:
     region = (
         db.query(DBRegion)
         .filter(DBRegion.id == region_id, DBRegion.is_active.is_(True))
-        .with_for_update()
+        .with_for_update(key_share=True)
         .first()
     )
     if not region:

@@ -90,6 +90,68 @@ def enforce_signup_velocity(
         )
 
 
+PROVISION_ENDPOINT = "provision-key"
+
+
+def enforce_provision_caps(db: Session, email: str) -> None:
+    """Record a moad provisioning attempt and raise 429 if a cap is hit.
+
+    Every moad provisioning can mint a new workspace with a demo credit. The
+    TKF-492 bots rotated IPs (so the per-IP cap never fired) but used a single
+    fresh domain, ~1 signup/min. Two caps, both over signup_events rows for
+    this endpoint:
+      - per email domain per day (free-mail providers exempt), and
+      - global per hour, the backstop for domain rotation.
+    Soft limits, same count-then-insert trade-off as enforce_signup_velocity.
+    """
+    from app.services.disposable_domains import extract_domain
+
+    domain = extract_domain(email)
+    now = datetime.now(UTC)
+    recent = db.query(DBSignupEvent).filter(
+        DBSignupEvent.endpoint == PROVISION_ENDPOINT
+    )
+    exempt = {
+        d.strip().lower()
+        for d in settings.PROVISION_DOMAIN_CAP_EXEMPT.split(",")
+        if d.strip()
+    }
+
+    domain_hit = (
+        settings.PROVISION_MAX_PER_DOMAIN_PER_DAY > 0
+        and domain not in exempt
+        and recent.filter(
+            DBSignupEvent.created_at >= now - timedelta(days=1),
+            DBSignupEvent.email.ilike(
+                "%@" + domain.replace("%", r"\%").replace("_", r"\_"), escape="\\"
+            ),
+        ).count()
+        >= settings.PROVISION_MAX_PER_DOMAIN_PER_DAY
+    )
+    global_hit = (
+        settings.PROVISION_MAX_PER_HOUR > 0
+        and recent.filter(DBSignupEvent.created_at >= now - timedelta(hours=1)).count()
+        >= settings.PROVISION_MAX_PER_HOUR
+    )
+
+    # ponytail: no IP here; the request isn't threaded this deep, and the caps
+    # don't use it. Thread it through if forensics need it.
+    db.add(DBSignupEvent(email=email, endpoint=PROVISION_ENDPOINT))
+    db.commit()
+
+    if domain_hit or global_hit:
+        logger.warning(
+            "Provision cap hit (%s): domain=%s email=%s",
+            "domain" if domain_hit else "global",
+            domain,
+            email,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many sign-ups right now. Please try again later.",
+        )
+
+
 def prune_signup_events(db: Session) -> int:
     """Delete signup_events older than the retention window. Returns rows removed.
 

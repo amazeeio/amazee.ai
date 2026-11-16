@@ -1610,8 +1610,10 @@ def test_pool_purchase_locks_region_row_against_concurrent_deactivation(
         s for s in statements if "FROM regions" in s and s.strip().startswith("SELECT")
     ]
     assert region_selects, "expected the purchase path to select the region"
-    assert any("FOR UPDATE" in s for s in region_selects), (
-        "region row must be locked FOR UPDATE so a concurrent deactivation "
+    # FOR NO KEY UPDATE, not FOR UPDATE: it still serialises against the
+    # deactivation UPDATE but does not block FK inserts on the region (TKF-492).
+    assert any("FOR NO KEY UPDATE" in s for s in region_selects), (
+        "region row must be locked FOR NO KEY UPDATE so a concurrent deactivation "
         f"cannot commit mid-purchase; got: {region_selects}"
     )
 

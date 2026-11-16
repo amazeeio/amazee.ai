@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.db.models import DBAuditLog, DBSignupEvent, DBSystemSecret
 from app.services.signup_velocity import (
     client_ip,
+    enforce_provision_caps,
     enforce_signup_velocity,
     prune_signup_events,
 )
@@ -164,3 +165,24 @@ def test_prune_script_rolls_back_and_releases_the_lock_on_failure(db, monkeypatc
     assert db.query(DBAuditLog).count() == 0
     lock = db.query(DBSystemSecret).filter_by(key=f"lock_{job.LOCK_NAME}").one()
     assert lock.value == "false"
+
+
+def test_provision_caps_per_domain_exempt_and_global(db, monkeypatch):
+    """TKF-492: one fresh domain, rotating IPs. Domain cap blocks it, free-mail
+    is exempt from that cap, and the global cap backstops domain rotation."""
+    monkeypatch.setattr(settings, "PROVISION_MAX_PER_DOMAIN_PER_DAY", 2)
+    monkeypatch.setattr(settings, "PROVISION_MAX_PER_HOUR", 5)
+    monkeypatch.setattr(settings, "PROVISION_DOMAIN_CAP_EXEMPT", "gmail.com")
+
+    enforce_provision_caps(db, "a@bot.store")
+    enforce_provision_caps(db, "b@bot.store")
+    with pytest.raises(HTTPException) as exc:
+        enforce_provision_caps(db, "c@bot.store")
+    assert exc.value.status_code == 429
+    # a lookalike domain is not caught by the bot.store LIKE
+    enforce_provision_caps(db, "a@notbot.store")
+
+    # exempt domain passes the domain cap; 4 rows so far, the global cap is 5
+    enforce_provision_caps(db, "x@gmail.com")
+    with pytest.raises(HTTPException):
+        enforce_provision_caps(db, "y@gmail.com")
