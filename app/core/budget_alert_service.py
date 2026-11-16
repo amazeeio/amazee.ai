@@ -397,21 +397,18 @@ async def _exact_team_key_state(
 def _unsettled_consumed_dollars(db: Session, team: DBTeam, region_id: int) -> float:
     """``consumed_cents`` sitting on entries that are *still valid*, in dollars.
 
-    Normally zero, and it has to be added back when it is not. Settlement usually
-    re-bases rather than annotates: ``materialize_topup_rollovers`` deactivates a
+    It has to be added back, because the spend window still counts that spend.
+    ``materialize_topup_rollovers`` re-bases at invoice close: it deactivates a
     partly-consumed entry and writes a fresh ``topup_rollover`` holding the
-    remainder with ``consumed_cents = 0``, deactivating the original. So among valid
-    entries the column is 0, face value equals remaining, and the window opening at
-    the oldest valid purchase lines up with it.
+    remainder with ``consumed_cents = 0``. Two paths annotate instead.
+    ``app/api/subscription.py`` runs ``allocate_period_spend_fifo`` at cancellation
+    without a rollover, and ``settle_topup_spend`` charges spend to the valid
+    top-ups of a team with no subscription at each purchase. Both leave
+    ``consumed_cents`` on entries that stay valid.
 
-    Cancellation is the exception. ``app/api/subscription.py`` runs
-    ``allocate_period_spend_fifo`` but never calls ``materialize_topup_rollovers``,
-    so it increments ``consumed_cents`` on entries that stay valid. The budget would
-    then drop by spend the numerator still counts — the same money subtracted once
-    and added once — and the percentage would read high. Adding it back keeps the
-    two sides describing the same money whichever way the ledger was settled.
-
-    Normally a no-op, and it logs the first time it is not.
+    Without the add-back the budget would drop by spend the numerator still
+    counts, the same money subtracted once and added once, and the percentage
+    would read high.
     """
     consumed_cents = (
         db.query(func.coalesce(func.sum(DBPeriodicBudgetLedgerEntry.consumed_cents), 0))
@@ -430,10 +427,9 @@ def _unsettled_consumed_dollars(db: Session, team: DBTeam, region_id: int) -> fl
     if not consumed_cents:
         return 0.0
     dollars = round(int(consumed_cents) / 100.0, 4)
-    logger.info(
-        "Team %s region %s has $%.2f consumed on still-valid ledger entries "
-        "(unsettled, likely a cancellation); added back so the budget matches the "
-        "spend window",
+    logger.debug(
+        "Team %s region %s has $%.2f consumed on still-valid ledger entries; "
+        "added back so the budget matches the spend window",
         team.id,
         region_id,
         dollars,

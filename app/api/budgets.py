@@ -41,6 +41,7 @@ from app.core.periodic_budget_ledger_service import (
     compute_active_topup_remaining,
 )
 from app.core.pool_budget_service import key_cap_map
+from app.core.spend_period_service import settle_topup_spend
 
 logger = logging.getLogger(__name__)
 
@@ -614,6 +615,15 @@ async def purchase_periodic_topup(
             else None
         )
         previous_team_budget_duration = team_info.get("budget_duration")
+        await settle_topup_spend(
+            db,
+            team=team,
+            region_id=region_id,
+            service=service,
+            lite_team_id=lite_team_id,
+            team_info=team_info,
+            exclude_entry_id=topup_entry.id,
+        )
 
         sub_remaining_cents = 0
         now_topup = datetime.now(UTC)
