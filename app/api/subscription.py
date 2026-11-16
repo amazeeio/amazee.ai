@@ -100,12 +100,6 @@ def _raise_settlement_failed(
     )
 
 
-DEACTIVATE_SNAPSHOT_SOURCES = (
-    "moad_subscription_deactivate",
-    "moad_subscription_deactivate_retry",
-)
-
-
 def _current_period_spend_baseline_cents(
     db: Session, *, team_id: int, region_id: int, period_start: datetime
 ) -> int:
@@ -132,19 +126,19 @@ def _current_period_spend_baseline_cents(
 def _latest_spend_snapshot(
     db: Session, *, team_id: int, region_id: int
 ) -> DBTeamSpendPeriod | None:
-    """The newest snapshot written by a deactivation attempt.
+    """The newest settled counter, by id and of any source.
 
-    A cycle snapshot holds the counter at the start of the period, which a
-    retry would debit a second time.
+    Every source holds a counter already charged to the ledger, so a retry
+    starts after it; this includes the top-up settlements written after a
+    cancellation and by the failed attempt itself.
     """
     return (
         db.query(DBTeamSpendPeriod)
         .filter(
             DBTeamSpendPeriod.team_id == team_id,
             DBTeamSpendPeriod.region_id == region_id,
-            DBTeamSpendPeriod.source.in_(DEACTIVATE_SNAPSHOT_SOURCES),
         )
-        .order_by(DBTeamSpendPeriod.period_start.desc(), DBTeamSpendPeriod.id.desc())
+        .order_by(DBTeamSpendPeriod.id.desc())
         .first()
     )
 

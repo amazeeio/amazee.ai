@@ -2305,6 +2305,81 @@ def test_subscription_deactivate_retry_debits_spend_since_the_first_attempt(
     )
 
 
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_retry_starts_after_the_newest_topup_settlement(
+    mock_litellm_class,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """An older cancellation snapshot must not make the retry charge spend that a
+    top-up settlement, or the failed attempt, already charged."""
+    test_team.budget_type = BudgetType.POOL
+    now = datetime.now(UTC)
+    for total_spend, source, start in (
+        (10.0, "moad_subscription_deactivate", now - timedelta(days=40)),
+        (30.0, "topup_settlement", now - timedelta(days=5)),
+    ):
+        db.add(
+            DBTeamSpendPeriod(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                budget_type="pool",
+                period_start=start,
+                period_end=start,
+                total_spend=total_spend,
+                source=source,
+            )
+        )
+        db.commit()
+    topup = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="topup",
+        stripe_payment_id="pi_topup_retry_after_settlement",
+        amount_cents=10000,
+        consumed_cents=0,
+        purchased_at=now - timedelta(days=5),
+        expires_at=now + timedelta(days=300),
+        is_active=True,
+    )
+    db.add(topup)
+    db.commit()
+
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 50.0}})
+    mock_litellm.update_team_budget = AsyncMock(side_effect=Exception("litellm down"))
+    mock_litellm.set_key_restrictions = AsyncMock()
+    payload = {
+        "transaction_id": "txn_cancel_retry_after_settlement",
+        "team_id": test_team.id,
+        "region_id": test_region.id,
+        "reason": "cancelled",
+    }
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    first = client.post(
+        "/billing/subscription/deactivate", headers=headers, json=payload
+    )
+    assert first.status_code == 502
+    db.refresh(topup)
+    assert topup.consumed_cents == 2000
+
+    mock_litellm.update_team_budget.side_effect = None
+    mock_litellm.update_team_budget.return_value = None
+    second = client.post(
+        "/billing/subscription/deactivate", headers=headers, json=payload
+    )
+
+    assert second.status_code == 200
+    db.refresh(topup)
+    # The 20.00 since the settlement is charged once, not 40.00 from the old snapshot.
+    assert topup.consumed_cents == 2000
+    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 130.0
+
+
 @patch(
     "app.api.subscription.capture_periodic_team_spend_for_period",
     new_callable=AsyncMock,
