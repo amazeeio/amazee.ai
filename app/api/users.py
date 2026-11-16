@@ -884,6 +884,12 @@ async def create_user(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
         )
+    # A team admin chooses the password for this row, so an unproven email here
+    # gives the same access as a self registration.
+    if not current_user.is_admin and email_identity_taken(db, user.email):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
+        )
 
     # Team admin may only create a user in their own team, system admin may create in any team
     if not current_user.is_admin and current_user.team_id != user.team_id:
@@ -1029,6 +1035,19 @@ async def update_user(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to perform this action",
+        )
+
+    # A team admin chooses the password for this row, so an unproven email here
+    # gives the same access as a self registration.
+    if (
+        user_update.email is not None
+        and not current_user.is_admin
+        and normalize_email_for_lookup(user_update.email)
+        != normalize_email_for_lookup(db_user.email)
+        and email_identity_taken(db, user_update.email)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
         )
 
     previous_email = db_user.email

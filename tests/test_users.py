@@ -393,6 +393,61 @@ def test_create_user_by_team_admin(client, team_admin_token, test_team, db):
     assert any(u["id"] == user_data["id"] for u in team_data["users"])
 
 
+def _add_tagged_team(db):
+    db.add(
+        DBTeam(name="tagged-team", admin_email="alice+team-x@corp.com", is_active=True)
+    )
+    db.commit()
+
+
+def test_team_admin_create_user_refused_on_tagged_identity(
+    client, team_admin_token, test_team, db
+):
+    _add_tagged_team(db)
+    response = client.post(
+        "/users/",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={
+            "email": "alice@corp.com",
+            "password": "newpassword123",
+            "team_id": test_team.id,
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Email already registered"
+
+
+def test_team_admin_update_user_email_refused_on_tagged_identity(
+    client, team_admin_token, test_team_admin, db
+):
+    db.add(
+        DBUser(
+            email="alice+123@corp.com",
+            hashed_password=get_password_hash("password123"),
+            is_active=True,
+            is_admin=False,
+        )
+    )
+    db.commit()
+    response = client.put(
+        f"/users/{test_team_admin.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"email": "alice@corp.com"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Email already registered"
+
+
+def test_system_admin_create_tagged_user_still_allowed(client, admin_token, db):
+    _add_tagged_team(db)
+    response = client.post(
+        "/users/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"email": "alice+5@corp.com", "password": "newpassword123"},
+    )
+    assert response.status_code == 201
+
+
 def test_assign_and_list_user_admin_regions(client, admin_token, db, test_team_user):
     dedicated_region = DBRegion(
         name="dedicated-user-admin-region",
