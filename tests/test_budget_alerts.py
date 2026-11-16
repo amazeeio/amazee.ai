@@ -2106,3 +2106,28 @@ def test_window_before_sweep_candidates_is_empty_under_the_default_lookback(db, 
         assert window_before_sweep_candidates(db, region.id, sweep_start, now) == {
             team.id
         }
+
+
+def test_region_sweep_starts_at_a_used_up_topup_that_opens_a_window(db, region):
+    """FIFO marks a used-up top-up inactive, but the window still opens at it."""
+    from app.core.budget_alert_service import (
+        region_sweep_start,
+        window_before_sweep_candidates,
+    )
+
+    now = datetime.now(UTC)
+    team = _make_team(db)
+    used_up = _add_topup(db, team, region, amount_cents=5_000, purchased_days_ago=100)
+    used_up.consumed_cents = 5_000
+    used_up.is_active = False
+    db.commit()
+    _add_topup(db, team, region, amount_cents=1_000, purchased_days_ago=10)
+
+    window = resolve_team_period_window(db, team, region.id, now=now)
+    assert region_sweep_start(db, region.id, now) <= window.period_start.date()
+
+    with patch.object(settings, "BUDGET_ALERT_MAX_LOOKBACK_DAYS", 30):
+        sweep_start = region_sweep_start(db, region.id, now)
+        assert window_before_sweep_candidates(db, region.id, sweep_start, now) == {
+            team.id
+        }
