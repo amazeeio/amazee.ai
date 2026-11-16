@@ -1747,7 +1747,17 @@ async def test_sync_pool_keys_keeps_spend_on_expiry(db, test_team, test_region):
     mock_instance.update_key_duration.assert_not_awaited()
 
 
-def _buy(client, admin_token, team, region, amount_cents, *, days_ago=0):
+def _buy(
+    client,
+    admin_token,
+    team,
+    region,
+    amount_cents,
+    *,
+    days_ago=0,
+    payment_id=None,
+    expected_status=201,
+):
     purchased_at = datetime.now(UTC) - timedelta(days=days_ago)
     response = client.post(
         f"/budgets/region/{region.id}/teams/{team.id}/purchase",
@@ -1755,11 +1765,12 @@ def _buy(client, admin_token, team, region, amount_cents, *, days_ago=0):
             "amount_cents": amount_cents,
             "currency": "usd",
             "purchased_at": purchased_at.isoformat().replace("+00:00", "Z"),
-            "stripe_payment_id": f"pi_settle_{int(time.time() * 1000000)}",
+            "stripe_payment_id": payment_id
+            or f"pi_settle_{int(time.time() * 1000000)}",
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
-    assert response.status_code == 201, response.text
+    assert response.status_code == expected_status, response.text
     return response.json()
 
 
@@ -1939,6 +1950,39 @@ def test_topup_after_another_topup_expired_does_not_give_back_spend(
     assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 65.0
     db.refresh(entry_b)
     assert entry_b.consumed_cents == 2500
+
+
+def test_topup_retry_after_failed_budget_write_does_not_charge_spend_again(
+    client, admin_token, db, test_team, test_region
+):
+    """The settlement of a failed purchase stays; the retry starts from it."""
+    test_team.budget_type = "pool"
+    db.commit()
+    payment_id = f"pi_settle_retry_{int(time.time() * 1000000)}"
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(0.0, 30.0, 30.0)
+        mock_instance.update_team_budget = AsyncMock(
+            side_effect=[None, RuntimeError("LiteLLM down"), None]
+        )
+        _buy(client, admin_token, test_team, test_region, 5000, days_ago=1)
+        _buy(
+            client,
+            admin_token,
+            test_team,
+            test_region,
+            2000,
+            payment_id=payment_id,
+            expected_status=502,
+        )
+        _buy(client, admin_token, test_team, test_region, 2000, payment_id=payment_id)
+
+    # 30 spent + 20 left on the first top-up + 20 new.
+    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 70.0
+    first, retried = _topup_entries(db, test_team, test_region)
+    assert first.consumed_cents == 3000
+    assert retried.consumed_cents == 0
 
 
 def _buy_then_spend_7993(client, admin_token, db, team, region):
