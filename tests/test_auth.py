@@ -1,9 +1,9 @@
 import pytest
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch, MagicMock
 from app.api.auth import generate_validation_token
 from app.core.security import get_password_hash
-from app.db.models import DBTeam, DBUser
+from app.db.models import DBUser
+from tests.conftest import _add_tagged_team, _add_tagged_user
 
 
 @pytest.fixture
@@ -231,30 +231,6 @@ def test_update_email_to_existing_email_fails(client, test_user, test_admin):
     assert response.json()["detail"] == "Email already registered"
 
 
-def _add_tagged_user(db, email="alice+123@corp.com"):
-    db.add(
-        DBUser(
-            email=email,
-            hashed_password=get_password_hash("testpassword"),
-            is_active=True,
-            is_admin=False,
-        )
-    )
-    db.commit()
-
-
-def _add_tagged_team(db, deleted=False):
-    db.add(
-        DBTeam(
-            name="tagged-team",
-            admin_email="alice+team-x@corp.com",
-            is_active=True,
-            deleted_at=datetime.now(UTC) if deleted else None,
-        )
-    )
-    db.commit()
-
-
 def _register(client, email):
     return client.post(
         "/auth/register", json={"email": email, "password": "newpassword123"}
@@ -287,19 +263,16 @@ def test_register_underscore_is_not_a_wildcard(client, db):
 
 @pytest.mark.parametrize("tagged", ["user", "team"])
 def test_update_email_refused_when_tagged_identity_exists(
-    client, db, test_user, tagged
+    client, db, test_token, tagged
 ):
     if tagged == "user":
         _add_tagged_user(db)
     else:
         _add_tagged_team(db)
-    token = client.post(
-        "/auth/login", data={"username": test_user.email, "password": "testpassword"}
-    ).json()["access_token"]
 
     response = client.put(
         "/auth/me/update",
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"Authorization": f"Bearer {test_token}"},
         json={"current_password": "testpassword", "email": "alice@corp.com"},
     )
     assert response.status_code == 400

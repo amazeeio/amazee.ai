@@ -18,6 +18,7 @@ from datetime import datetime, UTC
 from unittest.mock import patch, AsyncMock
 import pytest
 from fastapi import HTTPException
+from tests.conftest import _add_tagged_team, _add_tagged_user
 
 
 def test_create_user(client, test_admin, admin_token):
@@ -393,13 +394,6 @@ def test_create_user_by_team_admin(client, team_admin_token, test_team, db):
     assert any(u["id"] == user_data["id"] for u in team_data["users"])
 
 
-def _add_tagged_team(db):
-    db.add(
-        DBTeam(name="tagged-team", admin_email="alice+team-x@corp.com", is_active=True)
-    )
-    db.commit()
-
-
 def test_team_admin_create_user_refused_on_tagged_identity(
     client, team_admin_token, test_team, db
 ):
@@ -420,15 +414,7 @@ def test_team_admin_create_user_refused_on_tagged_identity(
 def test_team_admin_update_user_email_refused_on_tagged_identity(
     client, team_admin_token, test_team_admin, db
 ):
-    db.add(
-        DBUser(
-            email="alice+123@corp.com",
-            hashed_password=get_password_hash("password123"),
-            is_active=True,
-            is_admin=False,
-        )
-    )
-    db.commit()
+    _add_tagged_user(db)
     response = client.put(
         f"/users/{test_team_admin.id}",
         headers={"Authorization": f"Bearer {team_admin_token}"},
