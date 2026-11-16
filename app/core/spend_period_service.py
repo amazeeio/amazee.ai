@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -654,11 +655,11 @@ async def settle_topup_spend(
     rule = "first settlement"
     if last_row is not None:
         baseline_cents = int(round(float(last_row.total_spend or 0) * 100))
-        snapshot_at = _as_utc(last_row.created_at)
-        # Row creation time, not purchased_at: a rollover is dated at the end of
-        # its period, and a top-up's purchased_at comes from the caller's clock.
+        # Every settlement writes a snapshot, so an entry from an earlier
+        # transaction was held at it. Only the DB clock orders rows reliably.
+        txn_now = db.scalar(select(func.now()))
         held_credit_left = any(
-            entry.created_at is None or _as_utc(entry.created_at) <= snapshot_at
+            entry.created_at is None or entry.created_at < txn_now
             for entry in _active_entries(db, team.id, region_id)
         )
         if not held_credit_left:

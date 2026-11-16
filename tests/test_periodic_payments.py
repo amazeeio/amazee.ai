@@ -2411,19 +2411,6 @@ def test_subscription_deactivate_retry_starts_after_the_newest_topup_settlement(
     top-up settlement, or the failed attempt, already charged."""
     test_team.budget_type = BudgetType.POOL
     now = datetime.now(UTC)
-    topup = DBPeriodicBudgetLedgerEntry(
-        team_id=test_team.id,
-        region_id=test_region.id,
-        entry_type="topup",
-        stripe_payment_id="pi_topup_retry_after_settlement",
-        amount_cents=10000,
-        consumed_cents=0,
-        purchased_at=now - timedelta(days=5),
-        expires_at=now + timedelta(days=300),
-        is_active=True,
-    )
-    db.add(topup)
-    db.commit()
     for total_spend, source, start in (
         (10.0, "moad_subscription_deactivate", now - timedelta(days=40)),
         (30.0, "topup_settlement", now - timedelta(days=5)),
@@ -2440,6 +2427,19 @@ def test_subscription_deactivate_retry_starts_after_the_newest_topup_settlement(
             )
         )
         db.commit()
+    topup = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="topup",
+        stripe_payment_id="pi_topup_retry_after_settlement",
+        amount_cents=10000,
+        consumed_cents=0,
+        purchased_at=now - timedelta(days=5),
+        expires_at=now + timedelta(days=300),
+        is_active=True,
+    )
+    db.add(topup)
+    db.commit()
 
     mock_litellm = mock_litellm_class.return_value
     mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 50.0}})
