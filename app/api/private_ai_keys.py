@@ -712,7 +712,8 @@ async def list_private_ai_keys(
           every secret in the database to any admin-scoped integration
           (e.g. a management token) that calls this endpoint with no filters.
     If user is team admin:
-        - Returns keys of their team, and keys with no team whose owner is in their team
+        - Returns keys of their team, keys with no team whose owner is in their
+          team, and their own keys
     If user is not admin:
         - Returns their own keys, and keys for their team, ignoring owner_id and team_id parameters
 
@@ -769,13 +770,15 @@ async def list_private_ai_keys(
                 )
                 team_user_ids = [user.id for user in team_users]
                 # A key of another team stays hidden even when its owner is now
-                # a member, the same rule as single-key access.
+                # a member, the same rule as single-key access. The caller's own
+                # keys stay listed.
                 query = query.filter(
                     (DBPrivateAIKey.team_id == current_user.team_id)
                     | (
                         (DBPrivateAIKey.team_id.is_(None))
                         & (DBPrivateAIKey.owner_id.in_(team_user_ids))
                     )
+                    | (DBPrivateAIKey.owner_id == current_user.id)
                 )
             else:
                 # Non-admin users
@@ -887,13 +890,15 @@ async def list_private_ai_keys_by_region(
                 )
                 team_user_ids = [user.id for user in team_users]
                 # A key of another team stays hidden even when its owner is now
-                # a member, the same rule as single-key access.
+                # a member, the same rule as single-key access. The caller's own
+                # keys stay listed.
                 query = query.filter(
                     (DBPrivateAIKey.team_id == current_user.team_id)
                     | (
                         (DBPrivateAIKey.team_id.is_(None))
                         & (DBPrivateAIKey.owner_id.in_(team_user_ids))
                     )
+                    | (DBPrivateAIKey.owner_id == current_user.id)
                 )
             else:
                 # Non-admin users
