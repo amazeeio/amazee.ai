@@ -159,11 +159,11 @@ def test_pool_topup_window_opens_at_the_oldest_valid_purchase(
 ):
     """The window spans the life of the credit the team still holds.
 
-    It opens at the oldest still-valid purchase because the budget is the full face
-    value of every valid entry: ``consumed_cents`` is only written by FIFO at
-    invoice close, which a team with no subscription never has. Opening at the
-    newest purchase would leave spend against the older entries counted nowhere —
-    missing from the numerator and never deducted from the budget.
+    It opens at the oldest still-valid purchase because the alert budget adds the
+    ``consumed_cents`` of every valid entry back, which a top-up settlement
+    writes for a team with no subscription. Opening at the newest purchase would
+    leave spend against the older entries counted nowhere: missing from the
+    numerator and never deducted from the budget.
 
     It closes 365 days after the NEWEST purchase, since that is when the last of
     the credit lapses.

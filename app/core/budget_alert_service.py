@@ -349,6 +349,9 @@ def spend_window_start(window: TeamPeriodWindow, now: datetime) -> datetime:
     (see the invariant at ``app/api/spend.py``). A closed cycle's spend is
     therefore already subtracted from the budget, so counting it again in the
     numerator inflates the percentage and fires alerts nobody has earned.
+
+    A top-up settlement also increments ``consumed_cents``, but inside the
+    window, so ``_unsettled_consumed_dollars`` adds that part back.
     """
     return window.period_start or now
 
