@@ -604,6 +604,7 @@ async def purchase_periodic_topup(
     previous_team_max_budget: float | None = None
     previous_team_budget_duration: str | None = None
     team_budget_updated = False
+    settlement = None
     try:
         team_info_resp = await get_team_info_or_recreate(db, team, region, service)
         team_info = team_info_resp.get("team_info", team_info_resp)
@@ -615,6 +616,9 @@ async def purchase_periodic_topup(
             else None
         )
         previous_team_budget_duration = team_info.get("budget_duration")
+        # The settlement can charge the new top-up row, which a failure deletes,
+        # so a failure must undo the settlement too.
+        settlement = db.begin_nested()
         await settle_topup_spend(
             db,
             team=team,
@@ -685,6 +689,8 @@ async def purchase_periodic_topup(
                     region_id,
                     str(rollback_exc),
                 )
+        if settlement is not None and settlement.is_active:
+            settlement.rollback()
         # Top-up purchase failed to reach LiteLLM. Delete the ledger entry
         # rather than deactivating it (issue #617A): a leftover row — even
         # inactive — permanently blocks a retry with the same

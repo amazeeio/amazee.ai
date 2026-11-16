@@ -1955,7 +1955,7 @@ def test_topup_after_another_topup_expired_does_not_give_back_spend(
 def test_topup_retry_after_failed_budget_write_does_not_charge_spend_again(
     client, admin_token, db, test_team, test_region
 ):
-    """The settlement of a failed purchase stays; the retry starts from it."""
+    """A failed purchase undoes its settlement, so the retry charges the spend once."""
     test_team.budget_type = "pool"
     db.commit()
     payment_id = f"pi_settle_retry_{int(time.time() * 1000000)}"
@@ -1983,6 +1983,59 @@ def test_topup_retry_after_failed_budget_write_does_not_charge_spend_again(
     first, retried = _topup_entries(db, test_team, test_region)
     assert first.consumed_cents == 3000
     assert retried.consumed_cents == 0
+
+
+def test_failed_topup_write_undoes_the_settlement_that_charged_the_new_row(
+    client, admin_token, db, test_team, test_region
+):
+    """A purchase dated before the first one is charged first by FIFO. When its
+    LiteLLM write fails, that charge and the snapshot go away with the row."""
+    test_team.budget_type = "pool"
+    db.commit()
+    payment_id = f"pi_settle_undo_{int(time.time() * 1000000)}"
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(0.0, 79.93, 79.93)
+        mock_instance.update_team_budget = AsyncMock(
+            side_effect=[None, RuntimeError("LiteLLM down"), None]
+        )
+        _buy(client, admin_token, test_team, test_region, 10000, days_ago=1)
+        _buy(
+            client,
+            admin_token,
+            test_team,
+            test_region,
+            5000,
+            days_ago=5,
+            payment_id=payment_id,
+            expected_status=502,
+        )
+
+        (first,) = _topup_entries(db, test_team, test_region)
+        assert first.consumed_cents == 0
+        assert (
+            db.query(DBTeamSpendPeriod)
+            .filter(DBTeamSpendPeriod.source == "topup_settlement")
+            .count()
+            == 1
+        )
+
+        _buy(
+            client,
+            admin_token,
+            test_team,
+            test_region,
+            5000,
+            days_ago=5,
+            payment_id=payment_id,
+        )
+
+    # 79.93 spent: 50 on the older retried row, 29.93 on the first; 70.07 left.
+    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 150.0
+    retried, first = _topup_entries(db, test_team, test_region)
+    assert retried.consumed_cents == 5000
+    assert first.consumed_cents == 2993
 
 
 def _buy_then_spend_7993(client, admin_token, db, team, region):
