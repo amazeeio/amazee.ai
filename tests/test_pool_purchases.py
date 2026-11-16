@@ -1918,24 +1918,27 @@ def test_topup_team_without_snapshot_is_settled_from_its_next_purchase(
 def test_topup_after_another_topup_expired_does_not_give_back_spend(
     client, admin_token, db, test_team, test_region
 ):
-    """An expired top-up drops out, and spend already charged is not given back."""
+    """The oldest top-up expires partly used: only its unused part is lost, and
+    spend already charged is not given back."""
     test_team.budget_type = "pool"
     db.commit()
 
     with patch("app.api.budgets.LiteLLMService") as mock_litellm:
         mock_instance = mock_litellm.return_value
-        mock_instance.get_team_info = _team_info(0.0, 0.0, 30.0)
+        mock_instance.get_team_info = _team_info(0.0, 5.0, 30.0)
         mock_instance.update_team_budget = AsyncMock()
-        _buy(client, admin_token, test_team, test_region, 5000, days_ago=2)
-        _buy(client, admin_token, test_team, test_region, 2000, days_ago=1)
-        entry_b, entry_a = _topup_entries(db, test_team, test_region)
+        _buy(client, admin_token, test_team, test_region, 2000, days_ago=2)
+        _buy(client, admin_token, test_team, test_region, 5000, days_ago=1)
+        entry_a, entry_b = _topup_entries(db, test_team, test_region)
+        assert entry_a.consumed_cents == 500
         entry_a.expires_at = datetime.now(UTC) - timedelta(minutes=1)
         db.commit()
         _buy(client, admin_token, test_team, test_region, 1000)
 
-    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 60.0
+    # 30 spent + 25 left on B + 10 new; the $15 left on A expired.
+    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 65.0
     db.refresh(entry_b)
-    assert entry_b.consumed_cents == 3000
+    assert entry_b.consumed_cents == 2500
 
 
 def _buy_then_spend_7993(client, admin_token, db, team, region):
@@ -1993,15 +1996,16 @@ def test_team_budget_clear_after_expiry_does_not_give_back_spend(
     db.commit()
     with patch("app.api.budgets.LiteLLMService") as mock_litellm:
         mock_instance = mock_litellm.return_value
-        mock_instance.get_team_info = _team_info(0.0, 0.0)
+        mock_instance.get_team_info = _team_info(0.0, 5.0)
         mock_instance.update_team_budget = AsyncMock()
-        _buy(client, admin_token, test_team, test_region, 5000, days_ago=2)
-        _buy(client, admin_token, test_team, test_region, 2000, days_ago=1)
-    _, entry_a = _topup_entries(db, test_team, test_region)
+        _buy(client, admin_token, test_team, test_region, 2000, days_ago=2)
+        _buy(client, admin_token, test_team, test_region, 5000, days_ago=1)
+    entry_a, _ = _topup_entries(db, test_team, test_region)
     entry_a.expires_at = datetime.now(UTC) - timedelta(minutes=1)
     db.commit()
 
-    assert _clear_team_budget(client, admin_token, test_team, test_region) == 50.0
+    # Last settled counter 5 + the 50 left on B; the $15 left on A expired.
+    assert _clear_team_budget(client, admin_token, test_team, test_region) == 55.0
 
 
 def test_team_budget_clear_restores_settled_cap(
