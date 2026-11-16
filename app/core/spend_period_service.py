@@ -10,7 +10,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.periodic_budget_ledger_service import allocate_period_spend_fifo
+from app.core.periodic_budget_ledger_service import (
+    _active_entries,
+    allocate_period_spend_fifo,
+)
 from app.db.models import (
     DBPeriodicBudgetLedgerEntry,
     DBPrivateAIKey,
@@ -651,7 +654,16 @@ async def settle_topup_spend(
     rule = "first settlement"
     if last_row is not None:
         baseline_cents = int(round(float(last_row.total_spend or 0) * 100))
-        if not cycle_active and counter_cents >= baseline_cents:
+        snapshot_at = _as_utc(last_row.created_at)
+        held_credit_left = any(
+            _as_utc(entry.purchased_at) <= snapshot_at
+            for entry in _active_entries(db, team.id, region_id)
+        )
+        if not held_credit_left:
+            # Every top-up held at the snapshot has expired, and the spend since
+            # then used that credit, so charging it to a newer top-up bills it twice.
+            rule = "credit expired"
+        elif not cycle_active and counter_cents >= baseline_cents:
             spend_cents = counter_cents - baseline_cents
             rule = "counter"
         else:

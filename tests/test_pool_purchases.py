@@ -1952,6 +1952,31 @@ def test_topup_after_another_topup_expired_does_not_give_back_spend(
     assert entry_b.consumed_cents == 2500
 
 
+def test_topup_after_every_held_topup_expired_charges_nothing(
+    client, admin_token, db, test_team, test_region
+):
+    """Buy $100, spend $60, the top-up expires, buy $100: the expired credit paid
+    for the $60, so the new top-up gives the full $100 of room."""
+    test_team.budget_type = "pool"
+    db.commit()
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(0.0, 60.0)
+        mock_instance.update_team_budget = AsyncMock()
+        _buy(client, admin_token, test_team, test_region, 10000, days_ago=1)
+        (expired,) = _topup_entries(db, test_team, test_region)
+        expired.expires_at = datetime.now(UTC) - timedelta(minutes=1)
+        db.commit()
+        _buy(client, admin_token, test_team, test_region, 10000)
+
+    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 160.0
+    assert [e.consumed_cents for e in _topup_entries(db, test_team, test_region)] == [
+        0,
+        0,
+    ]
+
+
 def test_topup_retry_after_failed_budget_write_does_not_charge_spend_again(
     client, admin_token, db, test_team, test_region
 ):
