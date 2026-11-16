@@ -231,6 +231,7 @@ def _active_topup(
     *,
     oldest: bool,
     include_spent: bool = False,
+    exclude_id: int | None = None,
 ) -> DBPeriodicBudgetLedgerEntry | None:
     """The oldest or newest still-valid top-up for a (team, region).
 
@@ -255,27 +256,32 @@ def _active_topup(
         if oldest
         else DBPeriodicBudgetLedgerEntry.id.desc()
     )
-    return (
-        db.query(DBPeriodicBudgetLedgerEntry)
-        .filter(
-            DBPeriodicBudgetLedgerEntry.team_id == team_id,
-            DBPeriodicBudgetLedgerEntry.region_id == region_id,
-            DBPeriodicBudgetLedgerEntry.entry_type.in_(["topup", "topup_rollover"]),
-            valid,
-            (
-                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
-                | (DBPeriodicBudgetLedgerEntry.expires_at > now)
-            ),
-        )
-        .order_by(order, tiebreak)
-        .first()
+    query = db.query(DBPeriodicBudgetLedgerEntry).filter(
+        DBPeriodicBudgetLedgerEntry.team_id == team_id,
+        DBPeriodicBudgetLedgerEntry.region_id == region_id,
+        DBPeriodicBudgetLedgerEntry.entry_type.in_(["topup", "topup_rollover"]),
+        valid,
+        (
+            DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+            | (DBPeriodicBudgetLedgerEntry.expires_at > now)
+        ),
     )
+    if exclude_id is not None:
+        query = query.filter(DBPeriodicBudgetLedgerEntry.id != exclude_id)
+    return query.order_by(order, tiebreak).first()
 
 
 def _latest_active_topup(
-    db: Session, team_id: int, region_id: int, now: datetime
+    db: Session,
+    team_id: int,
+    region_id: int,
+    now: datetime,
+    *,
+    exclude_id: int | None = None,
 ) -> DBPeriodicBudgetLedgerEntry | None:
-    return _active_topup(db, team_id, region_id, now, oldest=False)
+    return _active_topup(
+        db, team_id, region_id, now, oldest=False, exclude_id=exclude_id
+    )
 
 
 def _oldest_active_topup(
@@ -645,22 +651,12 @@ async def settle_topup_spend(
             spend_cents = max(0, int(round(float(logged or 0) * 100)))
             rule = "logs"
     else:
-        query = db.query(DBPeriodicBudgetLedgerEntry.purchased_at).filter(
-            DBPeriodicBudgetLedgerEntry.team_id == team.id,
-            DBPeriodicBudgetLedgerEntry.region_id == region_id,
-            DBPeriodicBudgetLedgerEntry.entry_type.in_(["topup", "topup_rollover"]),
-            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
-            (
-                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
-                | (DBPeriodicBudgetLedgerEntry.expires_at > now)
-            ),
+        latest = _latest_active_topup(
+            db, team.id, region_id, now, exclude_id=exclude_entry_id
         )
-        if exclude_entry_id is not None:
-            query = query.filter(DBPeriodicBudgetLedgerEntry.id != exclude_entry_id)
-        latest = query.order_by(DBPeriodicBudgetLedgerEntry.purchased_at.desc()).first()
         # A legacy team has no snapshot. Start at its latest earlier purchase, so it
         # keeps the credit it already holds and only new spend is charged.
-        window_start = _as_utc(latest[0]) if latest is not None else None
+        window_start = _as_utc(latest.purchased_at) if latest is not None else None
         if window_start is None or window_start >= now:
             spend_cents = 0
         else:
