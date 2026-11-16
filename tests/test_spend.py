@@ -5493,6 +5493,64 @@ def test_user_daily_activity_key_breakdown_hides_other_users_tokens(
     assert own_item["litellm_token"] == "sk-daily-own-token"
 
 
+@patch("app.api.spend.LiteLLMService.get_model_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.get_user_daily_activity", new_callable=AsyncMock)
+def test_user_daily_activity_key_breakdown_hides_other_team_key_of_moved_member(
+    mock_activity,
+    mock_model_info,
+    client,
+    team_admin_token,
+    test_team,
+    test_team_user,
+    test_region,
+    db,
+):
+    mock_model_info.return_value = {"data": []}
+    other_team = DBTeam(
+        name="Other Team",
+        admin_email="otherteam@example.com",
+        phone="0987654321",
+        billing_address="456 Other St, Other City, 54321",
+        is_active=True,
+        created_at=datetime.now(UTC),
+    )
+    db.add(other_team)
+    db.commit()
+    old_team_key = DBPrivateAIKey(
+        name="moved-member-old-team-key",
+        litellm_token="sk-moved-member-old-team-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=other_team.id,
+    )
+    own_team_key = DBPrivateAIKey(
+        name="moved-member-own-team-key",
+        litellm_token="sk-moved-member-own-team-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team.id,
+    )
+    db.add_all([old_team_key, own_team_key])
+    db.commit()
+
+    mock_activity.return_value = _key_breakdown_rows(
+        LiteLLMService.hash_token("sk-moved-member-old-team-token"),
+        LiteLLMService.hash_token("sk-moved-member-own-team-token"),
+        "hash-of-a-key-we-no-longer-hold",
+    )
+
+    response = client.get(
+        f"/spend/{test_region.id}/user/{test_team_user.id}/daily-activity",
+        params={"include_key_breakdown": "true"},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    assert "sk-moved-member-old-team-token" not in response.text
+    keys = response.json()["activity"][0]["key_breakdown"]
+    assert [k["key_id"] for k in keys] == [own_team_key.id]
+    assert keys[0]["litellm_token"] == "sk-moved-member-own-team-token"
+
+
 def _model_info_key(db, test_region, owner):
     key = DBPrivateAIKey(
         name="model-info-key",
