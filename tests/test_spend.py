@@ -5499,6 +5499,7 @@ def test_user_daily_activity_key_breakdown_hides_other_team_key_of_moved_member(
     mock_activity,
     mock_model_info,
     client,
+    admin_token,
     team_admin_token,
     test_team,
     test_team_user,
@@ -5546,9 +5547,23 @@ def test_user_daily_activity_key_breakdown_hides_other_team_key_of_moved_member(
     )
     assert response.status_code == 200
     assert "sk-moved-member-old-team-token" not in response.text
-    keys = response.json()["activity"][0]["key_breakdown"]
+    day = response.json()["activity"][0]
+    keys = day["key_breakdown"]
     assert [k["key_id"] for k in keys] == [own_team_key.id]
     assert keys[0]["litellm_token"] == "sk-moved-member-own-team-token"
+    # The hidden key's usage still counts in the day total.
+    assert day["spend"] == 6.0
+
+    # A system admin still sees the old team's key with its token.
+    response = client.get(
+        f"/spend/{test_region.id}/user/{test_team_user.id}/daily-activity",
+        params={"include_key_breakdown": "true"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    keys = response.json()["activity"][0]["key_breakdown"]
+    old_item = next(k for k in keys if k["key_id"] == old_team_key.id)
+    assert old_item["litellm_token"] == "sk-moved-member-old-team-token"
 
 
 def _model_info_key(db, test_region, owner):
