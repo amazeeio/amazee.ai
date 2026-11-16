@@ -1977,6 +1977,54 @@ def test_topup_after_every_held_topup_expired_charges_nothing(
     ]
 
 
+def test_topup_charges_spend_to_a_rollover_dated_in_the_future(
+    client, admin_token, db, test_team, test_region
+):
+    """A rollover is dated at the end of its period, but it is credit the team
+    held at the snapshot, so the spend since then is charged to it."""
+    test_team.budget_type = "pool"
+    now = datetime.now(UTC)
+    rollover = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="topup_rollover",
+        amount_cents=5000,
+        consumed_cents=0,
+        is_active=True,
+        purchased_at=now + timedelta(days=20),
+        expires_at=now + timedelta(days=200),
+    )
+    db.add(rollover)
+    db.commit()
+    db.add(
+        DBTeamSpendPeriod(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            budget_type="pool",
+            period_start=now,
+            period_end=now,
+            source="topup_settlement",
+            total_spend=10.0,
+        )
+    )
+    db.commit()
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(40.0)
+        mock_instance.update_team_budget = AsyncMock()
+        _buy(client, admin_token, test_team, test_region, 1000)
+
+    # 40 spent + 20 left; FIFO charges top-ups before rollovers, so the new
+    # $10 goes first and the rollover takes the other $20.
+    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 70.0
+    db.refresh(rollover)
+    assert rollover.consumed_cents == 2000
+    assert [e.consumed_cents for e in _topup_entries(db, test_team, test_region)] == [
+        1000
+    ]
+
+
 def test_topup_retry_after_failed_budget_write_does_not_charge_spend_again(
     client, admin_token, db, test_team, test_region
 ):

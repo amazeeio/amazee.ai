@@ -655,8 +655,10 @@ async def settle_topup_spend(
     if last_row is not None:
         baseline_cents = int(round(float(last_row.total_spend or 0) * 100))
         snapshot_at = _as_utc(last_row.created_at)
+        # Row creation time, not purchased_at: a rollover is dated at the end of
+        # its period, and a top-up's purchased_at comes from the caller's clock.
         held_credit_left = any(
-            _as_utc(entry.purchased_at) <= snapshot_at
+            entry.created_at is None or _as_utc(entry.created_at) <= snapshot_at
             for entry in _active_entries(db, team.id, region_id)
         )
         if not held_credit_left:
