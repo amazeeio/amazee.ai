@@ -2025,6 +2025,50 @@ def test_topup_charges_spend_to_a_rollover_dated_in_the_future(
     ]
 
 
+def test_topup_charges_spend_to_an_entry_created_by_an_overlapping_purchase(
+    client, admin_token, db, test_team, test_region
+):
+    """A concurrent purchase can commit its row with a created_at later than this
+    transaction's start. It is still credit the team held, so spend is charged."""
+    test_team.budget_type = "pool"
+    now = datetime.now(UTC)
+    db.add(
+        DBTeamSpendPeriod(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            budget_type="pool",
+            period_start=now,
+            period_end=now,
+            source="topup_settlement",
+            total_spend=0.0,
+        )
+    )
+    other = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="topup",
+        amount_cents=5000,
+        consumed_cents=0,
+        is_active=True,
+        purchased_at=now - timedelta(hours=1),
+        expires_at=now + timedelta(days=300),
+        created_at=now + timedelta(hours=1),
+    )
+    db.add(other)
+    db.commit()
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(30.0)
+        mock_instance.update_team_budget = AsyncMock()
+        _buy(client, admin_token, test_team, test_region, 1000)
+
+    # 30 spent + 20 left on the other top-up + 10 new.
+    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 60.0
+    db.refresh(other)
+    assert other.consumed_cents == 3000
+
+
 def test_topup_retry_after_failed_budget_write_does_not_charge_spend_again(
     client, admin_token, db, test_team, test_region
 ):

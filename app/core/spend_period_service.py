@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -606,6 +605,7 @@ async def settle_topup_spend(
     service: LiteLLMService,
     lite_team_id: str,
     team_info: dict[str, Any],
+    new_entry_id: int | None = None,
 ) -> None:
     """Charge the spend since the last settlement to the valid top-ups, oldest first.
 
@@ -655,11 +655,10 @@ async def settle_topup_spend(
     rule = "first settlement"
     if last_row is not None:
         baseline_cents = int(round(float(last_row.total_spend or 0) * 100))
-        # Every settlement writes a snapshot, so an entry from an earlier
-        # transaction was held at it. Only the DB clock orders rows reliably.
-        txn_now = db.scalar(select(func.now()))
+        # Every settlement writes a snapshot, so every valid entry except the
+        # one this purchase just added was held at the last snapshot.
         held_credit_left = any(
-            entry.created_at is None or entry.created_at < txn_now
+            entry.id != new_entry_id
             for entry in _active_entries(db, team.id, region_id)
         )
         if not held_credit_left:
