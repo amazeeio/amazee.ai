@@ -1438,6 +1438,13 @@ def test_team_admin_cannot_change_member_email(
     response = client.put(
         f"/users/{test_team_user.id}",
         headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"email": None},
+    )
+    assert response.status_code == 403
+
+    response = client.put(
+        f"/users/{test_team_user.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
         json={"receive_marketing_updates": True},
     )
     assert response.status_code == 200
