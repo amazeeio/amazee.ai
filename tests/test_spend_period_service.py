@@ -411,33 +411,32 @@ async def test_settle_topup_spend_skips_a_team_without_the_purchase_gate(
 
 
 @pytest.mark.asyncio
-async def test_settle_topup_spend_runs_past_a_lapsed_subscription(
+async def test_settle_topup_spend_skips_a_lapsed_but_active_subscription(
     db, test_team, test_region
 ):
-    """A subscription past its period end does not block settlement or take the spend."""
+    """The subscription's cycle or cancellation settles it, so nothing changes here."""
     test_team.budget_type = BudgetType.POOL
     db.commit()
     now = datetime.now(UTC)
     entry = _topup(db, test_team, test_region, amount_cents=5000, days_ago=10)
-    lapsed = DBPeriodicBudgetLedgerEntry(
-        team_id=test_team.id,
-        region_id=test_region.id,
-        entry_type="subscription",
-        amount_cents=10_000,
-        consumed_cents=0,
-        is_active=True,
-        purchased_at=now - timedelta(days=40),
-        effective_period_start=now - timedelta(days=40),
-        effective_period_end=now - timedelta(days=9),
-        expires_at=now - timedelta(days=9),
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="subscription",
+            amount_cents=10_000,
+            consumed_cents=0,
+            is_active=True,
+            purchased_at=now - timedelta(days=40),
+            effective_period_start=now - timedelta(days=40),
+            effective_period_end=now - timedelta(days=9),
+            expires_at=now - timedelta(days=9),
+        )
     )
-    db.add(lapsed)
     db.commit()
-    _spend_snapshot(db, test_team, test_region, total_spend=10.0, days_ago=5)
 
     await _settle(db, test_team, test_region, _logs_service(), spend=40.0)
 
     db.refresh(entry)
-    db.refresh(lapsed)
-    assert entry.consumed_cents == 3000
-    assert lapsed.consumed_cents == 0
+    assert entry.consumed_cents == 0
+    assert db.query(DBTeamSpendPeriod).filter_by(team_id=test_team.id).count() == 0

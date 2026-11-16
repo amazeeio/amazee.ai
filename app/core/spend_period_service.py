@@ -615,11 +615,24 @@ async def settle_topup_spend(
     charges nothing and only records the counter. Teams that already held top-ups
     get their first snapshot from a one-off seed, so no long log read runs here.
     """
-    now = datetime.now(UTC)
     if not team.requires_pool_purchase_gate:
         return
-    if _active_subscription_entry(db, team.id, region_id, now) is not None:
+    # No expiry check: a lapsed subscription still settles at its next cycle or
+    # cancellation, and a settlement now would charge its spend twice.
+    has_subscription = (
+        db.query(DBPeriodicBudgetLedgerEntry.id)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team.id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+        )
+        .first()
+    )
+    if has_subscription is not None:
         return
+
+    now = datetime.now(UTC)
     counter_cents = int(round(float(team_info.get("spend") or 0) * 100))
     cycle_active = bool(team_info.get("budget_duration"))
 
@@ -651,14 +664,8 @@ async def settle_topup_spend(
             rule = "logs"
 
     if spend_cents > 0:
-        # A lapsed subscription entry can still be active; it paid for its own
-        # period, not for this spend.
         allocate_period_spend_fifo(
-            db,
-            team_id=team.id,
-            region_id=region_id,
-            spend_cents=spend_cents,
-            topups_only=True,
+            db, team_id=team.id, region_id=region_id, spend_cents=spend_cents
         )
 
     upsert_team_spend_period(
