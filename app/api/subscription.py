@@ -420,10 +420,6 @@ async def subscription_deactivate(
         )
         lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
         current_team_spend: float | None = None
-        retry_of_failed_sync = (
-            existing is not None and existing.sync_status == "sync_failed"
-        )
-        already_settled = bool(active_subscription_period) or retry_of_failed_sync
         if active_subscription_period:
             # Debit mid-period spend against top-up entries so that
             # compute_active_topup_remaining reflects actual remaining balance.
@@ -505,7 +501,7 @@ async def subscription_deactivate(
                 )
             except Exception as exc:
                 _raise_settlement_failed(db, request, team.id, exc)
-        elif retry_of_failed_sync:
+        elif existing is not None and existing.sync_status == "sync_failed":
             # A retry of a half-done deactivation: the period is settled, but
             # the spend since the first attempt was never debited and would
             # come back as headroom in the projection below.
@@ -609,9 +605,9 @@ async def subscription_deactivate(
                     team.id,
                     exc,
                 )
-            if current_team_spend is not None and not already_settled:
-                # Nothing above charged the spend since the last top-up, and the
-                # projection below would hand it back as credit.
+            if current_team_spend is not None:
+                # Neither branch above ran, so nothing charged the spend since
+                # the last top-up, and the projection below would hand it back.
                 try:
                     await settle_topup_spend(
                         db,
