@@ -1329,12 +1329,13 @@ def test_subscription_deactivate_without_period_settles_topup_spend(
     test_region,
 ):
     """With no open period, the spend since the last top-up is charged first."""
+    test_team.budget_type = BudgetType.POOL
     now = datetime.now(UTC)
     db.add(
         DBTeamSpendPeriod(
             team_id=test_team.id,
             region_id=test_region.id,
-            budget_type="periodic",
+            budget_type="pool",
             period_start=now - timedelta(days=2),
             period_end=now - timedelta(days=2),
             source="topup_settlement",
@@ -1737,6 +1738,8 @@ async def test_first_cycle_baseline_is_last_topup_settlement(
     db, test_team, test_region
 ):
     """A team that subscribes later is charged only the spend after its last top-up."""
+    test_team.budget_type = BudgetType.POOL
+    db.commit()
     await settle_topup_spend(
         db,
         team=test_team,

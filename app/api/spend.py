@@ -1535,8 +1535,9 @@ async def get_team_spend(
         # is incremented at cycle-close (by allocate_period_spend_fifo)
         # while LiteLLM's total_spend is simultaneously reset on the same
         # call. The two therefore never reflect the same dollars at the
-        # same time. If mid-cycle allocation is ever introduced, this will
-        # silently double-count that spend.
+        # same time. The mid-cycle top-up settlement (settle_topup_spend)
+        # runs only for purchase-gated POOL teams, never for this branch,
+        # because nothing here resets the key spend it would double-count.
         live_remaining_dollars = max(0.0, purchased_dollars - float(total_spend or 0.0))
         live_remaining_cents = int(round(live_remaining_dollars * 100))
         periodic_budget_view = PeriodicTeamBudgetView(

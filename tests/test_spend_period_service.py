@@ -427,3 +427,18 @@ async def test_settle_topup_spend_skips_team_with_active_subscription(
     db.refresh(entry)
     assert entry.consumed_cents == 0
     assert db.query(DBTeamSpendPeriod).filter_by(team_id=test_team.id).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_settle_topup_spend_skips_a_team_without_the_purchase_gate(
+    db, test_team, test_region
+):
+    """A purchase does not reset key spend for these teams, so they never settle."""
+    entry = _topup(db, test_team, test_region, amount_cents=5000, days_ago=10)
+    _spend_snapshot(db, test_team, test_region, total_spend=0.0, days_ago=5)
+
+    await _settle(db, test_team, test_region, _logs_service(), spend=40.0)
+
+    db.refresh(entry)
+    assert entry.consumed_cents == 0
+    assert db.query(DBTeamSpendPeriod).filter_by(team_id=test_team.id).count() == 1

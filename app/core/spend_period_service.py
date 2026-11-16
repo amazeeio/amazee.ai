@@ -609,7 +609,11 @@ async def settle_topup_spend(
     LiteLLM's team counter never resets, so a cap of ``counter + credit left`` is
     only right when ``consumed_cents`` is current. Subscription teams settle at
     invoice close, so this does nothing while a subscription entry is active.
+    Only purchase-gated POOL teams settle: a purchase resets their key spend, so
+    the spend view does not subtract the settled spend a second time.
     """
+    if not team.requires_pool_purchase_gate:
+        return
     has_subscription = (
         db.query(DBPeriodicBudgetLedgerEntry.id)
         .filter(
