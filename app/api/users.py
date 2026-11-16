@@ -1012,6 +1012,14 @@ async def update_user(
             detail="Not authorized to perform this action",
         )
 
+    # Sign-in is by email OTP, so a team admin who changes a member's email can
+    # sign in as that member.
+    if "email" in user_update.model_fields_set and not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action",
+        )
+
     previous_email = db_user.email
     for key, value in user_update.model_dump(exclude_unset=True).items():
         setattr(db_user, key, value)

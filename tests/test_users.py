@@ -1416,6 +1416,33 @@ def test_team_admin_cannot_change_is_active(client, team_admin_token, test_team_
     assert "Not authorized to perform this action" in response.json()["detail"]
 
 
+def test_team_admin_cannot_change_member_email(
+    client, db, team_admin_token, test_team_user
+):
+    """
+    GIVEN: A team member in the team admin's team
+    WHEN: the team admin tries to change the member's email via PUT /users/{id}
+    THEN: A 403 is returned and the email stays the same; other fields still work
+    """
+    response = client.put(
+        f"/users/{test_team_user.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"email": "hijack@example.com"},
+    )
+    assert response.status_code == 403
+    assert "Not authorized to perform this action" in response.json()["detail"]
+
+    db.refresh(test_team_user)
+    assert test_team_user.email == "teamuser@example.com"
+
+    response = client.put(
+        f"/users/{test_team_user.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"receive_marketing_updates": True},
+    )
+    assert response.status_code == 200
+
+
 @patch("app.api.users.settings.ENABLE_LIMITS", True)
 def test_create_user_with_limits_enabled(client, team_admin_token, test_team, db):
     """
