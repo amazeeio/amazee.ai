@@ -126,6 +126,8 @@ async def get_team_spend_history(
         .filter(
             DBTeamSpendPeriod.team_id == team_id,
             DBTeamSpendPeriod.region_id == region_id,
+            # A top-up settlement is a ledger baseline, not a billing period.
+            DBTeamSpendPeriod.source != "topup_settlement",
         )
         .order_by(DBTeamSpendPeriod.period_end.desc(), DBTeamSpendPeriod.id.desc())
         .limit(period_limit)
