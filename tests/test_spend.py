@@ -1446,6 +1446,15 @@ def test_update_team_budget_rejects_null_cap_for_periodic_team_admin(
 ):
     test_team.budget_type = BudgetType.PERIODIC
     test_team.require_purchase_for_requests = False
+    db.add(
+        DBSpendCap(
+            scope="team",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            max_budget=30.0,
+            budget_duration="30d",
+        )
+    )
     db.commit()
 
     response = client.put(
@@ -1465,7 +1474,8 @@ def test_update_team_budget_rejects_null_cap_for_periodic_team_admin(
         )
         .first()
     )
-    assert cap is None
+    assert cap is not None
+    assert cap.max_budget == 30.0
 
 
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
