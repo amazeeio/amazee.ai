@@ -340,18 +340,14 @@ async def update_user_me(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Current password is required to update email",
             )
-        # Check if email is already taken
+        # The new address is not proven, so it must not be another user's or claim
+        # another base identity. A change inside the same base gives nothing new.
         existing_user = get_user_by_email(db, user_update.email)
-        if existing_user and existing_user.id != current_user.id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered",
-            )
-        # The new address is not proven, so it must not claim another base
-        # identity. A change inside the same base gives the caller nothing new.
-        if normalize_email_for_lookup(user_update.email) != normalize_email_for_lookup(
-            current_user.email
-        ) and email_identity_taken(db, user_update.email):
+        if (existing_user and existing_user.id != current_user.id) or (
+            normalize_email_for_lookup(user_update.email)
+            != normalize_email_for_lookup(current_user.email)
+            and email_identity_taken(db, user_update.email)
+        ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email already registered",

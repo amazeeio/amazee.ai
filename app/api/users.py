@@ -879,16 +879,12 @@ async def create_user(
     # "user+team_id@domain" (created by moad's provision-key flow) are intentionally
     # distinct identities scoped to a specific Applications workspace team.  Normalizing
     # would strip the tag and find the base user, incorrectly blocking creation.
+    # A team admin chooses the password for this row, so for a team admin an
+    # unproven email that claims an existing base identity is also refused.
     db_user = (
         db.query(DBUser).filter(func.lower(DBUser.email) == user.email.lower()).first()
     )
-    if db_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
-        )
-    # A team admin chooses the password for this row, so an unproven email here
-    # gives the same access as a self registration.
-    if not current_user.is_admin and email_identity_taken(db, user.email):
+    if db_user or (not current_user.is_admin and email_identity_taken(db, user.email)):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
         )
