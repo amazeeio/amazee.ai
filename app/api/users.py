@@ -49,7 +49,7 @@ from app.core.security import (
     get_current_user_from_auth,
     get_role_min_team_admin,
 )
-from app.core.email import normalize_email_for_lookup
+from app.core.email import escape_like, normalize_email_for_lookup
 from app.core.roles import UserRole
 from app.services.litellm import LiteLLMService
 from app.services.disposable_domains import assert_email_domain_allowed
@@ -96,6 +96,25 @@ def get_user_by_email(db: Session, email: str) -> Optional[DBUser]:
     if normalized_user is not None:
         return normalized_user
     return db.query(DBUser).filter(func.lower(DBUser.email) == raw).first()
+
+
+def email_identity_taken(db: Session, email: str) -> bool:
+    """The moad key fallback treats the base email as the owner of every tagged
+    team, so only a proven owner can hold a base email that already exists."""
+    base = normalize_email_for_lookup(email)
+    user_match = func.lower(DBUser.email) == base
+    team_match = func.lower(DBTeam.admin_email) == base
+    if "@" in base:
+        local, domain = base.split("@", 1)
+        tagged = f"{escape_like(local)}+%@{escape_like(domain)}"
+        user_match = or_(user_match, DBUser.email.ilike(tagged, escape="\\"))
+        team_match = or_(team_match, DBTeam.admin_email.ilike(tagged, escape="\\"))
+    if db.query(DBUser.id).filter(user_match).first() is not None:
+        return True
+    return (
+        db.query(DBTeam.id).filter(DBTeam.deleted_at.is_(None), team_match).first()
+        is not None
+    )
 
 
 router = APIRouter(tags=["users"])

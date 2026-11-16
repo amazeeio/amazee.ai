@@ -1,8 +1,9 @@
 import pytest
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch, MagicMock
 from app.api.auth import generate_validation_token
 from app.core.security import get_password_hash
-from app.db.models import DBUser
+from app.db.models import DBTeam, DBUser
 
 
 @pytest.fixture
@@ -225,6 +226,81 @@ def test_update_email_to_existing_email_fails(client, test_user, test_admin):
         "/auth/me/update",
         headers={"Authorization": f"Bearer {token}"},
         json={"current_password": "testpassword", "email": test_admin.email},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Email already registered"
+
+
+def _add_tagged_user(db, email="alice+123@corp.com"):
+    db.add(
+        DBUser(
+            email=email,
+            hashed_password=get_password_hash("testpassword"),
+            is_active=True,
+            is_admin=False,
+        )
+    )
+    db.commit()
+
+
+def _add_tagged_team(db, deleted=False):
+    db.add(
+        DBTeam(
+            name="tagged-team",
+            admin_email="alice+team-x@corp.com",
+            is_active=True,
+            deleted_at=datetime.now(UTC) if deleted else None,
+        )
+    )
+    db.commit()
+
+
+def _register(client, email):
+    return client.post(
+        "/auth/register", json={"email": email, "password": "newpassword123"}
+    )
+
+
+def test_register_refused_when_tagged_user_exists(client, db):
+    _add_tagged_user(db)
+    response = _register(client, "alice@corp.com")
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Email already registered"
+
+
+def test_register_refused_when_tagged_team_admin_exists(client, db):
+    _add_tagged_team(db)
+    response = _register(client, "alice@corp.com")
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Email already registered"
+
+
+def test_register_allowed_when_only_deleted_team_has_admin_email(client, db):
+    _add_tagged_team(db, deleted=True)
+    assert _register(client, "alice@corp.com").status_code == 200
+
+
+def test_register_underscore_is_not_a_wildcard(client, db):
+    _add_tagged_user(db, email="axb+1@corp.com")
+    assert _register(client, "a_b@corp.com").status_code == 200
+
+
+@pytest.mark.parametrize("tagged", ["user", "team"])
+def test_update_email_refused_when_tagged_identity_exists(
+    client, db, test_user, tagged
+):
+    if tagged == "user":
+        _add_tagged_user(db)
+    else:
+        _add_tagged_team(db)
+    token = client.post(
+        "/auth/login", data={"username": test_user.email, "password": "testpassword"}
+    ).json()["access_token"]
+
+    response = client.put(
+        "/auth/me/update",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"current_password": "testpassword", "email": "alice@corp.com"},
     )
     assert response.status_code == 400
     assert response.json()["detail"] == "Email already registered"
