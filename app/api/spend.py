@@ -1056,6 +1056,9 @@ def _pool_previous_period_spend_baseline(
     """
     Snapshot baseline used for POOL max_budget projection when caps are changed
     mid-period. This is the latest captured period spend total.
+
+    Newest row by id, not by period_end: a cancelled cycle keeps a future
+    period_end and would win over the settlements written after it.
     """
     row = (
         db.query(DBTeamSpendPeriod.total_spend)
@@ -1064,7 +1067,7 @@ def _pool_previous_period_spend_baseline(
             DBTeamSpendPeriod.region_id == region_id,
             DBTeamSpendPeriod.budget_type == BudgetType.POOL,
         )
-        .order_by(DBTeamSpendPeriod.period_end.desc(), DBTeamSpendPeriod.id.desc())
+        .order_by(DBTeamSpendPeriod.id.desc())
         .first()
     )
     if row is None or row[0] is None:

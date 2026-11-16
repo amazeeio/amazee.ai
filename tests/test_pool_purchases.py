@@ -2065,3 +2065,45 @@ def test_alert_budget_after_three_topups_leaves_true_room(
 
     assert window_start == first.purchased_at
     assert budget == 110.0
+
+
+def test_team_budget_clear_after_cancel_uses_newest_settlement(
+    client, admin_token, db, test_team, test_region
+):
+    """A cancelled cycle row ends in the future but is older than the settlement."""
+    test_team.budget_type = "pool"
+    now = datetime.now(UTC)
+    for total_spend, source, start, end in (
+        (
+            10.0,
+            "moad_subscription_cycle",
+            now - timedelta(days=5),
+            now + timedelta(days=26),
+        ),
+        (
+            20.0,
+            "moad_subscription_deactivate",
+            now - timedelta(days=5),
+            now - timedelta(days=1),
+        ),
+    ):
+        db.add(
+            DBTeamSpendPeriod(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                budget_type="pool",
+                period_start=start,
+                period_end=end,
+                source=source,
+                total_spend=total_spend,
+            )
+        )
+    db.commit()
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(20.0)
+        mock_instance.update_team_budget = AsyncMock()
+        _buy(client, admin_token, test_team, test_region, 5000)
+    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 70.0
+
+    assert _clear_team_budget(client, admin_token, test_team, test_region) == 70.0
