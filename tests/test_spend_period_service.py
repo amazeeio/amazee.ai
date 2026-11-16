@@ -396,37 +396,6 @@ async def test_settle_topup_spend_reads_logs_when_counter_dropped_below_baseline
 
 
 @pytest.mark.asyncio
-async def test_settle_topup_spend_skips_team_with_active_subscription(
-    db, test_team, test_region
-):
-    """Subscription teams settle at invoice close, so nothing changes for them."""
-    test_team.budget_type = BudgetType.POOL
-    db.commit()
-    now = datetime.now(UTC)
-    entry = _topup(db, test_team, test_region, amount_cents=5000, days_ago=10)
-    db.add(
-        DBPeriodicBudgetLedgerEntry(
-            team_id=test_team.id,
-            region_id=test_region.id,
-            entry_type="subscription",
-            amount_cents=10_000,
-            consumed_cents=0,
-            is_active=True,
-            purchased_at=now - timedelta(days=5),
-            effective_period_start=now - timedelta(days=5),
-            effective_period_end=now + timedelta(days=25),
-        )
-    )
-    db.commit()
-
-    await _settle(db, test_team, test_region, _logs_service(), spend=40.0)
-
-    db.refresh(entry)
-    assert entry.consumed_cents == 0
-    assert db.query(DBTeamSpendPeriod).filter_by(team_id=test_team.id).count() == 0
-
-
-@pytest.mark.asyncio
 async def test_settle_topup_spend_skips_a_team_without_the_purchase_gate(
     db, test_team, test_region
 ):

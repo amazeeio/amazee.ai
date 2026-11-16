@@ -1805,15 +1805,7 @@ def test_topup_after_partial_spend_keeps_unspent_credit(
     client, admin_token, db, test_team, test_region
 ):
     """Buy $100, spend $79.93, buy $100: $120.07 of room, cap $200."""
-    test_team.budget_type = "pool"
-    db.commit()
-
-    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
-        mock_instance = mock_litellm.return_value
-        mock_instance.get_team_info = _team_info(0.0, 79.93)
-        mock_instance.update_team_budget = AsyncMock()
-        _buy(client, admin_token, test_team, test_region, 10000, days_ago=1)
-        data = _buy(client, admin_token, test_team, test_region, 10000)
+    data = _buy_then_spend_7993(client, admin_token, db, test_team, test_region)
 
     assert data["new_total_budget_cents"] == 20000
     assert (
@@ -1955,7 +1947,7 @@ def _buy_then_spend_7993(client, admin_token, db, team, region):
         mock_instance.get_team_info = _team_info(0.0, 79.93)
         mock_instance.update_team_budget = AsyncMock()
         _buy(client, admin_token, team, region, 10000, days_ago=1)
-        _buy(client, admin_token, team, region, 10000)
+        return _buy(client, admin_token, team, region, 10000)
 
 
 def _clear_team_budget(client, admin_token, team, region):
