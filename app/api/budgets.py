@@ -622,7 +622,6 @@ async def purchase_periodic_topup(
             service=service,
             lite_team_id=lite_team_id,
             team_info=team_info,
-            exclude_entry_id=topup_entry.id,
         )
 
         sub_remaining_cents = 0

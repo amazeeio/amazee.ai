@@ -302,7 +302,7 @@ def _logs_service(spend=0.0):
     return service
 
 
-async def _settle(db, team, region, service, *, spend, exclude_entry_id=None):
+async def _settle(db, team, region, service, *, spend):
     await settle_topup_spend(
         db,
         team=team,
@@ -310,7 +310,6 @@ async def _settle(db, team, region, service, *, spend, exclude_entry_id=None):
         service=service,
         lite_team_id="lite-team",
         team_info={"spend": spend},
-        exclude_entry_id=exclude_entry_id,
     )
     db.commit()
 
@@ -325,9 +324,7 @@ async def test_settle_topup_spend_first_settlement_charges_nothing(
     entry = _topup(db, test_team, test_region, amount_cents=5000, days_ago=0)
     service = _logs_service()
 
-    await _settle(
-        db, test_team, test_region, service, spend=12.0, exclude_entry_id=entry.id
-    )
+    await _settle(db, test_team, test_region, service, spend=12.0)
 
     db.refresh(entry)
     assert entry.consumed_cents == 0
@@ -356,29 +353,29 @@ async def test_settle_topup_spend_charges_oldest_entry_first(
 
 
 @pytest.mark.asyncio
-async def test_settle_topup_spend_bootstrap_reads_logs_since_latest_prior_purchase(
+async def test_settle_topup_spend_team_without_snapshot_is_settled_from_now_on(
     db, test_team, test_region
 ):
-    """A legacy team keeps the credit it holds; only spend since its last purchase counts."""
+    """Earlier top-ups and no snapshot: the first settlement charges $0, then the
+    next one charges only the spend since that snapshot."""
     test_team.budget_type = BudgetType.POOL
     db.commit()
     oldest = _topup(db, test_team, test_region, amount_cents=5000, days_ago=30)
-    prior = _topup(db, test_team, test_region, amount_cents=5000, days_ago=10)
-    new = _topup(db, test_team, test_region, amount_cents=5000, days_ago=0)
-    service = _logs_service(40.0)
+    _topup(db, test_team, test_region, amount_cents=5000, days_ago=10)
+    service = _logs_service()
 
-    await _settle(
-        db, test_team, test_region, service, spend=99.0, exclude_entry_id=new.id
-    )
+    await _settle(db, test_team, test_region, service, spend=99.0)
 
-    service.get_team_spend_in_range.assert_awaited_once()
-    _, start, _ = service.get_team_spend_in_range.await_args.args
-    db.refresh(prior)
-    assert start == prior.purchased_at
+    db.refresh(oldest)
+    assert oldest.consumed_cents == 0
+    rows = db.query(DBTeamSpendPeriod).filter_by(team_id=test_team.id).all()
+    assert [(r.source, r.total_spend) for r in rows] == [("topup_settlement", 99.0)]
+
+    await _settle(db, test_team, test_region, service, spend=139.0)
+
     db.refresh(oldest)
     assert oldest.consumed_cents == 4000
-    db.refresh(new)
-    assert new.consumed_cents == 0
+    service.get_team_spend_in_range.assert_not_awaited()
 
 
 @pytest.mark.asyncio

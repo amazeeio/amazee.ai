@@ -1887,10 +1887,11 @@ def test_topup_with_active_subscription_keeps_current_projection(
     )
 
 
-def test_legacy_topup_team_is_charged_only_spend_since_last_purchase(
+def test_topup_team_without_snapshot_is_settled_from_its_next_purchase(
     client, admin_token, db, test_team, test_region
 ):
-    """With no snapshot, only the logged spend since the latest earlier purchase counts."""
+    """A team with an earlier top-up and no snapshot is charged $0 at its first
+    settlement; the next purchase charges only the spend since then."""
     test_team.budget_type = "pool"
     now = datetime.now(UTC)
     seeded = DBPeriodicBudgetLedgerEntry(
@@ -1908,14 +1909,18 @@ def test_legacy_topup_team_is_charged_only_spend_since_last_purchase(
 
     with patch("app.api.budgets.LiteLLMService") as mock_litellm:
         mock_instance = mock_litellm.return_value
-        mock_instance.get_team_info = _team_info(60.0)
-        mock_instance.get_team_spend_in_range = AsyncMock(return_value=40.0)
+        mock_instance.get_team_info = _team_info(60.0, 75.0)
+        mock_instance.get_team_spend_in_range = AsyncMock(return_value=0.0)
         mock_instance.update_team_budget = AsyncMock()
-        _buy(client, admin_token, test_team, test_region, 10000)
+        _buy(client, admin_token, test_team, test_region, 10000, days_ago=1)
+        first_cap = mock_instance.update_team_budget.await_args.kwargs["max_budget"]
+        _buy(client, admin_token, test_team, test_region, 1000)
 
-    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 220.0
+    assert first_cap == 260.0
+    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 270.0
     db.refresh(seeded)
-    assert seeded.consumed_cents == 4000
+    assert seeded.consumed_cents == 1500
+    mock_instance.get_team_spend_in_range.assert_not_awaited()
 
 
 def test_topup_after_another_topup_expired_does_not_give_back_spend(

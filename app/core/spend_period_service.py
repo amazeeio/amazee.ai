@@ -231,7 +231,6 @@ def _active_topup(
     *,
     oldest: bool,
     include_spent: bool = False,
-    exclude_id: int | None = None,
 ) -> DBPeriodicBudgetLedgerEntry | None:
     """The oldest or newest still-valid top-up for a (team, region).
 
@@ -256,32 +255,27 @@ def _active_topup(
         if oldest
         else DBPeriodicBudgetLedgerEntry.id.desc()
     )
-    query = db.query(DBPeriodicBudgetLedgerEntry).filter(
-        DBPeriodicBudgetLedgerEntry.team_id == team_id,
-        DBPeriodicBudgetLedgerEntry.region_id == region_id,
-        DBPeriodicBudgetLedgerEntry.entry_type.in_(["topup", "topup_rollover"]),
-        valid,
-        (
-            DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
-            | (DBPeriodicBudgetLedgerEntry.expires_at > now)
-        ),
+    return (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team_id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type.in_(["topup", "topup_rollover"]),
+            valid,
+            (
+                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                | (DBPeriodicBudgetLedgerEntry.expires_at > now)
+            ),
+        )
+        .order_by(order, tiebreak)
+        .first()
     )
-    if exclude_id is not None:
-        query = query.filter(DBPeriodicBudgetLedgerEntry.id != exclude_id)
-    return query.order_by(order, tiebreak).first()
 
 
 def _latest_active_topup(
-    db: Session,
-    team_id: int,
-    region_id: int,
-    now: datetime,
-    *,
-    exclude_id: int | None = None,
+    db: Session, team_id: int, region_id: int, now: datetime
 ) -> DBPeriodicBudgetLedgerEntry | None:
-    return _active_topup(
-        db, team_id, region_id, now, oldest=False, exclude_id=exclude_id
-    )
+    return _active_topup(db, team_id, region_id, now, oldest=False)
 
 
 def _oldest_active_topup(
@@ -608,7 +602,6 @@ async def settle_topup_spend(
     service: LiteLLMService,
     lite_team_id: str,
     team_info: dict[str, Any],
-    exclude_entry_id: int | None = None,
 ) -> None:
     """Charge the spend since the last settlement to the valid top-ups, oldest first.
 
@@ -617,6 +610,10 @@ async def settle_topup_spend(
     invoice close, so this does nothing while a subscription entry is active.
     Only purchase-gated POOL teams settle: a purchase resets their key spend, so
     the spend view does not subtract the settled spend a second time.
+
+    A team with no snapshot is settled from its first settlement on: that one
+    charges nothing and only records the counter. Teams that already held top-ups
+    get their first snapshot from a one-off seed, so no long log read runs here.
     """
     now = datetime.now(UTC)
     if not team.requires_pool_purchase_gate:
@@ -638,7 +635,7 @@ async def settle_topup_spend(
     )
 
     spend_cents = 0
-    window_start: datetime | None = None
+    rule = "first settlement"
     if last_row is not None:
         baseline_cents = int(round(float(last_row.total_spend or 0) * 100))
         if not cycle_active and counter_cents >= baseline_cents:
@@ -647,20 +644,11 @@ async def settle_topup_spend(
         else:
             # The counter dropped (a recreated team) or a LiteLLM cycle can reset
             # it, so read the spend logs, which survive both.
-            window_start = _as_utc(last_row.created_at)
+            logged = await service.get_team_spend_in_range(
+                lite_team_id, _as_utc(last_row.created_at), now
+            )
+            spend_cents = max(0, int(round(float(logged or 0) * 100)))
             rule = "logs"
-    else:
-        latest = _latest_active_topup(
-            db, team.id, region_id, now, exclude_id=exclude_entry_id
-        )
-        # A legacy team has no snapshot. Start at its latest earlier purchase, so it
-        # keeps the credit it already holds and only new spend is charged.
-        window_start = _as_utc(latest.purchased_at) if latest is not None else None
-        rule = "bootstrap"
-
-    if window_start is not None and window_start < now:
-        logged = await service.get_team_spend_in_range(lite_team_id, window_start, now)
-        spend_cents = max(0, int(round(float(logged or 0) * 100)))
 
     if spend_cents > 0:
         # A lapsed subscription entry can still be active; it paid for its own

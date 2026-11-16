@@ -1286,7 +1286,6 @@ def test_subscription_deactivate_preserves_active_topup_budget(
     mock_litellm.get_team_info = AsyncMock(
         return_value={"team_info": {"spend": 6.0, "max_budget": 22.0}}
     )
-    mock_litellm.get_team_spend_in_range = AsyncMock(return_value=0.0)
     mock_litellm.update_team_budget = AsyncMock()
     mock_litellm.set_key_restrictions = AsyncMock()
 
