@@ -3830,3 +3830,79 @@ def test_delete_private_ai_key_wrong_team_id_is_404_and_persists(
 
     db.delete(survivor)
     db.commit()
+
+
+@patch("app.api.private_ai_keys.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch(
+    "app.api.private_ai_keys.LiteLLMService.update_key_duration",
+    new_callable=AsyncMock,
+)
+def test_extend_token_life_forbidden_for_team_admin(
+    mock_update_key_duration,
+    mock_get_key_info,
+    client,
+    team_admin_token,
+    test_team,
+    test_region,
+    db,
+):
+    key = DBPrivateAIKey(
+        name="extend-forbidden",
+        litellm_token="sk-extend-forbidden",
+        region_id=test_region.id,
+        team_id=test_team.id,
+        owner_id=None,
+    )
+    db.add(key)
+    db.commit()
+    db.refresh(key)
+
+    response = client.put(
+        f"/private-ai-keys/{key.id}/extend-token-life",
+        json={"duration": "-1"},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+
+    assert response.status_code == 403
+    mock_update_key_duration.assert_not_awaited()
+    mock_get_key_info.assert_not_awaited()
+
+
+@patch("app.api.private_ai_keys.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch(
+    "app.api.private_ai_keys.LiteLLMService.update_key_duration",
+    new_callable=AsyncMock,
+)
+def test_extend_token_life_allowed_for_system_admin(
+    mock_update_key_duration,
+    mock_get_key_info,
+    client,
+    admin_token,
+    test_team,
+    test_region,
+    db,
+):
+    key = DBPrivateAIKey(
+        name="extend-allowed",
+        litellm_token="sk-extend-allowed",
+        region_id=test_region.id,
+        team_id=test_team.id,
+        owner_id=None,
+    )
+    db.add(key)
+    db.commit()
+    db.refresh(key)
+    mock_get_key_info.return_value = {
+        "info": {"key_name": "extend-allowed", "expires": None}
+    }
+
+    response = client.put(
+        f"/private-ai-keys/{key.id}/extend-token-life",
+        json={"duration": "30d"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200, response.json()
+    mock_update_key_duration.assert_awaited_once_with(
+        litellm_token="sk-extend-allowed", duration="30d"
+    )
