@@ -1,12 +1,13 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import false
 
 from app.core.config import settings
+from app.core.spend_period_service import settle_topup_spend
 from app.core.worker import (
     _previous_period_spend_baseline_cents,
     _record_periodic_payment_direct,
@@ -1729,6 +1730,31 @@ def test_previous_period_spend_baseline_prefers_the_newest_snapshot(
     )
 
     assert baseline == 1200
+
+
+@pytest.mark.asyncio
+async def test_first_cycle_baseline_is_last_topup_settlement(
+    db, test_team, test_region
+):
+    """A team that subscribes later is charged only the spend after its last top-up."""
+    await settle_topup_spend(
+        db,
+        team=test_team,
+        region_id=test_region.id,
+        service=MagicMock(),
+        lite_team_id="lite-team",
+        team_info={"spend": 33.0},
+    )
+    db.commit()
+
+    baseline = _previous_period_spend_baseline_cents(
+        db,
+        team_id=test_team.id,
+        region_id=test_region.id,
+        current_period_start=datetime.now(UTC),
+    )
+
+    assert baseline == 3300
 
 
 def _seed_deactivate_period(db, team, region, *, baseline_spend):

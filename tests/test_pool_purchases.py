@@ -1939,3 +1939,77 @@ def test_topup_after_another_topup_expired_does_not_give_back_spend(
     assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 60.0
     db.refresh(entry_b)
     assert entry_b.consumed_cents == 3000
+
+
+def _buy_then_spend_7993(client, admin_token, db, team, region):
+    """Criterion 2 flow: buy $100, spend $79.93, buy $100."""
+    team.budget_type = "pool"
+    db.commit()
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(0.0, 79.93)
+        mock_instance.update_team_budget = AsyncMock()
+        _buy(client, admin_token, team, region, 10000, days_ago=1)
+        _buy(client, admin_token, team, region, 10000)
+
+
+def _clear_team_budget(client, admin_token, team, region):
+    with (
+        patch(
+            "app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock
+        ) as mock_update,
+        patch(
+            "app.api.spend.LiteLLMService.get_team_info",
+            new_callable=AsyncMock,
+            return_value={"team_info": {}},
+        ),
+    ):
+        response = client.post(
+            f"/spend/{region.id}/team/{team.id}/budget/clear",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    assert response.status_code == 200, response.text
+    return mock_update.await_args.kwargs["max_budget"]
+
+
+def test_periodic_status_reports_settled_topup_remaining(
+    client, admin_token, db, test_team, test_region
+):
+    _buy_then_spend_7993(client, admin_token, db, test_team, test_region)
+
+    response = client.get(
+        f"/budgets/region/{test_region.id}/teams/{test_team.id}/periodic-status",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["topup_remaining_cents"] == 12007
+    assert data["desired_remaining_cents"] == 12007
+
+
+def test_team_budget_clear_after_expiry_does_not_give_back_spend(
+    client, admin_token, db, test_team, test_region
+):
+    """The clear path reads the last settlement, so an expired top-up stays gone."""
+    test_team.budget_type = "pool"
+    db.commit()
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(0.0, 0.0)
+        mock_instance.update_team_budget = AsyncMock()
+        _buy(client, admin_token, test_team, test_region, 5000, days_ago=2)
+        _buy(client, admin_token, test_team, test_region, 2000, days_ago=1)
+    _, entry_a = _topup_entries(db, test_team, test_region)
+    entry_a.expires_at = datetime.now(UTC) - timedelta(minutes=1)
+    db.commit()
+
+    assert _clear_team_budget(client, admin_token, test_team, test_region) == 50.0
+
+
+def test_team_budget_clear_restores_settled_cap(
+    client, admin_token, db, test_team, test_region
+):
+    _buy_then_spend_7993(client, admin_token, db, test_team, test_region)
+
+    assert _clear_team_budget(client, admin_token, test_team, test_region) == 200.0
