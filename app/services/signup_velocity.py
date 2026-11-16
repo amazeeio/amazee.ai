@@ -102,6 +102,7 @@ def enforce_provision_caps(db: Session, email: str) -> None:
     this endpoint:
       - per email domain per day (free-mail providers exempt), and
       - global per hour, the backstop for domain rotation.
+    Unlike enforce_signup_velocity, rejected attempts are not recorded.
     Soft limits, same count-then-insert trade-off as enforce_signup_velocity.
     """
     from app.services.disposable_domains import extract_domain
@@ -134,11 +135,6 @@ def enforce_provision_caps(db: Session, email: str) -> None:
         >= settings.PROVISION_MAX_PER_HOUR
     )
 
-    # ponytail: no IP here; the request isn't threaded this deep, and the caps
-    # don't use it. Thread it through if forensics need it.
-    db.add(DBSignupEvent(email=email, endpoint=PROVISION_ENDPOINT))
-    db.commit()
-
     if domain_hit or global_hit:
         logger.warning(
             "Provision cap hit (%s): domain=%s email=%s",
@@ -150,6 +146,13 @@ def enforce_provision_caps(db: Session, email: str) -> None:
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many sign-ups right now. Please try again later.",
         )
+
+    # Only admitted attempts are recorded: rejected retries must not keep the
+    # shared window full and lock out unrelated users (the log line covers them).
+    # ponytail: no IP here; the request isn't threaded this deep, and the caps
+    # don't use it. Thread it through if forensics need it.
+    db.add(DBSignupEvent(email=email, endpoint=PROVISION_ENDPOINT))
+    db.commit()
 
 
 def prune_signup_events(db: Session) -> int:

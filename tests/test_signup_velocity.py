@@ -182,7 +182,17 @@ def test_provision_caps_per_domain_exempt_and_global(db, monkeypatch):
     # a lookalike domain is not caught by the bot.store LIKE
     enforce_provision_caps(db, "a@notbot.store")
 
-    # exempt domain passes the domain cap; 4 rows so far, the global cap is 5
+    # exempt domain passes the domain cap (3 admitted rows so far); the
+    # global cap of 5 then blocks the third gmail attempt
     enforce_provision_caps(db, "x@gmail.com")
+    enforce_provision_caps(db, "y@gmail.com")
     with pytest.raises(HTTPException):
-        enforce_provision_caps(db, "y@gmail.com")
+        enforce_provision_caps(db, "z@gmail.com")
+
+    # rejected attempts are not recorded, so they can't hold the window full
+    assert (
+        db.query(DBSignupEvent)
+        .filter(DBSignupEvent.endpoint == "provision-key")
+        .count()
+        == 5
+    )
