@@ -2152,3 +2152,30 @@ def test_team_budget_clear_after_cancel_uses_newest_settlement(
     assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 70.0
 
     assert _clear_team_budget(client, admin_token, test_team, test_region) == 70.0
+
+
+def test_drift_check_finds_no_drift_for_a_settled_topup_team(
+    client, admin_token, db, test_team, test_region
+):
+    """The drift check reads the settled ledger, so the purchase cap matches it.
+
+    Only the billing cycle calls this check, but it can run for a top-up-only team.
+    """
+    import asyncio
+
+    from app.core.worker import reconcile_periodic_team_budget_drift
+
+    _buy_then_spend_7993(client, admin_token, db, test_team, test_region)
+
+    with patch("app.core.worker.LiteLLMService") as mock_litellm:
+        mock_litellm.return_value.get_team_info = AsyncMock(
+            return_value={"team_info": {"spend": 79.93, "max_budget": 200.0}}
+        )
+        result = asyncio.run(
+            reconcile_periodic_team_budget_drift(
+                db=db, team=test_team, region=test_region
+            )
+        )
+
+    assert result.expected_max_budget_cents == 20000
+    assert result.drift_cents == 0
