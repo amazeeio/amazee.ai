@@ -691,6 +691,17 @@ async def create_llm_token(
         )
 
 
+def _team_key_filter(team_id, owner_ids):
+    """Keys of the team, plus keys with no team whose owner is in the team.
+
+    A key of another team stays out even when its owner is now a member, the
+    same rule as single-key access. Every key list uses this one rule.
+    """
+    return (DBPrivateAIKey.team_id == team_id) | (
+        (DBPrivateAIKey.team_id.is_(None)) & (DBPrivateAIKey.owner_id.in_(owner_ids))
+    )
+
+
 @router.get("", response_model=List[PrivateAIKey])
 @router.get("/", response_model=List[PrivateAIKey])
 async def list_private_ai_keys(
@@ -743,15 +754,7 @@ async def list_private_ai_keys(
             # Get all users in the team
             team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
             team_user_ids = [user.id for user in team_users]
-            # Same team rule as the team-admin branch: a key of another team
-            # stays out even when its owner is now a member of this team.
-            query = query.filter(
-                (DBPrivateAIKey.team_id == team_id)
-                | (
-                    (DBPrivateAIKey.team_id.is_(None))
-                    & (DBPrivateAIKey.owner_id.in_(team_user_ids))
-                )
-            )
+            query = query.filter(_team_key_filter(team_id, team_user_ids))
         elif not show_all:
             # Safe default: no filters and no explicit opt-in means "my own
             # keys", not "every key in the system".
@@ -773,15 +776,9 @@ async def list_private_ai_keys(
                     .all()
                 )
                 team_user_ids = [user.id for user in team_users]
-                # A key of another team stays hidden even when its owner is now
-                # a member, the same rule as single-key access. The caller's own
-                # keys stay listed.
+                # The caller's own keys stay listed, also those of an old team.
                 query = query.filter(
-                    (DBPrivateAIKey.team_id == current_user.team_id)
-                    | (
-                        (DBPrivateAIKey.team_id.is_(None))
-                        & (DBPrivateAIKey.owner_id.in_(team_user_ids))
-                    )
+                    _team_key_filter(current_user.team_id, team_user_ids)
                     | (DBPrivateAIKey.owner_id == current_user.id)
                 )
             else:
@@ -861,15 +858,7 @@ async def list_private_ai_keys_by_region(
 
             # Use subquery instead of loading users into memory
             team_user_ids_subq = db.query(DBUser.id).filter(DBUser.team_id == team_id)
-            # Same team rule as the team-admin branch: a key of another team
-            # stays out even when its owner is now a member of this team.
-            query = query.filter(
-                (DBPrivateAIKey.team_id == team_id)
-                | (
-                    (DBPrivateAIKey.team_id.is_(None))
-                    & (DBPrivateAIKey.owner_id.in_(team_user_ids_subq))
-                )
-            )
+            query = query.filter(_team_key_filter(team_id, team_user_ids_subq))
 
         if user_id is not None:
             # Verify the user exists; return empty list if not found
@@ -899,15 +888,9 @@ async def list_private_ai_keys_by_region(
                     .all()
                 )
                 team_user_ids = [user.id for user in team_users]
-                # A key of another team stays hidden even when its owner is now
-                # a member, the same rule as single-key access. The caller's own
-                # keys stay listed.
+                # The caller's own keys stay listed, also those of an old team.
                 query = query.filter(
-                    (DBPrivateAIKey.team_id == current_user.team_id)
-                    | (
-                        (DBPrivateAIKey.team_id.is_(None))
-                        & (DBPrivateAIKey.owner_id.in_(team_user_ids))
-                    )
+                    _team_key_filter(current_user.team_id, team_user_ids)
                     | (DBPrivateAIKey.owner_id == current_user.id)
                 )
             else:
