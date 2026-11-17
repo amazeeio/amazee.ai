@@ -633,6 +633,26 @@ CHARGED_SNAPSHOT_SOURCES = (
 )
 
 
+def _latest_spend_snapshot(
+    db: Session, *, team_id: int, region_id: int
+) -> DBTeamSpendPeriod | None:
+    """The newest counter already charged to the ledger, by id.
+
+    This includes the top-up settlements written after a cancellation and by
+    the failed attempt itself, so a retry starts after them.
+    """
+    return (
+        db.query(DBTeamSpendPeriod)
+        .filter(
+            DBTeamSpendPeriod.team_id == team_id,
+            DBTeamSpendPeriod.region_id == region_id,
+            DBTeamSpendPeriod.source.in_(CHARGED_SNAPSHOT_SOURCES),
+        )
+        .order_by(DBTeamSpendPeriod.id.desc())
+        .first()
+    )
+
+
 async def settle_topup_spend(
     db: Session,
     *,
@@ -676,17 +696,7 @@ async def settle_topup_spend(
     counter_cents = int(round(float(team_info.get("spend") or 0) * 100))
     cycle_active = bool(team_info.get("budget_duration"))
 
-    # Only a charged row is a baseline: a cycle capture can read the counter after a debit.
-    last_row = (
-        db.query(DBTeamSpendPeriod)
-        .filter(
-            DBTeamSpendPeriod.team_id == team.id,
-            DBTeamSpendPeriod.region_id == region_id,
-            DBTeamSpendPeriod.source.in_(CHARGED_SNAPSHOT_SOURCES),
-        )
-        .order_by(DBTeamSpendPeriod.id.desc())
-        .first()
-    )
+    last_row = _latest_spend_snapshot(db, team_id=team.id, region_id=region_id)
 
     spend_cents = 0
     rule = "first settlement"

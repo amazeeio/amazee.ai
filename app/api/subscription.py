@@ -11,7 +11,7 @@ from app.core.periodic_budget_ledger_service import (
 )
 from app.core.security import get_role_min_system_admin
 from app.core.spend_period_service import (
-    CHARGED_SNAPSHOT_SOURCES,
+    _latest_spend_snapshot,
     settle_topup_spend,
     upsert_team_spend_period,
 )
@@ -122,26 +122,6 @@ def _current_period_spend_baseline_cents(
     if row is None or row[0] is None:
         return 0
     return int(round(float(row[0]) * 100))
-
-
-def _latest_spend_snapshot(
-    db: Session, *, team_id: int, region_id: int
-) -> DBTeamSpendPeriod | None:
-    """The newest counter already charged to the ledger, by id.
-
-    This includes the top-up settlements written after a cancellation and by
-    the failed attempt itself, so a retry starts after them.
-    """
-    return (
-        db.query(DBTeamSpendPeriod)
-        .filter(
-            DBTeamSpendPeriod.team_id == team_id,
-            DBTeamSpendPeriod.region_id == region_id,
-            DBTeamSpendPeriod.source.in_(CHARGED_SNAPSHOT_SOURCES),
-        )
-        .order_by(DBTeamSpendPeriod.id.desc())
-        .first()
-    )
 
 
 @router.post(
