@@ -84,11 +84,17 @@ def _lock_active_region_or_404(db: Session, region_id: int) -> DBRegion:
 
     Only writers to this row contend; readers are unaffected by MVCC, and a
     region row is only written when an admin edits the region.
+
+    It is `FOR NO KEY UPDATE` (key_share=True), not plain `FOR UPDATE`: the
+    latter also blocks the FK `FOR KEY SHARE` lock that every team/key INSERT
+    takes on its region. Held across the LiteLLM awaits, that froze team
+    signups, and their sync wait froze the event loop this purchase needed to
+    commit, a deadlock Postgres could not see (TKF-492).
     """
     region = (
         db.query(DBRegion)
         .filter(DBRegion.id == region_id, DBRegion.is_active.is_(True))
-        .with_for_update()
+        .with_for_update(key_share=True)
         .first()
     )
     if not region:
