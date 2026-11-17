@@ -2300,9 +2300,11 @@ def test_topup_after_cancel_charges_spend_since_the_deactivate_counter(
         expires_at=now + timedelta(days=settings.POOL_PURCHASE_EXPIRY_DAYS - 10),
     )
     db.add(held)
+    # The capture reads the counter after the debit, so it holds more spend. It
+    # differs from the later settlement, so the clear also proves the order by id.
     for total_spend, source, end in (
         (10.0, "moad_subscription_deactivate", now),
-        (20.0, "moad_subscription_cycle", now + timedelta(days=26)),
+        (12.0, "moad_subscription_cycle", now + timedelta(days=26)),
     ):
         db.add(
             DBTeamSpendPeriod(
