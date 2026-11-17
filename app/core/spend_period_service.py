@@ -235,19 +235,21 @@ def counted_in_pool_window():
     subscription already absorbed that spend, so such a top-up must not open the window.
     Deactivation keeps the old ``effective_period_end``, so a top-up bought after a
     mid-cycle cancellation and before that end does not count when used up.
+    A rollover is dated at the end of the cycle that wrote it, so an entry dated at
+    that end does not count either.
     """
     entry = DBPeriodicBudgetLedgerEntry
     sub = aliased(DBPeriodicBudgetLedgerEntry)
-    bought_before_a_subscription_ended = exists().where(
+    bought_by_a_subscription_end = exists().where(
         sub.team_id == entry.team_id,
         sub.region_id == entry.region_id,
         sub.entry_type == "subscription",
-        sub.effective_period_end > entry.purchased_at,
+        sub.effective_period_end >= entry.purchased_at,
     )
     used_up_topup = (
         entry.entry_type.in_(["topup", "topup_rollover"])
         & (entry.consumed_cents >= entry.amount_cents)
-        & ~bought_before_a_subscription_ended
+        & ~bought_by_a_subscription_end
     )
     return entry.is_active.is_(True) | used_up_topup
 

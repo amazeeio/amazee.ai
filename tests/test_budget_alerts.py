@@ -2152,3 +2152,27 @@ def test_used_up_topup_from_a_subscription_era_does_not_open_the_window(db, regi
     assert window.period_start == new.purchased_at
     assert _team_budget(db, team, region.id) == 10.0
     assert region_sweep_start(db, region.id, now) == window.period_start.date()
+
+
+def test_used_up_rollover_dated_at_the_subscription_end_does_not_open_the_window(
+    db, region
+):
+    """Invoice close dates a rollover at the cycle end, so FIFO using it up at
+    cancellation is subscription spend: the window opens at the later top-up."""
+    from app.core.budget_alert_service import _team_budget
+
+    now = datetime.now(UTC)
+    team = _make_team(db)
+    sub = _add_subscription(db, team, region, amount_cents=10_000, days_left=-10)
+    sub.is_active = False
+    rollover = _add_topup(db, team, region, amount_cents=5_000)
+    rollover.entry_type = "topup_rollover"
+    rollover.purchased_at = sub.effective_period_end
+    rollover.consumed_cents = 5_000
+    rollover.is_active = False
+    db.commit()
+    new = _add_topup(db, team, region, amount_cents=1_000, purchased_days_ago=5)
+
+    window = resolve_team_period_window(db, team, region.id, now=now)
+    assert window.period_start == new.purchased_at
+    assert _team_budget(db, team, region.id) == 10.0
