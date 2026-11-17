@@ -671,8 +671,8 @@ async def settle_topup_spend(
     Only purchase-gated POOL teams settle: a purchase resets their key spend, so
     the spend view does not subtract the settled spend a second time.
 
-    A team with no snapshot is settled from its first settlement on: that one
-    charges nothing and only records the counter. Teams that already held top-ups
+    A team with no charged snapshot is settled from its first settlement on: that
+    one charges nothing and only records the counter. Teams that already held top-ups
     get their first snapshot from a one-off seed, so no long log read runs here.
     """
     if not team.requires_pool_purchase_gate:
