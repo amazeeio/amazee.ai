@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import exists
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.core.config import settings
 from app.core.periodic_budget_ledger_service import (
@@ -226,6 +227,31 @@ def _active_subscription_entry(
     )
 
 
+def counted_in_pool_window():
+    """Ledger rows that can open a team's window: active, or a used-up top-up
+    bought after every subscription entry of the team and region ended.
+
+    FIFO also uses up top-ups at invoice close and at cancellation, and the
+    subscription already absorbed that spend, so such a top-up must not open the window.
+    Deactivation keeps the old ``effective_period_end``, so a top-up bought after a
+    mid-cycle cancellation and before that end does not count when used up.
+    """
+    entry = DBPeriodicBudgetLedgerEntry
+    sub = aliased(DBPeriodicBudgetLedgerEntry)
+    bought_before_a_subscription_ended = exists().where(
+        sub.team_id == entry.team_id,
+        sub.region_id == entry.region_id,
+        sub.entry_type == "subscription",
+        sub.effective_period_end > entry.purchased_at,
+    )
+    used_up_topup = (
+        entry.entry_type.in_(["topup", "topup_rollover"])
+        & (entry.consumed_cents >= entry.amount_cents)
+        & ~bought_before_a_subscription_ended
+    )
+    return entry.is_active.is_(True) | used_up_topup
+
+
 def _active_topup(
     db: Session,
     team_id: int,
@@ -239,15 +265,14 @@ def _active_topup(
 
     Both ends are needed: the oldest opens the window and the newest closes it.
     See ``resolve_team_period_window`` for why they are not the same entry.
-    ``include_spent`` also matches an unexpired entry that FIFO used up, which
-    FIFO marks inactive although its spend still belongs to the window.
+    ``include_spent`` also matches a used-up entry that still belongs to the
+    window, as ``counted_in_pool_window`` decides.
     """
-    valid = DBPeriodicBudgetLedgerEntry.is_active.is_(True)
-    if include_spent:
-        valid = valid | (
-            DBPeriodicBudgetLedgerEntry.consumed_cents
-            >= DBPeriodicBudgetLedgerEntry.amount_cents
-        )
+    valid = (
+        counted_in_pool_window()
+        if include_spent
+        else DBPeriodicBudgetLedgerEntry.is_active.is_(True)
+    )
     order = (
         DBPeriodicBudgetLedgerEntry.purchased_at.asc()
         if oldest

@@ -60,15 +60,15 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
 from prometheus_client import Counter, Gauge, Summary
-from sqlalchemy import exists, func
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy import func
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.pool_budget_service import pool_available_budget_for_team_region
 from app.core.spend_period_service import (
     TeamPeriodWindow,
-    _active_subscription_entry,
     compute_period_start,
+    counted_in_pool_window,
     current_cycle_start,
     resolve_team_period_window,
 )
@@ -414,24 +414,15 @@ def _unsettled_consumed_dollars(db: Session, team: DBTeam, region_id: int) -> fl
     counts, the same money subtracted once and added once, and the percentage
     would read high.
 
-    With no subscription, a top-up that FIFO used up is inactive but unexpired,
-    and the window still opens at it, so its consumption is added back too.
+    A used-up top-up that opens the window (see ``counted_in_pool_window``) is
+    inactive but unexpired, so its consumption is added back too.
     """
-    counted = DBPeriodicBudgetLedgerEntry.is_active.is_(True)
-    if _active_subscription_entry(db, team.id, region_id, datetime.now(UTC)) is None:
-        counted = counted | (
-            DBPeriodicBudgetLedgerEntry.entry_type.in_(["topup", "topup_rollover"])
-            & (
-                DBPeriodicBudgetLedgerEntry.consumed_cents
-                >= DBPeriodicBudgetLedgerEntry.amount_cents
-            )
-        )
     consumed_cents = (
         db.query(func.coalesce(func.sum(DBPeriodicBudgetLedgerEntry.consumed_cents), 0))
         .filter(
             DBPeriodicBudgetLedgerEntry.team_id == team.id,
             DBPeriodicBudgetLedgerEntry.region_id == region_id,
-            counted,
+            counted_in_pool_window(),
             DBPeriodicBudgetLedgerEntry.consumed_cents > 0,
             (
                 DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
@@ -629,31 +620,6 @@ def _sweep_start(now: datetime) -> date:
     return (now - timedelta(days=settings.BUDGET_ALERT_MAX_LOOKBACK_DAYS)).date()
 
 
-def _counted_in_pool_window(now: datetime):
-    """Ledger rows that can open a team's window, as ``_active_topup`` decides.
-
-    An active entry, or an unexpired top-up that FIFO used up for a team with no
-    active subscription: FIFO marks it inactive, but the window still opens at it.
-    """
-    entry = DBPeriodicBudgetLedgerEntry
-    sub = aliased(DBPeriodicBudgetLedgerEntry)
-    has_active_subscription = exists().where(
-        sub.team_id == entry.team_id,
-        sub.region_id == entry.region_id,
-        sub.entry_type == "subscription",
-        sub.is_active.is_(True),
-        sub.effective_period_start.isnot(None),
-        sub.effective_period_end.isnot(None),
-        sub.effective_period_end > now,
-    )
-    used_up_topup = (
-        entry.entry_type.in_(["topup", "topup_rollover"])
-        & (entry.consumed_cents >= entry.amount_cents)
-        & ~has_active_subscription
-    )
-    return entry.is_active.is_(True) | used_up_topup
-
-
 def region_sweep_start(db: Session, region_id: int, now: datetime) -> date:
     """First day the activity sweep must cover for this region.
 
@@ -665,7 +631,7 @@ def region_sweep_start(db: Session, region_id: int, now: datetime) -> date:
     request cover the earliest window in the region rather than a fixed span.
 
     It anchors on the oldest purchase that can open a window (see
-    ``_counted_in_pool_window``), which is a *conservative* lower bound: a cycle start is always at or after the purchase that funded it, so this
+    ``counted_in_pool_window``), which is a *conservative* lower bound: a cycle start is always at or after the purchase that funded it, so this
     can fetch a few more days than any team needs but can never fetch too few.
 
     Anchoring on the ledger also usually makes the sweep *cheaper* than the
@@ -681,7 +647,7 @@ def region_sweep_start(db: Session, region_id: int, now: datetime) -> date:
         .join(DBTeam, DBTeam.id == DBPeriodicBudgetLedgerEntry.team_id)
         .filter(
             DBPeriodicBudgetLedgerEntry.region_id == region_id,
-            _counted_in_pool_window(now),
+            counted_in_pool_window(),
             DBPeriodicBudgetLedgerEntry.purchased_at.isnot(None),
             (
                 DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
@@ -793,7 +759,7 @@ def window_before_sweep_candidates(
         .join(DBTeam, DBTeam.id == DBPeriodicBudgetLedgerEntry.team_id)
         .filter(
             DBPeriodicBudgetLedgerEntry.region_id == region_id,
-            _counted_in_pool_window(now),
+            counted_in_pool_window(),
             DBTeam.deleted_at.is_(None),
             DBTeam.budget_type == BudgetType.POOL,
             (

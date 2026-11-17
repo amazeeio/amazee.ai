@@ -2131,3 +2131,24 @@ def test_region_sweep_starts_at_a_used_up_topup_that_opens_a_window(db, region):
         assert window_before_sweep_candidates(db, region.id, sweep_start, now) == {
             team.id
         }
+
+
+def test_used_up_topup_from_a_subscription_era_does_not_open_the_window(db, region):
+    """FIFO used up the old top-up at invoice close, so the subscription already
+    absorbed its spend: the window opens at the later top-up."""
+    from app.core.budget_alert_service import _team_budget, region_sweep_start
+
+    now = datetime.now(UTC)
+    team = _make_team(db)
+    sub = _add_subscription(db, team, region, amount_cents=10_000, days_left=-10)
+    sub.is_active = False
+    old = _add_topup(db, team, region, amount_cents=5_000, purchased_days_ago=20)
+    old.consumed_cents = 5_000
+    old.is_active = False
+    db.commit()
+    new = _add_topup(db, team, region, amount_cents=1_000, purchased_days_ago=5)
+
+    window = resolve_team_period_window(db, team, region.id, now=now)
+    assert window.period_start == new.purchased_at
+    assert _team_budget(db, team, region.id) == 10.0
+    assert region_sweep_start(db, region.id, now) == window.period_start.date()
