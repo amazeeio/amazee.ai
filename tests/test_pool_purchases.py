@@ -2282,46 +2282,51 @@ def test_alert_budget_after_three_topups_leaves_true_room(
     assert budget == 110.0
 
 
-def test_team_budget_clear_after_cancel_uses_newest_settlement(
+def test_topup_after_cancel_charges_spend_since_the_deactivate_counter(
     client, admin_token, db, test_team, test_region
 ):
-    """A cancelled cycle row ends in the future but is older than the settlement."""
+    """The capture after a cancellation is only a report, so the purchase
+    charges from the deactivate counter."""
     test_team.budget_type = "pool"
     now = datetime.now(UTC)
-    for total_spend, source, start, end in (
-        (
-            10.0,
-            "moad_subscription_cycle",
-            now - timedelta(days=5),
-            now + timedelta(days=26),
-        ),
-        (
-            20.0,
-            "moad_subscription_deactivate",
-            now - timedelta(days=5),
-            now - timedelta(days=1),
-        ),
+    held = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="topup",
+        amount_cents=5000,
+        consumed_cents=0,
+        is_active=True,
+        purchased_at=now - timedelta(days=10),
+        expires_at=now + timedelta(days=settings.POOL_PURCHASE_EXPIRY_DAYS - 10),
+    )
+    db.add(held)
+    for total_spend, source, end in (
+        (10.0, "moad_subscription_deactivate", now),
+        (20.0, "moad_subscription_cycle", now + timedelta(days=26)),
     ):
         db.add(
             DBTeamSpendPeriod(
                 team_id=test_team.id,
                 region_id=test_region.id,
                 budget_type="pool",
-                period_start=start,
+                period_start=now - timedelta(days=5),
                 period_end=end,
                 source=source,
                 total_spend=total_spend,
             )
         )
-    db.commit()
+        db.commit()
     with patch("app.api.budgets.LiteLLMService") as mock_litellm:
         mock_instance = mock_litellm.return_value
         mock_instance.get_team_info = _team_info(20.0)
         mock_instance.update_team_budget = AsyncMock()
         _buy(client, admin_token, test_team, test_region, 5000)
-    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 70.0
 
-    assert _clear_team_budget(client, admin_token, test_team, test_region) == 70.0
+    # Counter 20 + 40 left on the held top-up + 50 new.
+    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 110.0
+    db.refresh(held)
+    assert held.consumed_cents == 1000
+    assert _clear_team_budget(client, admin_token, test_team, test_region) == 110.0
 
 
 def test_drift_check_finds_no_drift_for_a_settled_topup_team(

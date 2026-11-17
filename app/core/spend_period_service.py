@@ -597,6 +597,15 @@ def upsert_team_spend_period(
     return row
 
 
+# Snapshot sources whose counter was charged to the ledger when it was written.
+# A cycle capture row is only a report: it can read the counter after a debit.
+CHARGED_SNAPSHOT_SOURCES = (
+    "moad_subscription_deactivate",
+    "moad_subscription_deactivate_retry",
+    "topup_settlement",
+)
+
+
 async def settle_topup_spend(
     db: Session,
     *,
@@ -640,12 +649,13 @@ async def settle_topup_spend(
     counter_cents = int(round(float(team_info.get("spend") or 0) * 100))
     cycle_active = bool(team_info.get("budget_duration"))
 
-    # Every snapshot source holds a counter value that is already settled.
+    # Only a charged row is a baseline: a cycle capture can read the counter after a debit.
     last_row = (
         db.query(DBTeamSpendPeriod)
         .filter(
             DBTeamSpendPeriod.team_id == team.id,
             DBTeamSpendPeriod.region_id == region_id,
+            DBTeamSpendPeriod.source.in_(CHARGED_SNAPSHOT_SOURCES),
         )
         .order_by(DBTeamSpendPeriod.id.desc())
         .first()

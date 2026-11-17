@@ -11,6 +11,7 @@ from app.core.periodic_budget_ledger_service import (
 )
 from app.core.security import get_role_min_system_admin
 from app.core.spend_period_service import (
+    CHARGED_SNAPSHOT_SOURCES,
     settle_topup_spend,
     upsert_team_spend_period,
 )
@@ -121,15 +122,6 @@ def _current_period_spend_baseline_cents(
     if row is None or row[0] is None:
         return 0
     return int(round(float(row[0]) * 100))
-
-
-# Snapshot sources whose counter was charged to the ledger when it was written.
-# A cycle capture row is only a report: it can read the counter after a debit.
-CHARGED_SNAPSHOT_SOURCES = (
-    "moad_subscription_deactivate",
-    "moad_subscription_deactivate_retry",
-    "topup_settlement",
-)
 
 
 def _latest_spend_snapshot(
