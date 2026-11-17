@@ -2,8 +2,8 @@
 # Edit this file, then run `make requirements`.
 -c requirements.txt
 pytest==9.2.0
-pytest-asyncio==1.4.1
+pytest-asyncio==1.5.0
 pytest-cov==7.1.0
 requests-mock==1.12.1
-faker==40.44.0
-pytest-env==1.8.4
+faker==40.54.0
+pytest-env==1.8.5
