@@ -44,6 +44,7 @@ from app.core.team_service import (
     hard_delete_cutoff,
     is_anonymous_trial_team,
     periodic_free_credit_over,
+    periodic_signup_credit_expired,
 )
 from app.core.limit_service import LimitService
 from app.core.litellm_user_sync import team_role_for_litellm
@@ -1261,6 +1262,7 @@ async def reconcile_team_keys(
     keys_by_region: Dict[DBRegion, List[DBPrivateAIKey]],
     key_state_cache: Optional["RegionKeyStateCache"] = None,
     zero_budget: bool = False,
+    restore_zeroed: bool = False,
 ) -> float:
     """
     Monitor spend for all keys in a team across different regions and repair drifted key caps.
@@ -1281,6 +1283,11 @@ async def reconcile_team_keys(
             per TTL window; when omitted a private cache is used.
         zero_budget: Set every key's max_budget to 0 (and clear its
             budget_duration so LiteLLM never resets it). Keys stay alive.
+        restore_zeroed: The team has paid since the free-credit cutoff. Keys
+            without a cap row that are still at max_budget 0 with no
+            budget_duration go back to the key-creation budget. Covers keys a
+            top-up restore missed (failed sync, other region, subscription or
+            ledger credit).
 
     Returns:
         float: Total spend across all keys for the team
@@ -1290,6 +1297,11 @@ async def reconcile_team_keys(
     team_total = 0
     total_by_user = defaultdict(float)
     service_key_total = 0
+    restore_duration, restore_max_spend = None, None
+    if restore_zeroed:
+        restore_duration, restore_max_spend, _ = LimitService(
+            db
+        ).get_token_restrictions(team.id)
 
     # Monitor keys for each region
     for region, keys in keys_by_region.items():
@@ -1392,6 +1404,30 @@ async def reconcile_team_keys(
                                     ),
                                 )
                             )
+                    elif (
+                        restore_zeroed
+                        and key.id not in cap_map
+                        and info.get("budget_duration") is None
+                        and _same_budget_amount(info.get("max_budget"), 0)
+                    ):
+                        # ponytail: $0 + no duration on a paid PERIODIC team is
+                        # read as "left over from the cutoff"; a key an admin
+                        # zeroed on purpose should get a cap row instead.
+                        logger.info(
+                            f"Key {key.id} zeroed by free-credit cutoff, team has paid: restoring"
+                        )
+                        pending_writes.append(
+                            (
+                                key.id,
+                                partial(
+                                    litellm_service.update_key_budget,
+                                    key.litellm_token,
+                                    max_budget=restore_max_spend,
+                                    budget_duration=f"{restore_duration}d",
+                                    spend=0.0,
+                                ),
+                            )
+                        )
 
                     # Add to team total
                     team_total += current_spend
@@ -1548,6 +1584,10 @@ async def monitor_teams(db: Session):
                 # SIGNUP_CREDIT_DAYS: keys go to $0 but stay alive, so the
                 # team can still buy.
                 free_credit_over = periodic_free_credit_over(db, team)
+                # Paid since the cutoff: undo any $0 keys the top-up missed.
+                restore_zeroed = (
+                    not free_credit_over and periodic_signup_credit_expired(team)
+                )
 
                 # Get all keys for the team grouped by region
                 keys_by_region = get_team_keys_by_region(db, team.id)
@@ -1559,6 +1599,7 @@ async def monitor_teams(db: Session):
                     keys_by_region,
                     key_state_cache=key_state_cache,
                     zero_budget=free_credit_over,
+                    restore_zeroed=restore_zeroed,
                 )
 
                 # Set the total spend metric for the team (always emit metrics)

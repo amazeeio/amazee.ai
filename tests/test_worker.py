@@ -225,6 +225,8 @@ _FRESH_KEY = {"spend": 1.0, "max_budget": 27.0, "budget_duration": "30d"}
 _ZERO = "zero"  # exactly one write: max_budget 0, budget_duration cleared
 _NONE = "none"  # no budget write at all
 _NO_ZERO = "no_zero"  # writes allowed, but none sets max_budget 0
+_RESTORE = "restore"  # exactly one write: back to the key-creation budget
+_ZEROED_KEY = {"spend": 5.0, "max_budget": 0, "budget_duration": None}
 
 
 @pytest.mark.asyncio
@@ -245,6 +247,15 @@ _NO_ZERO = "no_zero"  # writes allowed, but none sets max_budget 0
         (31, None, {"spend": 1.0, "max_budget": 0, "budget_duration": "30d"}, _ZERO),
         # SIGNUP_CREDIT_DAYS is read from settings, not hard-coded
         (15, "signup_credit_days_10", _FRESH_KEY, _ZERO),
+        # Paid after the cutoff but the top-up restore missed this key
+        # (failed sync, other region, subscription, ledger credit): restore it
+        (31, "topup", _ZEROED_KEY, _RESTORE),
+        (31, "last_payment", _ZEROED_KEY, _RESTORE),
+        (31, "ledger", _ZEROED_KEY, _RESTORE),
+        # Exempt teams were never zeroed by the cutoff: leave $0 keys alone
+        (31, "always_free", _ZEROED_KEY, _NONE),
+        (31, "anonymous_trial", _ZEROED_KEY, _NONE),
+        (29, "topup", _ZEROED_KEY, _NONE),
     ],
 )
 @patch("app.core.worker.LimitService")
@@ -321,12 +332,21 @@ async def test_monitor_teams_unpaid_periodic_team_free_credit_ends(
     mock_instance.get_key_info = AsyncMock(return_value={"info": dict(key_info)})
     mock_instance.update_key_budget = AsyncMock()
     mock_instance.update_key_duration = AsyncMock()
+    mock_limit_service.return_value.get_token_restrictions.return_value = (
+        30,
+        27.0,
+        100,
+    )
 
     await monitor_teams(db)
 
     mock_instance.update_key_duration.assert_not_called()
     mock_ses.return_value.send_email.assert_not_called()
-    if expected == _ZERO:
+    if expected == _RESTORE:
+        mock_instance.update_key_budget.assert_awaited_once_with(
+            "periodic_token", max_budget=27.0, budget_duration="30d", spend=0.0
+        )
+    elif expected == _ZERO:
         mock_instance.update_key_budget.assert_awaited_once_with(
             "periodic_token", max_budget=0, clear_budget_duration=True
         )
