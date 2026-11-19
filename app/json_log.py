@@ -1,4 +1,4 @@
-"""One JSON object per log line (TKF-559).
+"""One JSON object per log line.
 
 backend-start.sh passes app/log_config.json to uvicorn on Lagoon, so the app
 loggers and uvicorn's own loggers all write through this formatter. The log
