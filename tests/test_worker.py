@@ -122,11 +122,10 @@ def test_get_snapshot_remaining_cents_scopes_to_current_period(
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LimitService")
-@patch("app.core.worker.SESService")
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
 async def test_monitor_teams_calls_limit_service(
-    mock_litellm, mock_ses, mock_limit_service, db, test_team
+    mock_litellm, mock_limit_service, db, test_team
 ):
     """
     Test that monitor_teams calls the limit service to set team limits.
@@ -154,12 +153,10 @@ async def test_monitor_teams_calls_limit_service(
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LimitService")
-@patch("app.core.worker.SESService")
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
 async def test_monitor_teams_basic_metrics(
     mock_litellm,
-    mock_ses,
     mock_limit_service,
     db,
     test_team,
@@ -259,11 +256,9 @@ _ZEROED_KEY = {"spend": 5.0, "max_budget": 0, "budget_duration": None}
     ],
 )
 @patch("app.core.worker.LimitService")
-@patch("app.core.worker.SESService")
 @patch("app.core.worker.LiteLLMService")
 async def test_monitor_teams_unpaid_periodic_team_free_credit_ends(
     mock_litellm,
-    mock_ses,
     mock_limit_service,
     age_days,
     variant,
@@ -341,7 +336,6 @@ async def test_monitor_teams_unpaid_periodic_team_free_credit_ends(
     await monitor_teams(db)
 
     mock_instance.update_key_duration.assert_not_called()
-    mock_ses.return_value.send_email.assert_not_called()
     if expected == _RESTORE:
         mock_instance.update_key_budget.assert_awaited_once_with(
             "periodic_token", max_budget=27.0, budget_duration="30d", spend=0.0
@@ -359,12 +353,10 @@ async def test_monitor_teams_unpaid_periodic_team_free_credit_ends(
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LimitService")
-@patch("app.core.worker.SESService")
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
 async def test_monitor_teams_pool_team_with_purchase_not_expired(
     mock_litellm,
-    mock_ses,
     mock_limit_service,
     db,
     test_team,
@@ -437,12 +429,10 @@ async def test_monitor_teams_pool_team_with_purchase_not_expired(
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LimitService")
-@patch("app.core.worker.SESService")
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
 async def test_monitor_teams_pool_team_without_purchase_not_expired(
     mock_litellm,
-    mock_ses,
     mock_limit_service,
     db,
     test_team,
@@ -496,12 +486,10 @@ async def test_monitor_teams_pool_team_without_purchase_not_expired(
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LimitService")
-@patch("app.core.worker.SESService")
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
 async def test_monitor_teams_key_spend(
     mock_litellm,
-    mock_ses,
     mock_limit_service,
     db,
     test_team,
@@ -567,10 +555,9 @@ async def test_monitor_teams_key_spend(
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LimitService")
-@patch("app.core.worker.SESService")
 @patch("app.core.worker.LiteLLMService")
 async def test_monitor_teams_active_labels(
-    mock_litellm, mock_ses, mock_limit_service, db, test_team
+    mock_litellm, mock_limit_service, db, test_team
 ):
     """
     Test handling of active team labels.
@@ -610,10 +597,9 @@ async def test_monitor_teams_active_labels(
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LimitService")
-@patch("app.core.worker.SESService")
 @patch("app.core.worker.LiteLLMService")
 async def test_monitor_teams_error_handling(
-    mock_litellm, mock_ses, mock_limit_service, db, test_team, test_region
+    mock_litellm, mock_limit_service, db, test_team, test_region
 ):
     """
     Test error handling in team monitoring.
@@ -658,11 +644,10 @@ async def test_monitor_teams_error_handling(
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LimitService")
-@patch("app.core.worker.SESService")
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
 async def test_monitor_teams_metrics_always_emitted(
-    mock_litellm, mock_ses, mock_limit_service, db, test_team
+    mock_litellm, mock_limit_service, db, test_team
 ):
     """
     Test that monitor_teams emits team_freshness_days.
@@ -693,11 +678,10 @@ async def test_monitor_teams_metrics_always_emitted(
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LimitService")
-@patch("app.core.worker.SESService")
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
 async def test_monitor_teams_reads_keys_and_applies_limits(
-    mock_litellm, mock_ses, mock_limit_service, db, test_team, test_region
+    mock_litellm, mock_limit_service, db, test_team, test_region
 ):
     """monitor_teams reads every key through LiteLLM and applies team limits."""
     test_team.last_payment = datetime.now(UTC) - timedelta(days=35)
@@ -988,9 +972,8 @@ async def test_reconcile_team_keys_leaves_periodic_key_without_cap_alone(
 @pytest.mark.asyncio
 @patch("app.core.worker.LimitService")
 @patch("app.core.worker.LiteLLMService")
-@patch("app.core.worker.SESService")
 async def test_monitor_teams_populates_team_metrics(
-    mock_ses, mock_litellm_class, mock_limit_service, db, test_team, test_region
+    mock_litellm_class, mock_limit_service, db, test_team, test_region
 ):
     """
     Test that monitor_teams function populates DBTeamMetrics table.
@@ -1042,9 +1025,8 @@ async def test_monitor_teams_populates_team_metrics(
 @pytest.mark.asyncio
 @patch("app.core.worker.LimitService")
 @patch("app.core.worker.LiteLLMService")
-@patch("app.core.worker.SESService")
 async def test_monitor_teams_sql_count_error(
-    mock_ses, mock_litellm_class, mock_limit_service, db, test_team
+    mock_litellm_class, mock_limit_service, db, test_team
 ):
     """
     Test that monitor_teams handles SQL count queries correctly without throwing SQL expression errors.
@@ -1125,9 +1107,8 @@ async def test_monitor_teams_sql_count_error(
 @pytest.mark.asyncio
 @patch("app.core.worker.LimitService")
 @patch("app.core.worker.LiteLLMService")
-@patch("app.core.worker.SESService")
 async def test_monitor_teams_updates_existing_metrics(
-    mock_ses, mock_litellm_class, mock_limit_service, db, test_team, test_region
+    mock_litellm_class, mock_limit_service, db, test_team, test_region
 ):
     """
     Test that monitor_teams updates existing DBTeamMetrics records.
@@ -1830,11 +1811,9 @@ async def test_reconcile_team_keys_defaultdict_initialization(
 
 @pytest.mark.asyncio
 @patch("app.core.worker._monitor_team_freshness")
-@patch("app.core.worker.SESService")
 @patch("app.core.worker.reconcile_team_keys", new_callable=AsyncMock)
 async def test_monitor_teams_handles_individual_team_errors_gracefully(
     mock_reconcile,
-    mock_ses,
     mock_freshness,
     db,
     test_team,
@@ -1852,7 +1831,6 @@ async def test_monitor_teams_handles_individual_team_errors_gracefully(
     db.commit()
 
     mock_reconcile.return_value = 0.0
-    mock_ses.return_value = None
 
     # Freshness is computed before reconcile_team_keys, so a failure there aborts
     # that team before reconcile runs.
@@ -1870,11 +1848,9 @@ async def test_monitor_teams_handles_individual_team_errors_gracefully(
 
 @pytest.mark.asyncio
 @patch("app.core.worker._monitor_team_freshness")
-@patch("app.core.worker.SESService")
 @patch("app.core.worker.reconcile_team_keys", new_callable=AsyncMock)
 async def test_monitor_teams_records_failure_metric_on_error(
     mock_reconcile,
-    mock_ses,
     mock_freshness,
     db,
     test_team,
@@ -1887,7 +1863,6 @@ async def test_monitor_teams_records_failure_metric_on_error(
     THEN: A failure metric should be recorded for that team
     """
     mock_reconcile.return_value = 0.0
-    mock_ses.return_value = None
     mock_freshness.side_effect = Exception("Test error")
 
     # The metric is a process-wide counter, so compare against its current value.
@@ -1908,11 +1883,9 @@ async def test_monitor_teams_records_failure_metric_on_error(
 
 @pytest.mark.asyncio
 @patch("app.core.worker._monitor_team_freshness")
-@patch("app.core.worker.SESService")
 @patch("app.core.worker.reconcile_team_keys", new_callable=AsyncMock)
 async def test_monitor_teams_continues_processing_after_error(
     mock_reconcile,
-    mock_ses,
     mock_freshness,
     db,
     test_team,
@@ -1936,7 +1909,6 @@ async def test_monitor_teams_continues_processing_after_error(
     db.commit()
 
     mock_reconcile.return_value = 0.0
-    mock_ses.return_value = None
 
     # Fail the freshness check of the second team only
     def side_effect(team, *args, **kwargs):
@@ -2561,12 +2533,10 @@ async def test_reconcile_team_keys_write_failure_does_not_lose_spend(
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LimitService")
-@patch("app.core.worker.SESService")
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
 async def test_monitor_teams_does_not_expire_anonymous_trial_team_keys(
     mock_litellm,
-    mock_ses,
     mock_limit_service,
     db,
     test_region,
@@ -2632,12 +2602,10 @@ async def test_monitor_teams_does_not_expire_anonymous_trial_team_keys(
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LimitService")
-@patch("app.core.worker.SESService")
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
 async def test_monitor_teams_does_not_retire_anonymous_trial_team(
     mock_litellm,
-    mock_ses,
     mock_limit_service,
     db,
     test_region,
@@ -2671,12 +2639,10 @@ async def test_monitor_teams_does_not_retire_anonymous_trial_team(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("warned_days_ago", [None, 30])
 @patch("app.core.worker.LimitService")
-@patch("app.core.worker.SESService")
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
 async def test_monitor_teams_never_retires_inactive_regular_team(
     mock_litellm,
-    mock_ses,
     mock_limit_service,
     warned_days_ago,
     db,
@@ -2686,7 +2652,7 @@ async def test_monitor_teams_never_retires_inactive_regular_team(
     """
     Given: A regular team inactive for 400 days, never warned or warned long ago
     When: monitor_teams runs
-    Then: It is not soft-deleted, its users stay active and no email is sent
+    Then: It is not soft-deleted and its users stay active
     """
     test_team.created_at = datetime.now(UTC) - timedelta(days=400)
     if warned_days_ago is not None:
@@ -2702,4 +2668,3 @@ async def test_monitor_teams_never_retires_inactive_regular_team(
     db.refresh(test_team_user)
     assert test_team.deleted_at is None
     assert test_team_user.is_active is True
-    mock_ses.return_value.send_email.assert_not_called()
