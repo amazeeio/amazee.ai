@@ -24,7 +24,9 @@ if [ -n "${LAGOON_ENVIRONMENT:-}" ]; then
     # Production default: trust only private (in-cluster) peers, never "*".
     FORWARDED_ALLOW_IPS="${FORWARDED_ALLOW_IPS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}"
     # Production mode (Lagoon)
+    # app/log_config.json writes every log line as one JSON object (TKF-559).
     exec uvicorn app.main:app --host 0.0.0.0 --port 8800 --workers 4 \
+        --log-config /app/app/log_config.json \
         --forwarded-allow-ips "${FORWARDED_ALLOW_IPS}"
 else
     # Development mode (local docker-compose)
