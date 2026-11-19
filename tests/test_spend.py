@@ -6471,3 +6471,71 @@ def test_hourly_day_today_or_future_is_400(
     )
     assert response.status_code == 400
     mock_iter_spend_logs.assert_not_called()
+
+
+@pytest.mark.parametrize("paid", [False, True])
+@pytest.mark.parametrize("action", ["set", "clear"])
+@patch("app.api.spend._lock_region_or_404", wraps=_lock_region_or_404)
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_key_budget_writes_keep_the_free_credit_cutoff(
+    mock_update_key_budget,
+    mock_get_key_info,
+    mock_lock_region,
+    action,
+    paid,
+    client,
+    team_admin_token,
+    test_team,
+    test_team_user,
+    test_region,
+    db,
+):
+    """
+    Given: A PERIODIC team past SIGNUP_CREDIT_DAYS whose keys sit at $0
+    When: Its team admin sets or clears a key budget
+    Then: Never paid -> the key stays at $0 (region lock taken first);
+          paid -> the write goes through as normal.
+    """
+    test_team.budget_type = BudgetType.PERIODIC
+    test_team.is_always_free = False
+    test_team.created_at = datetime.now(UTC) - timedelta(
+        days=settings.SIGNUP_CREDIT_DAYS + 1
+    )
+    test_team.last_payment = datetime.now(UTC) if paid else None
+    key = DBPrivateAIKey(
+        name="cutoff-key",
+        litellm_token="cutoff-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+    mock_get_key_info.return_value = {"info": {"max_budget": 0.0}}
+    headers = {"Authorization": f"Bearer {team_admin_token}"}
+
+    if action == "set":
+        response = client.put(
+            f"/spend/{test_region.id}/key/{key.id}/budget",
+            headers=headers,
+            json={"max_budget": 50.0},
+        )
+    else:
+        response = client.post(
+            f"/spend/{test_region.id}/key/{key.id}/budget/clear", headers=headers
+        )
+
+    assert response.status_code == 200, response.text
+    kwargs = mock_update_key_budget.await_args.kwargs
+    if paid:
+        assert kwargs["max_budget"] == (50.0 if action == "set" else None)
+        assert kwargs["clear_max_budget"] is (action == "clear")
+    else:
+        assert kwargs == {
+            "litellm_token": "cutoff-token",
+            "max_budget": 0.0,
+            "clear_budget_duration": True,
+        }
+        mock_lock_region.assert_called_once()
+        assert "has not purchased" in response.json()["note"]

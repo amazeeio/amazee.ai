@@ -2668,3 +2668,45 @@ async def test_monitor_teams_never_retires_inactive_regular_team(
     db.refresh(test_team_user)
     assert test_team.deleted_at is None
     assert test_team_user.is_active is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["unpaid", "paid_meanwhile", "purchase_in_flight"])
+async def test_run_cutoff_writes_rechecks_under_the_region_lock(
+    state, db, test_team, test_region
+):
+    """
+    Given: Zero writes queued for a never-paid PERIODIC team past its free credit
+    When: The writes run
+    Then: They run only if the team is still unpaid under the region lock. A
+          top-up committed meanwhile, or one still holding the lock, skips them
+          so the job cannot re-zero keys the purchase just restored.
+    """
+    from app.core.worker import _run_cutoff_writes
+    from app.db.models import DBRegion
+    from app.db.database import SessionLocal
+
+    test_team.budget_type = BudgetType.PERIODIC
+    test_team.is_always_free = False
+    test_team.last_payment = None
+    test_team.created_at = datetime.now(UTC) - timedelta(
+        days=settings.SIGNUP_CREDIT_DAYS + 1
+    )
+    db.commit()
+    if state == "paid_meanwhile":
+        test_team.last_payment = datetime.now(UTC)
+        db.commit()
+    write = AsyncMock()
+
+    holder = SessionLocal()
+    try:
+        if state == "purchase_in_flight":
+            holder.query(DBRegion).filter(DBRegion.id == test_region.id).with_for_update(
+                key_share=True
+            ).first()
+        await _run_cutoff_writes(test_team.id, test_region, [(1, write)])
+    finally:
+        holder.rollback()
+        holder.close()
+
+    assert write.await_count == (1 if state == "unpaid" else 0)

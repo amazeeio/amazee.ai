@@ -5,6 +5,8 @@ from datetime import UTC, datetime, timedelta
 from functools import partial
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, and_, or_, update as sa_update
+from sqlalchemy.exc import OperationalError
+from app.db.database import SessionLocal
 from app.db.models import (
     DBTeam,
     DBAuditLog,
@@ -1256,6 +1258,46 @@ def _same_budget_amount(current: float | None, expected: float | None) -> bool:
     return round(float(current), 4) == round(float(expected), 4)
 
 
+async def _run_cutoff_writes(
+    team_id: int,
+    region: DBRegion,
+    writes: list[tuple[int, Callable[[], Awaitable[None]]]],
+) -> None:
+    """Zero a never-paid team's keys under the purchase's region lock.
+
+    The cutoff is decided before LiteLLM is read, so a first top-up can restore
+    the keys in between and this run would zero them again. The top-up holds
+    this region row lock until it commits, so take it NOWAIT (a purchase in
+    flight skips the cutoff until the next run), re-check payment state under
+    it, then write. A separate session limits the lock to these writes; the
+    run's own session only commits at the end of the whole run.
+    """
+    if not writes:
+        return
+    # ponytail: purchases in this region wait while the zero writes run, fine
+    # for a handful of keys per team; batch per region if that ever grows.
+    with SessionLocal() as lock_db:
+        try:
+            locked = (
+                lock_db.query(DBRegion.id)
+                .filter(DBRegion.id == region.id)
+                .with_for_update(key_share=True, nowait=True)
+                .first()
+            )
+        except OperationalError:
+            logger.info(
+                "Region %s is locked by a purchase, free-credit cutoff for team %s "
+                "waits for the next run",
+                region.name,
+                team_id,
+            )
+            return
+        team = lock_db.query(DBTeam).filter(DBTeam.id == team_id).first()
+        if locked is None or not periodic_free_credit_over(lock_db, team):
+            return
+        await _run_key_writes(writes, region.name)
+
+
 async def reconcile_team_keys(
     db: Session,
     team: DBTeam,
@@ -1297,11 +1339,11 @@ async def reconcile_team_keys(
     team_total = 0
     total_by_user = defaultdict(float)
     service_key_total = 0
-    restore_duration, restore_max_spend = None, None
-    if restore_zeroed:
-        restore_duration, restore_max_spend, _ = LimitService(
-            db
-        ).get_token_restrictions(team.id)
+    restore_duration, restore_max_spend, _ = (
+        LimitService(db).get_token_restrictions(team.id)
+        if restore_zeroed
+        else (None, None, None)
+    )
 
     # Monitor keys for each region
     for region, keys in keys_by_region.items():
@@ -1323,6 +1365,8 @@ async def reconcile_team_keys(
             # Writes are queued here and run concurrently in batches of
             # KEY_WRITE_BATCH. Issuing them inline costs one round-trip per key.
             pending_writes: list[tuple[int, Callable[[], Awaitable[None]]]] = []
+            # Free-credit zero writes run last, under the region lock.
+            cutoff_writes: list[tuple[int, Callable[[], Awaitable[None]]]] = []
 
             # Check spend for each key in this region
             for key in keys:
@@ -1357,7 +1401,7 @@ async def reconcile_team_keys(
                             logger.info(
                                 f"Key {key.id} free credit over, max_budget -> 0"
                             )
-                            pending_writes.append(
+                            cutoff_writes.append(
                                 (
                                     key.id,
                                     partial(
@@ -1467,6 +1511,7 @@ async def reconcile_team_keys(
 
             # Execute any writes left over from the last partial batch
             await _run_key_writes(pending_writes, region.name)
+            await _run_cutoff_writes(team.id, region, cutoff_writes)
 
         except Exception as e:
             logger.error(

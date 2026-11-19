@@ -16,6 +16,10 @@ from app.core.config import settings
 from app.core.limit_service import DEFAULT_MAX_SPEND, LimitService
 from app.core.litellm_user_sync import team_role_for_litellm
 from app.core.roles import UserRole
+from app.core.team_service import (
+    periodic_free_credit_over,
+    periodic_signup_credit_expired,
+)
 from app.core.rbac import enforce_declared_team_scope
 from app.core.periodic_budget_ledger_service import compute_active_topup_remaining
 from app.core.pool_budget_service import (
@@ -748,6 +752,31 @@ def _apply_pool_key_windows(
             item.period_start = team_window.period_start
 
 
+def _key_team(db: Session, key: DBPrivateAIKey) -> DBTeam | None:
+    """The key's own team, or the owner's team for a user-scoped key."""
+    team_id = key.team_id
+    if team_id is None and key.owner_id is not None:
+        team_id = db.query(DBUser.team_id).filter(DBUser.id == key.owner_id).scalar()
+    if team_id is None:
+        return None
+    return db.query(DBTeam).filter(DBTeam.id == team_id).first()
+
+
+def _key_free_credit_over(db: Session, key: DBPrivateAIKey, region_id: int) -> bool:
+    """True while the key's never-paid PERIODIC team is past its free credit.
+
+    monitor_teams holds such keys at max_budget 0, so a budget write must not
+    lift that. Takes the region lock first, like _key_gate_locked: the top-up
+    holds it while restoring keys, so an unlocked read could re-zero a key the
+    purchase just paid for.
+    """
+    team = _key_team(db, key)
+    if not periodic_signup_credit_expired(team):
+        return False
+    _lock_region_or_404(db, region_id)
+    return periodic_free_credit_over(db, team)
+
+
 def _key_gate_locked(db: Session, key: DBPrivateAIKey, region_id: int) -> bool:
     """True while this key's team is purchase-gated and has never bought.
 
@@ -765,16 +794,11 @@ def _key_gate_locked(db: Session, key: DBPrivateAIKey, region_id: int) -> bool:
     an unlocked read can still see "never purchased" for a team that is
     already funded and re-gate a key the purchase just paid for.
     """
-    team_id = key.team_id
-    if team_id is None and key.owner_id is not None:
-        team_id = db.query(DBUser.team_id).filter(DBUser.id == key.owner_id).scalar()
-    if team_id is None:
-        return False
-    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    team = _key_team(db, key)
     if team is None or not team.requires_pool_purchase_gate:
         return False
     _lock_region_or_404(db, region_id)
-    return not pool_team_has_ever_purchased(db, team_id, region_id)
+    return not pool_team_has_ever_purchased(db, team.id, region_id)
 
 
 async def _refuse_unpaid_key_cap_raise(
@@ -3078,12 +3102,21 @@ async def update_key_budget(
     # set now is stored but not pushed: writing it would lift the gate and let
     # one request through. The first purchase applies the stored cap.
     gate_locked = _key_gate_locked(db, key, region_id)
+    # Same for a never-paid PERIODIC team past its free credit: the cap is
+    # stored and the key stays at $0 until a top-up restores it.
+    credit_over = not gate_locked and _key_free_credit_over(db, key, region_id)
     if gate_locked:
         await service.update_key_budget(
             litellm_token=key.litellm_token,
             budget_duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
             max_budget=0.0,
             clear_max_budget=False,
+        )
+    elif credit_over:
+        await service.update_key_budget(
+            litellm_token=key.litellm_token,
+            max_budget=0.0,
+            clear_budget_duration=True,
         )
     else:
         # The ledger owns the key cap period, so LiteLLM must never reset key
@@ -3134,7 +3167,7 @@ async def update_key_budget(
         note=(
             "Cap stored. The team has not purchased yet, so the key stays at a "
             "zero budget and the cap applies from the first purchase."
-            if gate_locked
+            if gate_locked or credit_over
             else "If key has team_id, team/team-member budgets may take precedence during enforcement."
         ),
     )
@@ -3208,6 +3241,7 @@ async def clear_key_budget(
     # first request against the team's $0 budget. The first purchase clears
     # it, and from then on this endpoint behaves normally.
     gate_key = _key_gate_locked(db, key, region_id)
+    credit_over = not gate_key and _key_free_credit_over(db, key, region_id)
 
     if gate_key:
         await service.update_key_budget(
@@ -3215,6 +3249,12 @@ async def clear_key_budget(
             budget_duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
             max_budget=0.0,
             clear_max_budget=False,
+        )
+    elif credit_over:
+        await service.update_key_budget(
+            litellm_token=key.litellm_token,
+            max_budget=0.0,
+            clear_budget_duration=True,
         )
     else:
         await service.update_key_budget(
@@ -3251,7 +3291,7 @@ async def clear_key_budget(
         note=(
             "Team has not purchased yet: key kept at a zero max_budget so it "
             "cannot serve requests. The first purchase clears it."
-            if gate_key
+            if gate_key or credit_over
             else "Cleared key max_budget and budget_duration overrides."
         ),
     )
