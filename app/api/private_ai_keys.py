@@ -56,6 +56,7 @@ from app.core.limit_service import (
 )
 from app.core.pool_budget_service import pool_team_has_ever_purchased
 from app.core.team_service import is_anonymous_trial_team
+from app.services.signup_velocity import enforce_provision_caps
 
 router = APIRouter(tags=["private-ai-keys"])
 
@@ -1467,6 +1468,10 @@ async def _provision_via_moad(
                 requested_name,
                 existing_name,
             )
+
+    # Past the idempotent-retry return: this call can mint a new workspace with
+    # a demo credit, so cap it per email domain and globally (TKF-492).
+    enforce_provision_caps(db, base_email)
 
     # Send the base email (plus-tags stripped) so moad resolves the real
     # Keycloak/MOAD identity instead of creating a new tagged surrogate.
