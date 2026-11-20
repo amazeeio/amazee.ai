@@ -52,6 +52,11 @@ def test_create_private_ai_key(
     mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
     mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
 
+    # The token came from the password login; drop the password so the caller
+    # is an email-code user, which moad provisioning accepts without a team.
+    test_user.hashed_password = None
+    db.commit()
+
     litellm_token = "test-private-key-123"
 
     # Simulate the key that moad would create via /internal/provision-key
@@ -116,6 +121,11 @@ def test_create_private_ai_key_invalid_region(
     """Test that a Drupal user gets 404 when moad reports region not found."""
     mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
     mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+
+    # The token came from the password login; drop the password so the caller
+    # is an email-code user, which moad provisioning accepts without a team.
+    test_user.hashed_password = None
+    db.commit()
 
     mock_response = Mock()
     mock_response.status_code = 404
