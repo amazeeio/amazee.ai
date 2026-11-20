@@ -1470,8 +1470,7 @@ async def _provision_via_moad(
             )
 
     # Past the idempotent-retry return: this call can mint a new workspace with
-    # a demo credit, so cap it per base mailbox, per email domain and globally
-    # (TKF-492).
+    # a demo credit, so cap it per base mailbox, per email domain and globally.
     enforce_mailbox_cap(db, base_email, existing_ok=False)
     enforce_provision_caps(db, base_email)
 
