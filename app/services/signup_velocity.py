@@ -9,6 +9,8 @@ table (no Redis in this backend; the shared DB keeps the cap correct across pods
 Per-IP (not per-email-domain) is deliberate: legit users share providers like
 gmail.com, and moad tags trial emails as ``base+<team_id>@<real-domain>``, so a
 per-domain cap would false-positive on shared domains.
+
+The module also holds the moad provision caps and the per-mailbox cap.
 """
 
 import logging
