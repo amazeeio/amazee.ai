@@ -50,7 +50,14 @@ from app.core.limit_service import (
 from app.core.worker import generate_pricing_url
 
 from app.db.database import get_db
-from app.db.models import DBUser, DBAPIToken, DBRegion, DBTeam, DBRevokedToken
+from app.db.models import (
+    DBAPIToken,
+    DBRegion,
+    DBRevokedToken,
+    DBSpendCap,
+    DBTeam,
+    DBUser,
+)
 
 from app.services.litellm import LiteLLMService
 from app.services.dynamodb import DynamoDBService
@@ -510,7 +517,8 @@ async def sign_in(
     Use this token for subsequent authenticated requests.
 
     If the user doesn't exist, they will be automatically registered and a new team will be created
-    with them as the admin.
+    with them as the admin. An existing user without a team gets one the same way, unless
+    the Gmail mailbox cap is reached; then they sign in without a team.
     """
     if not sign_in_data:
         auth_logger.warning("Sign-in attempt with invalid data format")
@@ -589,6 +597,13 @@ async def sign_in(
                     previous_role = user.role
                     user.team_id = team.id
                     user.role = UserRole.ADMIN
+                    # A cap left behind by an interrupted removal must not
+                    # follow the user back into a reused team.
+                    db.query(DBSpendCap).filter(
+                        DBSpendCap.scope == "team_member",
+                        DBSpendCap.team_id == team.id,
+                        DBSpendCap.user_id == user.id,
+                    ).delete(synchronize_session=False)
                     db.commit()
                     db.refresh(user)
                     attached_team_id = team.id

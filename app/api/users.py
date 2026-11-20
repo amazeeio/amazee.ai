@@ -100,7 +100,8 @@ def get_user_by_email(db: Session, email: str) -> Optional[DBUser]:
 
 def email_identity_taken(db: Session, email: str) -> bool:
     """The moad key fallback treats the base email as the owner of every tagged
-    team, so only a proven owner can hold a base email that already exists."""
+    team without another person's member, so only a proven owner can hold a
+    base email that already exists."""
     base = normalize_email_for_lookup(email)
     local, domain = base.split("@", 1)
     tagged = f"{escape_like(local)}+%@{escape_like(domain)}"

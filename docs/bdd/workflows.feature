@@ -26,6 +26,7 @@ Feature: amazee.ai Key and Team Management Workflows
     And the system has sent an 8-character alphanumeric validation code to my email
     When I perform a "POST" to "/auth/sign-in" with the correct 8-character alphanumeric code
     Then if I am a new user, a new team "Team user@example.com" should be automatically created
+    And if I already exist without a team, I should get a team in the same way, unless my Gmail mailbox already has an account
     And I should be registered as the "ADMIN" of that team
     And the team should have "PERIODIC" budget type by default
     And my Drupal site should be successfully linked to my amazee.ai account
