@@ -115,7 +115,7 @@ frontend-test-build:
 frontend-test: frontend-test-build
 	docker run --rm \
 		-e CI=true \
-		amazeeai-frontend-test npm test -- --ci
+		amazeeai-frontend-test npm test -- --run
 
 # Run all tests (backend and frontend)
 test-all: backend-test frontend-test
