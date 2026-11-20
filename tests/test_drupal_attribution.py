@@ -938,3 +938,34 @@ def test_email_code_user_with_team_still_provisions(
     response = _post_key(drupal_client, token, test_region.id)
     assert response.status_code == 200
     post.assert_called_once()
+
+
+@patch("app.api.private_ai_keys.settings")
+@patch("httpx.AsyncClient")
+def test_registered_user_cannot_take_a_key_by_email_match(
+    mock_client_cls, mock_settings, drupal_client, db, test_region
+):
+    """A registered email is not proven, so the admin_email fallback must not run."""
+    mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+    mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+    victim_team = DBTeam(name="victim", admin_email="victim+team-abc@example.com")
+    db.add(victim_team)
+    db.commit()
+    _seed_key(db, "victim-key", "victim-token", test_region.id, team_id=victim_team.id)
+    attacker = _make_user(db, email="victim@example.com", password="testpassword")
+    token = _login(drupal_client, attacker)
+    post = AsyncMock()
+    mock_client_cls.return_value = _moad_client(post)
+
+    response = drupal_client.post(
+        "/private-ai-keys",
+        # An empty name counts as a retry, so the fallback would return the key.
+        json={"region_id": test_region.id, "name": ""},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
+    assert "victim-token" not in response.text
+    db.refresh(attacker)
+    assert attacker.team_id is None
+    post.assert_not_called()
