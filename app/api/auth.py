@@ -37,6 +37,7 @@ from app.core.security import (
     hash_api_token,
     verify_password,
 )
+from app.core.litellm_user_sync import sync_add_user_to_team
 from app.core.limit_service import (
     LimitedResource,
     LimitService,
@@ -584,13 +585,28 @@ async def sign_in(
                 else:
                     team = await _sign_in_team(db, sign_in_username)
                 if team:
+                    previous_role = user.role
                     user.team_id = team.id
                     user.role = UserRole.ADMIN
                     db.commit()
                     db.refresh(user)
-                    auth_logger.info(
-                        f"Attached {sign_in_username} to team {team.id} as admin"
-                    )
+                    try:
+                        await sync_add_user_to_team(db=db, db_user=user, team_id=team.id)
+                    except Exception:
+                        # Without the LiteLLM membership the member budgets do not
+                        # apply. The user signs in without the team; the next
+                        # sign-in reuses the same team and tries again.
+                        auth_logger.exception(
+                            f"LiteLLM sync failed, {sign_in_username} stays without a team"
+                        )
+                        user.team_id = None
+                        user.role = previous_role
+                        db.commit()
+                        db.refresh(user)
+                    else:
+                        auth_logger.info(
+                            f"Attached {sign_in_username} to team {team.id} as admin"
+                        )
 
     auth_logger.info(f"Successful sign-in for user: {sign_in_username}")
     return create_and_set_access_token(response, user.email, user)
