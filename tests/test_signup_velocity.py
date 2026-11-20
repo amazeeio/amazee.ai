@@ -370,3 +370,19 @@ def test_mailbox_cap_allows_sign_in_of_an_existing_user(
     # A second address from before the cap must not lock out the first one.
     _users(db, "ab@gmail.com")
     assert _sign_in(client, dynamodb, "a.b@gmail.com").status_code == 200
+
+
+def test_mailbox_cap_sign_in_holds_the_base_mailbox_lock(
+    client, db, auth_mocks, monkeypatch
+):
+    from app.api.auth import _provision_lock
+
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    dynamodb, _ = auth_mocks
+    _users(db, "ab@gmail.com")
+
+    with patch("app.api.auth._provision_lock", wraps=_provision_lock) as lock:
+        assert _sign_in(client, dynamodb, "a.b@gmail.com").status_code == 429
+        # A second 429, not a lock-wait 503, shows the 429 path released the lock.
+        assert _sign_in(client, dynamodb, "a.b@gmail.com").status_code == 429
+    assert [c.args[1:] for c in lock.call_args_list] == [("ab@gmail.com", 0)] * 2

@@ -73,8 +73,9 @@ from app.schemas.models import (
 )
 
 from app.api.teams import register_team
+from app.api.private_ai_keys import _provision_lock
 from app.api.users import _create_user_in_db, get_user_by_email
-from app.core.email import normalize_email_for_lookup
+from app.core.email import base_mailbox, normalize_email_for_lookup
 from app.services.disposable_domains import assert_email_domain_allowed
 from app.services.signup_velocity import enforce_mailbox_cap, enforce_signup_velocity
 from app.services.token_revocation import (
@@ -384,6 +385,15 @@ async def register(request: Request, user: UserCreate, db: Session = Depends(get
     return db_user
 
 
+def _needs_team(user: DBUser) -> bool:
+    """A team-less user that a code sign-in attaches to a team; never staff."""
+    return (
+        user.team_id is None
+        and not user.is_admin
+        and user.role not in (UserRole.SYSTEM_ADMIN, UserRole.SALES)
+    )
+
+
 async def _sign_in_team(db: Session, sign_in_username: str) -> DBTeam:
     """The team a code sign-in attaches the user to: an orphaned one or a new one."""
     # Reuse a team orphaned by a user hard-delete: same admin_email, not
@@ -502,40 +512,47 @@ async def sign_in(
     # Get user from database after verifying the code
     user = get_user_by_email(db, sign_in_username)
 
-    # If user doesn't exist, create a new user and team
-    if not user:
-        auth_logger.info(f"Creating new user and team for: {sign_in_username}")
-        # Only NEW-account creation is velocity-limited; existing-user code logins
-        # (the common case, incl. many users behind one corporate IP) are not.
-        enforce_mailbox_cap(db, sign_in_username)
-        enforce_signup_velocity(request, db, email=sign_in_username, endpoint="sign-in")
-        team = await _sign_in_team(db, sign_in_username)
+    if user is None or _needs_team(user):
+        # One lock per base mailbox, so overlapping sign-ins of dot variants
+        # cannot both pass the mailbox cap. Region 0 never exists, so the key
+        # never meets a provisioning lock.
+        async with _provision_lock(db, base_mailbox(sign_in_username), 0):
+            # Another request may have saved this user while we waited.
+            if user is None:
+                user = get_user_by_email(db, sign_in_username)
+            else:
+                db.refresh(user)
 
-        user_data = UserCreate(
-            email=sign_in_username,
-            password=None,
-            team_id=team.id,
-            role=UserRole.ADMIN,
-        )
-        user = await _create_user_in_db(user_data, db)
+            # If user doesn't exist, create a new user and team
+            if not user:
+                auth_logger.info(f"Creating new user and team for: {sign_in_username}")
+                # Only NEW-account creation is velocity-limited; existing-user code logins
+                # (the common case, incl. many users behind one corporate IP) are not.
+                enforce_mailbox_cap(db, sign_in_username)
+                enforce_signup_velocity(request, db, email=sign_in_username, endpoint="sign-in")
+                team = await _sign_in_team(db, sign_in_username)
 
-        auth_logger.info(
-            f"Successfully created new user and team for: {sign_in_data.username}"
-        )
-    elif (
-        user.team_id is None
-        and not user.is_admin
-        and user.role not in (UserRole.SYSTEM_ADMIN, UserRole.SALES)
-    ):
-        # The code proves the inbox, so a user without a team (made by
-        # /auth/register, or whose team was deleted) gets one and can get a key.
-        enforce_mailbox_cap(db, sign_in_username, existing_ok=False)
-        team = await _sign_in_team(db, sign_in_username)
-        user.team_id = team.id
-        user.role = UserRole.ADMIN
-        db.commit()
-        db.refresh(user)
-        auth_logger.info(f"Attached {sign_in_username} to team {team.id} as admin")
+                user_data = UserCreate(
+                    email=sign_in_username,
+                    password=None,
+                    team_id=team.id,
+                    role=UserRole.ADMIN,
+                )
+                user = await _create_user_in_db(user_data, db)
+
+                auth_logger.info(
+                    f"Successfully created new user and team for: {sign_in_data.username}"
+                )
+            elif _needs_team(user):
+                # The code proves the inbox, so a user without a team (made by
+                # /auth/register, or whose team was deleted) gets one and can get a key.
+                enforce_mailbox_cap(db, sign_in_username, existing_ok=False)
+                team = await _sign_in_team(db, sign_in_username)
+                user.team_id = team.id
+                user.role = UserRole.ADMIN
+                db.commit()
+                db.refresh(user)
+                auth_logger.info(f"Attached {sign_in_username} to team {team.id} as admin")
 
     auth_logger.info(f"Successful sign-in for user: {sign_in_username}")
     return create_and_set_access_token(response, user.email, user)
