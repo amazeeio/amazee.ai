@@ -23,6 +23,17 @@ def mock_ses():
         yield mock_instance
 
 
+@pytest.fixture
+def sign_in_team(test_region):
+    """test_user has no team, so a code sign-in creates one for it."""
+    with (
+        patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock),
+        patch("app.core.litellm_user_sync.LiteLLMService") as sync_litellm,
+    ):
+        sync_litellm.return_value = AsyncMock()
+        yield
+
+
 def test_login_success(client, test_user):
     response = client.post(
         "/auth/login", data={"username": test_user.email, "password": "testpassword"}
@@ -326,7 +337,7 @@ def test_validate_email_invalid_format(client, mock_dynamodb):
         mock_dynamodb.write_validation_code.assert_not_called()
 
 
-def test_sign_in_success(client, test_user, mock_dynamodb):
+def test_sign_in_success(client, test_user, mock_dynamodb, sign_in_team):
     # First, generate a validation code
     email = test_user.email
     code = "TESTCODE"
@@ -353,7 +364,7 @@ def test_sign_in_success(client, test_user, mock_dynamodb):
     mock_dynamodb.read_validation_code.assert_called_once_with(email)
 
 
-def test_sign_in_success_form(client, test_user, mock_dynamodb):
+def test_sign_in_success_form(client, test_user, mock_dynamodb, sign_in_team):
     # First, generate a validation code
     email = test_user.email
     code = "TESTCODE"
@@ -888,7 +899,7 @@ def test_login_cookie_expiration_system_admin(client, test_admin):
     assert "Max-Age=28800" in set_cookie_header or "max-age=28800" in set_cookie_header
 
 
-def test_sign_in_cookie_expiration_regular_user(client, test_user, mock_dynamodb):
+def test_sign_in_cookie_expiration_regular_user(client, test_user, mock_dynamodb, sign_in_team):
     """
     Given a regular user
     When the user signs in with verification code

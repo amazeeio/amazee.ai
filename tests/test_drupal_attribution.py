@@ -969,3 +969,39 @@ def test_registered_user_cannot_take_a_key_by_email_match(
     db.refresh(attacker)
     assert attacker.team_id is None
     post.assert_not_called()
+
+
+@patch("app.api.private_ai_keys.settings")
+@patch("httpx.AsyncClient")
+def test_registered_user_gets_a_team_by_code_sign_in(
+    mock_client_cls, mock_settings, drupal_client, db, test_region
+):
+    """The email code proves the inbox, so the 403 for registered users ends."""
+    mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+    mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+    user = _make_user(db, password="testpassword")
+    post = _moad_ok(db, test_region.id, "registered-team-token")
+    mock_client_cls.return_value = _moad_client(post)
+
+    with (
+        patch("app.api.auth.DynamoDBService") as dynamodb,
+        patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock),
+        patch("app.core.litellm_user_sync.LiteLLMService") as sync_litellm,
+    ):
+        sync_litellm.return_value = AsyncMock()
+        dynamodb.return_value.read_validation_code.return_value = {
+            "email": EMAIL,
+            "code": "TESTCODE",
+        }
+        response = drupal_client.post(
+            "/auth/sign-in", json={"username": EMAIL, "verification_code": "TESTCODE"}
+        )
+    assert response.status_code == 200
+    db.refresh(user)
+    assert user.team_id is not None
+    assert user.role == UserRole.ADMIN
+    assert user.hashed_password is not None
+
+    response = _post_key(drupal_client, response.json()["access_token"], test_region.id)
+    assert response.status_code == 200
+    post.assert_called_once()
