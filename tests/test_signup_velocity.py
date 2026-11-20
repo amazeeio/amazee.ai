@@ -8,10 +8,11 @@ from fastapi import HTTPException
 from sqlalchemy import event
 
 from app.core.config import settings
-from app.db.models import DBAuditLog, DBSignupEvent, DBSystemSecret
+from app.db.models import DBAuditLog, DBSignupEvent, DBSystemSecret, DBUser
 from app.services.signup_velocity import (
     registrable_domain,
     client_ip,
+    enforce_mailbox_cap,
     enforce_provision_caps,
     enforce_signup_velocity,
     prune_signup_events,
@@ -217,3 +218,59 @@ def test_provision_domain_cap_groups_subdomains(db, monkeypatch):
     assert registrable_domain("a.b.co.uk") == "b.co.uk"
     assert registrable_domain("a.bot.io") == "bot.io"
     assert registrable_domain("bot.store") == "bot.store"
+
+
+def _users(db, *emails):
+    for email in emails:
+        db.add(DBUser(email=email, hashed_password="x", is_active=True))
+    db.commit()
+
+
+def _blocked(db, email, **kwargs):
+    with pytest.raises(HTTPException) as exc:
+        enforce_mailbox_cap(db, email, **kwargs)
+    assert exc.value.status_code == 429
+
+
+def test_mailbox_cap_blocks_dot_variants_and_allows_same_address(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    _users(db, "a.b@gmail.com")
+    _blocked(db, "ab@gmail.com")
+    _blocked(db, "ab+x@googlemail.com")
+    for email in ("a.b@gmail.com", "A.B@gmail.com", "a.b+tag@gmail.com"):
+        enforce_mailbox_cap(db, email)
+
+
+def test_mailbox_cap_existing_not_ok_counts_other_addresses(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    _users(db, "a.b@gmail.com")
+    enforce_mailbox_cap(db, "a.b@gmail.com", existing_ok=False)
+    _users(db, "ab@gmail.com")
+    _blocked(db, "a.b@gmail.com", existing_ok=False)
+
+
+def test_mailbox_cap_ignores_portal_surrogate_users(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    _users(db, "a.b@gmail.com", "a.b+123@gmail.com")
+    enforce_mailbox_cap(db, "a.b@gmail.com", existing_ok=False)
+
+
+def test_mailbox_cap_skips_other_domains_and_mailboxes(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    _users(db, "a.b@x.com", "a.b@gmail.com")
+    enforce_mailbox_cap(db, "ab@x.com")
+    enforce_mailbox_cap(db, "a.c@gmail.com")
+
+
+def test_mailbox_cap_zero_disables(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 0)
+    _users(db, "a.b@gmail.com")
+    enforce_mailbox_cap(db, "ab@gmail.com")
+
+
+def test_mailbox_cap_of_two_allows_a_second_address(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 2)
+    _users(db, "a.b@gmail.com")
+    enforce_mailbox_cap(db, "ab@gmail.com")
+    _users(db, "ab@gmail.com")
+    _blocked(db, "a.b@googlemail.com")
