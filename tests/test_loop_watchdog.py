@@ -1,92 +1,106 @@
 import asyncio
-import io
-import threading
-import time
+import os
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
 
 import pytest
+from uvicorn.config import STARTUP_FAILURE
 
-from app.core import loop_watchdog
-from app.core.loop_watchdog import LoopWatchdog, STALL_EXIT_CODE
+from app.core.loop_watchdog import LoopWatchdog
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
-@pytest.mark.asyncio
-async def test_blocked_loop_triggers_on_stall():
-    """A sync call that blocks the loop (like a psycopg2 lock wait) trips it."""
-    stalls = []
-    fired = threading.Event()
+# Runs the real watchdog in a child process, since a firing watchdog exits the
+# process. Timeout 0.5s, heartbeat every 0.1s.
+CHILD = textwrap.dedent(
+    """
+    import asyncio, sys, time
+    from app.core.loop_watchdog import LoopWatchdog
 
-    def on_stall(stalled_for):
-        stalls.append(stalled_for)
-        fired.set()
+    def block_the_loop(seconds):
+        time.sleep(seconds)  # a sync call on the loop, like a psycopg2 lock wait
 
-    watchdog = LoopWatchdog(0.3, interval=0.05, on_stall=on_stall)
-    watchdog.start()
-    try:
-        time.sleep(0.8)  # blocks the event loop, as a sync DB lock wait does
-        assert fired.wait(1), "watchdog did not fire on a blocked loop"
-        assert len(stalls) == 1
-        assert stalls[0] >= 0.3
-    finally:
+    async def main(mode):
+        watchdog = LoopWatchdog(0.5, interval=0.1)
+        watchdog.start()
+        await asyncio.sleep(0.3)
+        if mode == "block":
+            block_the_loop(10)
+        elif mode == "await":
+            await asyncio.sleep(1.5)
+        elif mode == "block-after-stop":
+            await watchdog.stop()
+            block_the_loop(1.5)
+            return
         await watchdog.stop()
 
+    asyncio.run(main(sys.argv[1]))
+    """
+)
+
+
+def run_child(mode: str) -> subprocess.CompletedProcess:
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
+    return subprocess.run(
+        [sys.executable, "-c", CHILD, mode],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=8,  # "block" sleeps 10s; only the watchdog ends it sooner
+    )
+
+
+def test_blocked_loop_dumps_stacks_and_exits_with_code_1():
+    result = run_child("block")
+
+    assert result.returncode == 1, result.stderr
+    # uvicorn stops the whole server, instead of replacing the worker, on this.
+    assert result.returncode != STARTUP_FAILURE
+    assert "Timeout (0:00:00.500000)!" in result.stderr
+    # The dump names the call that blocked the loop.
+    assert "in block_the_loop" in result.stderr
+
+
+def test_turning_loop_never_fires():
+    """Awaiting keeps the loop turning, so the timer never runs out."""
+    result = run_child("await")
+
+    assert result.returncode == 0, result.stderr
+    assert "Timeout" not in result.stderr
+
+
+def test_stop_disarms_the_timer():
+    """A slow shutdown after stop() must not end in a false dump and exit."""
+    result = run_child("block-after-stop")
+
+    assert result.returncode == 0, result.stderr
+    assert "Timeout" not in result.stderr
+
 
 @pytest.mark.asyncio
-async def test_turning_loop_never_triggers():
-    """Awaiting (the loop keeps turning) is not a stall, however long it lasts."""
-    stalls = []
-    watchdog = LoopWatchdog(0.3, interval=0.05, on_stall=stalls.append)
+async def test_heartbeat_rearms_until_stop():
+    calls = []
+    watchdog = LoopWatchdog(
+        0.3,
+        interval=0.05,
+        arm=lambda timeout: calls.append(("arm", timeout)),
+        disarm=lambda: calls.append(("disarm",)),
+    )
     watchdog.start()
-    try:
-        await asyncio.sleep(0.8)
-    finally:
-        await watchdog.stop()
-    assert stalls == []
-
-
-@pytest.mark.asyncio
-async def test_stop_ends_the_watch_thread():
-    watchdog = LoopWatchdog(0.3, interval=0.05, on_stall=lambda _: None)
-    watchdog.start()
+    await asyncio.sleep(0.2)
     await watchdog.stop()
-    watchdog._thread.join(1)
-    assert not watchdog._thread.is_alive()
+    await asyncio.sleep(0.2)
+
+    arms = [c for c in calls if c[0] == "arm"]
+    assert len(arms) >= 3
+    assert all(timeout == 0.3 for _, timeout in arms)
+    # Disarmed last, and never re-armed after stop().
+    assert calls[-1] == ("disarm",)
 
 
 def test_stall_timeout_must_exceed_interval():
     with pytest.raises(ValueError):
         LoopWatchdog(1.0, interval=1.0)
-
-
-def test_exit_stalled_worker_dumps_stacks_and_hard_exits(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        loop_watchdog.faulthandler,
-        "dump_traceback",
-        lambda **kw: calls.append(("dump", kw.get("all_threads"))),
-    )
-    monkeypatch.setattr(
-        loop_watchdog.os, "_exit", lambda code: calls.append(("exit", code))
-    )
-
-    loop_watchdog.exit_stalled_worker(61.0)
-
-    assert calls == [("dump", True), ("exit", STALL_EXIT_CODE)]
-    # uvicorn stops the whole server, instead of replacing the worker, on 3.
-    assert STALL_EXIT_CODE != 3
-
-
-def test_exit_stalled_worker_exits_when_the_stack_dump_fails(monkeypatch):
-    """A stderr with no fileno() makes the dump raise; the worker must still exit."""
-    exits = []
-
-    def broken_dump(**_):
-        raise io.UnsupportedOperation("fileno")
-
-    monkeypatch.setattr(loop_watchdog.faulthandler, "dump_traceback", broken_dump)
-    monkeypatch.setattr(loop_watchdog.os, "_exit", exits.append)
-
-    # The real os._exit never returns, so the error never surfaces; the stub does.
-    with pytest.raises(io.UnsupportedOperation):
-        loop_watchdog.exit_stalled_worker(61.0)
-
-    assert exits == [STALL_EXIT_CODE]
