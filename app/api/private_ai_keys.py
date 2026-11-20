@@ -56,7 +56,7 @@ from app.core.limit_service import (
 )
 from app.core.pool_budget_service import pool_team_has_ever_purchased
 from app.core.team_service import is_anonymous_trial_team
-from app.services.signup_velocity import enforce_provision_caps
+from app.services.signup_velocity import enforce_mailbox_cap, enforce_provision_caps
 
 router = APIRouter(tags=["private-ai-keys"])
 
@@ -1373,6 +1373,14 @@ async def _provision_via_moad(
 ) -> PrivateAIKey:
     """Runs under ``_provision_lock``; see ``_delegate_to_moad``."""
 
+    # Only /auth/register makes a password user without a team. Its email is not
+    # proven, so it gets no key by an email match below and no new workspace.
+    if current_user.team_id is None and current_user.hashed_password:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Please sign in with the email code to get a key.",
+        )
+
     # Idempotency: if the user's team already has a key for this region,
     # return it instead of provisioning a new one. This matches the
     # "one key per team per region" invariant and prevents key
@@ -1470,7 +1478,8 @@ async def _provision_via_moad(
             )
 
     # Past the idempotent-retry return: this call can mint a new workspace with
-    # a demo credit, so cap it per email domain and globally (TKF-492).
+    # a demo credit, so cap it per base mailbox, per email domain and globally.
+    enforce_mailbox_cap(db, base_email, existing_ok=False)
     enforce_provision_caps(db, base_email)
 
     # Send the base email (plus-tags stripped) so moad resolves the real

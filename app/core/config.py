@@ -150,6 +150,12 @@ class Settings(BaseSettings):
     SIGNUP_EVENTS_RETENTION_DAYS: int = int(
         os.getenv("SIGNUP_EVENTS_RETENTION_DAYS", "7")
     )
+    # Distinct addresses that users can have for one base mailbox (Gmail dot
+    # variants), for all time. 0 turns the check off. Each variant became a new
+    # account with new demo credits.
+    SIGNUP_MAX_ADDRESSES_PER_MAILBOX: int = int(
+        os.getenv("SIGNUP_MAX_ADDRESSES_PER_MAILBOX", "1")
+    )
     # --- Access token revocation (logout) ---
     # How long a revoked_tokens row stays after its token expires. It is also the
     # longest time after expiry in which validate-jwt sends a new sign-in link.
