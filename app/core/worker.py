@@ -1298,6 +1298,33 @@ async def _run_cutoff_writes(
         await _run_key_writes(writes, region.name)
 
 
+def _region_has_paid_credit(db: Session, team_id: int, region_id: int) -> bool:
+    """An active subscription or unspent top-up in the region.
+
+    A cancelled subscriber with nothing left has keys at $0 with no
+    budget_duration too (subscription deactivation), so payment history alone
+    cannot tell those keys from cutoff leftovers.
+    """
+    if compute_active_topup_remaining(db, team_id=team_id, region_id=region_id) > 0:
+        return True
+    now = datetime.now(UTC)
+    return (
+        db.query(DBPeriodicBudgetLedgerEntry.id)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team_id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            (
+                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                | (DBPeriodicBudgetLedgerEntry.expires_at > now)
+            ),
+        )
+        .first()
+        is not None
+    )
+
+
 async def reconcile_team_keys(
     db: Session,
     team: DBTeam,
@@ -1327,9 +1354,11 @@ async def reconcile_team_keys(
             budget_duration so LiteLLM never resets it). Keys stay alive.
         restore_zeroed: The team has paid since the free-credit cutoff. Keys
             without a cap row that are still at max_budget 0 with no
-            budget_duration go back to the key-creation budget. Covers keys a
-            top-up restore missed (failed sync, other region, subscription or
-            ledger credit).
+            budget_duration go back to the key-creation budget, in regions
+            where the team has an active subscription or unspent top-up.
+            Covers keys a top-up restore missed (failed sync, other region,
+            subscription). A cancelled subscriber with no credit left keeps
+            its $0 keys.
 
     Returns:
         float: Total spend across all keys for the team
@@ -1361,6 +1390,10 @@ async def reconcile_team_keys(
             is_pool = team.budget_type == BudgetType.POOL
             # One gate lookup per team and region, never per key.
             gate_locked = team_gate_locked(db, team, region.id)
+            # Only restore where the team still has credit to spend.
+            restore_region = restore_zeroed and _region_has_paid_credit(
+                db, team.id, region.id
+            )
 
             # Writes are queued here and run concurrently in batches of
             # KEY_WRITE_BATCH. Issuing them inline costs one round-trip per key.
@@ -1449,7 +1482,7 @@ async def reconcile_team_keys(
                                 )
                             )
                     elif (
-                        restore_zeroed
+                        restore_region
                         and key.id not in cap_map
                         and info.get("budget_duration") is None
                         and _same_budget_amount(info.get("max_budget"), 0)

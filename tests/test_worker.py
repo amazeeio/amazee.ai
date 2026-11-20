@@ -244,11 +244,16 @@ _ZEROED_KEY = {"spend": 5.0, "max_budget": 0, "budget_duration": None}
         (31, None, {"spend": 1.0, "max_budget": 0, "budget_duration": "30d"}, _ZERO),
         # SIGNUP_CREDIT_DAYS is read from settings, not hard-coded
         (15, "signup_credit_days_10", _FRESH_KEY, _ZERO),
-        # Paid after the cutoff but the top-up restore missed this key
-        # (failed sync, other region, subscription, ledger credit): restore it
-        (31, "topup", _ZEROED_KEY, _RESTORE),
-        (31, "last_payment", _ZEROED_KEY, _RESTORE),
-        (31, "ledger", _ZEROED_KEY, _RESTORE),
+        # Credit in the region but the top-up restore missed this key
+        # (failed sync, other region, subscription): restore it
+        (31, "active_topup", _ZEROED_KEY, _RESTORE),
+        (31, "subscription", _ZEROED_KEY, _RESTORE),
+        # Paid once but no credit left (cancelled subscriber, spent top-up):
+        # $0 is the billing state, not a cutoff leftover
+        (31, "deactivated", _ZEROED_KEY, _NONE),
+        (31, "topup", _ZEROED_KEY, _NONE),
+        (31, "last_payment", _ZEROED_KEY, _NONE),
+        (31, "ledger", _ZEROED_KEY, _NONE),
         # Exempt teams were never zeroed by the cutoff: leave $0 keys alone
         (31, "always_free", _ZEROED_KEY, _NONE),
         (31, "anonymous_trial", _ZEROED_KEY, _NONE),
@@ -301,15 +306,22 @@ async def test_monitor_teams_unpaid_periodic_team_free_credit_ends(
                 payment_date=datetime.now(UTC) - timedelta(days=40),
             )
         )
-    if variant == "ledger":
+    if variant in ("ledger", "active_topup", "subscription", "deactivated"):
+        # ledger: spent top-up. deactivated: subscription the deactivation
+        # turned off. active_topup / subscription: credit still left.
+        live = variant in ("active_topup", "subscription")
         db.add(
             DBPeriodicBudgetLedgerEntry(
                 team_id=test_team.id,
                 region_id=test_region.id,
-                entry_type="topup",
+                entry_type=(
+                    "subscription"
+                    if variant in ("subscription", "deactivated")
+                    else "topup"
+                ),
                 amount_cents=1000,
-                consumed_cents=1000,
-                is_active=False,
+                consumed_cents=0 if live else 1000,
+                is_active=live,
                 purchased_at=datetime.now(UTC) - timedelta(days=40),
             )
         )
