@@ -820,7 +820,10 @@ def test_mailbox_cap_blocks_moad_provisioning_for_a_dot_variant(
     mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
 
     user = _make_user(db, email="a.b@gmail.com")
-    other = _make_user(db, email="ab@gmail.com")
+    other_team = DBTeam(name="other", admin_email="ab@gmail.com")
+    db.add(other_team)
+    db.commit()
+    other = _make_user(db, email="ab@gmail.com", team_id=other_team.id)
     token = _login(drupal_client, user)
 
     litellm_token = "drupal-key-mailbox"

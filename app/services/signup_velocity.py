@@ -202,6 +202,9 @@ def enforce_mailbox_cap(db: Session, email: str, *, existing_ok: bool = True) ->
     rows = (
         db.query(DBUser.email)
         .filter(
+            # /auth/register is public, needs no email code and creates a user
+            # without a team, so a team-less row proves nothing about the mailbox.
+            DBUser.team_id.isnot(None),
             func.split_part(lowered, "@", 2).in_(GMAIL_DOMAINS),
             func.replace(
                 func.split_part(func.split_part(lowered, "@", 1), "+", 1), ".", ""

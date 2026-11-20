@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy import event
 
 from app.core.config import settings
-from app.db.models import DBAuditLog, DBSignupEvent, DBSystemSecret, DBUser
+from app.db.models import DBAuditLog, DBSignupEvent, DBSystemSecret, DBTeam, DBUser
 from app.services.signup_velocity import (
     registrable_domain,
     client_ip,
@@ -221,9 +221,17 @@ def test_provision_domain_cap_groups_subdomains(db, monkeypatch):
     assert registrable_domain("bot.store") == "bot.store"
 
 
-def _users(db, *emails):
+def _users(db, *emails, team=True):
     for email in emails:
-        db.add(DBUser(email=email, hashed_password="x", is_active=True))
+        team_id = None
+        if team:
+            team_row = DBTeam(name=email, admin_email=email)
+            db.add(team_row)
+            db.flush()
+            team_id = team_row.id
+        db.add(
+            DBUser(email=email, hashed_password="x", is_active=True, team_id=team_id)
+        )
     db.commit()
 
 
@@ -281,6 +289,13 @@ def test_mailbox_cap_ignores_case(db, monkeypatch):
     monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
     _users(db, "John.Doe@Gmail.com", "john.doe+5@gmail.com")
     enforce_mailbox_cap(db, "john.doe@gmail.com", existing_ok=False)
+
+
+def test_mailbox_cap_ignores_team_less_users(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    _users(db, "j.ohndoe@gmail.com", team=False)
+    enforce_mailbox_cap(db, "johndoe@gmail.com")
+    enforce_mailbox_cap(db, "johndoe@gmail.com", existing_ok=False)
 
 
 def test_mailbox_cap_skips_other_domains_and_mailboxes(db, monkeypatch):
