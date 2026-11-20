@@ -202,11 +202,8 @@ def enforce_mailbox_cap(db: Session, email: str, *, existing_ok: bool = True) ->
     # only validate-email, new sign-ups and moad provisioning run it. Add an
     # expression index on the base local part (needs a migration) if it grows.
     rows = (
-        db.query(DBUser.email)
+        db.query(DBUser.email, DBUser.team_id)
         .filter(
-            # /auth/register is public, needs no email code and creates a user
-            # without a team, so a team-less row proves nothing about the mailbox.
-            DBUser.team_id.isnot(None),
             func.split_part(lowered, "@", 2).in_(GMAIL_DOMAINS),
             func.replace(
                 func.split_part(func.split_part(lowered, "@", 1), "+", 1), ".", ""
@@ -215,9 +212,14 @@ def enforce_mailbox_cap(db: Session, email: str, *, existing_ok: bool = True) ->
         )
         .all()
     )
-    addresses = {normalize_email_for_lookup(row.email) for row in rows}
-    if existing_ok and address in addresses:
+    if existing_ok and address in {normalize_email_for_lookup(r.email) for r in rows}:
         return
+
+    # /auth/register is public, needs no email code and creates a user without
+    # a team, so a team-less row proves nothing about the mailbox.
+    addresses = {
+        normalize_email_for_lookup(r.email) for r in rows if r.team_id is not None
+    }
 
     count = len(addresses | {address})
     if count > cap:

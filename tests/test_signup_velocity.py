@@ -292,6 +292,13 @@ def test_mailbox_cap_ignores_team_less_users(db, monkeypatch):
     enforce_mailbox_cap(db, "johndoe@gmail.com", existing_ok=False)
 
 
+def test_mailbox_cap_lets_a_team_less_user_sign_in_again(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    _users(db, "j.ohndoe@gmail.com", team=False)
+    _users(db, "johndoe@gmail.com")
+    enforce_mailbox_cap(db, "j.ohndoe@gmail.com")
+
+
 def test_mailbox_cap_skips_other_domains_and_mailboxes(db, monkeypatch):
     monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
     _users(db, "a.b@x.com", "a.b@gmail.com")
