@@ -197,8 +197,8 @@ def enforce_mailbox_cap(db: Session, email: str, *, existing_ok: bool = True) ->
 
     lowered = func.lower(DBUser.email)
     # ponytail: scans the users table with no index; fine at ~24k rows because
-    # only new sign-ups and moad provisioning run it. Add an expression index on
-    # the base local part (needs a migration) if the table grows a lot.
+    # only validate-email, new sign-ups and moad provisioning run it. Add an
+    # expression index on the base local part (needs a migration) if it grows.
     rows = (
         db.query(DBUser.email)
         .filter(
