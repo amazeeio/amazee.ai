@@ -7,7 +7,7 @@ import logging
 from contextlib import asynccontextmanager
 
 import httpx
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlalchemy.exc import OperationalError
 
 from app.db.database import get_db
@@ -1444,6 +1444,16 @@ async def _provision_via_moad(
     if existing_key is None and "@" in base_email:
         local, domain = base_email.split("@", 1)
         tag_pattern = f"{escape_like(local)}+%@{escape_like(domain)}"
+        # The admin_email does not prove membership: an admin removed from a
+        # team keeps it as the team's contact. So skip a team with a member who
+        # is another person. moad's own "<email>+<team id>@" member is the same
+        # person and does not count.
+        member_email = func.lower(DBUser.email)
+        member_base = func.concat(
+            func.split_part(func.split_part(member_email, "@", 1), "+", 1),
+            "@",
+            func.split_part(member_email, "@", 2),
+        )
         existing_key = (
             db.query(DBPrivateAIKey)
             .join(DBTeam, DBPrivateAIKey.team_id == DBTeam.id)
@@ -1452,6 +1462,7 @@ async def _provision_via_moad(
                 DBTeam.deleted_at.is_(None),
                 (DBTeam.admin_email.ilike(escape_like(base_email), escape="\\"))
                 | (DBTeam.admin_email.ilike(tag_pattern, escape="\\")),
+                ~DBTeam.users.any(member_base != base_email),
             )
             .order_by(DBPrivateAIKey.created_at.desc())
             .first()
