@@ -539,6 +539,7 @@ async def sign_in(
 
     # Get user from database after verifying the code
     user = get_user_by_email(db, sign_in_username)
+    attached_team_id = None
 
     if user is None or _needs_team(user):
         # One lock per base mailbox, so overlapping sign-ins of dot variants
@@ -590,23 +591,29 @@ async def sign_in(
                     user.role = UserRole.ADMIN
                     db.commit()
                     db.refresh(user)
-                    try:
-                        await sync_add_user_to_team(db=db, db_user=user, team_id=team.id)
-                    except Exception:
-                        # Without the LiteLLM membership the member budgets do not
-                        # apply. The user signs in without the team; the next
-                        # sign-in reuses the same team and tries again.
-                        auth_logger.exception(
-                            f"LiteLLM sync failed, {sign_in_username} stays without a team"
-                        )
-                        user.team_id = None
-                        user.role = previous_role
-                        db.commit()
-                        db.refresh(user)
-                    else:
-                        auth_logger.info(
-                            f"Attached {sign_in_username} to team {team.id} as admin"
-                        )
+                    attached_team_id = team.id
+
+    # Outside the lock: two slow LiteLLM calls must not make a retry of the same
+    # mailbox wait for the lock and fail.
+    if attached_team_id is not None:
+        try:
+            await sync_add_user_to_team(db=db, db_user=user, team_id=attached_team_id)
+        except Exception:
+            # Without the LiteLLM membership the member budgets do not apply.
+            # The user signs in without the team; the next sign-in reuses the
+            # same team and tries again.
+            auth_logger.exception(
+                f"LiteLLM sync failed, {sign_in_username} stays without a team"
+            )
+            db.rollback()
+            user.team_id = None
+            user.role = previous_role
+            db.commit()
+            db.refresh(user)
+        else:
+            auth_logger.info(
+                f"Attached {sign_in_username} to team {attached_team_id} as admin"
+            )
 
     auth_logger.info(f"Successful sign-in for user: {sign_in_username}")
     return create_and_set_access_token(response, user.email, user)

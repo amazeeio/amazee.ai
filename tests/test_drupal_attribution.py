@@ -1156,6 +1156,17 @@ def test_sign_in_team_attach_is_undone_when_litellm_sync_fails(
     db.refresh(user)
     assert user.team_id is None
     assert user.role == UserRole.DEFAULT
+    team_ids = {t.id for t in db.query(DBTeam).filter(DBTeam.admin_email == EMAIL)}
+    assert len(team_ids) == 1
+
+    # The next sign-in reuses the team that the failed sync left without members.
+    with patch("app.api.auth.sync_add_user_to_team", new_callable=AsyncMock):
+        response = _code_sign_in(drupal_client, EMAIL)
+
+    assert response.status_code == 200
+    db.refresh(user)
+    assert user.team_id in team_ids
+    assert db.query(DBTeam).filter(DBTeam.admin_email == EMAIL).count() == 1
 
 
 @patch("app.api.private_ai_keys.settings")
