@@ -1101,6 +1101,35 @@ def _code_sign_in(client, email):
         )
 
 
+def test_failed_sign_in_sync_keeps_a_team_set_by_a_parallel_request(
+    drupal_client, db, test_region
+):
+    """The undo clears only the team that this sign-in attached."""
+    user = _make_user(db)
+    other_team = DBTeam(name="key-team", admin_email="key-team@corp.com", is_active=True)
+    db.add(other_team)
+    db.commit()
+    db.refresh(other_team)
+
+    async def move_user_then_fail(**kwargs):
+        db.query(DBUser).filter(DBUser.id == user.id).update(
+            {DBUser.team_id: other_team.id}
+        )
+        db.commit()
+        raise RuntimeError("litellm down")
+
+    with patch(
+        "app.api.auth.sync_add_user_to_team",
+        new_callable=AsyncMock,
+        side_effect=move_user_then_fail,
+    ):
+        response = _code_sign_in(drupal_client, EMAIL)
+
+    assert response.status_code == 200
+    db.refresh(user)
+    assert user.team_id == other_team.id
+
+
 def test_capped_gmail_user_signs_in_without_a_team(drupal_client, db):
     """The mailbox cap stops a second team, not the sign-in of an existing user."""
     other_team = DBTeam(name="other", admin_email="ab@gmail.com", is_active=True)

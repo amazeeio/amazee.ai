@@ -621,8 +621,14 @@ async def sign_in(
                 f"LiteLLM sync failed, {sign_in_username} stays without a team"
             )
             db.rollback()
-            user.team_id = None
-            user.role = previous_role
+            # A parallel request may have moved the user to another team while
+            # the sync ran; undo only this attach.
+            db.query(DBUser).filter(
+                DBUser.id == user.id, DBUser.team_id == attached_team_id
+            ).update(
+                {DBUser.team_id: None, DBUser.role: previous_role},
+                synchronize_session=False,
+            )
             db.commit()
             db.refresh(user)
         else:
