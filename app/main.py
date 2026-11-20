@@ -22,6 +22,7 @@ from app.api import (
     users,
 )
 from app.core.config import settings
+from app.core.loop_watchdog import LoopWatchdog
 from app.middleware.audit import AuditLogMiddleware
 from app.middleware.auth import AuthMiddleware
 from app.middleware.caching import CacheControlMiddleware
@@ -66,7 +67,16 @@ class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    yield
+    # Runs once per uvicorn worker, so each worker watches its own loop.
+    watchdog = None
+    if settings.EVENT_LOOP_STALL_TIMEOUT_SECONDS > 0:
+        watchdog = LoopWatchdog(settings.EVENT_LOOP_STALL_TIMEOUT_SECONDS)
+        watchdog.start()
+    try:
+        yield
+    finally:
+        if watchdog is not None:
+            await watchdog.stop()
 
 
 app = FastAPI(
