@@ -9,6 +9,8 @@ table (no Redis in this backend; the shared DB keeps the cap correct across pods
 Per-IP (not per-email-domain) is deliberate: legit users share providers like
 gmail.com, and moad tags trial emails as ``base+<team_id>@<real-domain>``, so a
 per-domain cap would false-positive on shared domains.
+
+The module also holds the moad provision caps and the per-mailbox cap.
 """
 
 import logging
@@ -16,11 +18,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Optional
 
 from fastapi import HTTPException, Request, status
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.audit import prune_audit_log
 from app.core.config import settings
-from app.db.models import DBSignupEvent
+from app.core.email import GMAIL_DOMAINS, base_mailbox, normalize_email_for_lookup
+from app.db.models import DBSignupEvent, DBUser
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +91,148 @@ def enforce_signup_velocity(
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many signup attempts from this network. Please try again later.",
+        )
+
+
+PROVISION_ENDPOINT = "provision-key"
+
+# Second-level labels that sit under a country TLD as part of the public
+# suffix (example.co.uk, example.com.au).
+# ponytail: heuristic, not the Public Suffix List. Ceilings: a flat ccTLD
+# domain such as co.de keeps one count per subdomain, and a shared suffix such
+# as onmicrosoft.com puts all its tenants in one count. Swap in tldextract with
+# its bundled list if either matters.
+_CC_SECOND_LEVEL = {"ac", "co", "com", "edu", "gov", "ne", "net", "or", "org"}
+
+
+def registrable_domain(domain: str) -> str:
+    """Collapse a host to its registrable domain: a.b.bot.store -> bot.store."""
+    labels = domain.split(".")
+    keep = (
+        3
+        if len(labels[-1]) == 2 and len(labels) >= 3 and labels[-2] in _CC_SECOND_LEVEL
+        else 2
+    )
+    return ".".join(labels[-keep:])
+
+
+def enforce_provision_caps(db: Session, email: str) -> None:
+    """Record a moad provisioning attempt and raise 429 if a cap is hit.
+
+    Every moad provisioning can mint a new workspace with a demo credit.
+    Abusive sign-ups rotate IPs (so a per-IP cap never fires) but tend to use
+    one fresh domain. Two caps, both over signup_events rows for this endpoint:
+      - per registrable email domain per day, so sibling subdomains
+        (a.bot.store, b.bot.store) share one count (free-mail exempt), and
+      - global per hour, the backstop for domain rotation.
+    Unlike enforce_signup_velocity, rejected attempts are not recorded.
+    Soft limits, same count-then-insert trade-off as enforce_signup_velocity.
+    """
+    from app.services.disposable_domains import extract_domain
+
+    domain = registrable_domain(extract_domain(email))
+    now = datetime.now(UTC)
+    escaped = domain.replace("%", r"\%").replace("_", r"\_")
+    recent = db.query(DBSignupEvent).filter(
+        DBSignupEvent.endpoint == PROVISION_ENDPOINT
+    )
+    exempt = {
+        d.strip().lower()
+        for d in settings.PROVISION_DOMAIN_CAP_EXEMPT.split(",")
+        if d.strip()
+    }
+
+    domain_hit = (
+        settings.PROVISION_MAX_PER_DOMAIN_PER_DAY > 0
+        and domain not in exempt
+        and recent.filter(
+            DBSignupEvent.created_at >= now - timedelta(days=1),
+            or_(
+                DBSignupEvent.email.ilike("%@" + escaped, escape="\\"),
+                DBSignupEvent.email.ilike("%@%." + escaped, escape="\\"),
+            ),
+        ).count()
+        >= settings.PROVISION_MAX_PER_DOMAIN_PER_DAY
+    )
+    global_hit = (
+        settings.PROVISION_MAX_PER_HOUR > 0
+        and recent.filter(DBSignupEvent.created_at >= now - timedelta(hours=1)).count()
+        >= settings.PROVISION_MAX_PER_HOUR
+    )
+
+    if domain_hit or global_hit:
+        logger.warning(
+            "Provision cap hit (%s): domain=%s email=%s",
+            "domain" if domain_hit else "global",
+            domain,
+            email,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many sign-ups right now. Please try again later.",
+        )
+
+    # Only admitted attempts are recorded: rejected retries must not keep the
+    # shared window full and lock out unrelated users (the log line covers them).
+    # ponytail: no IP here; the request isn't threaded this deep, and the caps
+    # don't use it. Thread it through if forensics need it.
+    db.add(DBSignupEvent(email=email, endpoint=PROVISION_ENDPOINT))
+    db.commit()
+
+
+def enforce_mailbox_cap(db: Session, email: str, *, existing_ok: bool = True) -> None:
+    """Raise 429 if the base mailbox of this email already has too many addresses.
+
+    Gmail delivers all dot variants to one inbox, so each variant became a new
+    account with new demo credits. The cap counts addresses, not attempts, so a
+    user who signs in again is not blocked. The provisioning path passes
+    existing_ok=False because there the current user already owns the address.
+    """
+    cap = settings.SIGNUP_MAX_ADDRESSES_PER_MAILBOX
+    if cap == 0:
+        return
+
+    address = normalize_email_for_lookup(email)
+    base_local, _, base_domain = base_mailbox(email).rpartition("@")
+    if base_domain != "gmail.com":
+        return
+
+    lowered = func.lower(DBUser.email)
+    # ponytail: scans the users table with no index; fine at ~24k rows because
+    # only validate-email, new sign-ups and moad provisioning run it. Add an
+    # expression index on the base local part (needs a migration) if it grows.
+    rows = (
+        db.query(DBUser.email, DBUser.team_id)
+        .filter(
+            func.split_part(lowered, "@", 2).in_(GMAIL_DOMAINS),
+            func.replace(
+                func.split_part(func.split_part(lowered, "@", 1), "+", 1), ".", ""
+            )
+            == base_local,
+        )
+        .all()
+    )
+    if existing_ok and address in {normalize_email_for_lookup(r.email) for r in rows}:
+        return
+
+    # /auth/register is public, needs no email code and creates a user without
+    # a team, so a team-less row proves nothing about the mailbox.
+    addresses = {
+        normalize_email_for_lookup(r.email) for r in rows if r.team_id is not None
+    }
+
+    count = len(addresses | {address})
+    if count > cap:
+        logger.warning(
+            "Mailbox cap hit: base=%s addresses=%d cap=%d",
+            f"{base_local}@{base_domain}",
+            count,
+            cap,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="This mailbox already has an account. "
+            "Please sign in with the address you used before.",
         )
 
 

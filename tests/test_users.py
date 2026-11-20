@@ -18,7 +18,7 @@ from datetime import datetime, UTC
 from unittest.mock import patch, AsyncMock
 import pytest
 from fastapi import HTTPException
-from tests.conftest import _add_tagged_team, _add_tagged_user
+from tests.conftest import _add_tagged_team
 
 
 def test_create_user(client, test_admin, admin_token):
@@ -406,19 +406,6 @@ def test_team_admin_create_user_refused_on_tagged_identity(
             "password": "newpassword123",
             "team_id": test_team.id,
         },
-    )
-    assert response.status_code == 400
-    assert response.json()["detail"] == "Email already registered"
-
-
-def test_team_admin_update_user_email_refused_on_tagged_identity(
-    client, team_admin_token, test_team_admin, db
-):
-    _add_tagged_user(db)
-    response = client.put(
-        f"/users/{test_team_admin.id}",
-        headers={"Authorization": f"Bearer {team_admin_token}"},
-        json={"email": "alice@corp.com"},
     )
     assert response.status_code == 400
     assert response.json()["detail"] == "Email already registered"
@@ -1457,6 +1444,40 @@ def test_team_admin_cannot_change_is_active(client, team_admin_token, test_team_
     assert "Not authorized to perform this action" in response.json()["detail"]
 
 
+def test_team_admin_cannot_change_member_email(
+    client, db, team_admin_token, test_team_user
+):
+    """
+    GIVEN: A team member in the team admin's team
+    WHEN: the team admin tries to change the member's email via PUT /users/{id}
+    THEN: A 403 is returned and the email stays the same; other fields still work
+    """
+    response = client.put(
+        f"/users/{test_team_user.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"email": "hijack@example.com"},
+    )
+    assert response.status_code == 403
+    assert "Not authorized to perform this action" in response.json()["detail"]
+
+    db.refresh(test_team_user)
+    assert test_team_user.email == "teamuser@example.com"
+
+    response = client.put(
+        f"/users/{test_team_user.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"email": None},
+    )
+    assert response.status_code == 403
+
+    response = client.put(
+        f"/users/{test_team_user.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"receive_marketing_updates": True},
+    )
+    assert response.status_code == 200
+
+
 @patch("app.api.users.settings.ENABLE_LIMITS", True)
 def test_create_user_with_limits_enabled(client, team_admin_token, test_team, db):
     """
@@ -2221,3 +2242,27 @@ def test_add_user_to_team_rejected_at_capacity(client, admin_token, db, test_tea
     db.expire_all()
     db.refresh(joiner)
     assert joiner.team_id is None
+
+
+def test_team_admin_cannot_add_user_to_team(client, db, team_admin_token, test_team):
+    """
+    GIVEN: A team-less user
+    WHEN: A team admin adds that user to their own team
+    THEN: A 403 is returned and the user stays out of the team
+    """
+    user = DBUser(email="teamless-target@example.com", role="read_only")
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    response = client.post(
+        f"/users/{user.id}/add-to-team",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"team_id": test_team.id},
+    )
+    assert response.status_code == 403
+    assert "Not authorized to perform this action" in response.json()["detail"]
+
+    db.expire_all()
+    db.refresh(user)
+    assert user.team_id is None

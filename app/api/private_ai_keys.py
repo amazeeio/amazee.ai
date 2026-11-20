@@ -40,7 +40,6 @@ from app.core.email import escape_like, normalize_email_for_lookup
 from app.services.litellm import INFERENCE_ONLY_ROUTES, LiteLLMService
 from app.core.security import (
     get_current_user_from_auth,
-    get_role_min_team_admin,
     get_private_ai_access,
     get_private_ai_direct_access,
     get_role_min_system_admin,
@@ -57,6 +56,7 @@ from app.core.limit_service import (
 )
 from app.core.pool_budget_service import pool_team_has_ever_purchased
 from app.core.team_service import is_anonymous_trial_team
+from app.services.signup_velocity import enforce_mailbox_cap, enforce_provision_caps
 
 router = APIRouter(tags=["private-ai-keys"])
 
@@ -691,6 +691,17 @@ async def create_llm_token(
         )
 
 
+def _team_key_filter(team_id, owner_ids):
+    """Keys of the team, plus keys with no team whose owner is in the team.
+
+    A key of another team stays out even when its owner is now a member, the
+    same rule as single-key access. Every key list uses this one rule.
+    """
+    return (DBPrivateAIKey.team_id == team_id) | (
+        (DBPrivateAIKey.team_id.is_(None)) & (DBPrivateAIKey.owner_id.in_(owner_ids))
+    )
+
+
 @router.get("", response_model=List[PrivateAIKey])
 @router.get("/", response_model=List[PrivateAIKey])
 async def list_private_ai_keys(
@@ -712,7 +723,8 @@ async def list_private_ai_keys(
           every secret in the database to any admin-scoped integration
           (e.g. a management token) that calls this endpoint with no filters.
     If user is team admin:
-        - Returns keys owned by users in their team AND keys owned by their team
+        - Returns keys of their team, keys with no team whose owner is in their
+          team, and their own keys
     If user is not admin:
         - Returns their own keys, and keys for their team, ignoring owner_id and team_id parameters
 
@@ -742,11 +754,7 @@ async def list_private_ai_keys(
             # Get all users in the team
             team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
             team_user_ids = [user.id for user in team_users]
-            # Return keys owned by users in the team OR owned by the team
-            query = query.filter(
-                (DBPrivateAIKey.owner_id.in_(team_user_ids))
-                | (DBPrivateAIKey.team_id == team_id)
-            )
+            query = query.filter(_team_key_filter(team_id, team_user_ids))
         elif not show_all:
             # Safe default: no filters and no explicit opt-in means "my own
             # keys", not "every key in the system".
@@ -768,10 +776,10 @@ async def list_private_ai_keys(
                     .all()
                 )
                 team_user_ids = [user.id for user in team_users]
-                # Return keys owned by any user in the team OR owned by the team
+                # The caller's own keys stay listed, also those of an old team.
                 query = query.filter(
-                    (DBPrivateAIKey.owner_id.in_(team_user_ids))
-                    | (DBPrivateAIKey.team_id == current_user.team_id)
+                    _team_key_filter(current_user.team_id, team_user_ids)
+                    | (DBPrivateAIKey.owner_id == current_user.id)
                 )
             else:
                 # Non-admin users
@@ -814,7 +822,8 @@ async def list_private_ai_keys_by_region(
     Keys from soft-deleted teams are excluded from the results.
 
     Optional query parameters (admin only):
-    - **team_id**: Filter keys owned by users in this team or owned by this team directly.
+    - **team_id**: Filter keys of this team, and keys with no team whose owner is
+      in this team.
       Silently ignored for non-admin callers.
     - **user_id**: Filter keys owned by this specific user.
       Only respected when the caller is a system admin; non-admin callers have this
@@ -849,10 +858,7 @@ async def list_private_ai_keys_by_region(
 
             # Use subquery instead of loading users into memory
             team_user_ids_subq = db.query(DBUser.id).filter(DBUser.team_id == team_id)
-            query = query.filter(
-                (DBPrivateAIKey.owner_id.in_(team_user_ids_subq))
-                | (DBPrivateAIKey.team_id == team_id)
-            )
+            query = query.filter(_team_key_filter(team_id, team_user_ids_subq))
 
         if user_id is not None:
             # Verify the user exists; return empty list if not found
@@ -882,10 +888,10 @@ async def list_private_ai_keys_by_region(
                     .all()
                 )
                 team_user_ids = [user.id for user in team_users]
-                # Return keys owned by any user in the team OR owned by the team
+                # The caller's own keys stay listed, also those of an old team.
                 query = query.filter(
-                    (DBPrivateAIKey.owner_id.in_(team_user_ids))
-                    | (DBPrivateAIKey.team_id == current_user.team_id)
+                    _team_key_filter(current_user.team_id, team_user_ids)
+                    | (DBPrivateAIKey.owner_id == current_user.id)
                 )
             else:
                 # Non-admin users
@@ -1216,7 +1222,7 @@ async def extend_token_life(
     key_id: int,
     duration_update: TokenDurationUpdate,
     current_user=Depends(get_current_user_from_auth),
-    user_role: UserRole = Depends(get_role_min_team_admin),
+    user_role: UserRole = Depends(get_role_min_system_admin),
     db: Session = Depends(get_db),
 ):
     """
@@ -1231,7 +1237,7 @@ async def extend_token_life(
     - **duration**: The amount of time to add to the key's life (e.g. "30d" for 30 days, "1y" for 1 year)
 
     Note: You must be authenticated to use this endpoint.
-    Only the owner of the key or an admin can update it.
+    Only system admins can call it, because the billing cycle owns key expiry.
     """
     private_ai_key = _get_key_if_allowed(key_id, current_user, user_role, db)
 
@@ -1373,6 +1379,14 @@ async def _provision_via_moad(
 ) -> PrivateAIKey:
     """Runs under ``_provision_lock``; see ``_delegate_to_moad``."""
 
+    # Only /auth/register makes a password user without a team. Its email is not
+    # proven, so it gets no key by an email match below and no new workspace.
+    if current_user.team_id is None and current_user.hashed_password:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Please sign in with the email code to get a key.",
+        )
+
     # Idempotency: if the user's team already has a key for this region,
     # return it instead of provisioning a new one. This matches the
     # "one key per team per region" invariant and prevents key
@@ -1468,6 +1482,11 @@ async def _provision_via_moad(
                 requested_name,
                 existing_name,
             )
+
+    # Past the idempotent-retry return: this call can mint a new workspace with
+    # a demo credit, so cap it per base mailbox, per email domain and globally.
+    enforce_mailbox_cap(db, base_email, existing_ok=False)
+    enforce_provision_caps(db, base_email)
 
     # Send the base email (plus-tags stripped) so moad resolves the real
     # Keycloak/MOAD identity instead of creating a new tagged surrogate.

@@ -52,6 +52,11 @@ def test_create_private_ai_key(
     mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
     mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
 
+    # The token came from the password login; drop the password so the caller
+    # is an email-code user, which moad provisioning accepts without a team.
+    test_user.hashed_password = None
+    db.commit()
+
     litellm_token = "test-private-key-123"
 
     # Simulate the key that moad would create via /internal/provision-key
@@ -116,6 +121,11 @@ def test_create_private_ai_key_invalid_region(
     """Test that a Drupal user gets 404 when moad reports region not found."""
     mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
     mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+
+    # The token came from the password login; drop the password so the caller
+    # is an email-code user, which moad provisioning accepts without a team.
+    test_user.hashed_password = None
+    db.commit()
 
     mock_response = Mock()
     mock_response.status_code = 404
@@ -3619,6 +3629,142 @@ def test_list_private_ai_keys_by_region_show_all(
     assert all(k["owner_id"] == test_user.id for k in response.json())
 
 
+def test_team_admin_list_hides_moved_member_other_team_key(
+    client, db, team_admin_token, test_team, test_team_user, test_region
+):
+    """A team admin does not see another team's key owned by a member who
+    moved into their team, in both list endpoints"""
+    other_team = DBTeam(
+        name="Other Team",
+        admin_email="otherteam@example.com",
+        phone="0987654321",
+        billing_address="456 Other St, Other City, 54321",
+        is_active=True,
+        created_at=datetime.now(UTC),
+    )
+    db.add(other_team)
+    db.commit()
+    db.refresh(other_team)
+
+    for name, team_id in [
+        ("moved-member-other-team-db", other_team.id),
+        ("moved-member-own-team-db", test_team.id),
+        ("moved-member-no-team-db", None),
+    ]:
+        db.add(
+            DBPrivateAIKey(
+                database_name=name,
+                database_host="test-host",
+                database_username="test-user",
+                database_password="test-pass",
+                litellm_token=f"{name}-token",
+                owner_id=test_team_user.id,
+                team_id=team_id,
+                region_id=test_region.id,
+            )
+        )
+    db.commit()
+
+    for url in ["/private-ai-keys/", f"/private-ai-keys/region/{test_region.id}"]:
+        response = client.get(
+            url, headers={"Authorization": f"Bearer {team_admin_token}"}
+        )
+        assert response.status_code == 200
+        names = {k["database_name"] for k in response.json()}
+        assert "moved-member-other-team-db" not in names
+        assert "moved-member-own-team-db" in names
+        assert "moved-member-no-team-db" in names
+
+
+def test_team_admin_list_shows_own_key_of_other_team(
+    client, db, team_admin_token, test_team_admin, test_region
+):
+    """A team admin still sees their own key when the key belongs to another
+    team, in both list endpoints"""
+    other_team = DBTeam(
+        name="Other Team",
+        admin_email="otherteam@example.com",
+        phone="0987654321",
+        billing_address="456 Other St, Other City, 54321",
+        is_active=True,
+        created_at=datetime.now(UTC),
+    )
+    db.add(other_team)
+    db.commit()
+    db.refresh(other_team)
+
+    db.add(
+        DBPrivateAIKey(
+            database_name="team-admin-own-other-team-db",
+            database_host="test-host",
+            database_username="test-user",
+            database_password="test-pass",
+            litellm_token="team-admin-own-other-team-token",
+            owner_id=test_team_admin.id,
+            team_id=other_team.id,
+            region_id=test_region.id,
+        )
+    )
+    db.commit()
+
+    for url in ["/private-ai-keys/", f"/private-ai-keys/region/{test_region.id}"]:
+        response = client.get(
+            url, headers={"Authorization": f"Bearer {team_admin_token}"}
+        )
+        assert response.status_code == 200
+        names = {k["database_name"] for k in response.json()}
+        assert "team-admin-own-other-team-db" in names
+
+
+def test_admin_team_filter_hides_moved_member_other_team_key(
+    client, db, admin_token, test_team, test_team_user, test_region
+):
+    """A system admin filtering by team_id does not see another team's key owned
+    by a member who moved into that team, in both list endpoints"""
+    other_team = DBTeam(
+        name="Other Team",
+        admin_email="otherteam@example.com",
+        phone="0987654321",
+        billing_address="456 Other St, Other City, 54321",
+        is_active=True,
+        created_at=datetime.now(UTC),
+    )
+    db.add(other_team)
+    db.commit()
+    db.refresh(other_team)
+
+    for name, team_id in [
+        ("admin-filter-other-team-db", other_team.id),
+        ("admin-filter-own-team-db", test_team.id),
+        ("admin-filter-no-team-db", None),
+    ]:
+        db.add(
+            DBPrivateAIKey(
+                database_name=name,
+                database_host="test-host",
+                database_username="test-user",
+                database_password="test-pass",
+                litellm_token=f"{name}-token",
+                owner_id=test_team_user.id,
+                team_id=team_id,
+                region_id=test_region.id,
+            )
+        )
+    db.commit()
+
+    for url in ["/private-ai-keys/", f"/private-ai-keys/region/{test_region.id}"]:
+        response = client.get(
+            url,
+            headers={"Authorization": f"Bearer {admin_token}"},
+            params={"team_id": test_team.id},
+        )
+        assert response.status_code == 200
+        names = {k["database_name"] for k in response.json()}
+        assert "admin-filter-other-team-db" not in names
+        assert "admin-filter-own-team-db" in names
+        assert "admin-filter-no-team-db" in names
+
+
 def test_list_private_ai_keys_show_all(
     client, admin_token, test_token, test_region, test_user, test_admin, db
 ):
@@ -3830,3 +3976,79 @@ def test_delete_private_ai_key_wrong_team_id_is_404_and_persists(
 
     db.delete(survivor)
     db.commit()
+
+
+@patch("app.api.private_ai_keys.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch(
+    "app.api.private_ai_keys.LiteLLMService.update_key_duration",
+    new_callable=AsyncMock,
+)
+def test_extend_token_life_forbidden_for_team_admin(
+    mock_update_key_duration,
+    mock_get_key_info,
+    client,
+    team_admin_token,
+    test_team,
+    test_region,
+    db,
+):
+    key = DBPrivateAIKey(
+        name="extend-forbidden",
+        litellm_token="sk-extend-forbidden",
+        region_id=test_region.id,
+        team_id=test_team.id,
+        owner_id=None,
+    )
+    db.add(key)
+    db.commit()
+    db.refresh(key)
+
+    response = client.put(
+        f"/private-ai-keys/{key.id}/extend-token-life",
+        json={"duration": "-1"},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+
+    assert response.status_code == 403
+    mock_update_key_duration.assert_not_awaited()
+    mock_get_key_info.assert_not_awaited()
+
+
+@patch("app.api.private_ai_keys.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch(
+    "app.api.private_ai_keys.LiteLLMService.update_key_duration",
+    new_callable=AsyncMock,
+)
+def test_extend_token_life_allowed_for_system_admin(
+    mock_update_key_duration,
+    mock_get_key_info,
+    client,
+    admin_token,
+    test_team,
+    test_region,
+    db,
+):
+    key = DBPrivateAIKey(
+        name="extend-allowed",
+        litellm_token="sk-extend-allowed",
+        region_id=test_region.id,
+        team_id=test_team.id,
+        owner_id=None,
+    )
+    db.add(key)
+    db.commit()
+    db.refresh(key)
+    mock_get_key_info.return_value = {
+        "info": {"key_name": "extend-allowed", "expires": None}
+    }
+
+    response = client.put(
+        f"/private-ai-keys/{key.id}/extend-token-life",
+        json={"duration": "30d"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200, response.json()
+    mock_update_key_duration.assert_awaited_once_with(
+        litellm_token="sk-extend-allowed", duration="30d"
+    )

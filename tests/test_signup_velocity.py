@@ -2,15 +2,19 @@
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import event
 
 from app.core.config import settings
-from app.db.models import DBAuditLog, DBSignupEvent, DBSystemSecret
+from app.db.models import DBAuditLog, DBSignupEvent, DBSystemSecret, DBTeam, DBUser
 from app.services.signup_velocity import (
+    registrable_domain,
     client_ip,
+    enforce_mailbox_cap,
+    enforce_provision_caps,
     enforce_signup_velocity,
     prune_signup_events,
 )
@@ -164,3 +168,221 @@ def test_prune_script_rolls_back_and_releases_the_lock_on_failure(db, monkeypatc
     assert db.query(DBAuditLog).count() == 0
     lock = db.query(DBSystemSecret).filter_by(key=f"lock_{job.LOCK_NAME}").one()
     assert lock.value == "false"
+
+
+def test_provision_caps_per_domain_exempt_and_global(db, monkeypatch):
+    """Bots: one fresh domain, rotating IPs. Domain cap blocks it, free-mail
+    is exempt from that cap, and the global cap backstops domain rotation."""
+    monkeypatch.setattr(settings, "PROVISION_MAX_PER_DOMAIN_PER_DAY", 2)
+    monkeypatch.setattr(settings, "PROVISION_MAX_PER_HOUR", 5)
+    monkeypatch.setattr(settings, "PROVISION_DOMAIN_CAP_EXEMPT", "gmail.com")
+
+    enforce_provision_caps(db, "a@bot.store")
+    enforce_provision_caps(db, "b@bot.store")
+    with pytest.raises(HTTPException) as exc:
+        enforce_provision_caps(db, "c@bot.store")
+    assert exc.value.status_code == 429
+    # a lookalike domain is not caught by the bot.store LIKE
+    enforce_provision_caps(db, "a@notbot.store")
+
+    # exempt domain passes the domain cap (3 admitted rows so far); the
+    # global cap of 5 then blocks the third gmail attempt
+    enforce_provision_caps(db, "x@gmail.com")
+    enforce_provision_caps(db, "y@gmail.com")
+    with pytest.raises(HTTPException):
+        enforce_provision_caps(db, "z@gmail.com")
+
+    # rejected attempts are not recorded, so they can't hold the window full
+    assert (
+        db.query(DBSignupEvent)
+        .filter(DBSignupEvent.endpoint == "provision-key")
+        .count()
+        == 5
+    )
+
+
+def test_provision_domain_cap_groups_subdomains(db, monkeypatch):
+    """Sibling subdomains count against one registrable domain."""
+    monkeypatch.setattr(settings, "PROVISION_MAX_PER_DOMAIN_PER_DAY", 2)
+    monkeypatch.setattr(settings, "PROVISION_MAX_PER_HOUR", 0)
+
+    # A look-alike domain must not count against bot.store.
+    enforce_provision_caps(db, "z@notbot.store")
+    enforce_provision_caps(db, "z@x.notbot.store")
+    enforce_provision_caps(db, "a@x.bot.store")
+    enforce_provision_caps(db, "b@bot.store")
+    with pytest.raises(HTTPException):
+        enforce_provision_caps(db, "c@y.bot.store")
+
+    assert registrable_domain("a.b.bot.store") == "bot.store"
+    assert registrable_domain("mail.example.co.uk") == "example.co.uk"
+    assert registrable_domain("a.b.co.uk") == "b.co.uk"
+    assert registrable_domain("a.bot.io") == "bot.io"
+    assert registrable_domain("bot.store") == "bot.store"
+
+
+def _users(db, *emails, team=True):
+    for email in emails:
+        team_id = None
+        if team:
+            team_row = DBTeam(name=email, admin_email=email)
+            db.add(team_row)
+            db.flush()
+            team_id = team_row.id
+        db.add(
+            DBUser(email=email, hashed_password="x", is_active=True, team_id=team_id)
+        )
+    db.commit()
+
+
+def _blocked(db, email, **kwargs):
+    with pytest.raises(HTTPException) as exc:
+        enforce_mailbox_cap(db, email, **kwargs)
+    assert exc.value.status_code == 429
+
+
+def test_mailbox_cap_blocks_dot_variants_and_allows_same_address(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    _users(db, "a.b@gmail.com")
+    _blocked(db, "ab@gmail.com")
+    _blocked(db, "ab+x@googlemail.com")
+    for email in ("a.b@gmail.com", "A.B@gmail.com", "a.b+tag@gmail.com"):
+        enforce_mailbox_cap(db, email)
+
+
+def test_mailbox_cap_existing_not_ok_counts_other_addresses(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    _users(db, "a.b@gmail.com")
+    enforce_mailbox_cap(db, "a.b@gmail.com", existing_ok=False)
+    _users(db, "ab@gmail.com")
+    _blocked(db, "a.b@gmail.com", existing_ok=False)
+
+
+def test_mailbox_cap_ignores_portal_team_tags(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    _users(db, "john.doe@gmail.com", "john.doe+123@gmail.com", "john.doe+456@gmail.com")
+    enforce_mailbox_cap(db, "john.doe@gmail.com")
+    enforce_mailbox_cap(db, "john.doe@gmail.com", existing_ok=False)
+
+
+def test_mailbox_cap_ignores_a_team_tag_on_a_tagged_address(db, monkeypatch):
+    # Everything from the first "+" is removed, so both rows are one address.
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    _users(db, "a+x@gmail.com", "a+x+789@gmail.com")
+    enforce_mailbox_cap(db, "a@gmail.com")
+    enforce_mailbox_cap(db, "a@gmail.com", existing_ok=False)
+
+
+def test_mailbox_cap_counts_a_tagged_dot_variant(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    _users(db, "john.doe@gmail.com", "johndoe+123@gmail.com")
+    _blocked(db, "john.doe@gmail.com", existing_ok=False)
+
+
+def test_mailbox_cap_ignores_case(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    _users(db, "John.Doe@Gmail.com", "john.doe+5@gmail.com")
+    enforce_mailbox_cap(db, "john.doe@gmail.com", existing_ok=False)
+
+
+def test_mailbox_cap_ignores_team_less_users(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    _users(db, "j.ohndoe@gmail.com", team=False)
+    enforce_mailbox_cap(db, "johndoe@gmail.com")
+    enforce_mailbox_cap(db, "johndoe@gmail.com", existing_ok=False)
+
+
+def test_mailbox_cap_lets_a_team_less_user_sign_in_again(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    _users(db, "j.ohndoe@gmail.com", team=False)
+    _users(db, "johndoe@gmail.com")
+    enforce_mailbox_cap(db, "j.ohndoe@gmail.com")
+
+
+def test_mailbox_cap_skips_other_domains_and_mailboxes(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    _users(db, "a.b@x.com", "a.b@gmail.com")
+    enforce_mailbox_cap(db, "ab@x.com")
+    enforce_mailbox_cap(db, "a.c@gmail.com")
+
+
+def test_mailbox_cap_zero_disables(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 0)
+    _users(db, "a.b@gmail.com")
+    enforce_mailbox_cap(db, "ab@gmail.com")
+
+
+def test_mailbox_cap_of_two_allows_a_second_address(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 2)
+    _users(db, "a.b@gmail.com")
+    enforce_mailbox_cap(db, "ab@gmail.com")
+    _users(db, "ab@gmail.com")
+    _blocked(db, "a.b@googlemail.com")
+
+
+@pytest.fixture
+def auth_mocks():
+    with (
+        patch("app.api.auth.DynamoDBService") as dynamodb,
+        patch("app.api.auth.SESService") as ses,
+    ):
+        yield dynamodb.return_value, ses.return_value
+
+
+def _sign_in(client, dynamodb, email):
+    dynamodb.read_validation_code.return_value = {"email": email, "code": "TESTCODE"}
+    return client.post(
+        "/auth/sign-in", json={"username": email, "verification_code": "TESTCODE"}
+    )
+
+
+def test_mailbox_cap_on_validate_email(client, db, auth_mocks, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    _, ses = auth_mocks
+    _users(db, "a.b@gmail.com")
+
+    response = client.post("/auth/validate-email", json={"email": "ab@gmail.com"})
+    assert response.status_code == 429
+    ses.send_email.assert_not_called()
+
+    for email in ("a.b@gmail.com", "a.b+x@gmail.com"):
+        response = client.post("/auth/validate-email", json={"email": email})
+        assert response.status_code == 200
+
+
+def test_mailbox_cap_on_sign_in_of_a_new_address(client, db, auth_mocks, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    dynamodb, _ = auth_mocks
+    _users(db, "a.b@gmail.com")
+
+    assert _sign_in(client, dynamodb, "ab@gmail.com").status_code == 429
+    assert db.query(DBUser).filter(DBUser.email == "ab@gmail.com").first() is None
+
+
+def test_mailbox_cap_allows_sign_in_of_an_existing_user(
+    client, db, auth_mocks, monkeypatch
+):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    dynamodb, _ = auth_mocks
+    _users(db, "a.b@gmail.com")
+    assert _sign_in(client, dynamodb, "a.b@gmail.com").status_code == 200
+
+    # A second address from before the cap must not lock out the first one.
+    _users(db, "ab@gmail.com")
+    assert _sign_in(client, dynamodb, "a.b@gmail.com").status_code == 200
+
+
+def test_mailbox_cap_sign_in_holds_the_base_mailbox_lock(
+    client, db, auth_mocks, monkeypatch
+):
+    from app.api.auth import _provision_lock
+
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    dynamodb, _ = auth_mocks
+    _users(db, "ab@gmail.com")
+
+    with patch("app.api.auth._provision_lock", wraps=_provision_lock) as lock:
+        assert _sign_in(client, dynamodb, "a.b@gmail.com").status_code == 429
+        # A second 429, not a lock-wait 503, shows the 429 path released the lock.
+        assert _sign_in(client, dynamodb, "a.b@gmail.com").status_code == 429
+    assert [c.args[1:] for c in lock.call_args_list] == [("ab@gmail.com", 0)] * 2

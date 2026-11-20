@@ -1035,17 +1035,12 @@ async def update_user(
             detail="Not authorized to perform this action",
         )
 
-    # A team admin chooses the password for this row, so an unproven email here
-    # gives the same access as a self registration.
-    if (
-        user_update.email is not None
-        and not current_user.is_admin
-        and normalize_email_for_lookup(user_update.email)
-        != normalize_email_for_lookup(db_user.email)
-        and email_identity_taken(db, user_update.email)
-    ):
+    # Sign-in is by email OTP, so a team admin who changes a member's email can
+    # sign in as that member.
+    if "email" in user_update.model_fields_set and not current_user.is_admin:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action",
         )
 
     previous_email = db_user.email
@@ -1125,24 +1120,17 @@ async def update_user(
 @router.post(
     "/{user_id}/add-to-team",
     response_model=User,
-    dependencies=[Depends(get_role_min_team_admin)],
+    dependencies=[Depends(get_role_min_system_admin)],
 )
 async def add_user_to_team(
     user_id: int,
     team_operation: TeamOperation,
     db: Session = Depends(get_db),
-    current_user: DBUser = Depends(get_current_user_from_auth),
 ):
     """
-    Add a user to a team. Accessible by admin users or team admins.
+    Add a user to a team. System admins only; a team admin could otherwise pull
+    in any teamless user without their consent.
     """
-    # A team admin may only add users to their own team; system admins any team.
-    if not current_user.is_admin and current_user.team_id != team_operation.team_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to perform this action",
-        )
-
     db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")

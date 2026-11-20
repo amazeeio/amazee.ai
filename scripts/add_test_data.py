@@ -44,7 +44,6 @@ def create_test_data():
             "Test Team 9 - 80 Days, Second",
             "Test Team 10 - 75 Days",
             "Test Team 11 - 75 Days, Second",
-            "Test Team 12 - 95 Days Retention Warning",
         ]:
             existing_team = db.query(DBTeam).filter(DBTeam.name == team_name).first()
             if existing_team:
@@ -409,44 +408,6 @@ def create_test_data():
             team11 = existing_teams["Test Team 11 - 75 Days, Second"]
             print(f"\n11. Team 11 already exists: {team11.name} (ID: {team11.id})")
 
-        # 12. Team created 95 days ago, retention warning sent 14 days ago
-        if "Test Team 12 - 95 Days Retention Warning" not in existing_teams:
-            print(
-                "\n12. Creating team with one user (created 95 days ago, retention warning sent 14 days ago)..."
-            )
-            team12 = DBTeam(
-                name="Test Team 12 - 95 Days Retention Warning",
-                admin_email="admin12@test.com",
-                is_active=True,
-                is_always_free=False,
-                created_at=datetime.now(UTC) - timedelta(days=95),
-                retention_warning_sent_at=datetime.now(UTC) - timedelta(days=14),
-            )
-            db.add(team12)
-            db.commit()
-            db.refresh(team12)
-
-            user12 = DBUser(
-                email="user12@test.com",
-                hashed_password=get_password_hash("testpassword123"),
-                is_active=True,
-                is_admin=False,
-                role="admin",
-                team_id=team12.id,
-                created_at=datetime.now(UTC) - timedelta(days=95),
-            )
-            db.add(user12)
-            db.commit()
-
-            print(f"   Created team: {team12.name} (ID: {team12.id})")
-            print(f"   Created user: {user12.email} (ID: {user12.id})")
-            print(
-                f"   Retention warning sent: {team12.retention_warning_sent_at.strftime('%Y-%m-%d')}"
-            )
-        else:
-            team12 = existing_teams["Test Team 12 - 95 Days Retention Warning"]
-            print(f"\n12. Team 12 already exists: {team12.name} (ID: {team12.id})")
-
         print("\n✅ Test data created successfully!")
         print("\nSummary:")
         print(f"- Team 1: {team1.name} (created 32 days ago)")
@@ -460,9 +421,7 @@ def create_test_data():
         print(f"- Team 9: {team9.name} (created 80 days ago)")
         print(f"- Team 10: {team10.name} (created 75 days ago)")
         print(f"- Team 11: {team11.name} (created 75 days ago)")
-        print(
-            f"- Team 12: {team12.name} (created 95 days ago, retention warning sent 14 days ago)"
-        )
+        print()
         print("- Total users created: 12")
 
     except Exception as e:

@@ -10,6 +10,23 @@ class Settings(BaseSettings):
     DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "50"))
     DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "50"))
     DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))
+    # Postgres-side guards (ms, 0 disables). A session left "idle in transaction"
+    # held its locks and stalled every worker for 23 minutes (TKF-492); these make
+    # Postgres end such a session, and make waiters fail fast instead of hanging.
+    # Must exceed the longest legit idle-in-transaction wait: _provision_lock holds
+    # its connection open across the moad call (httpx timeout 60s), hence 120s.
+    DB_IDLE_IN_TRANSACTION_TIMEOUT_MS: int = int(
+        os.getenv("DB_IDLE_IN_TRANSACTION_TIMEOUT_MS", "120000")
+    )
+    DB_LOCK_TIMEOUT_MS: int = int(os.getenv("DB_LOCK_TIMEOUT_MS", "15000"))
+    # Seconds the event loop may go without turning before the worker dumps its
+    # stacks and exits so uvicorn replaces it (app/core/loop_watchdog.py,
+    # TKF-565). 0 disables it. Off by default because a debugger breakpoint or
+    # `--reload` dev server must not be killed; backend-start.sh turns it on for
+    # the multi-worker production server.
+    EVENT_LOOP_STALL_TIMEOUT_SECONDS: float = float(
+        os.getenv("EVENT_LOOP_STALL_TIMEOUT_SECONDS", "0")
+    )
 
     # JWT settings
     # Bind ONLY to AMAZEEAI_JWT_SECRET. Using an explicit validation_alias stops
@@ -103,6 +120,21 @@ class Settings(BaseSettings):
     # the daily refresh cron (scripts/trigger_refresh_disposable_domains_job.py).
     DISPOSABLE_DOMAINS_EXTRA: str = os.getenv("DISPOSABLE_DOMAINS_EXTRA", "")
 
+    # Layer 3: caps on moad key provisioning (each new workspace gets a demo
+    # credit). Bots rotated IPs and used one fresh domain (TKF-492), so these are
+    # per email domain and global, not per IP. Free-mail providers are exempt
+    # from the per-domain cap (many real users share them); the global cap
+    # still bounds them. 0 disables a cap.
+    PROVISION_MAX_PER_DOMAIN_PER_DAY: int = int(
+        os.getenv("PROVISION_MAX_PER_DOMAIN_PER_DAY", "10")
+    )
+    PROVISION_MAX_PER_HOUR: int = int(os.getenv("PROVISION_MAX_PER_HOUR", "30"))
+    PROVISION_DOMAIN_CAP_EXEMPT: str = os.getenv(
+        "PROVISION_DOMAIN_CAP_EXEMPT",
+        "gmail.com,googlemail.com,outlook.com,hotmail.com,live.com,yahoo.com,"
+        "icloud.com,me.com,proton.me,protonmail.com,gmx.de,gmx.net,web.de",
+    )
+
     # Layer 2: per-IP signup velocity cap (backed by the signup_events table).
     ENABLE_SIGNUP_VELOCITY_LIMIT: bool = (
         os.getenv("ENABLE_SIGNUP_VELOCITY_LIMIT", "true") == "true"
@@ -117,6 +149,12 @@ class Settings(BaseSettings):
     # removed by the daily prune cron so the table can't grow without bound.
     SIGNUP_EVENTS_RETENTION_DAYS: int = int(
         os.getenv("SIGNUP_EVENTS_RETENTION_DAYS", "7")
+    )
+    # Distinct addresses that users can have for one base mailbox (Gmail dot
+    # variants), for all time. 0 turns the check off. Each variant became a new
+    # account with new demo credits.
+    SIGNUP_MAX_ADDRESSES_PER_MAILBOX: int = int(
+        os.getenv("SIGNUP_MAX_ADDRESSES_PER_MAILBOX", "1")
     )
     # --- Access token revocation (logout) ---
     # How long a revoked_tokens row stays after its token expires. It is also the
@@ -202,7 +240,9 @@ class Settings(BaseSettings):
     # the catalog from overwriting or deleting their models.
     CATALOG_MANAGED_REGIONS: str = os.getenv("CATALOG_MANAGED_REGIONS", "")
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
+    model_config = SettingsConfigDict(
+        env_file=".env", extra="ignore", hide_input_in_errors=True
+    )
     main_route: str = os.getenv("LAGOON_ROUTE", "http://localhost:8800")
     frontend_route: str = os.getenv("FRONTEND_ROUTE", "http://localhost:3000")
 
@@ -231,8 +271,8 @@ class Settings(BaseSettings):
     def validate_encryption_key(cls, value):
         message = (
             "AMAZEEAI_ENCRYPTION_KEY must hold one or more Fernet keys, comma "
-            "separated, newest first. Generate one with: python -c \"from "
-            "cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+            'separated, newest first. Generate one with: python -c "from '
+            'cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"'
         )
         try:
             MultiFernet([Fernet(key) for key in encryption_keys(value)])

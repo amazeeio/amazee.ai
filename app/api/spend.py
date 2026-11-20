@@ -675,7 +675,7 @@ def _lock_region_or_404(db: Session, region_id: int) -> DBRegion:
     region = (
         db.query(DBRegion)
         .filter(DBRegion.id == region_id, DBRegion.is_active.is_(True))
-        .with_for_update()
+        .with_for_update(key_share=True)
         .first()
     )
     if not region:
@@ -2076,10 +2076,22 @@ async def get_user_daily_activity(
     )
     model_map = await _model_map(service, include_breakdown or include_key_breakdown)
 
+    key_by_hash = _keys_by_hash(db, region_id) if include_key_breakdown else None
+    if key_by_hash is not None and not current_user.is_admin:
+        # A member who moved teams still owns keys of the old team. Show only
+        # the keys the key list shows this caller, so no other team's token leaks.
+        key_by_hash = {
+            h: k
+            for h, k in key_by_hash.items()
+            if k.owner_id == current_user.id
+            or k.team_id is None
+            or k.team_id == current_user.team_id
+        }
+
     activity = _rows_to_daily_activity(
         rows,
         include_breakdown=include_breakdown,
-        key_by_hash=_keys_by_hash(db, region_id) if include_key_breakdown else None,
+        key_by_hash=key_by_hash,
         visible_owner_id=user_id,
         model_map=model_map,
     )
@@ -2558,6 +2570,19 @@ async def update_team_budget(
             detail=(
                 "Manual team budget updates are not allowed for periodic teams. "
                 "Use subscription renewal and periodic top-up purchase flows."
+            ),
+        )
+    # A null max_budget removes the LiteLLM team cap, and only a subscription
+    # payment puts the periodic cap back, so a team admin must not send it.
+    if (
+        team.budget_type == BudgetType.PERIODIC
+        and body.max_budget is None
+        and not current_user.is_admin
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Only system administrators can clear the budget for periodic teams."
             ),
         )
     # A non-purchase-gated POOL team skips the purchase clamp below, so a team

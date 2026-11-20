@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
+from app.core.email import base_mailbox, normalize_email_for_lookup
 from app.db.models import DBUser
 
 
@@ -97,3 +98,23 @@ def test_update_email_to_existing_case_insensitive(
 
     assert response.status_code == 400
     assert "Email already registered" in response.json()["detail"]
+
+
+def test_base_mailbox_gmail_drops_dots_and_tag():
+    assert base_mailbox("John.Q.Public+x@Gmail.com") == "johnqpublic@gmail.com"
+
+
+def test_base_mailbox_googlemail_maps_to_gmail():
+    assert base_mailbox("w.b@googlemail.com") == "wb@gmail.com"
+
+
+def test_base_mailbox_other_domains_keep_dots():
+    assert base_mailbox("first.last+tag@example.com") == "first.last@example.com"
+
+
+def test_base_mailbox_without_at_sign():
+    assert base_mailbox("noatsign") == "noatsign"
+
+
+def test_base_mailbox_leaves_lookup_normalization_unchanged():
+    assert normalize_email_for_lookup("a.b+x@gmail.com") == "a.b@gmail.com"

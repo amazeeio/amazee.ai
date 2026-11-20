@@ -17,6 +17,8 @@
 dynv6.net
 kozow.com
 baileybridge.org
+coffentobacco.store
+mavy.me
 
 # --- Free dynamic-DNS / free-subdomain providers ---
 duckdns.org
