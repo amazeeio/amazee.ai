@@ -256,6 +256,33 @@ def test_mailbox_cap_ignores_portal_surrogate_users(db, monkeypatch):
     enforce_mailbox_cap(db, "a.b@gmail.com", existing_ok=False)
 
 
+def test_mailbox_cap_ignores_portal_team_tags(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    _users(db, "john.doe@gmail.com", "john.doe+123@gmail.com", "john.doe+456@gmail.com")
+    enforce_mailbox_cap(db, "john.doe@gmail.com")
+    enforce_mailbox_cap(db, "john.doe@gmail.com", existing_ok=False)
+
+
+def test_mailbox_cap_ignores_a_team_tag_on_a_tagged_address(db, monkeypatch):
+    # Everything from the first "+" is removed, so both rows are one address.
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    _users(db, "a+x@gmail.com", "a+x+789@gmail.com")
+    enforce_mailbox_cap(db, "a@gmail.com")
+    enforce_mailbox_cap(db, "a@gmail.com", existing_ok=False)
+
+
+def test_mailbox_cap_counts_a_tagged_dot_variant(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    _users(db, "john.doe@gmail.com", "johndoe+123@gmail.com")
+    _blocked(db, "john.doe@gmail.com", existing_ok=False)
+
+
+def test_mailbox_cap_ignores_case(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    _users(db, "John.Doe@Gmail.com", "john.doe+5@gmail.com")
+    enforce_mailbox_cap(db, "john.doe@gmail.com", existing_ok=False)
+
+
 def test_mailbox_cap_skips_other_domains_and_mailboxes(db, monkeypatch):
     monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
     _users(db, "a.b@x.com", "a.b@gmail.com")
