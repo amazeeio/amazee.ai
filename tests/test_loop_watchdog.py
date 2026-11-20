@@ -1,4 +1,5 @@
 import asyncio
+import io
 import threading
 import time
 
@@ -72,3 +73,20 @@ def test_exit_stalled_worker_dumps_stacks_and_hard_exits(monkeypatch):
     assert calls == [("dump", True), ("exit", STALL_EXIT_CODE)]
     # uvicorn stops the whole server, instead of replacing the worker, on 3.
     assert STALL_EXIT_CODE != 3
+
+
+def test_exit_stalled_worker_exits_when_the_stack_dump_fails(monkeypatch):
+    """A stderr with no fileno() makes the dump raise; the worker must still exit."""
+    exits = []
+
+    def broken_dump(**_):
+        raise io.UnsupportedOperation("fileno")
+
+    monkeypatch.setattr(loop_watchdog.faulthandler, "dump_traceback", broken_dump)
+    monkeypatch.setattr(loop_watchdog.os, "_exit", exits.append)
+
+    # The real os._exit never returns, so the error never surfaces; the stub does.
+    with pytest.raises(io.UnsupportedOperation):
+        loop_watchdog.exit_stalled_worker(61.0)
+
+    assert exits == [STALL_EXIT_CODE]

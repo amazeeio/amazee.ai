@@ -38,15 +38,19 @@ STALL_EXIT_CODE = 70
 
 
 def exit_stalled_worker(stalled_for: float) -> None:
-    logger.critical(
-        "Event loop stalled for %.0fs; dumping stacks and exiting worker %s so "
-        "uvicorn starts a fresh one",
-        stalled_for,
-        os.getpid(),
-    )
-    faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
-    sys.stderr.flush()
-    os._exit(STALL_EXIT_CODE)
+    # The diagnostics are best effort. If stderr is closed or has no fileno(),
+    # the dump raises, and without the finally the frozen worker would live on.
+    try:
+        logger.critical(
+            "Event loop stalled for %.0fs; dumping stacks and exiting worker %s so "
+            "uvicorn starts a fresh one",
+            stalled_for,
+            os.getpid(),
+        )
+        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+        sys.stderr.flush()
+    finally:
+        os._exit(STALL_EXIT_CODE)
 
 
 class LoopWatchdog:
