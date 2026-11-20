@@ -2076,10 +2076,22 @@ async def get_user_daily_activity(
     )
     model_map = await _model_map(service, include_breakdown or include_key_breakdown)
 
+    key_by_hash = _keys_by_hash(db, region_id) if include_key_breakdown else None
+    if key_by_hash is not None and not current_user.is_admin:
+        # A member who moved teams still owns keys of the old team. Show only
+        # the keys the key list shows this caller, so no other team's token leaks.
+        key_by_hash = {
+            h: k
+            for h, k in key_by_hash.items()
+            if k.owner_id == current_user.id
+            or k.team_id is None
+            or k.team_id == current_user.team_id
+        }
+
     activity = _rows_to_daily_activity(
         rows,
         include_breakdown=include_breakdown,
-        key_by_hash=_keys_by_hash(db, region_id) if include_key_breakdown else None,
+        key_by_hash=key_by_hash,
         visible_owner_id=user_id,
         model_map=model_map,
     )

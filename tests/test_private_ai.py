@@ -3629,6 +3629,142 @@ def test_list_private_ai_keys_by_region_show_all(
     assert all(k["owner_id"] == test_user.id for k in response.json())
 
 
+def test_team_admin_list_hides_moved_member_other_team_key(
+    client, db, team_admin_token, test_team, test_team_user, test_region
+):
+    """A team admin does not see another team's key owned by a member who
+    moved into their team, in both list endpoints"""
+    other_team = DBTeam(
+        name="Other Team",
+        admin_email="otherteam@example.com",
+        phone="0987654321",
+        billing_address="456 Other St, Other City, 54321",
+        is_active=True,
+        created_at=datetime.now(UTC),
+    )
+    db.add(other_team)
+    db.commit()
+    db.refresh(other_team)
+
+    for name, team_id in [
+        ("moved-member-other-team-db", other_team.id),
+        ("moved-member-own-team-db", test_team.id),
+        ("moved-member-no-team-db", None),
+    ]:
+        db.add(
+            DBPrivateAIKey(
+                database_name=name,
+                database_host="test-host",
+                database_username="test-user",
+                database_password="test-pass",
+                litellm_token=f"{name}-token",
+                owner_id=test_team_user.id,
+                team_id=team_id,
+                region_id=test_region.id,
+            )
+        )
+    db.commit()
+
+    for url in ["/private-ai-keys/", f"/private-ai-keys/region/{test_region.id}"]:
+        response = client.get(
+            url, headers={"Authorization": f"Bearer {team_admin_token}"}
+        )
+        assert response.status_code == 200
+        names = {k["database_name"] for k in response.json()}
+        assert "moved-member-other-team-db" not in names
+        assert "moved-member-own-team-db" in names
+        assert "moved-member-no-team-db" in names
+
+
+def test_team_admin_list_shows_own_key_of_other_team(
+    client, db, team_admin_token, test_team_admin, test_region
+):
+    """A team admin still sees their own key when the key belongs to another
+    team, in both list endpoints"""
+    other_team = DBTeam(
+        name="Other Team",
+        admin_email="otherteam@example.com",
+        phone="0987654321",
+        billing_address="456 Other St, Other City, 54321",
+        is_active=True,
+        created_at=datetime.now(UTC),
+    )
+    db.add(other_team)
+    db.commit()
+    db.refresh(other_team)
+
+    db.add(
+        DBPrivateAIKey(
+            database_name="team-admin-own-other-team-db",
+            database_host="test-host",
+            database_username="test-user",
+            database_password="test-pass",
+            litellm_token="team-admin-own-other-team-token",
+            owner_id=test_team_admin.id,
+            team_id=other_team.id,
+            region_id=test_region.id,
+        )
+    )
+    db.commit()
+
+    for url in ["/private-ai-keys/", f"/private-ai-keys/region/{test_region.id}"]:
+        response = client.get(
+            url, headers={"Authorization": f"Bearer {team_admin_token}"}
+        )
+        assert response.status_code == 200
+        names = {k["database_name"] for k in response.json()}
+        assert "team-admin-own-other-team-db" in names
+
+
+def test_admin_team_filter_hides_moved_member_other_team_key(
+    client, db, admin_token, test_team, test_team_user, test_region
+):
+    """A system admin filtering by team_id does not see another team's key owned
+    by a member who moved into that team, in both list endpoints"""
+    other_team = DBTeam(
+        name="Other Team",
+        admin_email="otherteam@example.com",
+        phone="0987654321",
+        billing_address="456 Other St, Other City, 54321",
+        is_active=True,
+        created_at=datetime.now(UTC),
+    )
+    db.add(other_team)
+    db.commit()
+    db.refresh(other_team)
+
+    for name, team_id in [
+        ("admin-filter-other-team-db", other_team.id),
+        ("admin-filter-own-team-db", test_team.id),
+        ("admin-filter-no-team-db", None),
+    ]:
+        db.add(
+            DBPrivateAIKey(
+                database_name=name,
+                database_host="test-host",
+                database_username="test-user",
+                database_password="test-pass",
+                litellm_token=f"{name}-token",
+                owner_id=test_team_user.id,
+                team_id=team_id,
+                region_id=test_region.id,
+            )
+        )
+    db.commit()
+
+    for url in ["/private-ai-keys/", f"/private-ai-keys/region/{test_region.id}"]:
+        response = client.get(
+            url,
+            headers={"Authorization": f"Bearer {admin_token}"},
+            params={"team_id": test_team.id},
+        )
+        assert response.status_code == 200
+        names = {k["database_name"] for k in response.json()}
+        assert "admin-filter-other-team-db" not in names
+        assert "admin-filter-own-team-db" in names
+        assert "admin-filter-no-team-db" in names
+
+
 def test_list_private_ai_keys_show_all(
     client, admin_token, test_token, test_region, test_user, test_admin, db
 ):

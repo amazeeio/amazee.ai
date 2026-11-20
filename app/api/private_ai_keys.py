@@ -691,6 +691,17 @@ async def create_llm_token(
         )
 
 
+def _team_key_filter(team_id, owner_ids):
+    """Keys of the team, plus keys with no team whose owner is in the team.
+
+    A key of another team stays out even when its owner is now a member, the
+    same rule as single-key access. Every key list uses this one rule.
+    """
+    return (DBPrivateAIKey.team_id == team_id) | (
+        (DBPrivateAIKey.team_id.is_(None)) & (DBPrivateAIKey.owner_id.in_(owner_ids))
+    )
+
+
 @router.get("", response_model=List[PrivateAIKey])
 @router.get("/", response_model=List[PrivateAIKey])
 async def list_private_ai_keys(
@@ -712,7 +723,8 @@ async def list_private_ai_keys(
           every secret in the database to any admin-scoped integration
           (e.g. a management token) that calls this endpoint with no filters.
     If user is team admin:
-        - Returns keys owned by users in their team AND keys owned by their team
+        - Returns keys of their team, keys with no team whose owner is in their
+          team, and their own keys
     If user is not admin:
         - Returns their own keys, and keys for their team, ignoring owner_id and team_id parameters
 
@@ -742,11 +754,7 @@ async def list_private_ai_keys(
             # Get all users in the team
             team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
             team_user_ids = [user.id for user in team_users]
-            # Return keys owned by users in the team OR owned by the team
-            query = query.filter(
-                (DBPrivateAIKey.owner_id.in_(team_user_ids))
-                | (DBPrivateAIKey.team_id == team_id)
-            )
+            query = query.filter(_team_key_filter(team_id, team_user_ids))
         elif not show_all:
             # Safe default: no filters and no explicit opt-in means "my own
             # keys", not "every key in the system".
@@ -768,10 +776,10 @@ async def list_private_ai_keys(
                     .all()
                 )
                 team_user_ids = [user.id for user in team_users]
-                # Return keys owned by any user in the team OR owned by the team
+                # The caller's own keys stay listed, also those of an old team.
                 query = query.filter(
-                    (DBPrivateAIKey.owner_id.in_(team_user_ids))
-                    | (DBPrivateAIKey.team_id == current_user.team_id)
+                    _team_key_filter(current_user.team_id, team_user_ids)
+                    | (DBPrivateAIKey.owner_id == current_user.id)
                 )
             else:
                 # Non-admin users
@@ -814,7 +822,8 @@ async def list_private_ai_keys_by_region(
     Keys from soft-deleted teams are excluded from the results.
 
     Optional query parameters (admin only):
-    - **team_id**: Filter keys owned by users in this team or owned by this team directly.
+    - **team_id**: Filter keys of this team, and keys with no team whose owner is
+      in this team.
       Silently ignored for non-admin callers.
     - **user_id**: Filter keys owned by this specific user.
       Only respected when the caller is a system admin; non-admin callers have this
@@ -849,10 +858,7 @@ async def list_private_ai_keys_by_region(
 
             # Use subquery instead of loading users into memory
             team_user_ids_subq = db.query(DBUser.id).filter(DBUser.team_id == team_id)
-            query = query.filter(
-                (DBPrivateAIKey.owner_id.in_(team_user_ids_subq))
-                | (DBPrivateAIKey.team_id == team_id)
-            )
+            query = query.filter(_team_key_filter(team_id, team_user_ids_subq))
 
         if user_id is not None:
             # Verify the user exists; return empty list if not found
@@ -882,10 +888,10 @@ async def list_private_ai_keys_by_region(
                     .all()
                 )
                 team_user_ids = [user.id for user in team_users]
-                # Return keys owned by any user in the team OR owned by the team
+                # The caller's own keys stay listed, also those of an old team.
                 query = query.filter(
-                    (DBPrivateAIKey.owner_id.in_(team_user_ids))
-                    | (DBPrivateAIKey.team_id == current_user.team_id)
+                    _team_key_filter(current_user.team_id, team_user_ids)
+                    | (DBPrivateAIKey.owner_id == current_user.id)
                 )
             else:
                 # Non-admin users

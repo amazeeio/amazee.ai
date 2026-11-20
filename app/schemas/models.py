@@ -67,6 +67,9 @@ class UserUpdate(BaseModel):
 class AdminUserUpdate(BaseModel):
     """Fields an admin/team-admin may change via PUT /users/{id}.
 
+    Only system admins may set email, is_active or is_admin=true; the route
+    returns 403 to a team admin who sends them.
+
     Deliberately excludes password fields: this route never applied them (it
     silently dropped current_password/new_password). extra='forbid' now rejects
     them with a 422 instead of pretending to succeed. Self-service password
