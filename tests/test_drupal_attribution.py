@@ -1072,19 +1072,7 @@ def test_registered_user_gets_a_team_by_code_sign_in(
     post = _moad_ok(db, test_region.id, "registered-team-token")
     mock_client_cls.return_value = _moad_client(post)
 
-    with (
-        patch("app.api.auth.DynamoDBService") as dynamodb,
-        patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock),
-        patch("app.core.litellm_user_sync.LiteLLMService") as sync_litellm,
-    ):
-        sync_litellm.return_value = AsyncMock()
-        dynamodb.return_value.read_validation_code.return_value = {
-            "email": EMAIL,
-            "code": "TESTCODE",
-        }
-        response = drupal_client.post(
-            "/auth/sign-in", json={"username": EMAIL, "verification_code": "TESTCODE"}
-        )
+    response = _code_sign_in(drupal_client, EMAIL)
     assert response.status_code == 200
     db.refresh(user)
     assert user.team_id is not None
@@ -1204,10 +1192,11 @@ def test_fallback_skips_team_with_another_persons_member(
 
 @patch("app.api.private_ai_keys.settings")
 @patch("httpx.AsyncClient")
-def test_fallback_counts_moad_tagged_member_as_the_same_person(
+def test_fallback_reuses_key_of_shared_workspace_on_region_switch(
     mock_client_cls, mock_settings, drupal_client, db, test_region
 ):
-    """moad adds "<email>+<team id>@" to its team; the region switch still works."""
+    """moad adds each workspace member as "<email>+<team id>@". The owner's own
+    tagged member keeps the team reusable, even with another person in it."""
     mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
     mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
     t1 = DBTeam(name="t1", admin_email="alice@corp.com", is_active=True)
@@ -1217,6 +1206,7 @@ def test_fallback_counts_moad_tagged_member_as_the_same_person(
     db.refresh(t1)
     db.refresh(t2)
     _make_user(db, email=f"alice+{t2.id}@corp.com", role=UserRole.ADMIN, team_id=t2.id)
+    _make_user(db, email=f"bob+{t2.id}@corp.com", team_id=t2.id)
     _seed_key(db, "t2-key", "t2-token", test_region.id, t2.id)
 
     caller = _make_user(db, email="alice@corp.com", role=UserRole.ADMIN, team_id=t1.id)
