@@ -6,6 +6,10 @@ def normalize_email_for_lookup(email: str) -> str:
     return email.lower()
 
 
+def escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 GMAIL_DOMAINS = ("gmail.com", "googlemail.com")
 
 

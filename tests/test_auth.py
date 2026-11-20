@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 from app.api.auth import generate_validation_token
 from app.core.security import get_password_hash
 from app.db.models import DBUser
+from tests.conftest import _add_tagged_team, _add_tagged_user
 
 
 @pytest.fixture
@@ -236,6 +237,54 @@ def test_update_email_to_existing_email_fails(client, test_user, test_admin):
         "/auth/me/update",
         headers={"Authorization": f"Bearer {token}"},
         json={"current_password": "testpassword", "email": test_admin.email},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Email already registered"
+
+
+def _register(client, email):
+    return client.post(
+        "/auth/register", json={"email": email, "password": "newpassword123"}
+    )
+
+
+def test_register_refused_when_tagged_user_exists(client, db):
+    _add_tagged_user(db)
+    response = _register(client, "alice@corp.com")
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Email already registered"
+
+
+def test_register_refused_when_tagged_team_admin_exists(client, db):
+    _add_tagged_team(db)
+    response = _register(client, "alice@corp.com")
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Email already registered"
+
+
+def test_register_allowed_when_only_deleted_team_has_admin_email(client, db):
+    _add_tagged_team(db, deleted=True)
+    assert _register(client, "alice@corp.com").status_code == 200
+
+
+def test_register_underscore_is_not_a_wildcard(client, db):
+    _add_tagged_user(db, email="axb+1@corp.com")
+    assert _register(client, "a_b@corp.com").status_code == 200
+
+
+@pytest.mark.parametrize("tagged", ["user", "team"])
+def test_update_email_refused_when_tagged_identity_exists(
+    client, db, test_token, tagged
+):
+    if tagged == "user":
+        _add_tagged_user(db)
+    else:
+        _add_tagged_team(db)
+
+    response = client.put(
+        "/auth/me/update",
+        headers={"Authorization": f"Bearer {test_token}"},
+        json={"current_password": "testpassword", "email": "alice@corp.com"},
     )
     assert response.status_code == 400
     assert response.json()["detail"] == "Email already registered"

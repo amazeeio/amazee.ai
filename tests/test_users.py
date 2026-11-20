@@ -18,6 +18,7 @@ from datetime import datetime, UTC
 from unittest.mock import patch, AsyncMock
 import pytest
 from fastapi import HTTPException
+from tests.conftest import _add_tagged_team
 
 
 def test_create_user(client, test_admin, admin_token):
@@ -391,6 +392,33 @@ def test_create_user_by_team_admin(client, team_admin_token, test_team, db):
     assert team_response.status_code == 200
     team_data = team_response.json()
     assert any(u["id"] == user_data["id"] for u in team_data["users"])
+
+
+def test_team_admin_create_user_refused_on_tagged_identity(
+    client, team_admin_token, test_team, db
+):
+    _add_tagged_team(db)
+    response = client.post(
+        "/users/",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={
+            "email": "alice@corp.com",
+            "password": "newpassword123",
+            "team_id": test_team.id,
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Email already registered"
+
+
+def test_system_admin_create_tagged_user_still_allowed(client, admin_token, db):
+    _add_tagged_team(db)
+    response = client.post(
+        "/users/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"email": "alice+5@corp.com", "password": "newpassword123"},
+    )
+    assert response.status_code == 201
 
 
 def test_assign_and_list_user_admin_regions(client, admin_token, db, test_team_user):

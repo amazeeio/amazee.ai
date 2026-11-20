@@ -809,6 +809,95 @@ async def test_cancelled_request_releases_lock(mock_settings, db, test_region):
     post.assert_not_called()
 
 
+# ---------------------------------------------------------------------------
+# 9. Fallback by admin_email
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("caller_email", ["alice_smith@corp.com", "%@corp.com"])
+@patch("app.api.private_ai_keys.settings")
+@patch("httpx.AsyncClient")
+def test_fallback_escapes_wildcards_in_caller_email(
+    mock_client_cls, mock_settings, caller_email, drupal_client, db, test_region
+):
+    """'_' and '%' in the caller's email must not match another team's admin_email."""
+    mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+    mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+
+    victim_team = DBTeam(
+        name="victim-team", admin_email="alice.smith+team-x@corp.com", is_active=True
+    )
+    db.add(victim_team)
+    db.commit()
+    db.refresh(victim_team)
+    victim_key = _seed_key(
+        db, "victim-key", "victim-secret-token", test_region.id, victim_team.id
+    )
+
+    caller = _make_user(db, email=caller_email)
+    token = _login(drupal_client, caller)
+    _seed_key(db, "moad-key", "caller-fresh-token", test_region.id)
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "llm": {"token": "caller-fresh-token"},
+        "vectorDb": {"database": "db-caller-fresh-token"},
+    }
+    mock_http = _moad_client(AsyncMock(return_value=mock_response))
+    mock_client_cls.return_value = mock_http
+
+    response = drupal_client.post(
+        "/private-ai-keys",
+        json={"region_id": test_region.id, "name": ""},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    mock_http.post.assert_called_once()
+    body = response.json()
+    assert body["litellm_token"] == "caller-fresh-token"
+    assert body["id"] != victim_key.id
+    assert "victim-secret-token" not in response.text
+    db.refresh(caller)
+    assert caller.team_id != victim_team.id
+
+
+@patch("app.api.private_ai_keys.settings")
+@patch("httpx.AsyncClient")
+def test_fallback_reuses_key_of_own_tagged_team_on_region_switch(
+    mock_client_cls, mock_settings, drupal_client, db, test_region
+):
+    """The base email still finds the key of its own tagged team and pins to it."""
+    mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+    mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+
+    t1 = DBTeam(name="t1", admin_email="alice@corp.com", is_active=True)
+    t2 = DBTeam(name="t2", admin_email="alice+team-x@corp.com", is_active=True)
+    db.add_all([t1, t2])
+    db.commit()
+    db.refresh(t1)
+    db.refresh(t2)
+    _seed_key(db, "t2-key", "t2-token", test_region.id, t2.id)
+
+    caller = _make_user(db, email="alice@corp.com", role=UserRole.ADMIN, team_id=t1.id)
+    token = _login(drupal_client, caller)
+    mock_http = AsyncMock()
+    mock_client_cls.return_value = mock_http
+
+    response = drupal_client.post(
+        "/private-ai-keys",
+        json={"region_id": test_region.id, "name": ""},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["litellm_token"] == "t2-token"
+    mock_http.post.assert_not_called()
+    db.refresh(caller)
+    assert caller.team_id == t2.id
+
+
 @patch("app.api.private_ai_keys.settings")
 @patch("httpx.AsyncClient")
 def test_mailbox_cap_blocks_moad_provisioning_for_a_dot_variant(

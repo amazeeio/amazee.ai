@@ -74,7 +74,11 @@ from app.schemas.models import (
 
 from app.api.teams import register_team
 from app.api.private_ai_keys import _provision_lock
-from app.api.users import _create_user_in_db, get_user_by_email
+from app.api.users import (
+    _create_user_in_db,
+    email_identity_taken,
+    get_user_by_email,
+)
 from app.core.email import base_mailbox, normalize_email_for_lookup
 from app.services.disposable_domains import assert_email_domain_allowed
 from app.services.signup_velocity import enforce_mailbox_cap, enforce_signup_velocity
@@ -337,9 +341,14 @@ async def update_user_me(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Current password is required to update email",
             )
-        # Check if email is already taken
+        # The new address is not proven, so it must not be another user's or claim
+        # another base identity. A change inside the same base gives nothing new.
         existing_user = get_user_by_email(db, user_update.email)
-        if existing_user and existing_user.id != current_user.id:
+        if (existing_user and existing_user.id != current_user.id) or (
+            normalize_email_for_lookup(user_update.email)
+            != normalize_email_for_lookup(current_user.email)
+            and email_identity_taken(db, user_update.email)
+        ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email already registered",
@@ -369,9 +378,8 @@ async def register(request: Request, user: UserCreate, db: Session = Depends(get
     user.team_id = None
     # Normalize plus-tags so registrations collapse to the canonical identity.
     user.email = normalize_email_for_lookup(user.email)
-    # Check if user with this email exists
-    db_user = get_user_by_email(db, user.email)
-    if db_user:
+    # A tagged user or team admin with the same base email counts as taken.
+    if email_identity_taken(db, user.email):
         auth_logger.warning(f"Registration failed - email already exists: {user.email}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"

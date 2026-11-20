@@ -49,7 +49,7 @@ from app.core.security import (
     get_current_user_from_auth,
     get_role_min_team_admin,
 )
-from app.core.email import normalize_email_for_lookup
+from app.core.email import escape_like, normalize_email_for_lookup
 from app.core.roles import UserRole
 from app.services.litellm import LiteLLMService
 from app.services.disposable_domains import assert_email_domain_allowed
@@ -96,6 +96,27 @@ def get_user_by_email(db: Session, email: str) -> Optional[DBUser]:
     if normalized_user is not None:
         return normalized_user
     return db.query(DBUser).filter(func.lower(DBUser.email) == raw).first()
+
+
+def email_identity_taken(db: Session, email: str) -> bool:
+    """The moad key fallback treats the base email as the owner of every tagged
+    team, so only a proven owner can hold a base email that already exists."""
+    base = normalize_email_for_lookup(email)
+    local, domain = base.split("@", 1)
+    tagged = f"{escape_like(local)}+%@{escape_like(domain)}"
+    users_q = db.query(DBUser).filter(
+        or_(func.lower(DBUser.email) == base, DBUser.email.ilike(tagged, escape="\\"))
+    )
+    teams_q = db.query(DBTeam).filter(
+        DBTeam.deleted_at.is_(None),
+        or_(
+            func.lower(DBTeam.admin_email) == base,
+            DBTeam.admin_email.ilike(tagged, escape="\\"),
+        ),
+    )
+    return bool(
+        db.query(users_q.exists()).scalar() or db.query(teams_q.exists()).scalar()
+    )
 
 
 router = APIRouter(tags=["users"])
@@ -858,10 +879,12 @@ async def create_user(
     # "user+team_id@domain" (created by moad's provision-key flow) are intentionally
     # distinct identities scoped to a specific Applications workspace team.  Normalizing
     # would strip the tag and find the base user, incorrectly blocking creation.
+    # A team admin chooses the password for this row, so for a team admin an
+    # unproven email that claims an existing base identity is also refused.
     db_user = (
         db.query(DBUser).filter(func.lower(DBUser.email) == user.email.lower()).first()
     )
-    if db_user:
+    if db_user or (not current_user.is_admin and email_identity_taken(db, user.email)):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
         )
