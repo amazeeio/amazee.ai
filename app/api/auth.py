@@ -394,16 +394,22 @@ def _needs_team(user: DBUser) -> bool:
     )
 
 
-async def _sign_in_team(db: Session, sign_in_username: str) -> DBTeam:
-    """The team a code sign-in attaches the user to: an orphaned one or a new one."""
+async def _sign_in_team(db: Session, sign_in_username: str) -> Optional[DBTeam]:
+    """The team a code sign-in attaches the user to: an orphaned one or a new one.
+
+    None when a team that still has members holds this admin_email.
+    """
     # Reuse a team orphaned by a user hard-delete: same admin_email, not
     # soft-deleted. Without this, the unique admin_email on the leftover
     # team makes re-registration fail forever ("Email already registered").
+    # Only a team with no users: a removed admin must not get back in this way.
+    orphaned = ~DBTeam.users.any()
     team = (
         db.query(DBTeam)
         .filter(
             func.lower(DBTeam.admin_email) == sign_in_username,
             DBTeam.deleted_at.is_(None),
+            orphaned,
         )
         .first()
     )
@@ -421,6 +427,7 @@ async def _sign_in_team(db: Session, sign_in_username: str) -> DBTeam:
             .filter(
                 DBTeam.admin_email.ilike(f"{local}+%@{domain}", escape="\\"),
                 DBTeam.deleted_at.is_(None),
+                orphaned,
             )
             .order_by(DBTeam.id)
             .first()
@@ -429,6 +436,18 @@ async def _sign_in_team(db: Session, sign_in_username: str) -> DBTeam:
         auth_logger.info(
             f"Re-attaching {sign_in_username} to existing team {team.id} as admin"
         )
+    elif (
+        db.query(DBTeam)
+        .filter(
+            func.lower(DBTeam.admin_email) == sign_in_username,
+            DBTeam.deleted_at.is_(None),
+        )
+        .first()
+    ):
+        # A team with members keeps this unique admin_email, so no new team can
+        # take it; the user signs in without a team.
+        auth_logger.info(f"No team for {sign_in_username}: its team still has members")
+        return None
     else:
         # Resolve the sign-up region — first active non-dedicated region
         sign_up_region = (
@@ -535,8 +554,8 @@ async def sign_in(
                 user_data = UserCreate(
                     email=sign_in_username,
                     password=None,
-                    team_id=team.id,
-                    role=UserRole.ADMIN,
+                    team_id=team.id if team else None,
+                    role=UserRole.ADMIN if team else None,
                 )
                 user = await _create_user_in_db(user_data, db)
 
@@ -548,11 +567,14 @@ async def sign_in(
                 # /auth/register, or whose team was deleted) gets one and can get a key.
                 enforce_mailbox_cap(db, sign_in_username, existing_ok=False)
                 team = await _sign_in_team(db, sign_in_username)
-                user.team_id = team.id
-                user.role = UserRole.ADMIN
-                db.commit()
-                db.refresh(user)
-                auth_logger.info(f"Attached {sign_in_username} to team {team.id} as admin")
+                if team:
+                    user.team_id = team.id
+                    user.role = UserRole.ADMIN
+                    db.commit()
+                    db.refresh(user)
+                    auth_logger.info(
+                        f"Attached {sign_in_username} to team {team.id} as admin"
+                    )
 
     auth_logger.info(f"Successful sign-in for user: {sign_in_username}")
     return create_and_set_access_token(response, user.email, user)

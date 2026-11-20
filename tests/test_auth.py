@@ -532,6 +532,57 @@ def test_sign_in_reuses_orphaned_team(client, db, mock_dynamodb, test_region):
     assert user_data["team_id"] == team.id  # reused, not a new team
 
 
+
+def _team_with_member(db, admin_email, member_email):
+    from app.db.models import DBTeam
+
+    team = DBTeam(name=f"Team {admin_email}", admin_email=admin_email)
+    db.add(team)
+    db.commit()
+    db.add(
+        DBUser(email=member_email, is_active=True, team_id=team.id, role="admin")
+    )
+    db.commit()
+    return team
+
+
+def _code_sign_in(client, mock_dynamodb, email):
+    mock_dynamodb.read_validation_code.return_value = {"email": email, "code": "C0DE"}
+    return client.post(
+        "/auth/sign-in", json={"username": email, "verification_code": "C0DE"}
+    )
+
+
+def test_sign_in_does_not_return_a_removed_admin_to_the_team(
+    client, db, mock_dynamodb, sign_in_team
+):
+    """remove_user_from_team keeps admin_email, so it must not mean "orphaned"."""
+    email = "removed@example.com"
+    team = _team_with_member(db, email, "other@example.com")
+    removed = DBUser(email=email, is_active=True, team_id=None, role="admin")
+    db.add(removed)
+    db.commit()
+
+    assert _code_sign_in(client, mock_dynamodb, email).status_code == 200
+    db.refresh(removed)
+    assert removed.team_id is None
+    assert [u.email for u in team.users] == ["other@example.com"]
+
+
+def test_sign_in_new_user_skips_a_team_that_has_members(
+    client, db, mock_dynamodb, sign_in_team
+):
+    """A hard-deleted admin whose team still has members gets no seat back."""
+    email = "deleted@example.com"
+    team = _team_with_member(db, email, "member@example.com")
+
+    assert _code_sign_in(client, mock_dynamodb, email).status_code == 200
+    user = db.query(DBUser).filter(DBUser.email == email).one()
+    assert user.team_id is None
+    assert user.role == "user"
+    assert [u.email for u in team.users] == ["member@example.com"]
+
+
 def test_sign_in_reuses_orphaned_team_with_plus_tagged_admin_email(
     client, db, mock_dynamodb, test_region
 ):
