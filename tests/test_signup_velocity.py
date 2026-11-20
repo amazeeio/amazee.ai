@@ -10,6 +10,7 @@ from sqlalchemy import event
 from app.core.config import settings
 from app.db.models import DBAuditLog, DBSignupEvent, DBSystemSecret
 from app.services.signup_velocity import (
+    registrable_domain,
     client_ip,
     enforce_provision_caps,
     enforce_signup_velocity,
@@ -168,7 +169,7 @@ def test_prune_script_rolls_back_and_releases_the_lock_on_failure(db, monkeypatc
 
 
 def test_provision_caps_per_domain_exempt_and_global(db, monkeypatch):
-    """TKF-492: one fresh domain, rotating IPs. Domain cap blocks it, free-mail
+    """Bots: one fresh domain, rotating IPs. Domain cap blocks it, free-mail
     is exempt from that cap, and the global cap backstops domain rotation."""
     monkeypatch.setattr(settings, "PROVISION_MAX_PER_DOMAIN_PER_DAY", 2)
     monkeypatch.setattr(settings, "PROVISION_MAX_PER_HOUR", 5)
@@ -196,3 +197,18 @@ def test_provision_caps_per_domain_exempt_and_global(db, monkeypatch):
         .count()
         == 5
     )
+
+
+def test_provision_domain_cap_groups_subdomains(db, monkeypatch):
+    """Sibling subdomains count against one registrable domain."""
+    monkeypatch.setattr(settings, "PROVISION_MAX_PER_DOMAIN_PER_DAY", 2)
+    monkeypatch.setattr(settings, "PROVISION_MAX_PER_HOUR", 0)
+
+    enforce_provision_caps(db, "a@x.bot.store")
+    enforce_provision_caps(db, "b@bot.store")
+    with pytest.raises(HTTPException):
+        enforce_provision_caps(db, "c@y.bot.store")
+
+    assert registrable_domain("a.b.bot.store") == "bot.store"
+    assert registrable_domain("mail.example.co.uk") == "example.co.uk"
+    assert registrable_domain("bot.store") == "bot.store"

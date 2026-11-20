@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Optional
 
 from fastapi import HTTPException, Request, status
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.audit import prune_audit_log
@@ -92,23 +93,42 @@ def enforce_signup_velocity(
 
 PROVISION_ENDPOINT = "provision-key"
 
+# Second-level labels that sit under a country TLD as part of the public
+# suffix (example.co.uk, example.com.au).
+# ponytail: heuristic, not the Public Suffix List. Ceiling: rare suffixes
+# (e.g. *.github.io-style private ones) group too broadly; swap in tldextract
+# with its bundled list if that ever matters.
+_CC_SECOND_LEVEL = {"ac", "co", "com", "edu", "gov", "ne", "net", "or", "org"}
+
+
+def registrable_domain(domain: str) -> str:
+    """Collapse a host to its registrable domain: a.b.bot.store -> bot.store."""
+    labels = domain.split(".")
+    keep = (
+        3
+        if len(labels[-1]) == 2 and len(labels) >= 3 and labels[-2] in _CC_SECOND_LEVEL
+        else 2
+    )
+    return ".".join(labels[-keep:])
+
 
 def enforce_provision_caps(db: Session, email: str) -> None:
     """Record a moad provisioning attempt and raise 429 if a cap is hit.
 
-    Every moad provisioning can mint a new workspace with a demo credit. The
-    TKF-492 bots rotated IPs (so the per-IP cap never fired) but used a single
-    fresh domain, ~1 signup/min. Two caps, both over signup_events rows for
-    this endpoint:
-      - per email domain per day (free-mail providers exempt), and
+    Every moad provisioning can mint a new workspace with a demo credit.
+    Abusive sign-ups rotate IPs (so a per-IP cap never fires) but tend to use
+    one fresh domain. Two caps, both over signup_events rows for this endpoint:
+      - per registrable email domain per day, so sibling subdomains
+        (a.bot.store, b.bot.store) share one count (free-mail exempt), and
       - global per hour, the backstop for domain rotation.
     Unlike enforce_signup_velocity, rejected attempts are not recorded.
     Soft limits, same count-then-insert trade-off as enforce_signup_velocity.
     """
     from app.services.disposable_domains import extract_domain
 
-    domain = extract_domain(email)
+    domain = registrable_domain(extract_domain(email))
     now = datetime.now(UTC)
+    escaped = domain.replace("%", r"\%").replace("_", r"\_")
     recent = db.query(DBSignupEvent).filter(
         DBSignupEvent.endpoint == PROVISION_ENDPOINT
     )
@@ -123,8 +143,9 @@ def enforce_provision_caps(db: Session, email: str) -> None:
         and domain not in exempt
         and recent.filter(
             DBSignupEvent.created_at >= now - timedelta(days=1),
-            DBSignupEvent.email.ilike(
-                "%@" + domain.replace("%", r"\%").replace("_", r"\_"), escape="\\"
+            or_(
+                DBSignupEvent.email.ilike("%@" + escaped, escape="\\"),
+                DBSignupEvent.email.ilike("%@%." + escaped, escape="\\"),
             ),
         ).count()
         >= settings.PROVISION_MAX_PER_DOMAIN_PER_DAY
