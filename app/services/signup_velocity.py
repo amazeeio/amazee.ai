@@ -95,9 +95,10 @@ PROVISION_ENDPOINT = "provision-key"
 
 # Second-level labels that sit under a country TLD as part of the public
 # suffix (example.co.uk, example.com.au).
-# ponytail: heuristic, not the Public Suffix List. Ceiling: rare suffixes
-# (e.g. *.github.io-style private ones) group too broadly; swap in tldextract
-# with its bundled list if that ever matters.
+# ponytail: heuristic, not the Public Suffix List. Ceilings: a flat ccTLD
+# domain such as co.de keeps one count per subdomain, and a shared suffix such
+# as onmicrosoft.com puts all its tenants in one count. Swap in tldextract with
+# its bundled list if either matters.
 _CC_SECOND_LEVEL = {"ac", "co", "com", "edu", "gov", "ne", "net", "or", "org"}
 
 

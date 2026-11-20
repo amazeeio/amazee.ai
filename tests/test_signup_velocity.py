@@ -204,6 +204,9 @@ def test_provision_domain_cap_groups_subdomains(db, monkeypatch):
     monkeypatch.setattr(settings, "PROVISION_MAX_PER_DOMAIN_PER_DAY", 2)
     monkeypatch.setattr(settings, "PROVISION_MAX_PER_HOUR", 0)
 
+    # A look-alike domain must not count against bot.store.
+    enforce_provision_caps(db, "z@notbot.store")
+    enforce_provision_caps(db, "z@x.notbot.store")
     enforce_provision_caps(db, "a@x.bot.store")
     enforce_provision_caps(db, "b@bot.store")
     with pytest.raises(HTTPException):
@@ -211,4 +214,6 @@ def test_provision_domain_cap_groups_subdomains(db, monkeypatch):
 
     assert registrable_domain("a.b.bot.store") == "bot.store"
     assert registrable_domain("mail.example.co.uk") == "example.co.uk"
+    assert registrable_domain("a.b.co.uk") == "b.co.uk"
+    assert registrable_domain("a.bot.io") == "bot.io"
     assert registrable_domain("bot.store") == "bot.store"
