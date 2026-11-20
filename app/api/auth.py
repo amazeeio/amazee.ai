@@ -76,7 +76,7 @@ from app.api.teams import register_team
 from app.api.users import _create_user_in_db, get_user_by_email
 from app.core.email import normalize_email_for_lookup
 from app.services.disposable_domains import assert_email_domain_allowed
-from app.services.signup_velocity import enforce_signup_velocity
+from app.services.signup_velocity import enforce_mailbox_cap, enforce_signup_velocity
 from app.services.token_revocation import (
     add_revoked_token,
     retention_cutoff,
@@ -443,6 +443,7 @@ async def sign_in(
         auth_logger.info(f"Creating new user and team for: {sign_in_username}")
         # Only NEW-account creation is velocity-limited; existing-user code logins
         # (the common case, incl. many users behind one corporate IP) are not.
+        enforce_mailbox_cap(db, sign_in_username)
         enforce_signup_velocity(request, db, email=sign_in_username, endpoint="sign-in")
         # Reuse a team orphaned by a user hard-delete: same admin_email, not
         # soft-deleted. Without this, the unique admin_email on the leftover
@@ -641,6 +642,8 @@ async def validate_email(
 
     # Block disposable / dynamic-DNS domains before we even send an OTP.
     assert_email_domain_allowed(db, email)
+    # A new Gmail dot variant would become a second account with new credits.
+    enforce_mailbox_cap(db, email)
 
     # Cap OTP sends per IP: this endpoint triggers an email, so an unlimited
     # loop from one client could be used to spam arbitrary addresses.

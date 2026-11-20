@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
@@ -274,3 +275,55 @@ def test_mailbox_cap_of_two_allows_a_second_address(db, monkeypatch):
     enforce_mailbox_cap(db, "ab@gmail.com")
     _users(db, "ab@gmail.com")
     _blocked(db, "a.b@googlemail.com")
+
+
+@pytest.fixture
+def auth_mocks():
+    with (
+        patch("app.api.auth.DynamoDBService") as dynamodb,
+        patch("app.api.auth.SESService") as ses,
+    ):
+        yield dynamodb.return_value, ses.return_value
+
+
+def _sign_in(client, dynamodb, email):
+    dynamodb.read_validation_code.return_value = {"email": email, "code": "TESTCODE"}
+    return client.post(
+        "/auth/sign-in", json={"username": email, "verification_code": "TESTCODE"}
+    )
+
+
+def test_mailbox_cap_on_validate_email(client, db, auth_mocks, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    _, ses = auth_mocks
+    _users(db, "a.b@gmail.com")
+
+    response = client.post("/auth/validate-email", json={"email": "ab@gmail.com"})
+    assert response.status_code == 429
+    ses.send_email.assert_not_called()
+
+    for email in ("a.b@gmail.com", "a.b+x@gmail.com"):
+        response = client.post("/auth/validate-email", json={"email": email})
+        assert response.status_code == 200
+
+
+def test_mailbox_cap_on_sign_in_of_a_new_address(client, db, auth_mocks, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    dynamodb, _ = auth_mocks
+    _users(db, "a.b@gmail.com")
+
+    assert _sign_in(client, dynamodb, "ab@gmail.com").status_code == 429
+    assert db.query(DBUser).filter(DBUser.email == "ab@gmail.com").first() is None
+
+
+def test_mailbox_cap_allows_sign_in_of_an_existing_user(
+    client, db, auth_mocks, monkeypatch
+):
+    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
+    dynamodb, _ = auth_mocks
+    _users(db, "a.b@gmail.com")
+    assert _sign_in(client, dynamodb, "a.b@gmail.com").status_code == 200
+
+    # A second address from before the cap must not lock out the first one.
+    _users(db, "ab@gmail.com")
+    assert _sign_in(client, dynamodb, "a.b@gmail.com").status_code == 200
