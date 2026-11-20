@@ -19,6 +19,14 @@ class Settings(BaseSettings):
         os.getenv("DB_IDLE_IN_TRANSACTION_TIMEOUT_MS", "120000")
     )
     DB_LOCK_TIMEOUT_MS: int = int(os.getenv("DB_LOCK_TIMEOUT_MS", "15000"))
+    # Seconds the event loop may go without turning before the worker dumps its
+    # stacks and exits so uvicorn replaces it (app/core/loop_watchdog.py,
+    # TKF-565). 0 disables it. Off by default because a debugger breakpoint or
+    # `--reload` dev server must not be killed; backend-start.sh turns it on for
+    # the multi-worker production server.
+    EVENT_LOOP_STALL_TIMEOUT_SECONDS: float = float(
+        os.getenv("EVENT_LOOP_STALL_TIMEOUT_SECONDS", "0")
+    )
 
     # JWT settings
     # Bind ONLY to AMAZEEAI_JWT_SECRET. Using an explicit validation_alias stops

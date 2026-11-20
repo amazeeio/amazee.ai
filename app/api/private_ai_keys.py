@@ -40,7 +40,6 @@ from app.core.email import normalize_email_for_lookup
 from app.services.litellm import INFERENCE_ONLY_ROUTES, LiteLLMService
 from app.core.security import (
     get_current_user_from_auth,
-    get_role_min_team_admin,
     get_private_ai_access,
     get_private_ai_direct_access,
     get_role_min_system_admin,
@@ -1217,7 +1216,7 @@ async def extend_token_life(
     key_id: int,
     duration_update: TokenDurationUpdate,
     current_user=Depends(get_current_user_from_auth),
-    user_role: UserRole = Depends(get_role_min_team_admin),
+    user_role: UserRole = Depends(get_role_min_system_admin),
     db: Session = Depends(get_db),
 ):
     """
@@ -1232,7 +1231,7 @@ async def extend_token_life(
     - **duration**: The amount of time to add to the key's life (e.g. "30d" for 30 days, "1y" for 1 year)
 
     Note: You must be authenticated to use this endpoint.
-    Only the owner of the key or an admin can update it.
+    Only system admins can call it, because the billing cycle owns key expiry.
     """
     private_ai_key = _get_key_if_allowed(key_id, current_user, user_role, db)
 

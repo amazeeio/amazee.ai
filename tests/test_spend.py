@@ -1435,6 +1435,77 @@ def test_update_team_budget_rejects_manual_cap_for_periodic_team(
     mock_update_team_budget.assert_not_awaited()
 
 
+@patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
+def test_update_team_budget_rejects_null_cap_for_periodic_team_admin(
+    mock_update_team_budget,
+    client,
+    team_admin_token,
+    test_team,
+    test_region,
+    db,
+):
+    test_team.budget_type = BudgetType.PERIODIC
+    test_team.require_purchase_for_requests = False
+    db.add(
+        DBSpendCap(
+            scope="team",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            max_budget=30.0,
+            budget_duration="30d",
+        )
+    )
+    db.commit()
+
+    response = client.put(
+        f"/spend/{test_region.id}/team/{test_team.id}/budget",
+        json={"max_budget": None},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 403
+    assert "periodic" in response.json()["detail"].lower()
+    mock_update_team_budget.assert_not_awaited()
+    cap = (
+        db.query(DBSpendCap)
+        .filter(
+            DBSpendCap.scope == "team",
+            DBSpendCap.region_id == test_region.id,
+            DBSpendCap.team_id == test_team.id,
+        )
+        .first()
+    )
+    assert cap is not None
+    assert cap.max_budget == 30.0
+
+
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
+def test_update_team_budget_allows_null_cap_for_periodic_team_as_system_admin(
+    mock_update_team_budget,
+    mock_get_team_info,
+    client,
+    admin_token,
+    test_team,
+    test_region,
+    db,
+):
+    test_team.budget_type = BudgetType.PERIODIC
+    test_team.require_purchase_for_requests = False
+    db.commit()
+    mock_get_team_info.return_value = {
+        "team_info": {"max_budget": None, "budget_duration": None}
+    }
+
+    response = client.put(
+        f"/spend/{test_region.id}/team/{test_team.id}/budget",
+        json={"max_budget": None},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200, response.json()
+    mock_update_team_budget.assert_awaited_once()
+    assert mock_update_team_budget.await_args.kwargs["max_budget"] is None
+
+
 @patch("app.api.spend.invalidate_user_spend_cache")
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)

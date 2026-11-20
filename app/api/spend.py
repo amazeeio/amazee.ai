@@ -2560,6 +2560,19 @@ async def update_team_budget(
                 "Use subscription renewal and periodic top-up purchase flows."
             ),
         )
+    # A null max_budget removes the LiteLLM team cap, and only a subscription
+    # payment puts the periodic cap back, so a team admin must not send it.
+    if (
+        team.budget_type == BudgetType.PERIODIC
+        and body.max_budget is None
+        and not current_user.is_admin
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Only system administrators can clear the budget for periodic teams."
+            ),
+        )
     # A non-purchase-gated POOL team skips the purchase clamp below, so a team
     # admin could set an arbitrary max_budget with no payment — or clear the cap
     # by sending a null max_budget. Block all non-admin budget writes for this
