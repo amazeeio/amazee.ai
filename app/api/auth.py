@@ -573,8 +573,16 @@ async def sign_in(
             elif _needs_team(user):
                 # The code proves the inbox, so a user without a team (made by
                 # /auth/register, or whose team was deleted) gets one and can get a key.
-                enforce_mailbox_cap(db, sign_in_username, existing_ok=False)
-                team = await _sign_in_team(db, sign_in_username)
+                try:
+                    enforce_mailbox_cap(db, sign_in_username, existing_ok=False)
+                except HTTPException as exc:
+                    if exc.status_code != status.HTTP_429_TOO_MANY_REQUESTS:
+                        raise
+                    # The cap stops a second team for the mailbox, not the sign-in.
+                    auth_logger.info(f"No team for {sign_in_username}: mailbox cap")
+                    team = None
+                else:
+                    team = await _sign_in_team(db, sign_in_username)
                 if team:
                     user.team_id = team.id
                     user.role = UserRole.ADMIN
