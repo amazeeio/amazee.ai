@@ -866,3 +866,31 @@ def test_mailbox_cap_blocks_moad_provisioning_for_a_dot_variant(
     response = _post_key(drupal_client, token, test_region.id)
     assert response.status_code == 200
     mock_http.post.assert_called_once()
+
+
+@patch("app.api.private_ai_keys.settings")
+@patch("httpx.AsyncClient")
+def test_mailbox_cap_still_returns_an_existing_key(
+    mock_client_cls, mock_settings, drupal_client, db, test_region
+):
+    """The idempotent return runs before the cap, so a key that exists is kept."""
+    mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+    mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+
+    team = DBTeam(name="mailbox-team", admin_email="a.b@gmail.com", is_active=True)
+    other_team = DBTeam(name="other", admin_email="ab@gmail.com", is_active=True)
+    db.add_all([team, other_team])
+    db.commit()
+    user = _make_user(db, email="a.b@gmail.com", role=UserRole.ADMIN, team_id=team.id)
+    _make_user(db, email="ab@gmail.com", role=UserRole.ADMIN, team_id=other_team.id)
+    _seed_key(db, "test-key", "existing-token", test_region.id, team_id=team.id)
+    token = _login(drupal_client, user)
+
+    post = AsyncMock()
+    mock_client_cls.return_value = _moad_client(post)
+
+    response = _post_key(drupal_client, token, test_region.id)
+
+    assert response.status_code == 200
+    assert response.json()["litellm_token"] == "existing-token"
+    post.assert_not_called()
