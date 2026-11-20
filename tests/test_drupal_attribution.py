@@ -827,32 +827,20 @@ def test_mailbox_cap_blocks_moad_provisioning_for_a_dot_variant(
     token = _login(drupal_client, user)
 
     litellm_token = "drupal-key-mailbox"
-    db.add(
-        DBPrivateAIKey(
-            name="pre-seeded-key",
-            litellm_token=litellm_token,
-            litellm_api_url="http://test-llm",
-            database_name="db",
-            database_host="host",
-            database_username="u",
-            database_password="p",
-            region_id=test_region.id,
-        )
-    )
-    db.commit()
+    _seed_key(db, "pre-seeded-key", litellm_token, test_region.id)
 
     mock_response = MagicMock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"llm": {"token": litellm_token}, "vectorDb": {"database": "db"}}
-    mock_http = AsyncMock()
-    mock_http.__aenter__ = AsyncMock(return_value=mock_http)
-    mock_http.__aexit__ = AsyncMock(return_value=False)
-    mock_http.post = AsyncMock(return_value=mock_response)
-    mock_client_cls.return_value = mock_http
+    mock_response.json.return_value = {
+        "llm": {"token": litellm_token},
+        "vectorDb": {"database": f"db-{litellm_token}"},
+    }
+    post = AsyncMock(return_value=mock_response)
+    mock_client_cls.return_value = _moad_client(post)
 
     response = _post_key(drupal_client, token, test_region.id)
     assert response.status_code == 429
-    mock_http.post.assert_not_called()
+    post.assert_not_called()
     assert (
         db.query(DBSignupEvent)
         .filter(DBSignupEvent.endpoint == PROVISION_ENDPOINT)
@@ -865,7 +853,7 @@ def test_mailbox_cap_blocks_moad_provisioning_for_a_dot_variant(
     db.commit()
     response = _post_key(drupal_client, token, test_region.id)
     assert response.status_code == 200
-    mock_http.post.assert_called_once()
+    post.assert_called_once()
 
 
 @patch("app.api.private_ai_keys.settings")

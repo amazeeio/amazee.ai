@@ -258,12 +258,6 @@ def test_mailbox_cap_existing_not_ok_counts_other_addresses(db, monkeypatch):
     _blocked(db, "a.b@gmail.com", existing_ok=False)
 
 
-def test_mailbox_cap_ignores_portal_surrogate_users(db, monkeypatch):
-    monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
-    _users(db, "a.b@gmail.com", "a.b+123@gmail.com")
-    enforce_mailbox_cap(db, "a.b@gmail.com", existing_ok=False)
-
-
 def test_mailbox_cap_ignores_portal_team_tags(db, monkeypatch):
     monkeypatch.setattr(settings, "SIGNUP_MAX_ADDRESSES_PER_MAILBOX", 1)
     _users(db, "john.doe@gmail.com", "john.doe+123@gmail.com", "john.doe+456@gmail.com")
