@@ -1469,6 +1469,14 @@ async def _provision_via_moad(
                 existing_name,
             )
 
+    # Only /auth/register makes a password user without a team, and it proves
+    # no ownership of the email, so it must not mint a workspace with a credit.
+    if current_user.team_id is None and current_user.hashed_password:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Please sign in with the email code to get a key.",
+        )
+
     # Past the idempotent-retry return: this call can mint a new workspace with
     # a demo credit, so cap it per base mailbox, per email domain and globally.
     enforce_mailbox_cap(db, base_email, existing_ok=False)

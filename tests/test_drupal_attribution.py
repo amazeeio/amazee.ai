@@ -16,7 +16,7 @@ from sqlalchemy import text
 
 from app.api.private_ai_keys import PROVISION_LOCK_KEY_SQL, _delegate_to_moad
 from app.db.models import DBPrivateAIKey, DBRegion, DBSignupEvent, DBUser, DBTeam
-from app.core.security import get_password_hash
+from app.core.security import create_access_token, get_password_hash
 from app.core.roles import UserRole
 from app.schemas.models import PrivateAIKeyCreate
 from app.services.signup_velocity import PROVISION_ENDPOINT
@@ -25,10 +25,13 @@ from tests.conftest import TestingSessionLocal, engine
 EMAIL = "test-drupal@example.com"
 
 
-def _make_user(db, email=EMAIL, role=UserRole.DEFAULT, is_admin=False, team_id=None):
+def _make_user(
+    db, email=EMAIL, role=UserRole.DEFAULT, is_admin=False, team_id=None, password=None
+):
+    # Email-code users have no password; only /auth/register sets one.
     user = DBUser(
         email=email,
-        hashed_password=get_password_hash("testpassword"),
+        hashed_password=get_password_hash(password) if password else None,
         is_active=True,
         is_admin=is_admin,
         role=role,
@@ -41,11 +44,7 @@ def _make_user(db, email=EMAIL, role=UserRole.DEFAULT, is_admin=False, team_id=N
 
 
 def _login(client, user):
-    resp = client.post(
-        "/auth/login",
-        data={"username": user.email, "password": "testpassword"},
-    )
-    return resp.json()["access_token"]
+    return create_access_token(data={"sub": user.email})
 
 
 def _post_key(client, token, region_id, extra_headers=None):
@@ -882,3 +881,60 @@ def test_mailbox_cap_still_returns_an_existing_key(
     assert response.status_code == 200
     assert response.json()["litellm_token"] == "existing-token"
     post.assert_not_called()
+
+
+def _moad_ok(db, region_id, litellm_token):
+    """Seed the key that moad would create and a moad mock that returns it."""
+    _seed_key(db, "pre-seeded-key", litellm_token, region_id)
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {
+        "llm": {"token": litellm_token},
+        "vectorDb": {"database": f"db-{litellm_token}"},
+    }
+    return AsyncMock(return_value=response)
+
+
+@patch("app.api.private_ai_keys.settings")
+@patch("httpx.AsyncClient")
+def test_registered_user_without_team_gets_403(
+    mock_client_cls, mock_settings, drupal_client, db, test_region
+):
+    """A /auth/register user (password, no team) gets no moad workspace."""
+    mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+    mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+    user = _make_user(db, password="testpassword")
+    token = _login(drupal_client, user)
+    post = _moad_ok(db, test_region.id, "registered-token")
+    mock_client_cls.return_value = _moad_client(post)
+
+    response = _post_key(drupal_client, token, test_region.id)
+    assert response.status_code == 403
+    post.assert_not_called()
+
+    # The same teamless user without a password is not refused by this check.
+    user.hashed_password = None
+    db.commit()
+    response = _post_key(drupal_client, token, test_region.id)
+    assert response.status_code == 200
+    post.assert_called_once()
+
+
+@patch("app.api.private_ai_keys.settings")
+@patch("httpx.AsyncClient")
+def test_email_code_user_with_team_still_provisions(
+    mock_client_cls, mock_settings, drupal_client, db, test_region
+):
+    mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+    mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+    team = DBTeam(name="code-team", admin_email=EMAIL, is_active=True)
+    db.add(team)
+    db.commit()
+    user = _make_user(db, role=UserRole.ADMIN, team_id=team.id)
+    token = _login(drupal_client, user)
+    post = _moad_ok(db, test_region.id, "team-token")
+    mock_client_cls.return_value = _moad_client(post)
+
+    response = _post_key(drupal_client, token, test_region.id)
+    assert response.status_code == 200
+    post.assert_called_once()
