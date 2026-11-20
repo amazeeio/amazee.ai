@@ -1,10 +1,10 @@
-"""Recycle a uvicorn worker whose event loop has stopped turning (TKF-565).
+"""Recycle a uvicorn worker whose event loop has stopped turning.
 
 The handlers are async, but the database driver is synchronous. A query that
 waits on a row lock blocks its whole worker, including any request on that
 worker that would have committed the lock. Postgres can't see that as a
-deadlock, so nothing ends it (TKF-492, TKF-565: the API was down for 23 and
-42 minutes). Neither health check notices: uvicorn's supervisor pings each
+deadlock, so nothing ends it, and once every worker is blocked the whole API
+stops. Neither health check notices: uvicorn's supervisor pings each
 worker from a helper thread, not from the loop, and Lagoon's probes only open
 the TCP port. A frozen worker stays "healthy" until someone restarts the pod.
 
