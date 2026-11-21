@@ -1072,19 +1072,7 @@ def test_registered_user_gets_a_team_by_code_sign_in(
     post = _moad_ok(db, test_region.id, "registered-team-token")
     mock_client_cls.return_value = _moad_client(post)
 
-    with (
-        patch("app.api.auth.DynamoDBService") as dynamodb,
-        patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock),
-        patch("app.core.litellm_user_sync.LiteLLMService") as sync_litellm,
-    ):
-        sync_litellm.return_value = AsyncMock()
-        dynamodb.return_value.read_validation_code.return_value = {
-            "email": EMAIL,
-            "code": "TESTCODE",
-        }
-        response = drupal_client.post(
-            "/auth/sign-in", json={"username": EMAIL, "verification_code": "TESTCODE"}
-        )
+    response = _code_sign_in(drupal_client, EMAIL)
     assert response.status_code == 200
     db.refresh(user)
     assert user.team_id is not None
@@ -1094,3 +1082,196 @@ def test_registered_user_gets_a_team_by_code_sign_in(
     response = _post_key(drupal_client, response.json()["access_token"], test_region.id)
     assert response.status_code == 200
     post.assert_called_once()
+
+
+def _code_sign_in(client, email):
+    """Sign in with an email code; LiteLLM calls are mocked."""
+    with (
+        patch("app.api.auth.DynamoDBService") as dynamodb,
+        patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock),
+        patch("app.core.litellm_user_sync.LiteLLMService") as sync_litellm,
+    ):
+        sync_litellm.return_value = AsyncMock()
+        dynamodb.return_value.read_validation_code.return_value = {
+            "email": email,
+            "code": "TESTCODE",
+        }
+        return client.post(
+            "/auth/sign-in", json={"username": email, "verification_code": "TESTCODE"}
+        )
+
+
+def test_failed_sign_in_sync_keeps_a_team_set_by_a_parallel_request(
+    drupal_client, db, test_region
+):
+    """The undo clears only the team that this sign-in attached."""
+    user = _make_user(db)
+    other_team = DBTeam(name="key-team", admin_email="key-team@corp.com", is_active=True)
+    db.add(other_team)
+    db.commit()
+    db.refresh(other_team)
+
+    async def move_user_then_fail(**kwargs):
+        db.query(DBUser).filter(DBUser.id == user.id).update(
+            {DBUser.team_id: other_team.id}
+        )
+        db.commit()
+        raise RuntimeError("litellm down")
+
+    with patch(
+        "app.api.auth.sync_add_user_to_team",
+        new_callable=AsyncMock,
+        side_effect=move_user_then_fail,
+    ):
+        response = _code_sign_in(drupal_client, EMAIL)
+
+    assert response.status_code == 200
+    db.refresh(user)
+    assert user.team_id == other_team.id
+
+
+def test_capped_gmail_user_signs_in_without_a_team(drupal_client, db):
+    """The mailbox cap stops a second team, not the sign-in of an existing user."""
+    other_team = DBTeam(name="other", admin_email="ab@gmail.com", is_active=True)
+    db.add(other_team)
+    db.commit()
+    _make_user(db, email="ab@gmail.com", role=UserRole.ADMIN, team_id=other_team.id)
+    user = _make_user(db, email="a.b@gmail.com")
+
+    response = _code_sign_in(drupal_client, "a.b@gmail.com")
+
+    assert response.status_code == 200
+    db.refresh(user)
+    assert user.team_id is None
+
+
+def test_sign_in_team_attach_syncs_litellm_membership(drupal_client, db, test_region):
+    user = _make_user(db)
+    with patch("app.api.auth.sync_add_user_to_team", new_callable=AsyncMock) as sync:
+        response = _code_sign_in(drupal_client, EMAIL)
+
+    assert response.status_code == 200
+    db.refresh(user)
+    assert user.team_id is not None
+    sync.assert_awaited_once()
+    assert sync.await_args.kwargs["team_id"] == user.team_id
+
+
+def test_sign_in_team_attach_is_undone_when_litellm_sync_fails(
+    drupal_client, db, test_region
+):
+    """A failed sync leaves the user signed in without the team."""
+    user = _make_user(db)
+    with patch(
+        "app.api.auth.sync_add_user_to_team",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("litellm down"),
+    ):
+        response = _code_sign_in(drupal_client, EMAIL)
+
+    assert response.status_code == 200
+    db.refresh(user)
+    assert user.team_id is None
+    assert user.role == UserRole.DEFAULT
+    team_ids = {t.id for t in db.query(DBTeam).filter(DBTeam.admin_email == EMAIL)}
+    assert len(team_ids) == 1
+
+    # The next sign-in reuses the team that the failed sync left without members.
+    with patch("app.api.auth.sync_add_user_to_team", new_callable=AsyncMock):
+        response = _code_sign_in(drupal_client, EMAIL)
+
+    assert response.status_code == 200
+    db.refresh(user)
+    assert user.team_id in team_ids
+    assert db.query(DBTeam).filter(DBTeam.admin_email == EMAIL).count() == 1
+
+
+def test_sign_in_team_attach_is_undone_when_the_request_is_cancelled(
+    drupal_client, db, test_region
+):
+    """A cancelled sync is a BaseException; it must undo the attach, then raise."""
+    user = _make_user(db)
+    with patch(
+        "app.api.auth.sync_add_user_to_team",
+        new_callable=AsyncMock,
+        side_effect=asyncio.CancelledError(),
+    ) as sync:
+        with pytest.raises(BaseException):
+            _code_sign_in(drupal_client, EMAIL)
+
+    # The attach happened, so the undo below is what cleared it.
+    sync.assert_awaited_once()
+    assert sync.await_args.kwargs["team_id"] is not None
+    db.refresh(user)
+    assert user.team_id is None
+    assert user.role == UserRole.DEFAULT
+
+
+@patch("app.api.private_ai_keys.settings")
+@patch("httpx.AsyncClient")
+def test_fallback_skips_team_with_another_persons_member(
+    mock_client_cls, mock_settings, drupal_client, db, test_region
+):
+    """A removed admin keeps the admin_email but must not get the team's key."""
+    mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+    mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+    team = DBTeam(name="old-team", admin_email="alice+team-x@corp.com", is_active=True)
+    db.add(team)
+    db.commit()
+    db.refresh(team)
+    _make_user(db, email="bob@corp.com", role=UserRole.ADMIN, team_id=team.id)
+    _seed_key(db, "team-key", "team-secret-token", test_region.id, team.id)
+
+    removed_admin = _make_user(db, email="alice@corp.com")
+    token = _login(drupal_client, removed_admin)
+    post = _moad_ok(db, test_region.id, "alice-fresh-token")
+    mock_client_cls.return_value = _moad_client(post)
+
+    response = drupal_client.post(
+        "/private-ai-keys",
+        json={"region_id": test_region.id, "name": ""},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert "team-secret-token" not in response.text
+    post.assert_called_once()
+    db.refresh(removed_admin)
+    assert removed_admin.team_id != team.id
+
+
+@patch("app.api.private_ai_keys.settings")
+@patch("httpx.AsyncClient")
+def test_fallback_reuses_key_of_shared_workspace_on_region_switch(
+    mock_client_cls, mock_settings, drupal_client, db, test_region
+):
+    """moad adds each workspace member as "<email>+<team id>@". The owner's own
+    tagged member keeps the team reusable, even with another person in it."""
+    mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+    mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+    t1 = DBTeam(name="t1", admin_email="alice@corp.com", is_active=True)
+    t2 = DBTeam(name="t2", admin_email="alice+team-x@corp.com", is_active=True)
+    db.add_all([t1, t2])
+    db.commit()
+    db.refresh(t1)
+    db.refresh(t2)
+    _make_user(db, email=f"alice+{t2.id}@corp.com", role=UserRole.ADMIN, team_id=t2.id)
+    _make_user(db, email=f"bob+{t2.id}@corp.com", team_id=t2.id)
+    _seed_key(db, "t2-key", "t2-token", test_region.id, t2.id)
+
+    caller = _make_user(db, email="alice@corp.com", role=UserRole.ADMIN, team_id=t1.id)
+    token = _login(drupal_client, caller)
+    mock_http = AsyncMock()
+    mock_client_cls.return_value = mock_http
+
+    response = drupal_client.post(
+        "/private-ai-keys",
+        json={"region_id": test_region.id, "name": ""},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["litellm_token"] == "t2-token"
+    mock_http.post.assert_not_called()
+    db.refresh(caller)
+    assert caller.team_id == t2.id

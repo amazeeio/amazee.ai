@@ -1,3 +1,4 @@
+import asyncio
 import traceback
 import logging
 import secrets
@@ -37,6 +38,7 @@ from app.core.security import (
     hash_api_token,
     verify_password,
 )
+from app.core.litellm_user_sync import sync_add_user_to_team
 from app.core.limit_service import (
     LimitedResource,
     LimitService,
@@ -49,7 +51,14 @@ from app.core.limit_service import (
 from app.core.worker import generate_pricing_url
 
 from app.db.database import get_db
-from app.db.models import DBUser, DBAPIToken, DBRegion, DBTeam, DBRevokedToken
+from app.db.models import (
+    DBAPIToken,
+    DBRegion,
+    DBRevokedToken,
+    DBSpendCap,
+    DBTeam,
+    DBUser,
+)
 
 from app.services.litellm import LiteLLMService
 from app.services.dynamodb import DynamoDBService
@@ -509,7 +518,8 @@ async def sign_in(
     Use this token for subsequent authenticated requests.
 
     If the user doesn't exist, they will be automatically registered and a new team will be created
-    with them as the admin.
+    with them as the admin. An existing user without a team gets one the same way, unless
+    the Gmail mailbox cap is reached; then they sign in without a team.
     """
     if not sign_in_data:
         auth_logger.warning("Sign-in attempt with invalid data format")
@@ -538,6 +548,7 @@ async def sign_in(
 
     # Get user from database after verifying the code
     user = get_user_by_email(db, sign_in_username)
+    attached_team_id = None
 
     if user is None or _needs_team(user):
         # One lock per base mailbox, so overlapping sign-ins of dot variants
@@ -573,16 +584,62 @@ async def sign_in(
             elif _needs_team(user):
                 # The code proves the inbox, so a user without a team (made by
                 # /auth/register, or whose team was deleted) gets one and can get a key.
-                enforce_mailbox_cap(db, sign_in_username, existing_ok=False)
-                team = await _sign_in_team(db, sign_in_username)
+                try:
+                    enforce_mailbox_cap(db, sign_in_username, existing_ok=False)
+                except HTTPException as exc:
+                    if exc.status_code != status.HTTP_429_TOO_MANY_REQUESTS:
+                        raise
+                    # The cap stops a second team for the mailbox, not the sign-in.
+                    auth_logger.info(f"No team for {sign_in_username}: mailbox cap")
+                    team = None
+                else:
+                    team = await _sign_in_team(db, sign_in_username)
                 if team:
+                    previous_role = user.role
                     user.team_id = team.id
                     user.role = UserRole.ADMIN
+                    # A cap left behind by an interrupted removal must not
+                    # follow the user back into a reused team.
+                    db.query(DBSpendCap).filter(
+                        DBSpendCap.scope == "team_member",
+                        DBSpendCap.team_id == team.id,
+                        DBSpendCap.user_id == user.id,
+                    ).delete(synchronize_session=False)
                     db.commit()
                     db.refresh(user)
-                    auth_logger.info(
-                        f"Attached {sign_in_username} to team {team.id} as admin"
-                    )
+                    attached_team_id = team.id
+
+    # The membership sync runs outside the lock, so a slow LiteLLM call here does
+    # not make a retry of the same mailbox wait for the lock. Team and user
+    # creation above still call LiteLLM inside it.
+    if attached_team_id is not None:
+        try:
+            await sync_add_user_to_team(db=db, db_user=user, team_id=attached_team_id)
+        except (Exception, asyncio.CancelledError) as exc:
+            # Without the LiteLLM membership the member budgets do not apply.
+            # The user signs in without the team; the next sign-in reuses the
+            # same team and tries again. A cancelled request (client gone,
+            # worker shutdown) must undo it too.
+            auth_logger.exception(
+                f"LiteLLM sync failed, {sign_in_username} stays without a team"
+            )
+            db.rollback()
+            # A parallel request may have moved the user to another team while
+            # the sync ran; undo only this attach.
+            db.query(DBUser).filter(
+                DBUser.id == user.id, DBUser.team_id == attached_team_id
+            ).update(
+                {DBUser.team_id: None, DBUser.role: previous_role},
+                synchronize_session=False,
+            )
+            db.commit()
+            db.refresh(user)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+        else:
+            auth_logger.info(
+                f"Attached {sign_in_username} to team {attached_team_id} as admin"
+            )
 
     auth_logger.info(f"Successful sign-in for user: {sign_in_username}")
     return create_and_set_access_token(response, user.email, user)

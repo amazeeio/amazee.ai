@@ -918,6 +918,37 @@ def test_remove_user_from_team(client, admin_token, test_team_user):
     assert user_data["team_id"] is None
 
 
+def test_remove_user_from_team_also_removes_their_tagged_rows(
+    client, admin_token, test_team, db
+):
+    """moad's "<email>+<tag>@" row is the same person, and the key fallback
+    counts it as membership, so it must leave the team too."""
+    rows = {
+        email: DBUser(
+            email=email,
+            hashed_password="x",
+            is_active=True,
+            role="user",
+            team_id=test_team.id,
+        )
+        for email in ("alice@corp.com", "alice+team-x@corp.com", "bob@corp.com")
+    }
+    db.add_all(rows.values())
+    db.commit()
+
+    response = client.post(
+        f"/users/{rows['alice@corp.com'].id}/remove-from-team",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    for row in rows.values():
+        db.refresh(row)
+    assert rows["alice@corp.com"].team_id is None
+    assert rows["alice+team-x@corp.com"].team_id is None
+    assert rows["bob@corp.com"].team_id == test_team.id
+
+
 def test_remove_user_not_in_team(client, admin_token, test_user):
     """Test removing a user who is not in a team"""
     response = client.post(

@@ -100,7 +100,8 @@ def get_user_by_email(db: Session, email: str) -> Optional[DBUser]:
 
 def email_identity_taken(db: Session, email: str) -> bool:
     """The moad key fallback treats the base email as the owner of every tagged
-    team, so only a proven owner can hold a base email that already exists."""
+    team without another person's member, so only a proven owner can hold a
+    base email that already exists."""
     base = normalize_email_for_lookup(email)
     local, domain = base.split("@", 1)
     tagged = f"{escape_like(local)}+%@{escape_like(domain)}"
@@ -1225,15 +1226,30 @@ async def remove_user_from_team(
             detail="User is not a member of any team",
         )
 
+    previous_team_id = db_user.team_id
+    # One person can sit in a team as several rows: their own address and
+    # moad's "<email>+<tag>@" rows. The key fallback in private_ai_keys counts
+    # any of them as membership, so removing the person removes all of them.
+    # The requested row goes last: if a sync fails part way, it stays in the
+    # team, so a retry on the same user finds the remaining rows again.
+    base_email = normalize_email_for_lookup(db_user.email)
+    rows = [
+        member
+        for member in db.query(DBUser)
+        .filter(DBUser.team_id == previous_team_id, DBUser.id != db_user.id)
+        .all()
+        if normalize_email_for_lookup(member.email) == base_email
+    ] + [db_user]
+
     # Don't orphan a team: block removing its last remaining team admin (a team
     # admin can now remove members, including themselves). Promote another admin
     # first.
-    if db_user.role == UserRole.TEAM_ADMIN:
+    if any(row.role == UserRole.TEAM_ADMIN for row in rows):
         other_admins = (
             db.query(DBUser)
             .filter(
-                DBUser.team_id == db_user.team_id,
-                DBUser.id != db_user.id,
+                DBUser.team_id == previous_team_id,
+                DBUser.id.notin_([row.id for row in rows]),
                 DBUser.role == UserRole.TEAM_ADMIN,
             )
             .count()
@@ -1244,43 +1260,44 @@ async def remove_user_from_team(
                 detail="Cannot remove the last team admin from the team",
             )
 
-    # Remove user from team
-    previous_team_id = db_user.team_id
-    db_user.team_id = None
-    try:
-        db.commit()
-        db.refresh(db_user)
-    except Exception:
-        db.rollback()
-        raise
-
-    try:
-        await sync_remove_user_from_team(
-            db=db, db_user=db_user, team_id=previous_team_id
-        )
-    except Exception:
+    for row in rows:
+        row.team_id = None
         try:
-            db_user.team_id = previous_team_id
             db.commit()
-            db.refresh(db_user)
+            db.refresh(row)
         except Exception:
             db.rollback()
-            logger.exception(
-                "Failed to revert team removal for user %s after LiteLLM sync failure",
-                db_user.id,
-            )
-        raise
+            raise
 
-    # A member cap belongs to the membership, so it goes with it; a rejoin
-    # would otherwise silently inherit the old limit. Dropped only once the
-    # removal stuck, or the failure path above would restore a member whose
-    # cap is already gone.
-    db.query(DBSpendCap).filter(
-        DBSpendCap.scope == "team_member",
-        DBSpendCap.team_id == previous_team_id,
-        DBSpendCap.user_id == db_user.id,
-    ).delete(synchronize_session=False)
-    db.commit()
+        try:
+            await sync_remove_user_from_team(
+                db=db, db_user=row, team_id=previous_team_id
+            )
+        except (Exception, asyncio.CancelledError):
+            # A cancelled request must restore the row too.
+            try:
+                row.team_id = previous_team_id
+                db.commit()
+                db.refresh(row)
+            except Exception:
+                db.rollback()
+                logger.exception(
+                    "Failed to revert team removal for user %s after LiteLLM sync failure",
+                    row.id,
+                )
+            raise
+
+        # A member cap belongs to the membership, so it goes with it; a rejoin
+        # would otherwise silently inherit the old limit. Dropped only once the
+        # removal stuck, or the failure path above would restore a member whose
+        # cap is already gone.
+        db.query(DBSpendCap).filter(
+            DBSpendCap.scope == "team_member",
+            DBSpendCap.team_id == previous_team_id,
+            DBSpendCap.user_id == row.id,
+        ).delete(synchronize_session=False)
+        db.commit()
+    db.refresh(db_user)
 
     # No counter update here: the member counter is re-derived from the real
     # members on the next check, so the freed seat is picked up there.
