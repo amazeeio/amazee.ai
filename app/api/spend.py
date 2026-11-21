@@ -748,17 +748,8 @@ def _apply_pool_key_windows(
             item.period_start = team_window.period_start
 
 
-def _key_gate_locked(
-    db: Session, key: DBPrivateAIKey, region_id: int, current_user: DBUser
-) -> bool:
+def _key_gate_locked(db: Session, key: DBPrivateAIKey, region_id: int) -> bool:
     """True while this key's team is purchase-gated and has never bought.
-
-    A team outside the purchase gate is held the same way when a non-admin
-    writes the key budget: its keys start at $0, and its own admin must not
-    lift that by raising or clearing the key cap before any purchase. System
-    admins and always-free teams still set key budgets freely, and a MANUAL
-    team budget above $0 counts as funding: only a system admin can set one
-    (/limits/overwrite), and it grants credit without a purchase record.
 
     Such a key sits at a zero max_budget, and that zero is the only thing
     stopping inference: LiteLLM denies a key at spend >= max_budget but a team
@@ -780,26 +771,73 @@ def _key_gate_locked(
     if team_id is None:
         return False
     team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
-    if team is None:
+    if team is None or not team.requires_pool_purchase_gate:
         return False
-    if not team.requires_pool_purchase_gate:
-        if current_user.is_admin or team.is_always_free:
-            return False
-        admin_granted = (
-            db.query(DBLimitedResource.id)
-            .filter(
-                DBLimitedResource.owner_type == OwnerType.TEAM,
-                DBLimitedResource.owner_id == team_id,
-                DBLimitedResource.resource == ResourceType.BUDGET,
-                DBLimitedResource.limited_by == LimitSource.MANUAL,
-                DBLimitedResource.max_value > 0,
-            )
-            .first()
-        )
-        if admin_granted:
-            return False
     _lock_region_or_404(db, region_id)
     return not pool_team_has_ever_purchased(db, team_id, region_id)
+
+
+async def _refuse_unpaid_key_cap_raise(
+    db: Session,
+    key: DBPrivateAIKey,
+    region_id: int,
+    current_user: DBUser,
+    service: LiteLLMService,
+    new_max_budget: float | None,
+) -> None:
+    """Refuse a non-admin raise or clear of a key cap on a team that never paid.
+
+    A team outside the pool gate starts its keys at $0 while its LiteLLM team
+    has a budget, so its own admin could otherwise lift the key cap and spend
+    credit nobody bought. A lower cap always passes, and no $0 is pushed, so a
+    cap that a system admin set by hand keeps working.
+    """
+    if current_user.is_admin:
+        return
+    team_id = key.team_id
+    if team_id is None and key.owner_id is not None:
+        team_id = db.query(DBUser.team_id).filter(DBUser.id == key.owner_id).scalar()
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first() if team_id else None
+    # Gated pool teams are held by _key_gate_locked; dedicated teams are set up
+    # and billed by an admin.
+    if (
+        team is None
+        or team.requires_pool_purchase_gate
+        or team.is_always_free
+        or team.hide_public_regions
+    ):
+        return
+    if pool_team_has_ever_purchased(db, team.id, region_id):
+        return
+    # Only a system admin can set a MANUAL team budget (/limits/overwrite); it
+    # grants credit without a purchase record.
+    admin_granted = (
+        db.query(DBLimitedResource.id)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == team.id,
+            DBLimitedResource.resource == ResourceType.BUDGET,
+            DBLimitedResource.limited_by == LimitSource.MANUAL,
+            DBLimitedResource.max_value > 0,
+        )
+        .first()
+    )
+    if admin_granted:
+        return
+    current = (
+        (await service.get_key_info(key.litellm_token))
+        .get("info", {})
+        .get("max_budget")
+    )
+    if current is None or (new_max_budget is not None and new_max_budget <= current):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=(
+            "This team has not paid yet, so a key budget can only be lowered. "
+            "Ask an administrator to raise or clear it."
+        ),
+    )
 
 
 def _assert_team_access(current_user: DBUser, role: str, team_id: int) -> None:
@@ -3028,10 +3066,13 @@ async def update_key_budget(
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
+    await _refuse_unpaid_key_cap_raise(
+        db, key, region_id, current_user, service, body.max_budget
+    )
     # A gated team that has never purchased keeps its keys at zero, so a cap
     # set now is stored but not pushed: writing it would lift the gate and let
     # one request through. The first purchase applies the stored cap.
-    gate_locked = _key_gate_locked(db, key, region_id, current_user)
+    gate_locked = _key_gate_locked(db, key, region_id)
     if gate_locked:
         await service.update_key_budget(
             litellm_token=key.litellm_token,
@@ -3157,10 +3198,11 @@ async def clear_key_budget(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
 
+    await _refuse_unpaid_key_cap_raise(db, key, region_id, current_user, service, None)
     # Re-apply the gate instead of clearing, so a cleared key cannot pass its
     # first request against the team's $0 budget. The first purchase clears
     # it, and from then on this endpoint behaves normally.
-    gate_key = _key_gate_locked(db, key, region_id, current_user)
+    gate_key = _key_gate_locked(db, key, region_id)
 
     if gate_key:
         await service.update_key_budget(
