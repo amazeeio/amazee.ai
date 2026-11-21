@@ -24,8 +24,9 @@ if [ -n "${LAGOON_ENVIRONMENT:-}" ]; then
     # Production default: trust only private (in-cluster) peers, never "*".
     FORWARDED_ALLOW_IPS="${FORWARDED_ALLOW_IPS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}"
     # Replace a worker whose event loop has been blocked this long; uvicorn
-    # starts a fresh one (app/core/loop_watchdog.py, TKF-565). Above the 15s
-    # DB lock_timeout and 30s pool_timeout, so ordinary waits never trip it.
+    # starts a fresh one (app/core/loop_watchdog.py). Above the 15s DB
+    # lock_timeout and 30s pool_timeout, so ordinary waits never trip it.
+    # The Helm chart's liveness probe allows 90s, so this fires first.
     export EVENT_LOOP_STALL_TIMEOUT_SECONDS="${EVENT_LOOP_STALL_TIMEOUT_SECONDS:-60}"
     # Production mode (Lagoon)
     exec uvicorn app.main:app --host 0.0.0.0 --port 8800 --workers 4 \
