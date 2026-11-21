@@ -2817,6 +2817,56 @@ def test_team_admin_cannot_raise_key_budget_on_unpaid_periodic_team(
     assert pushed["clear_max_budget"] is False
 
 
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_team_admin_clears_key_budget_when_admin_granted_team_budget(
+    mock_update_key_budget,
+    mock_get_key_info,
+    client,
+    team_admin_token,
+    test_team,
+    test_team_admin,
+    test_region,
+    db,
+):
+    """Credit a system admin grants through /limits/overwrite must stay usable."""
+    from app.core.limit_service import LimitService
+    from app.schemas.limits import (
+        LimitSource,
+        LimitType,
+        OwnerType,
+        ResourceType,
+        UnitType,
+    )
+
+    key = _unpaid_periodic_team_key(db, test_team, test_team_admin, test_region)
+    LimitService(db).set_limit(
+        OwnerType.TEAM,
+        test_team.id,
+        ResourceType.BUDGET,
+        LimitType.DATA_PLANE,
+        UnitType.DOLLAR,
+        50.0,
+        limited_by=LimitSource.MANUAL,
+        set_by="admin@example.com",
+        trigger_propagation=False,
+    )
+    mock_get_key_info.return_value = {"info": {"max_budget": None}}
+
+    response = client.post(
+        f"/spend/{test_region.id}/key/{key.id}/budget/clear",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+
+    assert response.status_code == 200
+    mock_update_key_budget.assert_awaited_once_with(
+        litellm_token=key.litellm_token,
+        max_budget=None,
+        clear_max_budget=True,
+        clear_budget_duration=True,
+    )
+
+
 @patch("app.api.spend._lock_region_or_404", wraps=_lock_region_or_404)
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)

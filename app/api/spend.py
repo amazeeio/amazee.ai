@@ -34,6 +34,7 @@ from app.core.spend_period_service import (
 )
 from app.db.database import get_db
 from app.db.models import (
+    DBLimitedResource,
     DBPeriodicPayment,
     DBPeriodicBudgetLedgerEntry,
     DBPoolPurchase,
@@ -45,7 +46,7 @@ from app.db.models import (
     DBTeamRegion,
     DBUser,
 )
-from app.schemas.limits import OwnerType, ResourceType
+from app.schemas.limits import LimitSource, OwnerType, ResourceType
 from app.api.users import invalidate_user_spend_cache
 from app.schemas.models import (
     BreakdownKeyItem,
@@ -755,7 +756,9 @@ def _key_gate_locked(
     A team outside the purchase gate is held the same way when a non-admin
     writes the key budget: its keys start at $0, and its own admin must not
     lift that by raising or clearing the key cap before any purchase. System
-    admins and always-free teams still set key budgets freely.
+    admins and always-free teams still set key budgets freely, and a MANUAL
+    team budget above $0 counts as funding: only a system admin can set one
+    (/limits/overwrite), and it grants credit without a purchase record.
 
     Such a key sits at a zero max_budget, and that zero is the only thing
     stopping inference: LiteLLM denies a key at spend >= max_budget but a team
@@ -779,10 +782,22 @@ def _key_gate_locked(
     team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
     if team is None:
         return False
-    if not team.requires_pool_purchase_gate and (
-        current_user.is_admin or team.is_always_free
-    ):
-        return False
+    if not team.requires_pool_purchase_gate:
+        if current_user.is_admin or team.is_always_free:
+            return False
+        admin_granted = (
+            db.query(DBLimitedResource.id)
+            .filter(
+                DBLimitedResource.owner_type == OwnerType.TEAM,
+                DBLimitedResource.owner_id == team_id,
+                DBLimitedResource.resource == ResourceType.BUDGET,
+                DBLimitedResource.limited_by == LimitSource.MANUAL,
+                DBLimitedResource.max_value > 0,
+            )
+            .first()
+        )
+        if admin_granted:
+            return False
     _lock_region_or_404(db, region_id)
     return not pool_team_has_ever_purchased(db, team_id, region_id)
 
