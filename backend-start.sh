@@ -28,7 +28,9 @@ if [ -n "${LAGOON_ENVIRONMENT:-}" ]; then
     # DB lock_timeout and 30s pool_timeout, so ordinary waits never trip it.
     export EVENT_LOOP_STALL_TIMEOUT_SECONDS="${EVENT_LOOP_STALL_TIMEOUT_SECONDS:-60}"
     # Production mode (Lagoon)
+    # app/log_config.json writes every log line as one JSON object.
     exec uvicorn app.main:app --host 0.0.0.0 --port 8800 --workers 4 \
+        --log-config /app/app/log_config.json \
         --forwarded-allow-ips "${FORWARDED_ALLOW_IPS}"
 else
     # Development mode (local docker-compose)
