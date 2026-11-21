@@ -1186,6 +1186,24 @@ def test_sign_in_team_attach_is_undone_when_litellm_sync_fails(
     assert db.query(DBTeam).filter(DBTeam.admin_email == EMAIL).count() == 1
 
 
+def test_sign_in_team_attach_is_undone_when_the_request_is_cancelled(
+    drupal_client, db, test_region
+):
+    """A cancelled sync is a BaseException; it must undo the attach, then raise."""
+    user = _make_user(db)
+    with patch(
+        "app.api.auth.sync_add_user_to_team",
+        new_callable=AsyncMock,
+        side_effect=asyncio.CancelledError(),
+    ):
+        with pytest.raises(BaseException):
+            _code_sign_in(drupal_client, EMAIL)
+
+    db.refresh(user)
+    assert user.team_id is None
+    assert user.role == UserRole.DEFAULT
+
+
 @patch("app.api.private_ai_keys.settings")
 @patch("httpx.AsyncClient")
 def test_fallback_skips_team_with_another_persons_member(

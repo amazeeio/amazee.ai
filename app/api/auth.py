@@ -608,15 +608,17 @@ async def sign_in(
                     db.refresh(user)
                     attached_team_id = team.id
 
-    # Outside the lock: two slow LiteLLM calls must not make a retry of the same
-    # mailbox wait for the lock and fail.
+    # The membership sync runs outside the lock, so a slow LiteLLM call here does
+    # not make a retry of the same mailbox wait for the lock. Team and user
+    # creation above still call LiteLLM inside it.
     if attached_team_id is not None:
         try:
             await sync_add_user_to_team(db=db, db_user=user, team_id=attached_team_id)
-        except Exception:
+        except BaseException as exc:
             # Without the LiteLLM membership the member budgets do not apply.
             # The user signs in without the team; the next sign-in reuses the
-            # same team and tries again.
+            # same team and tries again. A cancelled request (client gone,
+            # worker shutdown) raises a BaseException and must undo it too.
             auth_logger.exception(
                 f"LiteLLM sync failed, {sign_in_username} stays without a team"
             )
@@ -631,6 +633,8 @@ async def sign_in(
             )
             db.commit()
             db.refresh(user)
+            if not isinstance(exc, Exception):
+                raise
         else:
             auth_logger.info(
                 f"Attached {sign_in_username} to team {attached_team_id} as admin"
