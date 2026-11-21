@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     DYNAMODB_REGION: str = "eu-west-1"
     SES_REGION: str = "eu-west-1"
     ENABLE_LIMITS: bool = os.getenv("ENABLE_LIMITS", "false") == "true"
+    # Free starting budget (USD) for a new team's LiteLLM team and for keys
+    # without a team. Unset means no free credit. New teams' key budgets come
+    # from the SYSTEM BUDGET limit row, which this value seeds only when missing.
+    DEFAULT_MAX_SPEND: float = float(os.getenv("DEFAULT_MAX_SPEND", "0"))
     AI_TRIAL_MAX_BUDGET: float = os.getenv("AI_TRIAL_MAX_BUDGET", 2.0)
     # Hard ceiling on total trial users. The trial endpoint is unauthenticated,
     # so this bounds free-key farming / provisioning DoS regardless of request
