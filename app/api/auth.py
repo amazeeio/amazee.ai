@@ -1,3 +1,4 @@
+import asyncio
 import traceback
 import logging
 import secrets
@@ -614,11 +615,11 @@ async def sign_in(
     if attached_team_id is not None:
         try:
             await sync_add_user_to_team(db=db, db_user=user, team_id=attached_team_id)
-        except BaseException as exc:
+        except (Exception, asyncio.CancelledError) as exc:
             # Without the LiteLLM membership the member budgets do not apply.
             # The user signs in without the team; the next sign-in reuses the
             # same team and tries again. A cancelled request (client gone,
-            # worker shutdown) raises a BaseException and must undo it too.
+            # worker shutdown) must undo it too.
             auth_logger.exception(
                 f"LiteLLM sync failed, {sign_in_username} stays without a team"
             )
@@ -633,7 +634,7 @@ async def sign_in(
             )
             db.commit()
             db.refresh(user)
-            if not isinstance(exc, Exception):
+            if isinstance(exc, asyncio.CancelledError):
                 raise
         else:
             auth_logger.info(

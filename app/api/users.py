@@ -1273,8 +1273,8 @@ async def remove_user_from_team(
             await sync_remove_user_from_team(
                 db=db, db_user=row, team_id=previous_team_id
             )
-        except BaseException:
-            # A cancelled request (a BaseException) must restore the row too.
+        except (Exception, asyncio.CancelledError):
+            # A cancelled request must restore the row too.
             try:
                 row.team_id = previous_team_id
                 db.commit()
