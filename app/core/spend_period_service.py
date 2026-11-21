@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import exists
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.core.config import settings
+from app.core.periodic_budget_ledger_service import (
+    _active_entries,
+    allocate_period_spend_fifo,
+)
 from app.db.models import (
     DBPeriodicBudgetLedgerEntry,
     DBPrivateAIKey,
@@ -19,6 +25,7 @@ from app.db.models import (
 from app.schemas.models import BudgetType
 from app.services.litellm import LiteLLMService
 
+logger = logging.getLogger(__name__)
 
 # Word-form budget durations accepted at our API boundary, mapped to the
 # canonical forms LiteLLM and our period maths both understand. Storing a word
@@ -220,14 +227,54 @@ def _active_subscription_entry(
     )
 
 
+def counted_in_pool_window():
+    """Ledger rows that can open a team's window: active, or a used-up top-up
+    bought after every subscription entry of the team and region ended.
+
+    FIFO also uses up top-ups at invoice close and at cancellation, and the
+    subscription already absorbed that spend, so such a top-up must not open the window.
+    Deactivation keeps the old ``effective_period_end``, so a top-up bought after a
+    mid-cycle cancellation and before that end does not count when used up.
+    A rollover is dated at the end of the cycle that wrote it, so an entry dated at
+    that end does not count either.
+    """
+    entry = DBPeriodicBudgetLedgerEntry
+    sub = aliased(DBPeriodicBudgetLedgerEntry)
+    bought_by_a_subscription_end = exists().where(
+        sub.team_id == entry.team_id,
+        sub.region_id == entry.region_id,
+        sub.entry_type == "subscription",
+        sub.effective_period_end >= entry.purchased_at,
+    )
+    used_up_topup = (
+        entry.entry_type.in_(["topup", "topup_rollover"])
+        & (entry.consumed_cents >= entry.amount_cents)
+        & ~bought_by_a_subscription_end
+    )
+    return entry.is_active.is_(True) | used_up_topup
+
+
 def _active_topup(
-    db: Session, team_id: int, region_id: int, now: datetime, *, oldest: bool
+    db: Session,
+    team_id: int,
+    region_id: int,
+    now: datetime,
+    *,
+    oldest: bool,
+    include_spent: bool = False,
 ) -> DBPeriodicBudgetLedgerEntry | None:
     """The oldest or newest still-valid top-up for a (team, region).
 
     Both ends are needed: the oldest opens the window and the newest closes it.
     See ``resolve_team_period_window`` for why they are not the same entry.
+    ``include_spent`` also matches a used-up entry that still belongs to the
+    window, as ``counted_in_pool_window`` decides.
     """
+    valid = (
+        counted_in_pool_window()
+        if include_spent
+        else DBPeriodicBudgetLedgerEntry.is_active.is_(True)
+    )
     order = (
         DBPeriodicBudgetLedgerEntry.purchased_at.asc()
         if oldest
@@ -244,7 +291,7 @@ def _active_topup(
             DBPeriodicBudgetLedgerEntry.team_id == team_id,
             DBPeriodicBudgetLedgerEntry.region_id == region_id,
             DBPeriodicBudgetLedgerEntry.entry_type.in_(["topup", "topup_rollover"]),
-            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            valid,
             (
                 DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
                 | (DBPeriodicBudgetLedgerEntry.expires_at > now)
@@ -264,7 +311,7 @@ def _latest_active_topup(
 def _oldest_active_topup(
     db: Session, team_id: int, region_id: int, now: datetime
 ) -> DBPeriodicBudgetLedgerEntry | None:
-    return _active_topup(db, team_id, region_id, now, oldest=True)
+    return _active_topup(db, team_id, region_id, now, oldest=True, include_spent=True)
 
 
 def resolve_team_period_window(
@@ -310,10 +357,10 @@ def resolve_team_period_window(
         # Opening at the oldest rather than the newest is what keeps the window and
         # the budget describing the same money. The budget is
         # ``amount - consumed_cents`` summed over every still-valid entry, and
-        # consumed_cents is only written by FIFO allocation at invoice close — which
-        # a team with no subscription never has. So the budget is effectively the full
-        # face value of every valid purchase, and a window opening at the newest
-        # purchase would leave the spend
+        # consumed_cents is written by FIFO allocation at invoice close or, for a
+        # team with no subscription, at each top-up settlement
+        # (``settle_topup_spend``). A window opening at the newest purchase
+        # would leave the spend
         # against the older ones counted nowhere: absent from the numerator, and not
         # deducted from the denominator either.
         #
@@ -575,3 +622,126 @@ def upsert_team_spend_period(
 
     db.flush()
     return row
+
+
+# Snapshot sources whose counter was charged to the ledger when it was written.
+# A cycle capture row is only a report: it can read the counter after a debit.
+CHARGED_SNAPSHOT_SOURCES = (
+    "moad_subscription_deactivate",
+    "moad_subscription_deactivate_retry",
+    "topup_settlement",
+)
+
+
+def _latest_spend_snapshot(
+    db: Session, *, team_id: int, region_id: int
+) -> DBTeamSpendPeriod | None:
+    """The newest counter already charged to the ledger, by id.
+
+    This includes the top-up settlements written after a cancellation and by
+    the failed attempt itself, so a retry starts after them.
+    """
+    return (
+        db.query(DBTeamSpendPeriod)
+        .filter(
+            DBTeamSpendPeriod.team_id == team_id,
+            DBTeamSpendPeriod.region_id == region_id,
+            DBTeamSpendPeriod.source.in_(CHARGED_SNAPSHOT_SOURCES),
+        )
+        .order_by(DBTeamSpendPeriod.id.desc())
+        .first()
+    )
+
+
+async def settle_topup_spend(
+    db: Session,
+    *,
+    team: DBTeam,
+    region_id: int,
+    service: LiteLLMService,
+    lite_team_id: str,
+    team_info: dict[str, Any],
+    new_entry_id: int | None = None,
+) -> None:
+    """Charge the spend since the last settlement to the valid top-ups, oldest first.
+
+    LiteLLM's team counter never resets, so a cap of ``counter + credit left`` is
+    only right when ``consumed_cents`` is current. Subscription teams settle at
+    invoice close, so this does nothing while a subscription entry is active.
+    Only purchase-gated POOL teams settle: a purchase resets their key spend, so
+    the spend view does not subtract the settled spend a second time.
+
+    A team with no charged snapshot is settled from its first settlement on: that
+    one charges nothing and only records the counter. Teams that already held top-ups
+    get their first snapshot from a one-off seed, so no long log read runs here.
+    """
+    if not team.requires_pool_purchase_gate:
+        return
+    # No expiry check: a lapsed subscription still settles at its next cycle or
+    # cancellation, and a settlement now would charge its spend twice.
+    has_subscription = (
+        db.query(DBPeriodicBudgetLedgerEntry.id)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team.id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+        )
+        .first()
+    )
+    if has_subscription is not None:
+        return
+
+    now = datetime.now(UTC)
+    counter_cents = int(round(float(team_info.get("spend") or 0) * 100))
+    cycle_active = bool(team_info.get("budget_duration"))
+
+    last_row = _latest_spend_snapshot(db, team_id=team.id, region_id=region_id)
+
+    spend_cents = 0
+    rule = "first settlement"
+    if last_row is not None:
+        baseline_cents = int(round(float(last_row.total_spend or 0) * 100))
+        # Every settlement writes a snapshot, so every valid entry except the
+        # one this purchase just added was held at the last snapshot.
+        held_credit_left = any(
+            entry.id != new_entry_id
+            for entry in _active_entries(db, team.id, region_id)
+        )
+        if not held_credit_left:
+            # Every top-up held at the snapshot has expired, and the spend since
+            # then used that credit, so charging it to a newer top-up bills it twice.
+            rule = "credit expired"
+        elif not cycle_active and counter_cents >= baseline_cents:
+            spend_cents = counter_cents - baseline_cents
+            rule = "counter"
+        else:
+            # The counter dropped (a recreated team) or a LiteLLM cycle can reset
+            # it, so read the spend logs, which survive both.
+            logged = await service.get_team_spend_in_range(
+                lite_team_id, _as_utc(last_row.created_at), now
+            )
+            spend_cents = max(0, int(round(float(logged or 0) * 100)))
+            rule = "logs"
+
+    if spend_cents > 0:
+        allocate_period_spend_fifo(
+            db, team_id=team.id, region_id=region_id, spend_cents=spend_cents
+        )
+
+    upsert_team_spend_period(
+        db=db,
+        team=team,
+        region_id=region_id,
+        period_start=now,
+        period_end=now,
+        source="topup_settlement",
+        snapshot={"total_spend": counter_cents / 100.0},
+    )
+    logger.info(
+        "Settled top-up spend for team_id=%s region_id=%s: %s cents from %s",
+        team.id,
+        region_id,
+        spend_cents,
+        rule,
+    )

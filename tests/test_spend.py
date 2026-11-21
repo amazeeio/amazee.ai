@@ -4649,6 +4649,36 @@ def test_get_team_spend_history_returns_periods_ordered_desc(
     assert data["periods"][1]["total_spend"] == 5.0
 
 
+def test_get_team_spend_history_hides_topup_settlements(
+    client, team_admin_token, test_team, test_region, db
+):
+    from datetime import UTC, datetime
+    from app.db.models import DBTeamSpendPeriod
+
+    for day, source in ((1, "moad_subscription_cycle"), (2, "topup_settlement")):
+        db.add(
+            DBTeamSpendPeriod(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                budget_type="pool",
+                period_start=datetime(2026, 4, day, tzinfo=UTC),
+                period_end=datetime(2026, 5, day, tzinfo=UTC),
+                total_spend=5.0,
+                source=source,
+            )
+        )
+        db.commit()
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/history",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    assert [p["source"] for p in response.json()["periods"]] == [
+        "moad_subscription_cycle"
+    ]
+
+
 def test_get_team_spend_history_includes_key_rows(
     client, team_admin_token, test_team, test_region, test_team_user, db
 ):

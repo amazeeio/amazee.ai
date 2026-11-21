@@ -68,6 +68,7 @@ from app.core.pool_budget_service import pool_available_budget_for_team_region
 from app.core.spend_period_service import (
     TeamPeriodWindow,
     compute_period_start,
+    counted_in_pool_window,
     current_cycle_start,
     resolve_team_period_window,
 )
@@ -348,6 +349,9 @@ def spend_window_start(window: TeamPeriodWindow, now: datetime) -> datetime:
     (see the invariant at ``app/api/spend.py``). A closed cycle's spend is
     therefore already subtracted from the budget, so counting it again in the
     numerator inflates the percentage and fires alerts nobody has earned.
+
+    A top-up settlement also increments ``consumed_cents``, but inside the
+    window, so ``_unsettled_consumed_dollars`` adds that part back.
     """
     return window.period_start or now
 
@@ -397,28 +401,28 @@ async def _exact_team_key_state(
 def _unsettled_consumed_dollars(db: Session, team: DBTeam, region_id: int) -> float:
     """``consumed_cents`` sitting on entries that are *still valid*, in dollars.
 
-    Normally zero, and it has to be added back when it is not. Settlement usually
-    re-bases rather than annotates: ``materialize_topup_rollovers`` deactivates a
+    It has to be added back, because the spend window still counts that spend.
+    ``materialize_topup_rollovers`` re-bases at invoice close: it deactivates a
     partly-consumed entry and writes a fresh ``topup_rollover`` holding the
-    remainder with ``consumed_cents = 0``, deactivating the original. So among valid
-    entries the column is 0, face value equals remaining, and the window opening at
-    the oldest valid purchase lines up with it.
+    remainder with ``consumed_cents = 0``. Two paths annotate instead.
+    ``app/api/subscription.py`` runs ``allocate_period_spend_fifo`` at cancellation
+    without a rollover, and ``settle_topup_spend`` charges spend to the valid
+    top-ups of a team with no subscription at each purchase. Both leave
+    ``consumed_cents`` on entries that stay valid.
 
-    Cancellation is the exception. ``app/api/subscription.py`` runs
-    ``allocate_period_spend_fifo`` but never calls ``materialize_topup_rollovers``,
-    so it increments ``consumed_cents`` on entries that stay valid. The budget would
-    then drop by spend the numerator still counts — the same money subtracted once
-    and added once — and the percentage would read high. Adding it back keeps the
-    two sides describing the same money whichever way the ledger was settled.
+    Without the add-back the budget would drop by spend the numerator still
+    counts, the same money subtracted once and added once, and the percentage
+    would read high.
 
-    Normally a no-op, and it logs the first time it is not.
+    A used-up top-up that opens the window (see ``counted_in_pool_window``) is
+    inactive but unexpired, so its consumption is added back too.
     """
     consumed_cents = (
         db.query(func.coalesce(func.sum(DBPeriodicBudgetLedgerEntry.consumed_cents), 0))
         .filter(
             DBPeriodicBudgetLedgerEntry.team_id == team.id,
             DBPeriodicBudgetLedgerEntry.region_id == region_id,
-            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            counted_in_pool_window(),
             DBPeriodicBudgetLedgerEntry.consumed_cents > 0,
             (
                 DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
@@ -430,10 +434,9 @@ def _unsettled_consumed_dollars(db: Session, team: DBTeam, region_id: int) -> fl
     if not consumed_cents:
         return 0.0
     dollars = round(int(consumed_cents) / 100.0, 4)
-    logger.info(
-        "Team %s region %s has $%.2f consumed on still-valid ledger entries "
-        "(unsettled, likely a cancellation); added back so the budget matches the "
-        "spend window",
+    logger.debug(
+        "Team %s region %s has $%.2f consumed on still-valid ledger entries; "
+        "added back so the budget matches the spend window",
         team.id,
         region_id,
         dollars,
@@ -627,8 +630,8 @@ def region_sweep_start(db: Session, region_id: int, now: datetime) -> date:
     90 % is reported at 55 % and gets told it is fine. The fix is to make the
     request cover the earliest window in the region rather than a fixed span.
 
-    It anchors on the oldest still-valid purchase, which is a *conservative* lower
-    bound: a cycle start is always at or after the purchase that funded it, so this
+    It anchors on the oldest purchase that can open a window (see
+    ``counted_in_pool_window``), which is a *conservative* lower bound: a cycle start is always at or after the purchase that funded it, so this
     can fetch a few more days than any team needs but can never fetch too few.
 
     Anchoring on the ledger also usually makes the sweep *cheaper* than the
@@ -644,7 +647,7 @@ def region_sweep_start(db: Session, region_id: int, now: datetime) -> date:
         .join(DBTeam, DBTeam.id == DBPeriodicBudgetLedgerEntry.team_id)
         .filter(
             DBPeriodicBudgetLedgerEntry.region_id == region_id,
-            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            counted_in_pool_window(),
             DBPeriodicBudgetLedgerEntry.purchased_at.isnot(None),
             (
                 DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
@@ -756,7 +759,7 @@ def window_before_sweep_candidates(
         .join(DBTeam, DBTeam.id == DBPeriodicBudgetLedgerEntry.team_id)
         .filter(
             DBPeriodicBudgetLedgerEntry.region_id == region_id,
-            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            counted_in_pool_window(),
             DBTeam.deleted_at.is_(None),
             DBTeam.budget_type == BudgetType.POOL,
             (

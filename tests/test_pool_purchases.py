@@ -8,7 +8,7 @@ from app.db.models import (
     DBPeriodicPayment,
 )
 from app.db.models import DBPeriodicBudgetLedgerEntry
-from app.db.models import DBTeamRegion
+from app.db.models import DBTeamRegion, DBTeamSpendPeriod
 from app.schemas.limits import LimitSource, LimitType, OwnerType, ResourceType, UnitType
 from datetime import datetime, UTC, timedelta
 import pytest
@@ -20,6 +20,7 @@ from app.api.budgets import (
     sync_pool_team_budgets,
 )
 from app.core.config import settings
+from app.core.periodic_budget_ledger_service import compute_active_topup_remaining
 
 
 @pytest.mark.skip(reason="Fixture isolation issue - passes when run with fresh DB")
@@ -1746,3 +1747,614 @@ async def test_sync_pool_keys_keeps_spend_on_expiry(db, test_team, test_region):
         assert call.kwargs.get("budget_duration") is None
         assert call.kwargs["clear_budget_duration"] is True
     mock_instance.update_key_duration.assert_not_awaited()
+
+
+def _buy(
+    client,
+    admin_token,
+    team,
+    region,
+    amount_cents,
+    *,
+    days_ago=0,
+    payment_id=None,
+    expected_status=201,
+):
+    purchased_at = datetime.now(UTC) - timedelta(days=days_ago)
+    response = client.post(
+        f"/budgets/region/{region.id}/teams/{team.id}/purchase",
+        json={
+            "amount_cents": amount_cents,
+            "currency": "usd",
+            "purchased_at": purchased_at.isoformat().replace("+00:00", "Z"),
+            "stripe_payment_id": payment_id
+            or f"pi_settle_{int(time.time() * 1000000)}",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == expected_status, response.text
+    return response.json()
+
+
+def _topup_entries(db, team, region):
+    return (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team.id,
+            DBPeriodicBudgetLedgerEntry.region_id == region.id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "topup",
+        )
+        .order_by(DBPeriodicBudgetLedgerEntry.purchased_at.asc())
+        .all()
+    )
+
+
+def _team_info(*spends):
+    return AsyncMock(side_effect=[{"team_info": {"spend": s}} for s in spends])
+
+
+def test_topup_after_spend_grants_only_new_credit(
+    client, admin_token, db, test_team, test_region
+):
+    """Buy $50, spend $50, buy $10: the team gets $10 of room, not $60."""
+    test_team.budget_type = "pool"
+    db.commit()
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(0.0, 50.0)
+        mock_instance.update_team_budget = AsyncMock()
+        _buy(client, admin_token, test_team, test_region, 5000, days_ago=1)
+        data = _buy(client, admin_token, test_team, test_region, 1000)
+
+    assert data["new_total_budget_cents"] == 6000
+    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 60.0
+    first = _topup_entries(db, test_team, test_region)[0]
+    assert first.consumed_cents == 5000
+    assert first.is_active is False
+
+
+def test_topup_after_partial_spend_keeps_unspent_credit(
+    client, admin_token, db, test_team, test_region
+):
+    """Buy $100, spend $79.93, buy $100: $120.07 of room, cap $200."""
+    data = _buy_then_spend_7993(client, admin_token, db, test_team, test_region)
+
+    assert data["new_total_budget_cents"] == 20000
+    assert (
+        compute_active_topup_remaining(
+            db, team_id=test_team.id, region_id=test_region.id
+        )
+        == 12007
+    )
+
+
+def test_topups_without_spend_add_up_and_ignore_pre_ledger_spend(
+    client, admin_token, db, test_team, test_region
+):
+    """Spend from before the first purchase is not charged to purchased credit."""
+    test_team.budget_type = "pool"
+    db.commit()
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(12.0, 12.0)
+        mock_instance.update_team_budget = AsyncMock()
+        _buy(client, admin_token, test_team, test_region, 3000, days_ago=1)
+        _buy(client, admin_token, test_team, test_region, 2000)
+
+    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 62.0
+    assert all(
+        e.consumed_cents == 0 for e in _topup_entries(db, test_team, test_region)
+    )
+
+
+def test_topup_with_active_subscription_keeps_current_projection(
+    client, admin_token, db, test_team, test_region
+):
+    """Subscription teams settle at invoice close, so the purchase charges nothing."""
+    test_team.budget_type = "pool"
+    now = datetime.now(UTC)
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="subscription",
+            amount_cents=10000,
+            consumed_cents=0,
+            is_active=True,
+            purchased_at=now - timedelta(days=5),
+            effective_period_start=now - timedelta(days=5),
+            effective_period_end=now + timedelta(days=25),
+            expires_at=now + timedelta(days=25),
+        )
+    )
+    db.commit()
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(40.0)
+        mock_instance.update_team_budget = AsyncMock()
+        _buy(client, admin_token, test_team, test_region, 5000)
+
+    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 190.0
+    entries = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(DBPeriodicBudgetLedgerEntry.team_id == test_team.id)
+        .all()
+    )
+    assert all(e.consumed_cents == 0 for e in entries)
+    assert (
+        db.query(DBTeamSpendPeriod)
+        .filter(DBTeamSpendPeriod.source == "topup_settlement")
+        .count()
+        == 0
+    )
+
+
+def test_topup_team_without_snapshot_is_settled_from_its_next_purchase(
+    client, admin_token, db, test_team, test_region
+):
+    """A team with an earlier top-up and no snapshot is charged $0 at its first
+    settlement; the next purchase charges only the spend since then."""
+    test_team.budget_type = "pool"
+    now = datetime.now(UTC)
+    seeded = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="topup",
+        amount_cents=10000,
+        consumed_cents=0,
+        is_active=True,
+        purchased_at=now - timedelta(days=10),
+        expires_at=now + timedelta(days=settings.POOL_PURCHASE_EXPIRY_DAYS - 10),
+    )
+    db.add(seeded)
+    db.commit()
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(60.0, 75.0)
+        mock_instance.get_team_spend_in_range = AsyncMock(return_value=0.0)
+        mock_instance.update_team_budget = AsyncMock()
+        _buy(client, admin_token, test_team, test_region, 10000, days_ago=1)
+        first_cap = mock_instance.update_team_budget.await_args.kwargs["max_budget"]
+        _buy(client, admin_token, test_team, test_region, 1000)
+
+    assert first_cap == 260.0
+    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 270.0
+    db.refresh(seeded)
+    assert seeded.consumed_cents == 1500
+    mock_instance.get_team_spend_in_range.assert_not_awaited()
+
+
+def test_topup_after_another_topup_expired_does_not_give_back_spend(
+    client, admin_token, db, test_team, test_region
+):
+    """The oldest top-up expires partly used: only its unused part is lost, and
+    spend already charged is not given back."""
+    test_team.budget_type = "pool"
+    db.commit()
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(0.0, 5.0, 30.0)
+        mock_instance.update_team_budget = AsyncMock()
+        _buy(client, admin_token, test_team, test_region, 2000, days_ago=2)
+        _buy(client, admin_token, test_team, test_region, 5000, days_ago=1)
+        entry_a, entry_b = _topup_entries(db, test_team, test_region)
+        assert entry_a.consumed_cents == 500
+        entry_a.expires_at = datetime.now(UTC) - timedelta(minutes=1)
+        db.commit()
+        _buy(client, admin_token, test_team, test_region, 1000)
+
+    # 30 spent + 25 left on B + 10 new; the $15 left on A expired.
+    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 65.0
+    db.refresh(entry_b)
+    assert entry_b.consumed_cents == 2500
+
+
+def test_topup_after_every_held_topup_expired_charges_nothing(
+    client, admin_token, db, test_team, test_region
+):
+    """Buy $100, spend $60, the top-up expires, buy $100: the expired credit paid
+    for the $60, so the new top-up gives the full $100 of room."""
+    test_team.budget_type = "pool"
+    db.commit()
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(0.0, 60.0)
+        mock_instance.update_team_budget = AsyncMock()
+        _buy(client, admin_token, test_team, test_region, 10000, days_ago=1)
+        (expired,) = _topup_entries(db, test_team, test_region)
+        expired.expires_at = datetime.now(UTC) - timedelta(minutes=1)
+        db.commit()
+        _buy(client, admin_token, test_team, test_region, 10000)
+
+    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 160.0
+    assert [e.consumed_cents for e in _topup_entries(db, test_team, test_region)] == [
+        0,
+        0,
+    ]
+
+
+def test_topup_charges_spend_to_a_rollover_dated_in_the_future(
+    client, admin_token, db, test_team, test_region
+):
+    """A rollover is dated at the end of its period, but it is credit the team
+    held at the snapshot, so the spend since then is charged to it."""
+    test_team.budget_type = "pool"
+    now = datetime.now(UTC)
+    rollover = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="topup_rollover",
+        amount_cents=5000,
+        consumed_cents=0,
+        is_active=True,
+        purchased_at=now + timedelta(days=20),
+        expires_at=now + timedelta(days=200),
+    )
+    db.add(rollover)
+    db.commit()
+    db.add(
+        DBTeamSpendPeriod(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            budget_type="pool",
+            period_start=now,
+            period_end=now,
+            source="topup_settlement",
+            total_spend=10.0,
+        )
+    )
+    db.commit()
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(40.0)
+        mock_instance.update_team_budget = AsyncMock()
+        _buy(client, admin_token, test_team, test_region, 1000)
+
+    # 40 spent + 20 left; FIFO charges top-ups before rollovers, so the new
+    # $10 goes first and the rollover takes the other $20.
+    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 70.0
+    db.refresh(rollover)
+    assert rollover.consumed_cents == 2000
+    assert [e.consumed_cents for e in _topup_entries(db, test_team, test_region)] == [
+        1000
+    ]
+
+
+def test_topup_charges_spend_to_an_entry_created_by_an_overlapping_purchase(
+    client, admin_token, db, test_team, test_region
+):
+    """A concurrent purchase can commit its row with a created_at later than this
+    transaction's start. It is still credit the team held, so spend is charged."""
+    test_team.budget_type = "pool"
+    now = datetime.now(UTC)
+    db.add(
+        DBTeamSpendPeriod(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            budget_type="pool",
+            period_start=now,
+            period_end=now,
+            source="topup_settlement",
+            total_spend=0.0,
+        )
+    )
+    other = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="topup",
+        amount_cents=5000,
+        consumed_cents=0,
+        is_active=True,
+        purchased_at=now - timedelta(hours=1),
+        expires_at=now + timedelta(days=300),
+        created_at=now + timedelta(hours=1),
+    )
+    db.add(other)
+    db.commit()
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(30.0)
+        mock_instance.update_team_budget = AsyncMock()
+        _buy(client, admin_token, test_team, test_region, 1000)
+
+    # 30 spent + 20 left on the other top-up + 10 new.
+    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 60.0
+    db.refresh(other)
+    assert other.consumed_cents == 3000
+
+
+def test_topup_retry_after_failed_budget_write_does_not_charge_spend_again(
+    client, admin_token, db, test_team, test_region
+):
+    """A failed purchase undoes its settlement, so the retry charges the spend once."""
+    test_team.budget_type = "pool"
+    db.commit()
+    payment_id = f"pi_settle_retry_{int(time.time() * 1000000)}"
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(0.0, 30.0, 30.0)
+        mock_instance.update_team_budget = AsyncMock(
+            side_effect=[None, RuntimeError("LiteLLM down"), None]
+        )
+        _buy(client, admin_token, test_team, test_region, 5000, days_ago=1)
+        _buy(
+            client,
+            admin_token,
+            test_team,
+            test_region,
+            2000,
+            payment_id=payment_id,
+            expected_status=502,
+        )
+        _buy(client, admin_token, test_team, test_region, 2000, payment_id=payment_id)
+
+    # 30 spent + 20 left on the first top-up + 20 new.
+    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 70.0
+    first, retried = _topup_entries(db, test_team, test_region)
+    assert first.consumed_cents == 3000
+    assert retried.consumed_cents == 0
+
+
+def test_failed_topup_write_undoes_the_settlement_that_charged_the_new_row(
+    client, admin_token, db, test_team, test_region
+):
+    """A purchase dated before the first one is charged first by FIFO. When its
+    LiteLLM write fails, that charge and the snapshot go away with the row."""
+    test_team.budget_type = "pool"
+    db.commit()
+    payment_id = f"pi_settle_undo_{int(time.time() * 1000000)}"
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(0.0, 79.93, 79.93)
+        mock_instance.update_team_budget = AsyncMock(
+            side_effect=[None, RuntimeError("LiteLLM down"), None]
+        )
+        _buy(client, admin_token, test_team, test_region, 10000, days_ago=1)
+        _buy(
+            client,
+            admin_token,
+            test_team,
+            test_region,
+            5000,
+            days_ago=5,
+            payment_id=payment_id,
+            expected_status=502,
+        )
+
+        (first,) = _topup_entries(db, test_team, test_region)
+        assert first.consumed_cents == 0
+        assert (
+            db.query(DBTeamSpendPeriod)
+            .filter(DBTeamSpendPeriod.source == "topup_settlement")
+            .count()
+            == 1
+        )
+
+        _buy(
+            client,
+            admin_token,
+            test_team,
+            test_region,
+            5000,
+            days_ago=5,
+            payment_id=payment_id,
+        )
+
+    # 79.93 spent: 50 on the older retried row, 29.93 on the first; 70.07 left.
+    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 150.0
+    retried, first = _topup_entries(db, test_team, test_region)
+    assert retried.consumed_cents == 5000
+    assert first.consumed_cents == 2993
+
+
+def _buy_then_spend_7993(client, admin_token, db, team, region):
+    """Criterion 2 flow: buy $100, spend $79.93, buy $100."""
+    team.budget_type = "pool"
+    db.commit()
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(0.0, 79.93)
+        mock_instance.update_team_budget = AsyncMock()
+        _buy(client, admin_token, team, region, 10000, days_ago=1)
+        return _buy(client, admin_token, team, region, 10000)
+
+
+def _clear_team_budget(client, admin_token, team, region):
+    with (
+        patch(
+            "app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock
+        ) as mock_update,
+        patch(
+            "app.api.spend.LiteLLMService.get_team_info",
+            new_callable=AsyncMock,
+            return_value={"team_info": {}},
+        ),
+    ):
+        response = client.post(
+            f"/spend/{region.id}/team/{team.id}/budget/clear",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    assert response.status_code == 200, response.text
+    return mock_update.await_args.kwargs["max_budget"]
+
+
+def test_periodic_status_reports_settled_topup_remaining(
+    client, admin_token, db, test_team, test_region
+):
+    _buy_then_spend_7993(client, admin_token, db, test_team, test_region)
+
+    response = client.get(
+        f"/budgets/region/{test_region.id}/teams/{test_team.id}/periodic-status",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["topup_remaining_cents"] == 12007
+    assert data["desired_remaining_cents"] == 12007
+
+
+def test_team_budget_clear_after_expiry_does_not_give_back_spend(
+    client, admin_token, db, test_team, test_region
+):
+    """The clear path reads the last settlement, so an expired top-up stays gone."""
+    test_team.budget_type = "pool"
+    db.commit()
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(0.0, 5.0)
+        mock_instance.update_team_budget = AsyncMock()
+        _buy(client, admin_token, test_team, test_region, 2000, days_ago=2)
+        _buy(client, admin_token, test_team, test_region, 5000, days_ago=1)
+    entry_a, _ = _topup_entries(db, test_team, test_region)
+    entry_a.expires_at = datetime.now(UTC) - timedelta(minutes=1)
+    db.commit()
+
+    # Last settled counter 5 + the 50 left on B; the $15 left on A expired.
+    assert _clear_team_budget(client, admin_token, test_team, test_region) == 55.0
+
+
+def test_team_budget_clear_restores_settled_cap(
+    client, admin_token, db, test_team, test_region
+):
+    _buy_then_spend_7993(client, admin_token, db, test_team, test_region)
+
+    assert _clear_team_budget(client, admin_token, test_team, test_region) == 200.0
+
+
+def _alert_window_and_budget(db, team, region):
+    from app.core.budget_alert_service import _team_budget
+    from app.core.spend_period_service import resolve_team_period_window
+
+    db.refresh(team)
+    window = resolve_team_period_window(db, team, region.id)
+    return window.period_start, _team_budget(db, team, region.id)
+
+
+def test_alert_budget_keeps_a_used_up_topup_in_the_window(
+    client, admin_token, db, test_team, test_region
+):
+    """Buy $50, spend $50, buy $10: the alert reads $50 of $60, not $50 of $10."""
+    test_team.budget_type = "pool"
+    db.commit()
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(0.0, 50.0)
+        mock_instance.update_team_budget = AsyncMock()
+        _buy(client, admin_token, test_team, test_region, 5000, days_ago=2)
+        _buy(client, admin_token, test_team, test_region, 1000)
+    first = _topup_entries(db, test_team, test_region)[0]
+    assert first.is_active is False
+
+    window_start, budget = _alert_window_and_budget(db, test_team, test_region)
+
+    assert window_start == first.purchased_at
+    assert budget == 60.0
+
+
+def test_alert_budget_after_three_topups_leaves_true_room(
+    client, admin_token, db, test_team, test_region
+):
+    """T1 $50, spend $10, T2 $50, spend $60 more, T3 $10: $70 of $110, $40 room."""
+    test_team.budget_type = "pool"
+    db.commit()
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(0.0, 10.0, 70.0)
+        mock_instance.update_team_budget = AsyncMock()
+        _buy(client, admin_token, test_team, test_region, 5000, days_ago=3)
+        _buy(client, admin_token, test_team, test_region, 5000, days_ago=2)
+        _buy(client, admin_token, test_team, test_region, 1000, days_ago=1)
+    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 110.0
+    first = _topup_entries(db, test_team, test_region)[0]
+
+    window_start, budget = _alert_window_and_budget(db, test_team, test_region)
+
+    assert window_start == first.purchased_at
+    assert budget == 110.0
+
+
+def test_topup_after_cancel_charges_spend_since_the_deactivate_counter(
+    client, admin_token, db, test_team, test_region
+):
+    """The capture after a cancellation is only a report, so the purchase
+    charges from the deactivate counter."""
+    test_team.budget_type = "pool"
+    now = datetime.now(UTC)
+    held = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="topup",
+        amount_cents=5000,
+        consumed_cents=0,
+        is_active=True,
+        purchased_at=now - timedelta(days=10),
+        expires_at=now + timedelta(days=settings.POOL_PURCHASE_EXPIRY_DAYS - 10),
+    )
+    db.add(held)
+    # The capture reads the counter after the debit, so it holds more spend. It
+    # differs from the later settlement, so the clear also proves the order by id.
+    for total_spend, source, end in (
+        (10.0, "moad_subscription_deactivate", now),
+        (12.0, "moad_subscription_cycle", now + timedelta(days=26)),
+    ):
+        db.add(
+            DBTeamSpendPeriod(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                budget_type="pool",
+                period_start=now - timedelta(days=5),
+                period_end=end,
+                source=source,
+                total_spend=total_spend,
+            )
+        )
+        db.commit()
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = _team_info(20.0)
+        mock_instance.update_team_budget = AsyncMock()
+        _buy(client, admin_token, test_team, test_region, 5000)
+
+    # Counter 20 + 40 left on the held top-up + 50 new.
+    assert mock_instance.update_team_budget.await_args.kwargs["max_budget"] == 110.0
+    db.refresh(held)
+    assert held.consumed_cents == 1000
+    assert _clear_team_budget(client, admin_token, test_team, test_region) == 110.0
+
+
+def test_drift_check_finds_no_drift_for_a_settled_topup_team(
+    client, admin_token, db, test_team, test_region
+):
+    """The drift check reads the settled ledger, so the purchase cap matches it.
+
+    Only the billing cycle calls this check, but it can run for a top-up-only team.
+    """
+    import asyncio
+
+    from app.core.worker import reconcile_periodic_team_budget_drift
+
+    _buy_then_spend_7993(client, admin_token, db, test_team, test_region)
+
+    with patch("app.core.worker.LiteLLMService") as mock_litellm:
+        mock_litellm.return_value.get_team_info = AsyncMock(
+            return_value={"team_info": {"spend": 79.93, "max_budget": 200.0}}
+        )
+        result = asyncio.run(
+            reconcile_periodic_team_budget_drift(
+                db=db, team=test_team, region=test_region
+            )
+        )
+
+    assert result.expected_max_budget_cents == 20000
+    assert result.drift_cents == 0

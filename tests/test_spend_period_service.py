@@ -1,10 +1,14 @@
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from app.core.config import settings
 from app.core.spend_period_service import (
     canonical_budget_duration,
     compute_period_start,
     resolve_team_period_window,
+    settle_topup_spend,
     upsert_team_spend_period,
 )
 from app.db.models import (
@@ -155,11 +159,11 @@ def test_pool_topup_window_opens_at_the_oldest_valid_purchase(
 ):
     """The window spans the life of the credit the team still holds.
 
-    It opens at the oldest still-valid purchase because the budget is the full face
-    value of every valid entry: ``consumed_cents`` is only written by FIFO at
-    invoice close, which a team with no subscription never has. Opening at the
-    newest purchase would leave spend against the older entries counted nowhere —
-    missing from the numerator and never deducted from the budget.
+    It opens at the oldest still-valid purchase because the alert budget adds the
+    ``consumed_cents`` of every valid entry back, which a top-up settlement
+    writes for a team with no subscription. Opening at the newest purchase would
+    leave spend against the older entries counted nowhere: missing from the
+    numerator and never deducted from the budget.
 
     It closes 365 days after the NEWEST purchase, since that is when the last of
     the credit lapses.
@@ -276,3 +280,163 @@ def test_word_form_and_canonical_agree_on_period_start():
         # Read-side safety net: keys already carrying a word form resolve too,
         # so no data migration is needed.
         assert compute_period_start(reset_at, word) == via_canonical
+
+
+def _spend_snapshot(db, team, region, *, total_spend, days_ago):
+    start = datetime.now(UTC) - timedelta(days=days_ago)
+    upsert_team_spend_period(
+        db=db,
+        team=team,
+        region_id=region.id,
+        period_start=start,
+        period_end=start,
+        source="topup_settlement",
+        snapshot={"total_spend": total_spend},
+    )
+    db.commit()
+
+
+def _logs_service(spend=0.0):
+    service = MagicMock()
+    service.get_team_spend_in_range = AsyncMock(return_value=spend)
+    return service
+
+
+async def _settle(db, team, region, service, *, spend):
+    await settle_topup_spend(
+        db,
+        team=team,
+        region_id=region.id,
+        service=service,
+        lite_team_id="lite-team",
+        team_info={"spend": spend},
+    )
+    db.commit()
+
+
+@pytest.mark.asyncio
+async def test_settle_topup_spend_first_settlement_charges_nothing(
+    db, test_team, test_region
+):
+    """Spend before the first ledger entry is not charged to purchased credit."""
+    test_team.budget_type = BudgetType.POOL
+    db.commit()
+    entry = _topup(db, test_team, test_region, amount_cents=5000, days_ago=0)
+    service = _logs_service()
+
+    await _settle(db, test_team, test_region, service, spend=12.0)
+
+    db.refresh(entry)
+    assert entry.consumed_cents == 0
+    rows = db.query(DBTeamSpendPeriod).filter_by(team_id=test_team.id).all()
+    assert [(r.source, r.total_spend) for r in rows] == [("topup_settlement", 12.0)]
+    service.get_team_spend_in_range.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_settle_topup_spend_charges_oldest_entry_first(
+    db, test_team, test_region
+):
+    test_team.budget_type = BudgetType.POOL
+    db.commit()
+    older = _topup(db, test_team, test_region, amount_cents=5000, days_ago=20)
+    newer = _topup(db, test_team, test_region, amount_cents=5000, days_ago=10)
+    _spend_snapshot(db, test_team, test_region, total_spend=10.0, days_ago=5)
+
+    await _settle(db, test_team, test_region, _logs_service(), spend=80.0)
+
+    db.refresh(older)
+    db.refresh(newer)
+    assert older.consumed_cents == 5000
+    assert older.is_active is False
+    assert newer.consumed_cents == 2000
+
+
+@pytest.mark.asyncio
+async def test_settle_topup_spend_team_without_snapshot_is_settled_from_now_on(
+    db, test_team, test_region
+):
+    """Earlier top-ups and no snapshot: the first settlement charges $0, then the
+    next one charges only the spend since that snapshot."""
+    test_team.budget_type = BudgetType.POOL
+    db.commit()
+    oldest = _topup(db, test_team, test_region, amount_cents=5000, days_ago=30)
+    _topup(db, test_team, test_region, amount_cents=5000, days_ago=10)
+    service = _logs_service()
+
+    await _settle(db, test_team, test_region, service, spend=99.0)
+
+    db.refresh(oldest)
+    assert oldest.consumed_cents == 0
+    rows = db.query(DBTeamSpendPeriod).filter_by(team_id=test_team.id).all()
+    assert [(r.source, r.total_spend) for r in rows] == [("topup_settlement", 99.0)]
+
+    await _settle(db, test_team, test_region, service, spend=139.0)
+
+    db.refresh(oldest)
+    assert oldest.consumed_cents == 4000
+    service.get_team_spend_in_range.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_settle_topup_spend_reads_logs_when_counter_dropped_below_baseline(
+    db, test_team, test_region
+):
+    test_team.budget_type = BudgetType.POOL
+    db.commit()
+    entry = _topup(db, test_team, test_region, amount_cents=5000, days_ago=10)
+    _spend_snapshot(db, test_team, test_region, total_spend=50.0, days_ago=5)
+    service = _logs_service(8.0)
+
+    await _settle(db, test_team, test_region, service, spend=5.0)
+
+    service.get_team_spend_in_range.assert_awaited_once()
+    db.refresh(entry)
+    assert entry.consumed_cents == 800
+
+
+@pytest.mark.asyncio
+async def test_settle_topup_spend_skips_a_team_without_the_purchase_gate(
+    db, test_team, test_region
+):
+    """A purchase does not reset key spend for these teams, so they never settle."""
+    entry = _topup(db, test_team, test_region, amount_cents=5000, days_ago=10)
+    _spend_snapshot(db, test_team, test_region, total_spend=0.0, days_ago=5)
+
+    await _settle(db, test_team, test_region, _logs_service(), spend=40.0)
+
+    db.refresh(entry)
+    assert entry.consumed_cents == 0
+    assert db.query(DBTeamSpendPeriod).filter_by(team_id=test_team.id).count() == 1
+
+
+@pytest.mark.asyncio
+async def test_settle_topup_spend_skips_a_lapsed_but_active_subscription(
+    db, test_team, test_region
+):
+    """The subscription's cycle or cancellation settles it, so nothing changes here."""
+    test_team.budget_type = BudgetType.POOL
+    db.commit()
+    now = datetime.now(UTC)
+    entry = _topup(db, test_team, test_region, amount_cents=5000, days_ago=10)
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="subscription",
+            amount_cents=10_000,
+            consumed_cents=0,
+            is_active=True,
+            purchased_at=now - timedelta(days=40),
+            effective_period_start=now - timedelta(days=40),
+            effective_period_end=now - timedelta(days=9),
+            expires_at=now - timedelta(days=9),
+        )
+    )
+    db.commit()
+
+    await _settle(db, test_team, test_region, _logs_service(), spend=40.0)
+
+    db.refresh(entry)
+    assert entry.consumed_cents == 0
+    assert db.query(DBTeamSpendPeriod).filter_by(team_id=test_team.id).count() == 0

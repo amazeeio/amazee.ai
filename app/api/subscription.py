@@ -10,7 +10,11 @@ from app.core.periodic_budget_ledger_service import (
     compute_active_topup_remaining,
 )
 from app.core.security import get_role_min_system_admin
-from app.core.spend_period_service import upsert_team_spend_period
+from app.core.spend_period_service import (
+    _latest_spend_snapshot,
+    settle_topup_spend,
+    upsert_team_spend_period,
+)
 from app.core.team_service import get_team_region_litellm_keys
 from app.core.worker import (
     _record_periodic_payment_direct,
@@ -97,12 +101,6 @@ def _raise_settlement_failed(
     )
 
 
-DEACTIVATE_SNAPSHOT_SOURCES = (
-    "moad_subscription_deactivate",
-    "moad_subscription_deactivate_retry",
-)
-
-
 def _current_period_spend_baseline_cents(
     db: Session, *, team_id: int, region_id: int, period_start: datetime
 ) -> int:
@@ -124,26 +122,6 @@ def _current_period_spend_baseline_cents(
     if row is None or row[0] is None:
         return 0
     return int(round(float(row[0]) * 100))
-
-
-def _latest_spend_snapshot(
-    db: Session, *, team_id: int, region_id: int
-) -> DBTeamSpendPeriod | None:
-    """The newest snapshot written by a deactivation attempt.
-
-    A cycle snapshot holds the counter at the start of the period, which a
-    retry would debit a second time.
-    """
-    return (
-        db.query(DBTeamSpendPeriod)
-        .filter(
-            DBTeamSpendPeriod.team_id == team_id,
-            DBTeamSpendPeriod.region_id == region_id,
-            DBTeamSpendPeriod.source.in_(DEACTIVATE_SNAPSHOT_SOURCES),
-        )
-        .order_by(DBTeamSpendPeriod.period_start.desc(), DBTeamSpendPeriod.id.desc())
-        .first()
-    )
 
 
 @router.post(
@@ -591,11 +569,6 @@ async def subscription_deactivate(
             row.is_active = False
         db.flush()
 
-        topup_remaining_dollars = (
-            compute_active_topup_remaining(db, team_id=team.id, region_id=region.id)
-            / 100.0
-        )
-
         if current_team_spend is None:
             try:
                 team_info_resp = await litellm_service.get_team_info(lite_team_id)
@@ -607,6 +580,25 @@ async def subscription_deactivate(
                     team.id,
                     exc,
                 )
+            if current_team_spend is not None:
+                # Neither branch above ran, so nothing charged the spend since
+                # the last top-up, and the projection below would hand it back.
+                try:
+                    await settle_topup_spend(
+                        db,
+                        team=team,
+                        region_id=region.id,
+                        service=litellm_service,
+                        lite_team_id=lite_team_id,
+                        team_info=team_info,
+                    )
+                except Exception as exc:
+                    _raise_settlement_failed(db, request, team.id, exc)
+
+        topup_remaining_dollars = (
+            compute_active_topup_remaining(db, team_id=team.id, region_id=region.id)
+            / 100.0
+        )
         if topup_remaining_dollars <= 0:
             # No top-up left: block every key in the team, whatever the spend
             # counter says now or later.
