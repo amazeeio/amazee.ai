@@ -276,6 +276,53 @@ def test_register_team_allows_purchase_gate_override(client, admin_token, test_r
     assert response.json()["require_purchase_for_requests"] is False
 
 
+def test_register_team_non_admin_cannot_set_billing_fields(
+    client, test_token, test_region
+):
+    with patch(
+        "app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock
+    ) as mock_create_team:
+        response = client.post(
+            "/teams/",
+            json={
+                "name": "Ungated Pool Team",
+                "admin_email": "ignored@example.com",
+                "budget_type": "pool",
+                "require_purchase_for_requests": False,
+                "region_id": test_region.id,
+            },
+            headers={"Authorization": f"Bearer {test_token}"},
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == (
+        "Only system administrators can set: budget_type, require_purchase_for_requests"
+    )
+    mock_create_team.assert_not_awaited()
+
+
+def test_register_team_non_admin_may_send_default_values(
+    client, test_token, test_region
+):
+    with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock):
+        response = client.post(
+            "/teams/",
+            json={
+                "name": "Default Values Team",
+                "admin_email": "ignored@example.com",
+                "budget_type": "periodic",
+                "require_purchase_for_requests": True,
+                "force_user_keys": False,
+                "hide_public_regions": False,
+                "region_id": test_region.id,
+            },
+            headers={"Authorization": f"Bearer {test_token}"},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["admin_email"] == "test@example.com"
+
+
 def test_register_team_unauthenticated(client, test_region):
     """Test that unauthenticated requests are rejected"""
     response = client.post(
