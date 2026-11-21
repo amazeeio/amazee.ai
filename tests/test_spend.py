@@ -2861,6 +2861,43 @@ def test_team_admin_can_raise_key_budget_on_always_free_team(
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_team_admin_can_raise_key_budget_on_ungated_pool_team(
+    mock_update_key_budget,
+    mock_get_key_info,
+    client,
+    team_admin_token,
+    test_team,
+    test_team_admin,
+    test_region,
+    db,
+):
+    """An ungated pool team is funded by a system admin, so the check skips it."""
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = False
+    db.commit()
+    key = DBPrivateAIKey(
+        name="ungated-pool-key",
+        litellm_token="ungated-pool-token",
+        region_id=test_region.id,
+        owner_id=test_team_admin.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+    mock_get_key_info.return_value = {"info": {"max_budget": 10.0}}
+
+    response = client.put(
+        f"/spend/{test_region.id}/key/{key.id}/budget",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"max_budget": 20.0},
+    )
+
+    assert response.status_code == 200
+    assert mock_update_key_budget.await_args.kwargs["max_budget"] == 20.0
+
+
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
 def test_team_admin_can_raise_key_budget_once_periodic_team_has_paid(
     mock_update_key_budget,
     mock_get_key_info,

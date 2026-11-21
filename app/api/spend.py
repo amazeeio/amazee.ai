@@ -785,12 +785,13 @@ async def _refuse_unpaid_key_cap_raise(
     service: LiteLLMService,
     new_max_budget: float | None,
 ) -> None:
-    """Refuse a non-admin raise or clear of a key cap on a team that never paid.
+    """Refuse a non-admin raise or clear of a key cap on a periodic team that never paid.
 
-    A team outside the pool gate starts its keys at $0 while its LiteLLM team
-    has a budget, so its own admin could otherwise lift the key cap and spend
-    credit nobody bought. A lower cap always passes, and no $0 is pushed, so a
-    cap that a system admin set by hand keeps working.
+    A periodic team starts its keys at $0 while its LiteLLM team has a budget,
+    so its own admin could otherwise lift the key cap and spend credit nobody
+    bought. A lower cap always passes, and no $0 is pushed, so a cap that a
+    system admin set by hand keeps working. Pool teams are funded by purchases
+    or by a system admin, so they are left alone.
     """
     if current_user.is_admin:
         return
@@ -798,11 +799,10 @@ async def _refuse_unpaid_key_cap_raise(
     if team_id is None and key.owner_id is not None:
         team_id = db.query(DBUser.team_id).filter(DBUser.id == key.owner_id).scalar()
     team = db.query(DBTeam).filter(DBTeam.id == team_id).first() if team_id else None
-    # Gated pool teams are held by _key_gate_locked; dedicated teams are set up
-    # and billed by an admin.
+    # Dedicated teams are set up and billed by an admin.
     if (
         team is None
-        or team.requires_pool_purchase_gate
+        or team.budget_type != BudgetType.PERIODIC
         or team.is_always_free
         or team.hide_public_regions
     ):
@@ -2898,7 +2898,12 @@ async def clear_team_budget(
             pass
         _, max_budget_to_restore, _ = limit_service.get_token_restrictions(team_id)
         max_budget_to_restore = round(
-            float(max_budget_to_restore or DEFAULT_MAX_SPEND), 4
+            float(
+                DEFAULT_MAX_SPEND
+                if max_budget_to_restore is None
+                else max_budget_to_restore
+            ),
+            4,
         )
 
     service = LiteLLMService(

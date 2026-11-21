@@ -191,6 +191,8 @@ def make_team(client, admin_token, litellm_region, db):
         resp = client.post("/teams", json=payload, headers=_auth(admin_token))
         assert resp.status_code == 201, f"team creation failed: {resp.text}"
         team = resp.json()
+        if team["budget_type"] == "pool" and team["require_purchase_for_requests"]:
+            return team  # a gated team must start at $0 for purchase-gate tests
         httpx.post(
             f"{LITELLM_A_URL}/team/update",
             json={
