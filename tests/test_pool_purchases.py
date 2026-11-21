@@ -255,6 +255,268 @@ def test_create_periodic_topup_success(client, admin_token, db, test_team, test_
     mock_instance.update_team_budget.assert_awaited_once()
 
 
+def _post_periodic_topup(client, admin_token, test_team, test_region):
+    return client.post(
+        f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase/periodic",
+        json={
+            "amount_cents": 5000,
+            "currency": "usd",
+            "purchased_at": "2026-03-13T10:00:00Z",
+            "stripe_payment_id": f"cs_periodic_{int(time.time() * 1000000)}",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+
+_ZEROED_KEY_INFO = {"info": {"max_budget": 0.0, "budget_duration": None}}
+
+
+def _zeroed_periodic_team_with_key(db, test_team, region, token):
+    test_team.budget_type = "periodic"
+    test_team.last_payment = None
+    test_team.is_always_free = False
+    test_team.created_at = datetime.now(UTC) - timedelta(
+        days=settings.SIGNUP_CREDIT_DAYS + 5
+    )
+    db.add(
+        DBPrivateAIKey(
+            name=token,
+            litellm_token=token,
+            region_id=region.id,
+            team_id=test_team.id,
+        )
+    )
+    db.commit()
+
+
+def test_create_periodic_topup_retry_restores_keys_after_failed_restore(
+    client, admin_token, db, test_team, test_region
+):
+    """
+    Given: A zeroed team whose first top-up failed while restoring keys
+    When: The same stripe_payment_id is retried (the payment row now exists)
+    Then: The keys are still restored, because the decision comes from key state
+    """
+    _zeroed_periodic_team_with_key(db, test_team, test_region, "retry-key")
+    payload = {
+        "amount_cents": 5000,
+        "currency": "usd",
+        "purchased_at": "2026-03-13T10:00:00Z",
+        "stripe_payment_id": f"cs_retry_{int(time.time() * 1000000)}",
+    }
+    url = f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase/periodic"
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            return_value={"team_info": {"spend": 0.0}}
+        )
+        mock_instance.get_key_info = AsyncMock(return_value=_ZEROED_KEY_INFO)
+        mock_instance.update_team_budget = AsyncMock()
+        mock_instance.update_key_budget = AsyncMock(
+            side_effect=Exception("LiteLLM down")
+        )
+
+        first = client.post(
+            url, json=payload, headers={"Authorization": f"Bearer {admin_token}"}
+        )
+        assert first.status_code == 502, first.text
+        payment = (
+            db.query(DBPeriodicPayment)
+            .filter(DBPeriodicPayment.stripe_payment_id == payload["stripe_payment_id"])
+            .one()
+        )
+        assert payment.sync_status == "sync_failed"
+
+        mock_instance.update_key_budget = AsyncMock()
+        retry = client.post(
+            url, json=payload, headers={"Authorization": f"Bearer {admin_token}"}
+        )
+
+    assert retry.status_code == 201, retry.text
+    tokens = [
+        c.kwargs["litellm_token"]
+        for c in mock_instance.update_key_budget.await_args_list
+    ]
+    assert tokens == ["retry-key"]
+    assert mock_instance.update_key_budget.await_args.kwargs["max_budget"] > 0
+
+
+def test_create_periodic_topup_second_region_restores_zeroed_keys(
+    client, admin_token, db, test_team, test_region
+):
+    """
+    Given: A zeroed team that already topped up in region A
+    When: It tops up in region B, whose keys are still at $0
+    Then: Region B's keys are restored, though a payment row already exists
+    """
+    from app.db.models import DBRegion
+
+    region_b = DBRegion(
+        name="test-region-b",
+        label="Test Region B",
+        description="Second test region",
+        postgres_host="localhost",
+        postgres_port=5432,
+        postgres_admin_user="admin",
+        postgres_admin_password="password",
+        litellm_api_url="http://localhost:4000",
+        litellm_api_key="test-key-b",
+        is_active=True,
+        is_dedicated=True,
+    )
+    db.add(region_b)
+    db.flush()
+    db.add(
+        DBTeamRegion(
+            team_id=test_team.id, region_id=region_b.id, created_at=datetime.now(UTC)
+        )
+    )
+    _zeroed_periodic_team_with_key(db, test_team, test_region, "region-a-key")
+    _zeroed_periodic_team_with_key(db, test_team, region_b, "region-b-key")
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            return_value={"team_info": {"spend": 0.0}}
+        )
+        mock_instance.get_key_info = AsyncMock(return_value=_ZEROED_KEY_INFO)
+        mock_instance.update_team_budget = AsyncMock()
+        mock_instance.update_key_budget = AsyncMock()
+
+        first = _post_periodic_topup(client, admin_token, test_team, test_region)
+        assert first.status_code == 201, first.text
+        mock_instance.update_key_budget.reset_mock()
+
+        second = _post_periodic_topup(client, admin_token, test_team, region_b)
+
+    assert second.status_code == 201, second.text
+    tokens = [
+        c.kwargs["litellm_token"]
+        for c in mock_instance.update_key_budget.await_args_list
+    ]
+    assert tokens == ["region-b-key"]
+
+
+def test_create_periodic_topup_skips_keys_not_at_zero(
+    client, admin_token, db, test_team, test_region
+):
+    """Keys LiteLLM reports with a live budget are left alone."""
+    _zeroed_periodic_team_with_key(db, test_team, test_region, "live-key")
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            return_value={"team_info": {"spend": 0.0}}
+        )
+        mock_instance.get_key_info = AsyncMock(
+            return_value={"info": {"max_budget": 5.0, "budget_duration": "30d"}}
+        )
+        mock_instance.update_team_budget = AsyncMock()
+        mock_instance.update_key_budget = AsyncMock()
+
+        response = _post_periodic_topup(client, admin_token, test_team, test_region)
+
+    assert response.status_code == 201, response.text
+    mock_instance.update_key_budget.assert_not_called()
+
+
+def test_create_periodic_topup_restores_keys_zeroed_by_free_credit_cutoff(
+    client, admin_token, db, test_team, test_region
+):
+    """
+    Given: A never-paid PERIODIC team past SIGNUP_CREDIT_DAYS, keys at $0
+    When: The team buys a top-up
+    Then: Each key gets its budget back (an explicit cap stays the cap) and its
+          spend is reset, so the team can spend the credit it bought.
+    """
+    test_team.budget_type = "periodic"
+    test_team.last_payment = None
+    test_team.is_always_free = False
+    test_team.created_at = datetime.now(UTC) - timedelta(
+        days=settings.SIGNUP_CREDIT_DAYS + 5
+    )
+    uncapped = DBPrivateAIKey(
+        name="Uncapped",
+        litellm_token="zeroed-uncapped",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    capped = DBPrivateAIKey(
+        name="Capped",
+        litellm_token="zeroed-capped",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add_all([uncapped, capped])
+    db.flush()
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            key_id=capped.id,
+            max_budget=7.0,
+        )
+    )
+    db.commit()
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            return_value={"team_info": {"spend": 27.0}}
+        )
+        mock_instance.get_key_info = AsyncMock(return_value=_ZEROED_KEY_INFO)
+        mock_instance.update_team_budget = AsyncMock()
+        mock_instance.update_key_budget = AsyncMock()
+
+        response = _post_periodic_topup(client, admin_token, test_team, test_region)
+
+    assert response.status_code == 201, response.text
+    calls = {
+        c.kwargs["litellm_token"]: c.kwargs
+        for c in mock_instance.update_key_budget.await_args_list
+    }
+    assert set(calls) == {"zeroed-uncapped", "zeroed-capped"}
+    assert calls["zeroed-uncapped"]["max_budget"] > 0
+    assert calls["zeroed-uncapped"]["budget_duration"] is not None
+    assert calls["zeroed-uncapped"]["spend"] == 0.0
+    assert calls["zeroed-capped"]["max_budget"] == 7.0
+    assert calls["zeroed-capped"]["clear_budget_duration"] is True
+    assert calls["zeroed-capped"]["spend"] == 0.0
+
+
+def test_create_periodic_topup_leaves_keys_of_team_in_free_credit(
+    client, admin_token, db, test_team, test_region
+):
+    """A team still inside SIGNUP_CREDIT_DAYS was never zeroed: no key writes."""
+    test_team.budget_type = "periodic"
+    test_team.last_payment = None
+    test_team.created_at = datetime.now(UTC) - timedelta(days=1)
+    db.add(
+        DBPrivateAIKey(
+            name="Fresh",
+            litellm_token="fresh-key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+        )
+    )
+    db.commit()
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            return_value={"team_info": {"spend": 1.0}}
+        )
+        mock_instance.update_team_budget = AsyncMock()
+        mock_instance.update_key_budget = AsyncMock()
+
+        response = _post_periodic_topup(client, admin_token, test_team, test_region)
+
+    assert response.status_code == 201, response.text
+    mock_instance.update_key_budget.assert_not_called()
+
+
 def test_create_periodic_topup_region_not_assigned_rejected(
     client, admin_token, db, test_team, test_region
 ):

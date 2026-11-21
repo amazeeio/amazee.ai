@@ -12,6 +12,8 @@ from app.core.config import settings
 from app.core.limit_service import DEFAULT_KEY_DURATION
 from app.db.models import (
     DBAuditLog,
+    DBPeriodicBudgetLedgerEntry,
+    DBPeriodicPayment,
     DBPrivateAIKey,
     DBRegion,
     DBSpendCap,
@@ -19,6 +21,7 @@ from app.db.models import (
     DBTeamRegion,
     DBUser,
 )
+from app.schemas.models import BudgetType
 from app.services.access_groups import effective_team_group_slugs
 from app.services.litellm import LiteLLMService, membership_max_budget_by_user
 from fastapi import HTTPException
@@ -62,6 +65,58 @@ def is_anonymous_trial_team(team: Optional[DBTeam]) -> bool:
     if team is None or not team.admin_email:
         return False
     return team.admin_email.lower() == settings.AI_TRIAL_TEAM_EMAIL.lower()
+
+
+def periodic_signup_credit_expired(team: Optional[DBTeam]) -> bool:
+    """True when a PERIODIC team is past SIGNUP_CREDIT_DAYS, ignoring payments.
+
+    Such a team may have had its keys zeroed by the free-credit cutoff at some
+    point, even if it has paid since. POOL, always-free and the anonymous trial
+    team are exempt.
+    """
+    if (
+        team is None
+        or team.budget_type == BudgetType.POOL
+        or team.is_always_free
+        or is_anonymous_trial_team(team)
+        or team.created_at is None
+    ):
+        return False
+    created_at = team.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - created_at).days >= settings.SIGNUP_CREDIT_DAYS
+
+
+def periodic_free_credit_over(db: Session, team: Optional[DBTeam]) -> bool:
+    """True when a never-paid PERIODIC team is past SIGNUP_CREDIT_DAYS.
+
+    Such a team's keys get max_budget 0 (monitor_teams) and new keys start at
+    0 (key creation). Any payment or ledger credit puts the team under the
+    billing rules instead, so paid credit is never zeroed. POOL, always-free
+    and the anonymous trial team are exempt.
+    """
+    if (
+        team is None
+        or team.last_payment is not None
+        or not periodic_signup_credit_expired(team)
+    ):
+        return False
+    has_payment = (
+        db.query(DBPeriodicPayment.id)
+        .filter(DBPeriodicPayment.team_id == team.id)
+        .first()
+        is not None
+    )
+    if has_payment:
+        return False
+    has_ledger = (
+        db.query(DBPeriodicBudgetLedgerEntry.id)
+        .filter(DBPeriodicBudgetLedgerEntry.team_id == team.id)
+        .first()
+        is not None
+    )
+    return not has_ledger
 
 
 def get_team_region_litellm_keys(
