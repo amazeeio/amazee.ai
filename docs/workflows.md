@@ -135,7 +135,7 @@ Limits are managed via the `LimitService` (`app/core/limit_service.py`). They fo
 
 | Resource | Default Value | Description |
 | :--- | :--- | :--- |
-| `DEFAULT_MAX_SPEND` | `$27.00` | Fallback max budget per key. |
+| `DEFAULT_MAX_SPEND` | `$0.00` | Fallback max budget per key and a new team's LiteLLM budget. Set by the `DEFAULT_MAX_SPEND` environment variable; unset means no free credit. New teams' key budgets follow the SYSTEM BUDGET limit row, which this value seeds only when the row is missing. |
 | `DEFAULT_RPM_PER_KEY` | `500` | Requests Per Minute limit. |
 | `DEFAULT_KEY_DURATION` | `30 days` | How long a key remains valid. |
 | `DEFAULT_USER_COUNT` | `1` | Max users per team (Periodic). |

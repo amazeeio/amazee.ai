@@ -2,7 +2,11 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.core.config import settings
-from app.core.limit_service import LimitService, setup_default_limits
+from app.core.limit_service import (
+    DEFAULT_MAX_SPEND,
+    LimitService,
+    setup_default_limits,
+)
 from app.core.security import get_password_hash
 from app.db.models import (
     DBBudgetAlertState,
@@ -230,7 +234,7 @@ def test_register_periodic_team_excludes_dedicated_regions_from_litellm_bootstra
     mock_create_team.assert_awaited_once_with(
         team_id=f"{test_region.name}_{team_data['id']}",
         team_alias=f"{test_region.name}_{team_data['id']}",
-        max_budget=27.0,
+        max_budget=DEFAULT_MAX_SPEND,
         budget_duration=None,
         models=None,
     )
@@ -274,6 +278,53 @@ def test_register_team_allows_purchase_gate_override(client, admin_token, test_r
 
     assert response.status_code == 201
     assert response.json()["require_purchase_for_requests"] is False
+
+
+def test_register_team_non_admin_cannot_set_billing_fields(
+    client, test_token, test_region
+):
+    with patch(
+        "app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock
+    ) as mock_create_team:
+        response = client.post(
+            "/teams/",
+            json={
+                "name": "Ungated Pool Team",
+                "admin_email": "ignored@example.com",
+                "budget_type": "pool",
+                "require_purchase_for_requests": False,
+                "region_id": test_region.id,
+            },
+            headers={"Authorization": f"Bearer {test_token}"},
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == (
+        "Only system administrators can set: budget_type, require_purchase_for_requests"
+    )
+    mock_create_team.assert_not_awaited()
+
+
+def test_register_team_non_admin_may_send_default_values(
+    client, test_token, test_region
+):
+    with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock):
+        response = client.post(
+            "/teams/",
+            json={
+                "name": "Default Values Team",
+                "admin_email": "ignored@example.com",
+                "budget_type": "periodic",
+                "require_purchase_for_requests": True,
+                "force_user_keys": False,
+                "hide_public_regions": False,
+                "region_id": test_region.id,
+            },
+            headers={"Authorization": f"Bearer {test_token}"},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["admin_email"] == "test@example.com"
 
 
 def test_register_team_unauthenticated(client, test_region):
@@ -1007,7 +1058,7 @@ def test_extend_team_trial_success(
             "key": test_key.litellm_token,
             "duration": "30d",
             "budget_duration": "30d",
-            "max_budget": 27.0,
+            "max_budget": DEFAULT_MAX_SPEND,
             "rpm_limit": 500,
         },
     )

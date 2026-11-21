@@ -2742,6 +2742,247 @@ def test_clear_key_budget_keeps_gate_for_unpurchased_pool_team(
     )
 
 
+def _unpaid_periodic_team_key(db, test_team, test_team_admin, test_region):
+    assert not test_team.requires_pool_purchase_gate
+    key = DBPrivateAIKey(
+        name="periodic-unpaid-key",
+        litellm_token="periodic-unpaid-token",
+        region_id=test_region.id,
+        owner_id=test_team_admin.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+    return key
+
+
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_team_admin_cannot_clear_key_budget_on_unpaid_periodic_team(
+    mock_update_key_budget,
+    mock_get_key_info,
+    client,
+    team_admin_token,
+    test_team,
+    test_team_admin,
+    test_region,
+    db,
+):
+    """A periodic team's keys start at $0; its own admin must not lift that."""
+    key = _unpaid_periodic_team_key(db, test_team, test_team_admin, test_region)
+    mock_get_key_info.return_value = {"info": {"max_budget": 0.0}}
+
+    response = client.post(
+        f"/spend/{test_region.id}/key/{key.id}/budget/clear",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+
+    assert response.status_code == 403
+    mock_update_key_budget.assert_not_awaited()
+
+
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_team_admin_cannot_raise_key_budget_on_unpaid_periodic_team(
+    mock_update_key_budget,
+    mock_get_key_info,
+    client,
+    team_admin_token,
+    test_team,
+    test_team_admin,
+    test_region,
+    db,
+):
+    key = _unpaid_periodic_team_key(db, test_team, test_team_admin, test_region)
+    mock_get_key_info.return_value = {"info": {"max_budget": 0.0}}
+
+    response = client.put(
+        f"/spend/{test_region.id}/key/{key.id}/budget",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"max_budget": 50.0},
+    )
+
+    assert response.status_code == 403
+    mock_update_key_budget.assert_not_awaited()
+
+
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_team_admin_can_lower_admin_set_key_budget_on_unpaid_periodic_team(
+    mock_update_key_budget,
+    mock_get_key_info,
+    client,
+    team_admin_token,
+    test_team,
+    test_team_admin,
+    test_region,
+    db,
+):
+    """A cap a system admin set by hand stays usable when the team lowers it."""
+    key = _unpaid_periodic_team_key(db, test_team, test_team_admin, test_region)
+    mock_get_key_info.return_value = {"info": {"max_budget": 200.0}}
+
+    response = client.put(
+        f"/spend/{test_region.id}/key/{key.id}/budget",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"max_budget": 100.0},
+    )
+
+    assert response.status_code == 200
+    assert mock_update_key_budget.await_args.kwargs["max_budget"] == 100.0
+
+
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_team_admin_can_raise_key_budget_on_always_free_team(
+    mock_update_key_budget,
+    mock_get_key_info,
+    client,
+    team_admin_token,
+    test_team,
+    test_team_admin,
+    test_region,
+    db,
+):
+    key = _unpaid_periodic_team_key(db, test_team, test_team_admin, test_region)
+    test_team.is_always_free = True
+    db.commit()
+    mock_get_key_info.return_value = {"info": {"max_budget": 0.0}}
+
+    response = client.put(
+        f"/spend/{test_region.id}/key/{key.id}/budget",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"max_budget": 50.0},
+    )
+
+    assert response.status_code == 200
+    assert mock_update_key_budget.await_args.kwargs["max_budget"] == 50.0
+
+
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_team_admin_can_raise_key_budget_on_ungated_pool_team(
+    mock_update_key_budget,
+    mock_get_key_info,
+    client,
+    team_admin_token,
+    test_team,
+    test_team_admin,
+    test_region,
+    db,
+):
+    """An ungated pool team is funded by a system admin, so the check skips it."""
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = False
+    db.commit()
+    key = DBPrivateAIKey(
+        name="ungated-pool-key",
+        litellm_token="ungated-pool-token",
+        region_id=test_region.id,
+        owner_id=test_team_admin.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+    mock_get_key_info.return_value = {"info": {"max_budget": 10.0}}
+
+    response = client.put(
+        f"/spend/{test_region.id}/key/{key.id}/budget",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"max_budget": 20.0},
+    )
+
+    assert response.status_code == 200
+    assert mock_update_key_budget.await_args.kwargs["max_budget"] == 20.0
+
+
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_team_admin_can_raise_key_budget_once_periodic_team_has_paid(
+    mock_update_key_budget,
+    mock_get_key_info,
+    client,
+    team_admin_token,
+    test_team,
+    test_team_admin,
+    test_region,
+    db,
+):
+    key = _unpaid_periodic_team_key(db, test_team, test_team_admin, test_region)
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            stripe_payment_id=f"paid-periodic-team-{test_team.id}",
+            amount_cents=2000,
+            consumed_cents=0,
+            purchased_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+    mock_get_key_info.return_value = {"info": {"max_budget": 0.0}}
+
+    response = client.put(
+        f"/spend/{test_region.id}/key/{key.id}/budget",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"max_budget": 50.0},
+    )
+
+    assert response.status_code == 200
+    assert mock_update_key_budget.await_args.kwargs["max_budget"] == 50.0
+
+
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_team_admin_clears_key_budget_when_admin_granted_team_budget(
+    mock_update_key_budget,
+    mock_get_key_info,
+    client,
+    team_admin_token,
+    test_team,
+    test_team_admin,
+    test_region,
+    db,
+):
+    """Credit a system admin grants through /limits/overwrite must stay usable."""
+    from app.core.limit_service import LimitService
+    from app.schemas.limits import (
+        LimitSource,
+        LimitType,
+        OwnerType,
+        ResourceType,
+        UnitType,
+    )
+
+    key = _unpaid_periodic_team_key(db, test_team, test_team_admin, test_region)
+    LimitService(db).set_limit(
+        OwnerType.TEAM,
+        test_team.id,
+        ResourceType.BUDGET,
+        LimitType.DATA_PLANE,
+        UnitType.DOLLAR,
+        50.0,
+        limited_by=LimitSource.MANUAL,
+        set_by="admin@example.com",
+        trigger_propagation=False,
+    )
+    mock_get_key_info.return_value = {"info": {"max_budget": 0.0}}
+
+    response = client.post(
+        f"/spend/{test_region.id}/key/{key.id}/budget/clear",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+
+    assert response.status_code == 200
+    mock_update_key_budget.assert_awaited_once_with(
+        litellm_token=key.litellm_token,
+        max_budget=None,
+        clear_max_budget=True,
+        clear_budget_duration=True,
+    )
+
+
 @patch("app.api.spend._lock_region_or_404", wraps=_lock_region_or_404)
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)

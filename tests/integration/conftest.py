@@ -16,7 +16,9 @@ from uuid import uuid4
 import httpx
 import pytest
 
+from app.core.limit_service import LimitService
 from app.db.models import DBRegion
+from app.schemas.limits import LimitType, OwnerType, ResourceType, UnitType
 from app.services.litellm import LiteLLMService
 
 # Fixed names — docker-compose.integration.yml sets AI_TRIAL_REGION and
@@ -151,14 +153,29 @@ def _auth(token):
     return {"Authorization": f"Bearer {token}"}
 
 
+TEAM_START_BUDGET = 27.0
+
+
 @pytest.fixture
-def make_team(client, admin_token, litellm_region):
+def make_team(client, admin_token, litellm_region, db):
     """Create a team through the API so the real LiteLLM bootstrap runs.
 
     require_purchase_for_requests=False, or new keys are gated behind a zero
     budget. No model restriction: create_key sends models=["all-team-models"],
     so a restricted team would reject mock-gpt completions.
+
+    New teams start with no credit, so each team gets TEAM_START_BUDGET: as the
+    system default (key budgets and the budget-clear restore read it) and as
+    the LiteLLM team cap.
     """
+    LimitService(db).set_limit(
+        OwnerType.SYSTEM,
+        0,
+        ResourceType.BUDGET,
+        LimitType.DATA_PLANE,
+        UnitType.DOLLAR,
+        TEAM_START_BUDGET,
+    )
 
     def _make(**overrides):
         suffix = uuid4().hex[:8]
@@ -173,7 +190,21 @@ def make_team(client, admin_token, litellm_region):
         }
         resp = client.post("/teams", json=payload, headers=_auth(admin_token))
         assert resp.status_code == 201, f"team creation failed: {resp.text}"
-        return resp.json()
+        team = resp.json()
+        if team["budget_type"] == "pool" and team["require_purchase_for_requests"]:
+            return team  # a gated team must start at $0 for purchase-gate tests
+        httpx.post(
+            f"{LITELLM_A_URL}/team/update",
+            json={
+                "team_id": LiteLLMService.format_team_id(
+                    litellm_region.name, team["id"]
+                ),
+                "max_budget": TEAM_START_BUDGET,
+            },
+            headers=_MASTER_AUTH,
+            timeout=30,
+        ).raise_for_status()
+        return team
 
     return _make
 
