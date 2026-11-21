@@ -747,8 +747,15 @@ def _apply_pool_key_windows(
             item.period_start = team_window.period_start
 
 
-def _key_gate_locked(db: Session, key: DBPrivateAIKey, region_id: int) -> bool:
+def _key_gate_locked(
+    db: Session, key: DBPrivateAIKey, region_id: int, current_user: DBUser
+) -> bool:
     """True while this key's team is purchase-gated and has never bought.
+
+    A team outside the purchase gate is held the same way when a non-admin
+    writes the key budget: its keys start at $0, and its own admin must not
+    lift that by raising or clearing the key cap before any purchase. System
+    admins and always-free teams still set key budgets freely.
 
     Such a key sits at a zero max_budget, and that zero is the only thing
     stopping inference: LiteLLM denies a key at spend >= max_budget but a team
@@ -770,7 +777,11 @@ def _key_gate_locked(db: Session, key: DBPrivateAIKey, region_id: int) -> bool:
     if team_id is None:
         return False
     team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
-    if team is None or not team.requires_pool_purchase_gate:
+    if team is None:
+        return False
+    if not team.requires_pool_purchase_gate and (
+        current_user.is_admin or team.is_always_free
+    ):
         return False
     _lock_region_or_404(db, region_id)
     return not pool_team_has_ever_purchased(db, team_id, region_id)
@@ -3005,7 +3016,7 @@ async def update_key_budget(
     # A gated team that has never purchased keeps its keys at zero, so a cap
     # set now is stored but not pushed: writing it would lift the gate and let
     # one request through. The first purchase applies the stored cap.
-    gate_locked = _key_gate_locked(db, key, region_id)
+    gate_locked = _key_gate_locked(db, key, region_id, current_user)
     if gate_locked:
         await service.update_key_budget(
             litellm_token=key.litellm_token,
@@ -3134,7 +3145,7 @@ async def clear_key_budget(
     # Re-apply the gate instead of clearing, so a cleared key cannot pass its
     # first request against the team's $0 budget. The first purchase clears
     # it, and from then on this endpoint behaves normally.
-    gate_key = _key_gate_locked(db, key, region_id)
+    gate_key = _key_gate_locked(db, key, region_id, current_user)
 
     if gate_key:
         await service.update_key_budget(
