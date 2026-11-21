@@ -1195,10 +1195,13 @@ def test_sign_in_team_attach_is_undone_when_the_request_is_cancelled(
         "app.api.auth.sync_add_user_to_team",
         new_callable=AsyncMock,
         side_effect=asyncio.CancelledError(),
-    ):
+    ) as sync:
         with pytest.raises(BaseException):
             _code_sign_in(drupal_client, EMAIL)
 
+    # The attach happened, so the undo below is what cleared it.
+    sync.assert_awaited_once()
+    assert sync.await_args.kwargs["team_id"] is not None
     db.refresh(user)
     assert user.team_id is None
     assert user.role == UserRole.DEFAULT

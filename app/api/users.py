@@ -1230,14 +1230,16 @@ async def remove_user_from_team(
     # One person can sit in a team as several rows: their own address and
     # moad's "<email>+<tag>@" rows. The key fallback in private_ai_keys counts
     # any of them as membership, so removing the person removes all of them.
+    # The requested row goes last: if a sync fails part way, it stays in the
+    # team, so a retry on the same user finds the remaining rows again.
     base_email = normalize_email_for_lookup(db_user.email)
-    rows = [db_user] + [
+    rows = [
         member
         for member in db.query(DBUser)
         .filter(DBUser.team_id == previous_team_id, DBUser.id != db_user.id)
         .all()
         if normalize_email_for_lookup(member.email) == base_email
-    ]
+    ] + [db_user]
 
     # Don't orphan a team: block removing its last remaining team admin (a team
     # admin can now remove members, including themselves). Promote another admin
@@ -1271,7 +1273,8 @@ async def remove_user_from_team(
             await sync_remove_user_from_team(
                 db=db, db_user=row, team_id=previous_team_id
             )
-        except Exception:
+        except BaseException:
+            # A cancelled request (a BaseException) must restore the row too.
             try:
                 row.team_id = previous_team_id
                 db.commit()
