@@ -372,7 +372,7 @@ def test_setup_default_limits_uses_current_constant_values(db: Session):
         None,
     )
     assert budget_limit is not None
-    assert budget_limit.max_value == 27.0  # DEFAULT_MAX_SPEND
+    assert budget_limit.max_value == 0.0  # DEFAULT_MAX_SPEND
 
     rpm_limit = next(
         (limit for limit in system_limits if limit.resource == ResourceType.RPM), None

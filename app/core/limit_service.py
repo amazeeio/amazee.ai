@@ -58,7 +58,9 @@ DEFAULT_SERVICE_KEYS = 5
 DEFAULT_VECTOR_DB_COUNT = 5  # Setting to match service keys for drupal module trial
 DEFAULT_KEY_DURATION = 30
 DEFAULT_KEY_EXPIRY = "365d"
-DEFAULT_MAX_SPEND = 27.0
+# No free credit: a new team, and a key without a team, can spend only after a
+# purchase or an admin-set budget. Free starting credit lets scripted sign-ups spend.
+DEFAULT_MAX_SPEND = 0.0
 DEFAULT_RPM_PER_KEY = 500
 
 # Reference collections

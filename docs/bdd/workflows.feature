@@ -50,7 +50,7 @@ Feature: amazee.ai Key and Team Management Workflows
     When the user requests to create a new AI key
     Then the "LimitService" should increment the "USER_KEY" resource count
     And the key creation should succeed
-    And the key should have the default "max_spend" of $27.00
+    And the key should have the default "max_spend" of $0.00
     And the key should have the default "rpm_limit" of 500
 
   Scenario: Exceeding the maximum key limit
