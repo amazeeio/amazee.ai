@@ -1,6 +1,7 @@
 from fastapi import HTTPException
 from app.db.models import DBTeam, DBRegion, DBTeamRegion
 from unittest.mock import patch, AsyncMock
+from app.core.limit_service import DEFAULT_MAX_SPEND
 from app.services.litellm import LiteLLMService
 
 
@@ -1287,8 +1288,8 @@ def test_associate_team_with_dedicated_region(
     assert call_kwargs["team_id"] == LiteLLMService.format_team_id(
         "dedicated-region-for-association", test_team.id
     )
-    # PERIODIC team: max_budget should be DEFAULT_MAX_SPEND, no budget_duration
-    assert call_kwargs["max_budget"] > 0
+    # PERIODIC team: max_budget is DEFAULT_MAX_SPEND (no free credit), no budget_duration
+    assert call_kwargs["max_budget"] == DEFAULT_MAX_SPEND
     assert call_kwargs["budget_duration"] is None
 
 
