@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     DYNAMODB_REGION: str = "eu-west-1"
     SES_REGION: str = "eu-west-1"
     ENABLE_LIMITS: bool = os.getenv("ENABLE_LIMITS", "false") == "true"
+    # Free starting budget (USD) for a new team's LiteLLM team and for keys
+    # without a team. Unset means no free credit. New teams' key budgets come
+    # from the SYSTEM BUDGET limit row, which this value seeds only when missing.
+    DEFAULT_MAX_SPEND: float = Field(0.0, ge=0)
     AI_TRIAL_MAX_BUDGET: float = os.getenv("AI_TRIAL_MAX_BUDGET", 2.0)
     # Hard ceiling on total trial users. The trial endpoint is unauthenticated,
     # so this bounds free-key farming / provisioning DoS regardless of request
@@ -149,6 +153,12 @@ class Settings(BaseSettings):
     # removed by the daily prune cron so the table can't grow without bound.
     SIGNUP_EVENTS_RETENTION_DAYS: int = int(
         os.getenv("SIGNUP_EVENTS_RETENTION_DAYS", "7")
+    )
+    # Distinct addresses that users can have for one base mailbox (Gmail dot
+    # variants), for all time. 0 turns the check off. Each variant became a new
+    # account with new demo credits.
+    SIGNUP_MAX_ADDRESSES_PER_MAILBOX: int = int(
+        os.getenv("SIGNUP_MAX_ADDRESSES_PER_MAILBOX", "1")
     )
     # --- Access token revocation (logout) ---
     # How long a revoked_tokens row stays after its token expires. It is also the

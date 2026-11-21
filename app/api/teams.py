@@ -145,6 +145,24 @@ async def register_team(
     # only privileged callers may set an arbitrary admin_email.
     if current_user is not None and not current_user.is_admin:
         team.admin_email = current_user.email
+        # The billing and tier fields that update_team keeps admin-only. Without
+        # this, a caller could create an ungated pool team and sign in to it.
+        # A value equal to the default is allowed, so full payloads still work.
+        forbidden = sorted(
+            field
+            for field in (
+                "budget_type",
+                "require_purchase_for_requests",
+                "force_user_keys",
+                "hide_public_regions",
+            )
+            if getattr(team, field) != TeamCreate.model_fields[field].default
+        )
+        if forbidden:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only system administrators can set: " + ", ".join(forbidden),
+            )
 
     # Defense-in-depth: block disposable / dynamic-DNS admin emails before any
     # team is created (the sign-in auto-provision path creates a team first).

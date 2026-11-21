@@ -1,3 +1,4 @@
+import asyncio
 import traceback
 import logging
 import secrets
@@ -37,6 +38,7 @@ from app.core.security import (
     hash_api_token,
     verify_password,
 )
+from app.core.litellm_user_sync import sync_add_user_to_team
 from app.core.limit_service import (
     LimitedResource,
     LimitService,
@@ -49,7 +51,14 @@ from app.core.limit_service import (
 from app.core.worker import generate_pricing_url
 
 from app.db.database import get_db
-from app.db.models import DBUser, DBAPIToken, DBRegion, DBTeam, DBRevokedToken
+from app.db.models import (
+    DBAPIToken,
+    DBRegion,
+    DBRevokedToken,
+    DBSpendCap,
+    DBTeam,
+    DBUser,
+)
 
 from app.services.litellm import LiteLLMService
 from app.services.dynamodb import DynamoDBService
@@ -73,10 +82,15 @@ from app.schemas.models import (
 )
 
 from app.api.teams import register_team
-from app.api.users import _create_user_in_db, get_user_by_email
-from app.core.email import normalize_email_for_lookup
+from app.api.private_ai_keys import _provision_lock
+from app.api.users import (
+    _create_user_in_db,
+    email_identity_taken,
+    get_user_by_email,
+)
+from app.core.email import base_mailbox, normalize_email_for_lookup
 from app.services.disposable_domains import assert_email_domain_allowed
-from app.services.signup_velocity import enforce_signup_velocity
+from app.services.signup_velocity import enforce_mailbox_cap, enforce_signup_velocity
 from app.services.token_revocation import (
     add_revoked_token,
     retention_cutoff,
@@ -336,9 +350,14 @@ async def update_user_me(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Current password is required to update email",
             )
-        # Check if email is already taken
+        # The new address is not proven, so it must not be another user's or claim
+        # another base identity. A change inside the same base gives nothing new.
         existing_user = get_user_by_email(db, user_update.email)
-        if existing_user and existing_user.id != current_user.id:
+        if (existing_user and existing_user.id != current_user.id) or (
+            normalize_email_for_lookup(user_update.email)
+            != normalize_email_for_lookup(current_user.email)
+            and email_identity_taken(db, user_update.email)
+        ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email already registered",
@@ -368,9 +387,8 @@ async def register(request: Request, user: UserCreate, db: Session = Depends(get
     user.team_id = None
     # Normalize plus-tags so registrations collapse to the canonical identity.
     user.email = normalize_email_for_lookup(user.email)
-    # Check if user with this email exists
-    db_user = get_user_by_email(db, user.email)
-    if db_user:
+    # A tagged user or team admin with the same base email counts as taken.
+    if email_identity_taken(db, user.email):
         auth_logger.warning(f"Registration failed - email already exists: {user.email}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
@@ -382,6 +400,98 @@ async def register(request: Request, user: UserCreate, db: Session = Depends(get
     db_user = await _create_user_in_db(user, db)
     auth_logger.info(f"Successfully registered new user: {user.email}")
     return db_user
+
+
+def _needs_team(user: DBUser) -> bool:
+    """A team-less user that a code sign-in attaches to a team; never staff."""
+    return (
+        user.team_id is None
+        and not user.is_admin
+        and user.role not in (UserRole.SYSTEM_ADMIN, UserRole.SALES)
+    )
+
+
+async def _sign_in_team(db: Session, sign_in_username: str) -> Optional[DBTeam]:
+    """The team a code sign-in attaches the user to: an orphaned one or a new one.
+
+    None when a team that still has members holds this admin_email.
+    """
+    # Reuse a team orphaned by a user hard-delete: same admin_email, not
+    # soft-deleted. Without this, the unique admin_email on the leftover
+    # team makes re-registration fail forever ("Email already registered").
+    # Only a team with no users: a removed admin must not get back in this way.
+    orphaned = ~DBTeam.users.any()
+    team = (
+        db.query(DBTeam)
+        .filter(
+            func.lower(DBTeam.admin_email) == sign_in_username,
+            DBTeam.deleted_at.is_(None),
+            orphaned,
+        )
+        .first()
+    )
+    if team is None and "@" in sign_in_username:
+        # The orphaned team may store a plus-tagged admin_email
+        # (e.g. "user+p12@…") while sign_in_username is the stripped
+        # base form — match tagged variants too.
+        # Escape LIKE wildcards — '_' is common in email local parts.
+        local, domain = (
+            part.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            for part in sign_in_username.split("@", 1)
+        )
+        team = (
+            db.query(DBTeam)
+            .filter(
+                DBTeam.admin_email.ilike(f"{local}+%@{domain}", escape="\\"),
+                DBTeam.deleted_at.is_(None),
+                orphaned,
+            )
+            .order_by(DBTeam.id)
+            .first()
+        )
+    if team:
+        auth_logger.info(
+            f"Re-attaching {sign_in_username} to existing team {team.id} as admin"
+        )
+    elif (
+        db.query(DBTeam)
+        .filter(
+            func.lower(DBTeam.admin_email) == sign_in_username,
+            DBTeam.deleted_at.is_(None),
+        )
+        .first()
+    ):
+        # A team with members keeps this unique admin_email, so no new team can
+        # take it; the user signs in without a team.
+        auth_logger.info(f"No team for {sign_in_username}: its team still has members")
+        return None
+    else:
+        # Resolve the sign-up region — first active non-dedicated region
+        sign_up_region = (
+            db.query(DBRegion)
+            .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
+            .order_by(DBRegion.id)
+            .first()
+        )
+        if not sign_up_region:
+            auth_logger.error(
+                "No active public region available for new team creation"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No active public region available",
+            )
+        # First create the team
+        team_data = TeamCreate(
+            name=f"Team {sign_in_username}",
+            admin_email=sign_in_username,
+            phone="",  # Required by schema but not used for auto-created teams
+            billing_address="",  # Required by schema but not used for auto-created teams
+            budget_type=BudgetType.PERIODIC,
+            region_id=sign_up_region.id,
+        )
+        team = await register_team(team_data, db, current_user=None)
+    return team
 
 
 @router.post("/sign-in", response_model=Token)
@@ -408,7 +518,8 @@ async def sign_in(
     Use this token for subsequent authenticated requests.
 
     If the user doesn't exist, they will be automatically registered and a new team will be created
-    with them as the admin.
+    with them as the admin. An existing user without a team gets one the same way, unless
+    the Gmail mailbox cap is reached; then they sign in without a team.
     """
     if not sign_in_data:
         auth_logger.warning("Sign-in attempt with invalid data format")
@@ -437,84 +548,98 @@ async def sign_in(
 
     # Get user from database after verifying the code
     user = get_user_by_email(db, sign_in_username)
+    attached_team_id = None
 
-    # If user doesn't exist, create a new user and team
-    if not user:
-        auth_logger.info(f"Creating new user and team for: {sign_in_username}")
-        # Only NEW-account creation is velocity-limited; existing-user code logins
-        # (the common case, incl. many users behind one corporate IP) are not.
-        enforce_signup_velocity(request, db, email=sign_in_username, endpoint="sign-in")
-        # Reuse a team orphaned by a user hard-delete: same admin_email, not
-        # soft-deleted. Without this, the unique admin_email on the leftover
-        # team makes re-registration fail forever ("Email already registered").
-        team = (
-            db.query(DBTeam)
-            .filter(
-                func.lower(DBTeam.admin_email) == sign_in_username,
-                DBTeam.deleted_at.is_(None),
-            )
-            .first()
-        )
-        if team is None and "@" in sign_in_username:
-            # The orphaned team may store a plus-tagged admin_email
-            # (e.g. "user+p12@…") while sign_in_username is the stripped
-            # base form — match tagged variants too.
-            # Escape LIKE wildcards — '_' is common in email local parts.
-            local, domain = (
-                part.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                for part in sign_in_username.split("@", 1)
-            )
-            team = (
-                db.query(DBTeam)
-                .filter(
-                    DBTeam.admin_email.ilike(f"{local}+%@{domain}", escape="\\"),
-                    DBTeam.deleted_at.is_(None),
+    if user is None or _needs_team(user):
+        # One lock per base mailbox, so overlapping sign-ins of dot variants
+        # cannot both pass the mailbox cap. Region 0 never exists, so the key
+        # never meets a provisioning lock.
+        async with _provision_lock(db, base_mailbox(sign_in_username), 0):
+            # Another request may have saved this user while we waited.
+            if user is None:
+                user = get_user_by_email(db, sign_in_username)
+            else:
+                db.refresh(user)
+
+            # If user doesn't exist, create a new user and team
+            if not user:
+                auth_logger.info(f"Creating new user and team for: {sign_in_username}")
+                # Only NEW-account creation is velocity-limited; existing-user code logins
+                # (the common case, incl. many users behind one corporate IP) are not.
+                enforce_mailbox_cap(db, sign_in_username)
+                enforce_signup_velocity(request, db, email=sign_in_username, endpoint="sign-in")
+                team = await _sign_in_team(db, sign_in_username)
+
+                user_data = UserCreate(
+                    email=sign_in_username,
+                    password=None,
+                    team_id=team.id if team else None,
+                    role=UserRole.ADMIN if team else None,
                 )
-                .order_by(DBTeam.id)
-                .first()
+                user = await _create_user_in_db(user_data, db)
+
+                auth_logger.info(
+                    f"Successfully created new user and team for: {sign_in_data.username}"
+                )
+            elif _needs_team(user):
+                # The code proves the inbox, so a user without a team (made by
+                # /auth/register, or whose team was deleted) gets one and can get a key.
+                try:
+                    enforce_mailbox_cap(db, sign_in_username, existing_ok=False)
+                except HTTPException as exc:
+                    if exc.status_code != status.HTTP_429_TOO_MANY_REQUESTS:
+                        raise
+                    # The cap stops a second team for the mailbox, not the sign-in.
+                    auth_logger.info(f"No team for {sign_in_username}: mailbox cap")
+                    team = None
+                else:
+                    team = await _sign_in_team(db, sign_in_username)
+                if team:
+                    previous_role = user.role
+                    user.team_id = team.id
+                    user.role = UserRole.ADMIN
+                    # A cap left behind by an interrupted removal must not
+                    # follow the user back into a reused team.
+                    db.query(DBSpendCap).filter(
+                        DBSpendCap.scope == "team_member",
+                        DBSpendCap.team_id == team.id,
+                        DBSpendCap.user_id == user.id,
+                    ).delete(synchronize_session=False)
+                    db.commit()
+                    db.refresh(user)
+                    attached_team_id = team.id
+
+    # The membership sync runs outside the lock, so a slow LiteLLM call here does
+    # not make a retry of the same mailbox wait for the lock. Team and user
+    # creation above still call LiteLLM inside it.
+    if attached_team_id is not None:
+        try:
+            await sync_add_user_to_team(db=db, db_user=user, team_id=attached_team_id)
+        except (Exception, asyncio.CancelledError) as exc:
+            # Without the LiteLLM membership the member budgets do not apply.
+            # The user signs in without the team; the next sign-in reuses the
+            # same team and tries again. A cancelled request (client gone,
+            # worker shutdown) must undo it too.
+            auth_logger.exception(
+                f"LiteLLM sync failed, {sign_in_username} stays without a team"
             )
-        if team:
-            auth_logger.info(
-                f"Re-attaching {sign_in_username} to existing team {team.id} as admin"
+            db.rollback()
+            # A parallel request may have moved the user to another team while
+            # the sync ran; undo only this attach.
+            db.query(DBUser).filter(
+                DBUser.id == user.id, DBUser.team_id == attached_team_id
+            ).update(
+                {DBUser.team_id: None, DBUser.role: previous_role},
+                synchronize_session=False,
             )
+            db.commit()
+            db.refresh(user)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
         else:
-            # Resolve the sign-up region — first active non-dedicated region
-            sign_up_region = (
-                db.query(DBRegion)
-                .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
-                .order_by(DBRegion.id)
-                .first()
+            auth_logger.info(
+                f"Attached {sign_in_username} to team {attached_team_id} as admin"
             )
-            if not sign_up_region:
-                auth_logger.error(
-                    "No active public region available for new team creation"
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="No active public region available",
-                )
-            # First create the team
-            team_data = TeamCreate(
-                name=f"Team {sign_in_username}",
-                admin_email=sign_in_username,
-                phone="",  # Required by schema but not used for auto-created teams
-                billing_address="",  # Required by schema but not used for auto-created teams
-                budget_type=BudgetType.PERIODIC,
-                region_id=sign_up_region.id,
-            )
-            team = await register_team(team_data, db, current_user=None)
-
-        user_data = UserCreate(
-            email=sign_in_username,
-            password=None,
-            team_id=team.id,
-            role=UserRole.ADMIN,
-        )
-        user = await _create_user_in_db(user_data, db)
-
-        auth_logger.info(
-            f"Successfully created new user and team for: {sign_in_data.username}"
-        )
 
     auth_logger.info(f"Successful sign-in for user: {sign_in_username}")
     return create_and_set_access_token(response, user.email, user)
@@ -641,6 +766,8 @@ async def validate_email(
 
     # Block disposable / dynamic-DNS domains before we even send an OTP.
     assert_email_domain_allowed(db, email)
+    # A new Gmail dot variant would become a second account with new credits.
+    enforce_mailbox_cap(db, email)
 
     # Cap OTP sends per IP: this endpoint triggers an email, so an unlimited
     # loop from one client could be used to spam arbitrary addresses.

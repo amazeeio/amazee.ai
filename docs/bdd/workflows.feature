@@ -26,6 +26,7 @@ Feature: amazee.ai Key and Team Management Workflows
     And the system has sent an 8-character alphanumeric validation code to my email
     When I perform a "POST" to "/auth/sign-in" with the correct 8-character alphanumeric code
     Then if I am a new user, a new team "Team user@example.com" should be automatically created
+    And if I already exist without a team, I should get a team in the same way, unless my Gmail mailbox already has an account
     And I should be registered as the "ADMIN" of that team
     And the team should have "PERIODIC" budget type by default
     And my Drupal site should be successfully linked to my amazee.ai account
@@ -50,7 +51,7 @@ Feature: amazee.ai Key and Team Management Workflows
     When the user requests to create a new AI key
     Then the "LimitService" should increment the "USER_KEY" resource count
     And the key creation should succeed
-    And the key should have the default "max_spend" of $27.00
+    And the key should have the default "max_spend" of $0.00
     And the key should have the default "rpm_limit" of 500
 
   Scenario: Exceeding the maximum key limit

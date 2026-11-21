@@ -26,7 +26,6 @@ from app.db.models import (
 )
 from app.schemas.models import BudgetType
 from app.core.worker import apply_billing_cycle_for_team
-from app.core.limit_service import DEFAULT_MAX_SPEND
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────────
@@ -166,7 +165,7 @@ async def test_pool_subscription_team_sets_no_litellm_budget_duration(
         db,
         team,
         test_region,
-        budget_cents=int(round(DEFAULT_MAX_SPEND * 100)),
+        budget_cents=2700,
     )
 
     team_call = mock_litellm.update_team_budget.await_args
@@ -371,7 +370,7 @@ async def test_pool_subscription_team_resets_key_spend(
         db,
         team,
         test_region,
-        budget_cents=int(round(DEFAULT_MAX_SPEND * 100)),
+        budget_cents=2700,
     )
 
     # Every key must have been called with spend=0.0 (reset on cycle)

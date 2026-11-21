@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 from app.api.auth import generate_validation_token
 from app.core.security import get_password_hash
 from app.db.models import DBUser
+from tests.conftest import _add_tagged_team, _add_tagged_user
 
 
 @pytest.fixture
@@ -21,6 +22,17 @@ def mock_ses():
         mock_instance = MagicMock()
         mock.return_value = mock_instance
         yield mock_instance
+
+
+@pytest.fixture
+def sign_in_team(test_region):
+    """test_user has no team, so a code sign-in creates one for it."""
+    with (
+        patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock),
+        patch("app.core.litellm_user_sync.LiteLLMService") as sync_litellm,
+    ):
+        sync_litellm.return_value = AsyncMock()
+        yield
 
 
 def test_login_success(client, test_user):
@@ -230,6 +242,54 @@ def test_update_email_to_existing_email_fails(client, test_user, test_admin):
     assert response.json()["detail"] == "Email already registered"
 
 
+def _register(client, email):
+    return client.post(
+        "/auth/register", json={"email": email, "password": "newpassword123"}
+    )
+
+
+def test_register_refused_when_tagged_user_exists(client, db):
+    _add_tagged_user(db)
+    response = _register(client, "alice@corp.com")
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Email already registered"
+
+
+def test_register_refused_when_tagged_team_admin_exists(client, db):
+    _add_tagged_team(db)
+    response = _register(client, "alice@corp.com")
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Email already registered"
+
+
+def test_register_allowed_when_only_deleted_team_has_admin_email(client, db):
+    _add_tagged_team(db, deleted=True)
+    assert _register(client, "alice@corp.com").status_code == 200
+
+
+def test_register_underscore_is_not_a_wildcard(client, db):
+    _add_tagged_user(db, email="axb+1@corp.com")
+    assert _register(client, "a_b@corp.com").status_code == 200
+
+
+@pytest.mark.parametrize("tagged", ["user", "team"])
+def test_update_email_refused_when_tagged_identity_exists(
+    client, db, test_token, tagged
+):
+    if tagged == "user":
+        _add_tagged_user(db)
+    else:
+        _add_tagged_team(db)
+
+    response = client.put(
+        "/auth/me/update",
+        headers={"Authorization": f"Bearer {test_token}"},
+        json={"current_password": "testpassword", "email": "alice@corp.com"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Email already registered"
+
+
 def test_generate_validation_token(client, mock_dynamodb):
     email = "test@example.com"
     code = generate_validation_token(email)
@@ -326,7 +386,7 @@ def test_validate_email_invalid_format(client, mock_dynamodb):
         mock_dynamodb.write_validation_code.assert_not_called()
 
 
-def test_sign_in_success(client, test_user, mock_dynamodb):
+def test_sign_in_success(client, test_user, mock_dynamodb, sign_in_team):
     # First, generate a validation code
     email = test_user.email
     code = "TESTCODE"
@@ -353,7 +413,7 @@ def test_sign_in_success(client, test_user, mock_dynamodb):
     mock_dynamodb.read_validation_code.assert_called_once_with(email)
 
 
-def test_sign_in_success_form(client, test_user, mock_dynamodb):
+def test_sign_in_success_form(client, test_user, mock_dynamodb, sign_in_team):
     # First, generate a validation code
     email = test_user.email
     code = "TESTCODE"
@@ -519,6 +579,57 @@ def test_sign_in_reuses_orphaned_team(client, db, mock_dynamodb, test_region):
     assert user_data["email"] == email
     assert user_data["role"] == "admin"
     assert user_data["team_id"] == team.id  # reused, not a new team
+
+
+
+def _team_with_member(db, admin_email, member_email):
+    from app.db.models import DBTeam
+
+    team = DBTeam(name=f"Team {admin_email}", admin_email=admin_email)
+    db.add(team)
+    db.commit()
+    db.add(
+        DBUser(email=member_email, is_active=True, team_id=team.id, role="admin")
+    )
+    db.commit()
+    return team
+
+
+def _code_sign_in(client, mock_dynamodb, email):
+    mock_dynamodb.read_validation_code.return_value = {"email": email, "code": "C0DE"}
+    return client.post(
+        "/auth/sign-in", json={"username": email, "verification_code": "C0DE"}
+    )
+
+
+def test_sign_in_does_not_return_a_removed_admin_to_the_team(
+    client, db, mock_dynamodb, sign_in_team
+):
+    """remove_user_from_team keeps admin_email, so it must not mean "orphaned"."""
+    email = "removed@example.com"
+    team = _team_with_member(db, email, "other@example.com")
+    removed = DBUser(email=email, is_active=True, team_id=None, role="admin")
+    db.add(removed)
+    db.commit()
+
+    assert _code_sign_in(client, mock_dynamodb, email).status_code == 200
+    db.refresh(removed)
+    assert removed.team_id is None
+    assert [u.email for u in team.users] == ["other@example.com"]
+
+
+def test_sign_in_new_user_skips_a_team_that_has_members(
+    client, db, mock_dynamodb, sign_in_team
+):
+    """A hard-deleted admin whose team still has members gets no seat back."""
+    email = "deleted@example.com"
+    team = _team_with_member(db, email, "member@example.com")
+
+    assert _code_sign_in(client, mock_dynamodb, email).status_code == 200
+    user = db.query(DBUser).filter(DBUser.email == email).one()
+    assert user.team_id is None
+    assert user.role == "user"
+    assert [u.email for u in team.users] == ["member@example.com"]
 
 
 def test_sign_in_reuses_orphaned_team_with_plus_tagged_admin_email(
@@ -888,7 +999,7 @@ def test_login_cookie_expiration_system_admin(client, test_admin):
     assert "Max-Age=28800" in set_cookie_header or "max-age=28800" in set_cookie_header
 
 
-def test_sign_in_cookie_expiration_regular_user(client, test_user, mock_dynamodb):
+def test_sign_in_cookie_expiration_regular_user(client, test_user, mock_dynamodb, sign_in_team):
     """
     Given a regular user
     When the user signs in with verification code

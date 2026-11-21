@@ -49,7 +49,7 @@ from app.core.security import (
     get_current_user_from_auth,
     get_role_min_team_admin,
 )
-from app.core.email import normalize_email_for_lookup
+from app.core.email import escape_like, normalize_email_for_lookup
 from app.core.roles import UserRole
 from app.services.litellm import LiteLLMService
 from app.services.disposable_domains import assert_email_domain_allowed
@@ -96,6 +96,28 @@ def get_user_by_email(db: Session, email: str) -> Optional[DBUser]:
     if normalized_user is not None:
         return normalized_user
     return db.query(DBUser).filter(func.lower(DBUser.email) == raw).first()
+
+
+def email_identity_taken(db: Session, email: str) -> bool:
+    """The moad key fallback treats the base email as the owner of every tagged
+    team without another person's member, so only a proven owner can hold a
+    base email that already exists."""
+    base = normalize_email_for_lookup(email)
+    local, domain = base.split("@", 1)
+    tagged = f"{escape_like(local)}+%@{escape_like(domain)}"
+    users_q = db.query(DBUser).filter(
+        or_(func.lower(DBUser.email) == base, DBUser.email.ilike(tagged, escape="\\"))
+    )
+    teams_q = db.query(DBTeam).filter(
+        DBTeam.deleted_at.is_(None),
+        or_(
+            func.lower(DBTeam.admin_email) == base,
+            DBTeam.admin_email.ilike(tagged, escape="\\"),
+        ),
+    )
+    return bool(
+        db.query(users_q.exists()).scalar() or db.query(teams_q.exists()).scalar()
+    )
 
 
 router = APIRouter(tags=["users"])
@@ -858,10 +880,12 @@ async def create_user(
     # "user+team_id@domain" (created by moad's provision-key flow) are intentionally
     # distinct identities scoped to a specific Applications workspace team.  Normalizing
     # would strip the tag and find the base user, incorrectly blocking creation.
+    # A team admin chooses the password for this row, so for a team admin an
+    # unproven email that claims an existing base identity is also refused.
     db_user = (
         db.query(DBUser).filter(func.lower(DBUser.email) == user.email.lower()).first()
     )
-    if db_user:
+    if db_user or (not current_user.is_admin and email_identity_taken(db, user.email)):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
         )
@@ -1012,6 +1036,14 @@ async def update_user(
             detail="Not authorized to perform this action",
         )
 
+    # Sign-in is by email OTP, so a team admin who changes a member's email can
+    # sign in as that member.
+    if "email" in user_update.model_fields_set and not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action",
+        )
+
     previous_email = db_user.email
     for key, value in user_update.model_dump(exclude_unset=True).items():
         setattr(db_user, key, value)
@@ -1089,24 +1121,17 @@ async def update_user(
 @router.post(
     "/{user_id}/add-to-team",
     response_model=User,
-    dependencies=[Depends(get_role_min_team_admin)],
+    dependencies=[Depends(get_role_min_system_admin)],
 )
 async def add_user_to_team(
     user_id: int,
     team_operation: TeamOperation,
     db: Session = Depends(get_db),
-    current_user: DBUser = Depends(get_current_user_from_auth),
 ):
     """
-    Add a user to a team. Accessible by admin users or team admins.
+    Add a user to a team. System admins only; a team admin could otherwise pull
+    in any teamless user without their consent.
     """
-    # A team admin may only add users to their own team; system admins any team.
-    if not current_user.is_admin and current_user.team_id != team_operation.team_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to perform this action",
-        )
-
     db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -1201,15 +1226,30 @@ async def remove_user_from_team(
             detail="User is not a member of any team",
         )
 
+    previous_team_id = db_user.team_id
+    # One person can sit in a team as several rows: their own address and
+    # moad's "<email>+<tag>@" rows. The key fallback in private_ai_keys counts
+    # any of them as membership, so removing the person removes all of them.
+    # The requested row goes last: if a sync fails part way, it stays in the
+    # team, so a retry on the same user finds the remaining rows again.
+    base_email = normalize_email_for_lookup(db_user.email)
+    rows = [
+        member
+        for member in db.query(DBUser)
+        .filter(DBUser.team_id == previous_team_id, DBUser.id != db_user.id)
+        .all()
+        if normalize_email_for_lookup(member.email) == base_email
+    ] + [db_user]
+
     # Don't orphan a team: block removing its last remaining team admin (a team
     # admin can now remove members, including themselves). Promote another admin
     # first.
-    if db_user.role == UserRole.TEAM_ADMIN:
+    if any(row.role == UserRole.TEAM_ADMIN for row in rows):
         other_admins = (
             db.query(DBUser)
             .filter(
-                DBUser.team_id == db_user.team_id,
-                DBUser.id != db_user.id,
+                DBUser.team_id == previous_team_id,
+                DBUser.id.notin_([row.id for row in rows]),
                 DBUser.role == UserRole.TEAM_ADMIN,
             )
             .count()
@@ -1220,43 +1260,44 @@ async def remove_user_from_team(
                 detail="Cannot remove the last team admin from the team",
             )
 
-    # Remove user from team
-    previous_team_id = db_user.team_id
-    db_user.team_id = None
-    try:
-        db.commit()
-        db.refresh(db_user)
-    except Exception:
-        db.rollback()
-        raise
-
-    try:
-        await sync_remove_user_from_team(
-            db=db, db_user=db_user, team_id=previous_team_id
-        )
-    except Exception:
+    for row in rows:
+        row.team_id = None
         try:
-            db_user.team_id = previous_team_id
             db.commit()
-            db.refresh(db_user)
+            db.refresh(row)
         except Exception:
             db.rollback()
-            logger.exception(
-                "Failed to revert team removal for user %s after LiteLLM sync failure",
-                db_user.id,
-            )
-        raise
+            raise
 
-    # A member cap belongs to the membership, so it goes with it; a rejoin
-    # would otherwise silently inherit the old limit. Dropped only once the
-    # removal stuck, or the failure path above would restore a member whose
-    # cap is already gone.
-    db.query(DBSpendCap).filter(
-        DBSpendCap.scope == "team_member",
-        DBSpendCap.team_id == previous_team_id,
-        DBSpendCap.user_id == db_user.id,
-    ).delete(synchronize_session=False)
-    db.commit()
+        try:
+            await sync_remove_user_from_team(
+                db=db, db_user=row, team_id=previous_team_id
+            )
+        except (Exception, asyncio.CancelledError):
+            # A cancelled request must restore the row too.
+            try:
+                row.team_id = previous_team_id
+                db.commit()
+                db.refresh(row)
+            except Exception:
+                db.rollback()
+                logger.exception(
+                    "Failed to revert team removal for user %s after LiteLLM sync failure",
+                    row.id,
+                )
+            raise
+
+        # A member cap belongs to the membership, so it goes with it; a rejoin
+        # would otherwise silently inherit the old limit. Dropped only once the
+        # removal stuck, or the failure path above would restore a member whose
+        # cap is already gone.
+        db.query(DBSpendCap).filter(
+            DBSpendCap.scope == "team_member",
+            DBSpendCap.team_id == previous_team_id,
+            DBSpendCap.user_id == row.id,
+        ).delete(synchronize_session=False)
+        db.commit()
+    db.refresh(db_user)
 
     # No counter update here: the member counter is re-derived from the real
     # members on the next check, so the freed seat is picked up there.

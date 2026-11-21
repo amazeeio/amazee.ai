@@ -465,3 +465,27 @@ def soft_delete_team_for_test(db, team: DBTeam, deleted_at: datetime = None):
     )
 
     db.commit()
+
+
+def _add_tagged_user(db, email="alice+123@corp.com"):
+    db.add(
+        DBUser(
+            email=email,
+            hashed_password=get_password_hash("testpassword"),
+            is_active=True,
+            is_admin=False,
+        )
+    )
+    db.commit()
+
+
+def _add_tagged_team(db, deleted=False):
+    db.add(
+        DBTeam(
+            name="tagged-team",
+            admin_email="alice+team-x@corp.com",
+            is_active=True,
+            deleted_at=datetime.now(UTC) if deleted else None,
+        )
+    )
+    db.commit()

@@ -9,6 +9,8 @@ table (no Redis in this backend; the shared DB keeps the cap correct across pods
 Per-IP (not per-email-domain) is deliberate: legit users share providers like
 gmail.com, and moad tags trial emails as ``base+<team_id>@<real-domain>``, so a
 per-domain cap would false-positive on shared domains.
+
+The module also holds the moad provision caps and the per-mailbox cap.
 """
 
 import logging
@@ -16,12 +18,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Optional
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.audit import prune_audit_log
 from app.core.config import settings
-from app.db.models import DBSignupEvent
+from app.core.email import GMAIL_DOMAINS, base_mailbox, normalize_email_for_lookup
+from app.db.models import DBSignupEvent, DBUser
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +178,62 @@ def enforce_provision_caps(db: Session, email: str) -> None:
     # don't use it. Thread it through if forensics need it.
     db.add(DBSignupEvent(email=email, endpoint=PROVISION_ENDPOINT))
     db.commit()
+
+
+def enforce_mailbox_cap(db: Session, email: str, *, existing_ok: bool = True) -> None:
+    """Raise 429 if the base mailbox of this email already has too many addresses.
+
+    Gmail delivers all dot variants to one inbox, so each variant became a new
+    account with new demo credits. The cap counts addresses, not attempts, so a
+    user who signs in again is not blocked. The provisioning path passes
+    existing_ok=False because there the current user already owns the address.
+    """
+    cap = settings.SIGNUP_MAX_ADDRESSES_PER_MAILBOX
+    if cap == 0:
+        return
+
+    address = normalize_email_for_lookup(email)
+    base_local, _, base_domain = base_mailbox(email).rpartition("@")
+    if base_domain != "gmail.com":
+        return
+
+    lowered = func.lower(DBUser.email)
+    # ponytail: scans the users table with no index; fine at ~24k rows because
+    # only validate-email, new sign-ups and moad provisioning run it. Add an
+    # expression index on the base local part (needs a migration) if it grows.
+    rows = (
+        db.query(DBUser.email, DBUser.team_id)
+        .filter(
+            func.split_part(lowered, "@", 2).in_(GMAIL_DOMAINS),
+            func.replace(
+                func.split_part(func.split_part(lowered, "@", 1), "+", 1), ".", ""
+            )
+            == base_local,
+        )
+        .all()
+    )
+    if existing_ok and address in {normalize_email_for_lookup(r.email) for r in rows}:
+        return
+
+    # /auth/register is public, needs no email code and creates a user without
+    # a team, so a team-less row proves nothing about the mailbox.
+    addresses = {
+        normalize_email_for_lookup(r.email) for r in rows if r.team_id is not None
+    }
+
+    count = len(addresses | {address})
+    if count > cap:
+        logger.warning(
+            "Mailbox cap hit: base=%s addresses=%d cap=%d",
+            f"{base_local}@{base_domain}",
+            count,
+            cap,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="This mailbox already has an account. "
+            "Please sign in with the address you used before.",
+        )
 
 
 def prune_signup_events(db: Session) -> int:

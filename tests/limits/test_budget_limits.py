@@ -25,7 +25,7 @@ def test_get_token_restrictions_default_limits(db, test_team):
     days_left, max_spend, rpm_limit = limit_service.get_token_restrictions(test_team.id)
 
     assert days_left == DEFAULT_KEY_DURATION  # 30 days
-    assert max_spend == DEFAULT_MAX_SPEND  # 27.0
+    assert max_spend == DEFAULT_MAX_SPEND
     assert rpm_limit == DEFAULT_RPM_PER_KEY  # 500
 
 

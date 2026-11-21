@@ -107,14 +107,15 @@ backend-test-cov: backend-test-build test-postgres
 	exit $$status
 
 # Build the frontend test container
+# The builder stage has the dev dependencies and the vitest config; the runtime stage has neither.
 frontend-test-build:
-	cd frontend && docker build -t amazeeai-frontend-test -f Dockerfile .
+	cd frontend && docker build --target builder -t amazeeai-frontend-test -f Dockerfile .
 
 # Run frontend tests
 frontend-test: frontend-test-build
 	docker run --rm \
 		-e CI=true \
-		amazeeai-frontend-test npm test -- --ci
+		amazeeai-frontend-test npm test -- --run
 
 # Run all tests (backend and frontend)
 test-all: backend-test frontend-test

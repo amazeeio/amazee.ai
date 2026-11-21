@@ -52,7 +52,7 @@ Sync per target region does:
 
 ## User-Team Change Flows
 
-- Add user to team (`POST /users/{id}/add-to-team`): syncs membership to that team's target regions.
+- Add user to team (`POST /users/{id}/add-to-team`): system admins only. Syncs membership to that team's target regions.
 - Remove user from team (`POST /users/{id}/remove-from-team`): removes membership from team regions.
 - Update user role (`POST /users/{id}/role`): syncs member role update (mapped to LiteLLM `user`).
 - Delete user (`DELETE /users/{id}`): attempts delete across target regions.
@@ -67,8 +67,7 @@ In MOAD (`src/server/graphql/resolvers/users.ts`):
 
 - Normal invite flow calls amazee API `create_user_users_post` with `team_id` set directly.
 - Email is encoded as `local+<teamId>@domain` before creation.
-- Special orphan recovery path:
-  - if encoded user already exists with `team_id=null`, MOAD calls `add_to_team` + role update instead of creating a new row.
+- MOAD does not call `add_to_team`. An older orphan recovery path called it for an encoded user with `team_id=null`; MOAD removed that call, and the route is now for system admins only.
 
 Result: MOAD typically creates users directly as team users (not as no-team users first).
 
