@@ -6485,7 +6485,7 @@ def test_key_budget_writes_keep_the_free_credit_cutoff(
     action,
     paid,
     client,
-    team_admin_token,
+    admin_token,
     test_team,
     test_team_user,
     test_region,
@@ -6493,7 +6493,8 @@ def test_key_budget_writes_keep_the_free_credit_cutoff(
 ):
     """
     Given: A PERIODIC team past SIGNUP_CREDIT_DAYS whose keys sit at $0
-    When: Its team admin sets or clears a key budget
+    When: A system admin sets or clears a key budget (a team admin is
+          refused earlier by _refuse_unpaid_key_cap_raise)
     Then: Never paid -> the key stays at $0 (region lock taken first);
           paid -> the write goes through as normal.
     """
@@ -6513,7 +6514,7 @@ def test_key_budget_writes_keep_the_free_credit_cutoff(
     db.add(key)
     db.commit()
     mock_get_key_info.return_value = {"info": {"max_budget": 0.0}}
-    headers = {"Authorization": f"Bearer {team_admin_token}"}
+    headers = {"Authorization": f"Bearer {admin_token}"}
 
     if action == "set":
         response = client.put(

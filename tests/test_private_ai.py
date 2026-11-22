@@ -4059,6 +4059,7 @@ def test_extend_token_life_allowed_for_system_admin(
     [(settings.SIGNUP_CREDIT_DAYS + 1, True), (1, False)],
 )
 @patch("app.api.private_ai_keys.LiteLLMService")
+@patch("app.core.limit_service.DEFAULT_MAX_SPEND", 27.0)  # free credit on
 def test_create_key_for_unpaid_periodic_team_past_free_credit_starts_at_zero(
     mock_litellm,
     age_days,

@@ -289,6 +289,7 @@ def _zeroed_periodic_team_with_key(db, test_team, region, token):
     db.commit()
 
 
+@patch("app.core.limit_service.DEFAULT_MAX_SPEND", 27.0)  # free credit on
 def test_create_periodic_topup_retry_restores_keys_after_failed_restore(
     client, admin_token, db, test_team, test_region
 ):
@@ -421,6 +422,7 @@ def test_create_periodic_topup_skips_keys_not_at_zero(
     mock_instance.update_key_budget.assert_not_called()
 
 
+@patch("app.core.limit_service.DEFAULT_MAX_SPEND", 27.0)  # free credit on
 def test_create_periodic_topup_restores_keys_zeroed_by_free_credit_cutoff(
     client, admin_token, db, test_team, test_region
 ):
