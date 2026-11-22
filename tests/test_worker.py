@@ -364,18 +364,29 @@ async def test_monitor_teams_unpaid_periodic_team_free_credit_ends(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("has_credit", [True, False])
+@pytest.mark.parametrize(
+    "has_credit, restored_meanwhile",
+    [(True, False), (False, False), (True, True)],
+)
 @patch("app.core.worker.LimitService")
 @patch("app.core.worker.LiteLLMService")
 async def test_monitor_teams_cutoff_zeroed_capped_key_resets_spend_when_paid(
-    mock_litellm, mock_limit_service, has_credit, db, test_team, test_region
+    mock_litellm,
+    mock_limit_service,
+    has_credit,
+    restored_meanwhile,
+    db,
+    test_team,
+    test_region,
 ):
     """
     Given: A paid PERIODIC team whose capped key is still at the cutoff's $0
     When: monitor_teams repairs the cap
     Then: With credit in the region, spend is reset too, so old free-credit
           spend cannot keep the key at its cap. Without credit, the cap is
-          repaired as before and spend is left alone.
+          repaired as before and spend is left alone. A key a top-up restored
+          after the read is re-checked live under the region lock and left
+          alone, so its new paid spend is not erased.
     """
     test_team.budget_type = BudgetType.PERIODIC
     test_team.created_at = datetime.now(UTC) - timedelta(days=31)
@@ -410,8 +421,11 @@ async def test_monitor_teams_cutoff_zeroed_capped_key_resets_spend_when_paid(
     db.commit()
 
     mock_instance = mock_litellm.return_value
+    zeroed = {"info": {"spend": 5.0, "max_budget": 0, "budget_duration": None}}
+    restored = {"info": {"spend": 1.0, "max_budget": 5.0, "budget_duration": None}}
     mock_instance.get_key_info = AsyncMock(
-        return_value={"info": {"spend": 5.0, "max_budget": 0, "budget_duration": None}}
+        side_effect=[zeroed, restored] if restored_meanwhile else None,
+        return_value=zeroed,
     )
     mock_instance.update_key_budget = AsyncMock()
     mock_limit_service.return_value.get_token_restrictions.return_value = (
@@ -422,6 +436,9 @@ async def test_monitor_teams_cutoff_zeroed_capped_key_resets_spend_when_paid(
 
     await monitor_teams(db)
 
+    if restored_meanwhile:
+        mock_instance.update_key_budget.assert_not_called()
+        return
     expected = {
         "clear_budget_duration": True,
         "max_budget": 5.0,

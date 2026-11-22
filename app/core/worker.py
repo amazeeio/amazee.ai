@@ -1277,14 +1277,7 @@ async def _run_cutoff_writes(
     # ponytail: purchases in this region wait while the zero writes run, fine
     # for a handful of keys per team; batch per region if that ever grows.
     with SessionLocal() as lock_db:
-        try:
-            locked = (
-                lock_db.query(DBRegion.id)
-                .filter(DBRegion.id == region.id)
-                .with_for_update(key_share=True, nowait=True)
-                .first()
-            )
-        except OperationalError:
+        if not _lock_region_nowait(lock_db, region):
             logger.info(
                 "Region %s is locked by a purchase, free-credit cutoff for team %s "
                 "waits for the next run",
@@ -1293,9 +1286,59 @@ async def _run_cutoff_writes(
             )
             return
         team = lock_db.query(DBTeam).filter(DBTeam.id == team_id).first()
-        if locked is None or not periodic_free_credit_over(lock_db, team):
+        if not periodic_free_credit_over(lock_db, team):
             return
         await _run_key_writes(writes, region.name)
+
+
+async def _run_restore_writes(
+    region: DBRegion,
+    litellm_service: LiteLLMService,
+    writes: list[tuple[int, str, dict]],
+) -> None:
+    """Restore cutoff-zeroed keys, with a spend reset, under the region lock.
+
+    The restore is decided from a cached snapshot, so a top-up may have
+    restored the key since and it may already carry new paid spend. Under the
+    lock no purchase is mid-restore, so a live /key/info that still shows $0
+    with no budget_duration is a real leftover and resetting spend cannot erase
+    paid spend.
+    """
+    if not writes:
+        return
+    with SessionLocal() as lock_db:
+        if not _lock_region_nowait(lock_db, region):
+            logger.info(
+                "Region %s is locked by a purchase, key restores wait for the next run",
+                region.name,
+            )
+            return
+
+        async def _restore(token: str, kwargs: dict) -> None:
+            info = (await litellm_service.get_key_info(token)).get("info", {}) or {}
+            if info.get("budget_duration") is None and _same_budget_amount(
+                info.get("max_budget"), 0
+            ):
+                await litellm_service.update_key_budget(token, **kwargs)
+
+        await _run_key_writes(
+            [(key_id, partial(_restore, token, kw)) for key_id, token, kw in writes],
+            region.name,
+        )
+
+
+def _lock_region_nowait(lock_db: Session, region: DBRegion) -> bool:
+    """Take the region row lock a purchase holds until it commits, or give up."""
+    try:
+        return (
+            lock_db.query(DBRegion.id)
+            .filter(DBRegion.id == region.id)
+            .with_for_update(key_share=True, nowait=True)
+            .first()
+            is not None
+        )
+    except OperationalError:
+        return False
 
 
 def _region_has_paid_credit(db: Session, team_id: int, region_id: int) -> bool:
@@ -1401,6 +1444,8 @@ async def reconcile_team_keys(
             pending_writes: list[tuple[int, Callable[[], Awaitable[None]]]] = []
             # Free-credit zero writes run last, under the region lock.
             cutoff_writes: list[tuple[int, Callable[[], Awaitable[None]]]] = []
+            # Spend-resetting restores also run last, under the region lock.
+            restore_writes: list[tuple[int, str, dict]] = []
 
             # Check spend for each key in this region
             for key in keys:
@@ -1481,16 +1526,21 @@ async def reconcile_team_keys(
                                     # reset spend like the top-up restore, or
                                     # old free-credit spend keeps it at its cap.
                                     budget_kwargs["spend"] = 0.0
-                            pending_writes.append(
-                                (
-                                    key.id,
-                                    partial(
-                                        litellm_service.update_key_budget,
-                                        key.litellm_token,
-                                        **budget_kwargs,
-                                    ),
+                            if "spend" in budget_kwargs:
+                                restore_writes.append(
+                                    (key.id, key.litellm_token, budget_kwargs)
                                 )
-                            )
+                            else:
+                                pending_writes.append(
+                                    (
+                                        key.id,
+                                        partial(
+                                            litellm_service.update_key_budget,
+                                            key.litellm_token,
+                                            **budget_kwargs,
+                                        ),
+                                    )
+                                )
                     elif (
                         restore_region
                         and key.id not in cap_map
@@ -1503,16 +1553,15 @@ async def reconcile_team_keys(
                         logger.info(
                             f"Key {key.id} zeroed by free-credit cutoff, team has paid: restoring"
                         )
-                        pending_writes.append(
+                        restore_writes.append(
                             (
                                 key.id,
-                                partial(
-                                    litellm_service.update_key_budget,
-                                    key.litellm_token,
-                                    max_budget=restore_max_spend,
-                                    budget_duration=f"{restore_duration}d",
-                                    spend=0.0,
-                                ),
+                                key.litellm_token,
+                                {
+                                    "max_budget": restore_max_spend,
+                                    "budget_duration": f"{restore_duration}d",
+                                    "spend": 0.0,
+                                },
                             )
                         )
 
@@ -1555,6 +1604,7 @@ async def reconcile_team_keys(
             # Execute any writes left over from the last partial batch
             await _run_key_writes(pending_writes, region.name)
             await _run_cutoff_writes(team.id, region, cutoff_writes)
+            await _run_restore_writes(region, litellm_service, restore_writes)
 
         except Exception as e:
             logger.error(
