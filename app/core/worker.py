@@ -1358,7 +1358,8 @@ async def reconcile_team_keys(
             where the team has an active subscription or unspent top-up.
             Covers keys a top-up restore missed (failed sync, other region,
             subscription). A cancelled subscriber with no credit left keeps
-            its $0 keys.
+            its $0 keys. Capped keys found at $0 there get their cap back
+            with spend reset.
 
     Returns:
         float: Total spend across all keys for the team
@@ -1471,6 +1472,15 @@ async def reconcile_team_keys(
                             if max_drifted:
                                 budget_kwargs["max_budget"] = expected_max
                                 budget_kwargs["clear_max_budget"] = expected_max is None
+                                if (
+                                    restore_region
+                                    and current_duration is None
+                                    and _same_budget_amount(current_max, 0)
+                                ):
+                                    # Cutoff-zeroed capped key on a paid team:
+                                    # reset spend like the top-up restore, or
+                                    # old free-credit spend keeps it at its cap.
+                                    budget_kwargs["spend"] = 0.0
                             pending_writes.append(
                                 (
                                     key.id,

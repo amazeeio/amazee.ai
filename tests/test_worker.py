@@ -364,6 +364,75 @@ async def test_monitor_teams_unpaid_periodic_team_free_credit_ends(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("has_credit", [True, False])
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.LiteLLMService")
+async def test_monitor_teams_cutoff_zeroed_capped_key_resets_spend_when_paid(
+    mock_litellm, mock_limit_service, has_credit, db, test_team, test_region
+):
+    """
+    Given: A paid PERIODIC team whose capped key is still at the cutoff's $0
+    When: monitor_teams repairs the cap
+    Then: With credit in the region, spend is reset too, so old free-credit
+          spend cannot keep the key at its cap. Without credit, the cap is
+          repaired as before and spend is left alone.
+    """
+    test_team.budget_type = BudgetType.PERIODIC
+    test_team.created_at = datetime.now(UTC) - timedelta(days=31)
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            amount_cents=1000,
+            consumed_cents=0 if has_credit else 1000,
+            is_active=has_credit,
+            purchased_at=datetime.now(UTC) - timedelta(days=1),
+        )
+    )
+    key = DBPrivateAIKey(
+        name="Capped Key",
+        litellm_token="capped_token",
+        region=test_region,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.flush()
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            key_id=key.id,
+            max_budget=5.0,
+        )
+    )
+    db.commit()
+
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock(
+        return_value={"info": {"spend": 5.0, "max_budget": 0, "budget_duration": None}}
+    )
+    mock_instance.update_key_budget = AsyncMock()
+    mock_limit_service.return_value.get_token_restrictions.return_value = (
+        30,
+        27.0,
+        100,
+    )
+
+    await monitor_teams(db)
+
+    expected = {
+        "clear_budget_duration": True,
+        "max_budget": 5.0,
+        "clear_max_budget": False,
+    }
+    if has_credit:
+        expected["spend"] = 0.0
+    mock_instance.update_key_budget.assert_awaited_once_with("capped_token", **expected)
+
+
+@pytest.mark.asyncio
 @patch("app.core.worker.LimitService")
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
