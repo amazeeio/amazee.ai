@@ -150,6 +150,7 @@ def _build_model_response(
                         else _redact_litellm_params(mr_record.litellm_params_override)
                     ),
                     access_groups_override=mr_record.access_groups_override,
+                    zero_data_retention=mr_record.zero_data_retention,
                 )
             )
         else:

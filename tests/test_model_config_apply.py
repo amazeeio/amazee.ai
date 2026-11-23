@@ -761,3 +761,27 @@ def test_apply_override_in_skipped_region_does_not_block_apply(client, admin_tok
     res = _apply(client, admin_token, payload)
     assert res.status_code == 200, res.text
     assert res.json()["skipped_regions"] == [{"region": "no-such-region", "reason": "unknown"}]
+
+
+@patch("app.services.model_sync.LiteLLMService")
+def test_apply_stores_zero_data_retention_without_resync(mock_svc, client, admin_token, db, test_region):
+    payload = _payload(test_region.name)
+    payload["models"][0]["deployments"][0]["zero_data_retention"] = True
+    assert _apply(client, admin_token, payload).status_code == 200
+    model = db.query(DBModel).filter_by(model_id="claude-sonnet").one()
+    assoc = db.query(DBModelRegion).filter_by(model_id=model.id).one()
+    assert assoc.zero_data_retention is True
+    db.query(DBModelRegion).update({"sync_status": "synced"})
+    db.commit()
+
+    payload["models"][0]["deployments"][0]["zero_data_retention"] = None
+    data = _apply(client, admin_token, payload).json()
+    assert {
+        "entity": "deployment",
+        "key": f"claude-sonnet@{test_region.name}",
+        "action": "update",
+        "detail": "zero_data_retention",
+    } in data["changes"]
+    assert data["syncs_scheduled"] == 0  # listing only, LiteLLM never sees it
+    db.refresh(assoc)
+    assert assoc.zero_data_retention is None

@@ -723,3 +723,39 @@ def test_model_sync_reconciles_access_group_entities(mock_service_cls, client, d
     instance.create_access_group.assert_called_once_with(
         "empty-group", [], description=ACCESS_GROUP_MANAGED_DESCRIPTION
     )
+
+
+def test_public_listing_reports_zero_data_retention(db, test_region, monkeypatch):
+    """Each listed model carries its deployment's zero_data_retention in that
+    region; an alias reports its regional target's value."""
+    from app.api.public import _filter_region_groups_by_access
+    from app.core.config import settings
+    from app.db.models import DBModelAliasTarget
+    from app.schemas.models import (
+        PublicModelCapabilities,
+        PublicModelPricing,
+        PublicModelSummary,
+        PublicRegionModels,
+    )
+
+    zdr = _make_model(db, "openai/zdr")
+    keeps = _make_model(db, "openai/keeps")
+    unknown = _make_model(db, "openai/unknown")
+    alias = _make_model(db, "chat", is_alias=True)
+    _deploy_model(db, zdr, test_region).zero_data_retention = True
+    _deploy_model(db, keeps, test_region).zero_data_retention = False
+    _deploy_model(db, unknown, test_region)
+    db.add(DBModelAliasTarget(alias_model_id=alias.id, region_id=test_region.id, target_model_id=keeps.id))
+    db.commit()
+
+    def summary(model_id):
+        return PublicModelSummary(
+            model_id=model_id, display_name=model_id, provider="openai", type="chat",
+            description="", capabilities=PublicModelCapabilities(), pricing=PublicModelPricing(),
+        )
+
+    groups = [PublicRegionModels(region=test_region.name, status="ga",
+                                 models=[summary(m) for m in ("openai/zdr", "openai/keeps", "openai/unknown", "chat")])]
+    monkeypatch.setattr(settings, "CATALOG_MANAGED_REGIONS", "")
+    listed = {m.model_id: m.zero_data_retention for m in _filter_region_groups_by_access(db, groups, None)[0].models}
+    assert listed == {"openai/zdr": True, "openai/keeps": False, "openai/unknown": None, "chat": False}
