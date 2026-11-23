@@ -91,6 +91,7 @@ app = FastAPI(
     1. **Register a new account**
        * Use the `/auth/register` endpoint
        * Provide your email and password
+       * This endpoint can be turned off on invite-only deployments (403)
 
     2. **Login to get access**
        * Use the `/auth/login` endpoint
