@@ -390,6 +390,7 @@ async def register(request: Request, user: UserCreate, db: Session = Depends(get
     - **password**: A secure password (minimum 12 characters)
 
     After registration, you'll need to login to get an access token.
+    Returns 403 when the deployment turns off self-registration.
     """
     auth_logger.info(f"Registration attempt for user: {user.email}")
     # Self-registration is anonymous: never trust role/team_id from the body,
