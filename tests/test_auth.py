@@ -103,6 +103,13 @@ def test_register_blocked_when_disabled(client, db, monkeypatch):
     )
 
 
+def test_register_blocked_before_body_validation(client, monkeypatch):
+    monkeypatch.setattr(settings, "DISABLE_AUTH_REGISTER", True)
+    response = client.post("/auth/register", json={"email": "blocked@example.com"})
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Registration is disabled"
+
+
 def test_register_existing_user(client, test_user):
     response = client.post(
         "/auth/register", json={"email": test_user.email, "password": "newpassword123"}
