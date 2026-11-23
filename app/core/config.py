@@ -143,6 +143,8 @@ class Settings(BaseSettings):
     ENABLE_SIGNUP_VELOCITY_LIMIT: bool = (
         os.getenv("ENABLE_SIGNUP_VELOCITY_LIMIT", "true") == "true"
     )
+    # Invite-only deployments turn off anonymous self-registration.
+    DISABLE_AUTH_REGISTER: bool = os.getenv("DISABLE_AUTH_REGISTER", "false") == "true"
     SIGNUP_MAX_PER_IP_PER_WINDOW: int = int(
         os.getenv("SIGNUP_MAX_PER_IP_PER_WINDOW", "5")
     )

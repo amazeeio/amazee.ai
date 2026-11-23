@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 from app.api.auth import generate_validation_token
+from app.core.config import settings
 from app.core.security import get_password_hash
 from app.db.models import DBUser
 from tests.conftest import _add_tagged_team, _add_tagged_user
@@ -87,6 +88,28 @@ def test_register_new_user(client):
     assert user_data["email"] == "newuser@example.com"
     assert user_data["is_active"] is True
     assert user_data["is_admin"] is False
+
+
+def test_register_blocked_when_disabled(client, db, monkeypatch):
+    monkeypatch.setattr(settings, "DISABLE_AUTH_REGISTER", True)
+    response = client.post(
+        "/auth/register",
+        json={"email": "blocked@example.com", "password": "newpassword123"},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Registration is disabled"
+    assert (
+        db.query(DBUser).filter(DBUser.email == "blocked@example.com").first() is None
+    )
+
+
+def test_register_blocked_before_body_validation(client, monkeypatch):
+    monkeypatch.setattr(settings, "DISABLE_AUTH_REGISTER", True)
+    response = client.post(
+        "/auth/register", json={"email": "blocked@example.com", "password": "x"}
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Registration is disabled"
 
 
 def test_register_existing_user(client, test_user):

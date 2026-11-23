@@ -369,7 +369,19 @@ async def update_user_me(
     return current_user
 
 
-@router.post("/register", response_model=User)
+def _require_registration_enabled() -> None:
+    # A route dependency runs before body validation, so a bad body still gets 403.
+    if settings.DISABLE_AUTH_REGISTER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Registration is disabled"
+        )
+
+
+@router.post(
+    "/register",
+    response_model=User,
+    dependencies=[Depends(_require_registration_enabled)],
+)
 async def register(request: Request, user: UserCreate, db: Session = Depends(get_db)):
     """
     Register a new user account.
@@ -378,6 +390,7 @@ async def register(request: Request, user: UserCreate, db: Session = Depends(get
     - **password**: A secure password (minimum 12 characters)
 
     After registration, you'll need to login to get an access token.
+    Returns 403 when the deployment turns off self-registration.
     """
     auth_logger.info(f"Registration attempt for user: {user.email}")
     # Self-registration is anonymous: never trust role/team_id from the body,
