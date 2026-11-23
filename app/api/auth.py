@@ -379,6 +379,10 @@ async def register(request: Request, user: UserCreate, db: Session = Depends(get
 
     After registration, you'll need to login to get an access token.
     """
+    if settings.DISABLE_AUTH_REGISTER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Registration is disabled"
+        )
     auth_logger.info(f"Registration attempt for user: {user.email}")
     # Self-registration is anonymous: never trust role/team_id from the body,
     # or a stranger could register straight into a victim's team or as an admin.
