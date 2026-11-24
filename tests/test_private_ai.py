@@ -2050,6 +2050,59 @@ def test_create_llm_token_creates_missing_litellm_team_first(
     assert group_slugs.call_args.args[2].id == test_region.id
 
 
+@pytest.mark.parametrize("remaining", [12.5, 0.0])
+@patch("httpx.AsyncClient")
+def test_create_llm_token_caps_missing_litellm_team_of_pool_team(
+    mock_client_class,
+    remaining,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_post_client,
+):
+    """A new LiteLLM team of a pool team gets the remaining pool budget as cap."""
+    test_team.budget_type = "pool"
+    test_team.require_purchase_for_requests = True
+    db.commit()
+    mock_client_class.return_value = mock_httpx_post_client
+
+    with (
+        patch.object(
+            LiteLLMService,
+            "get_team_info",
+            new=AsyncMock(side_effect=HTTPException(status_code=404)),
+        ),
+        patch(
+            "app.api.private_ai_keys.pool_team_has_ever_purchased", return_value=True
+        ),
+        patch(
+            "app.api.private_ai_keys.pool_available_budget_for_team_region",
+            return_value=remaining,
+        ) as pool_budget,
+    ):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "region_id": test_region.id,
+                "name": "Pool Region Key",
+                "team_id": test_team.id,
+            },
+        )
+
+    assert response.status_code == 200
+    team_new_body = next(
+        call.kwargs["json"]
+        for call in mock_httpx_post_client.post.call_args_list
+        if str(call.args[0]).endswith("/team/new")
+    )
+    assert team_new_body["max_budget"] == remaining
+    assert "budget_duration" not in team_new_body
+    pool_budget.assert_called_once_with(ANY, test_team.id, test_region.id)
+
+
 @patch("httpx.AsyncClient")
 def test_create_llm_token_leaves_existing_litellm_team_alone(
     mock_client_class,

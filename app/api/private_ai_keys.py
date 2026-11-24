@@ -55,7 +55,10 @@ from app.core.limit_service import (
     DEFAULT_MAX_SPEND,
     DEFAULT_RPM_PER_KEY,
 )
-from app.core.pool_budget_service import pool_team_has_ever_purchased
+from app.core.pool_budget_service import (
+    pool_available_budget_for_team_region,
+    pool_team_has_ever_purchased,
+)
 from app.services.signup_velocity import enforce_mailbox_cap, enforce_provision_caps
 
 router = APIRouter(tags=["private-ai-keys"])
@@ -625,7 +628,7 @@ async def create_llm_token(
         )
         if litellm_team is not None:
             # LiteLLM rejects /key/generate for a team it does not know in this region.
-            # The team gets no budget and no members, so the key behaves as before.
+            # No members. A pool team gets its pool budget left as cap, others no cap.
             lite_team_id = LiteLLMService.format_team_id(region.name, litellm_team)
             try:
                 await litellm_service.get_team_info(lite_team_id)
@@ -639,6 +642,11 @@ async def create_llm_token(
                     team_id=lite_team_id,
                     team_alias=lite_team_id,
                     models=effective_team_group_slugs(db, effective_team.id, region),
+                    max_budget=pool_available_budget_for_team_region(
+                        db, effective_team.id, region.id
+                    )
+                    if is_pool_team
+                    else None,
                 )
         litellm_token = await litellm_service.create_key(
             email=owner_email,
