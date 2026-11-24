@@ -14,7 +14,7 @@ from app.core.limit_service import (
 )
 from app.core.config import settings
 from collections.abc import AsyncIterator
-from typing import Optional
+from typing import Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ LIST_KEYS_PAGE_CONCURRENCY = max(1, int(os.getenv("LIST_KEYS_PAGE_CONCURRENCY", 
 # provider config form, because the OpenAI-style /models list has no
 # description. Without it those sites get 403 on model discovery. It exposes
 # the region's model catalogue only, not other keys.
-INFERENCE_ONLY_ROUTES = ["llm_api_routes", "/model/info"]
+INFERENCE_ONLY_ROUTES = ("llm_api_routes", "/model/info")
 
 # Timeout for regional LiteLLM model calls, which may run inside a BackgroundTask
 # with no retry — a hung proxy must not park the task on 'pending' forever.
@@ -195,7 +195,7 @@ class LiteLLMService:
         rpm_limit: Optional[int] = DEFAULT_RPM_PER_KEY,
         apply_limits: bool = True,
         blocked: Optional[bool] = None,
-        allowed_routes: Optional[list[str]] = INFERENCE_ONLY_ROUTES,
+        allowed_routes: Optional[Sequence[str]] = INFERENCE_ONLY_ROUTES,
         key: Optional[str] = None,
         expiry: str = DEFAULT_KEY_EXPIRY,
     ) -> str:
@@ -254,7 +254,7 @@ class LiteLLMService:
             if blocked is not None:
                 request_data["blocked"] = blocked
             if allowed_routes:
-                request_data["allowed_routes"] = allowed_routes
+                request_data["allowed_routes"] = list(allowed_routes)
 
             request_data["duration"] = expiry  # Sets the key expiry date
             if settings.ENABLE_LIMITS and apply_limits:
@@ -1023,7 +1023,7 @@ class LiteLLMService:
             )
 
     async def set_key_allowed_routes(
-        self, litellm_token: str, allowed_routes: list[str]
+        self, litellm_token: str, allowed_routes: Sequence[str]
     ) -> None:
         """Scope an existing key to *allowed_routes* (used by the backfill)."""
         try:
@@ -1031,7 +1031,7 @@ class LiteLLMService:
                 response = await client.post(
                     f"{self.api_url}/key/update",
                     headers={"Authorization": f"Bearer {self.master_key}"},
-                    json={"key": litellm_token, "allowed_routes": allowed_routes},
+                    json={"key": litellm_token, "allowed_routes": list(allowed_routes)},
                 )
                 response.raise_for_status()
         except httpx.HTTPStatusError as e:
