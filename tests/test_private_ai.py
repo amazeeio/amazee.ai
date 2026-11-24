@@ -18,6 +18,7 @@ from app.core.security import get_password_hash
 from httpx import HTTPStatusError
 from fastapi import status, HTTPException
 from app.core.config import settings
+from app.services.litellm import LiteLLMService
 from app.core.limit_service import (
     DEFAULT_KEY_DURATION,
     DEFAULT_MAX_SPEND,
@@ -1982,6 +1983,170 @@ def test_create_llm_token_for_customer_team_is_inference_only(
     assert response.status_code == 200
     payload = _key_generate_payload(mock_httpx_post_client, "Customer Key")
     assert payload["allowed_routes"] == ["llm_api_routes", "/model/info"]
+
+
+_TEAM_SETUP_SUFFIXES = ("/team/new", "/user/new", "/team/member_add", "/team/update")
+
+
+def _post_urls(mock_client):
+    return [str(call.args[0]) for call in mock_client.post.call_args_list]
+
+
+@pytest.mark.parametrize("owner_kind", ["team", "team_member"])
+@patch("httpx.AsyncClient")
+def test_create_llm_token_creates_missing_litellm_team_first(
+    mock_client_class,
+    owner_kind,
+    client,
+    admin_token,
+    test_region,
+    test_team,
+    test_team_user,
+    mock_httpx_post_client,
+):
+    """A team key in a region without the LiteLLM team creates the team first."""
+    mock_client_class.return_value = mock_httpx_post_client
+    owner = (
+        {"team_id": test_team.id}
+        if owner_kind == "team"
+        else {"owner_id": test_team_user.id}
+    )
+
+    with patch.object(
+        LiteLLMService,
+        "get_team_info",
+        new=AsyncMock(side_effect=HTTPException(status_code=404)),
+    ):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"region_id": test_region.id, "name": "New Region Key", **owner},
+        )
+
+    assert response.status_code == 200
+    urls = _post_urls(mock_httpx_post_client)
+    key_index = next(i for i, url in enumerate(urls) if url.endswith("/key/generate"))
+    for suffix in ("/team/new", "/user/new", "/team/member_add"):
+        index = next(i for i, url in enumerate(urls) if url.endswith(suffix))
+        assert index < key_index
+    team_new_body = next(
+        call.kwargs["json"]
+        for call in mock_httpx_post_client.post.call_args_list
+        if str(call.args[0]).endswith("/team/new")
+    )
+    assert team_new_body["team_id"] == LiteLLMService.format_team_id(
+        test_region.name, test_team.id
+    )
+    assert "max_budget" not in team_new_body
+
+
+@patch("httpx.AsyncClient")
+def test_create_llm_token_leaves_existing_litellm_team_alone(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    test_team,
+    test_team_user,
+    mock_httpx_post_client,
+):
+    """An existing LiteLLM team gets no create, member, or update calls."""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    with patch.object(
+        LiteLLMService,
+        "get_team_info",
+        new=AsyncMock(return_value={"team_id": "existing"}),
+    ):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "region_id": test_region.id,
+                "name": "Existing Team Key",
+                "team_id": test_team.id,
+            },
+        )
+
+    assert response.status_code == 200
+    urls = _post_urls(mock_httpx_post_client)
+    assert len([url for url in urls if url.endswith("/key/generate")]) == 1
+    assert not [url for url in urls if url.endswith(_TEAM_SETUP_SUFFIXES)]
+
+
+@patch("httpx.AsyncClient")
+def test_create_llm_token_without_team_skips_litellm_team_check(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    mock_httpx_post_client,
+):
+    """A key with no team makes no LiteLLM team calls."""
+    mock_client_class.return_value = mock_httpx_post_client
+    get_team_info = AsyncMock()
+
+    with patch.object(LiteLLMService, "get_team_info", new=get_team_info):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"region_id": test_region.id, "name": "No Team Key"},
+        )
+
+    assert response.status_code == 200
+    get_team_info.assert_not_awaited()
+    assert not [
+        url for url in _post_urls(mock_httpx_post_client) if url.endswith("/team/new")
+    ]
+
+
+@pytest.mark.parametrize("failure", ["team_check", "team_create"])
+@patch("httpx.AsyncClient")
+def test_create_llm_token_fails_when_litellm_team_check_fails(
+    mock_client_class,
+    failure,
+    client,
+    admin_token,
+    test_region,
+    test_team,
+    db,
+    mock_httpx_post_client,
+):
+    """A failed team check or team create stops the key creation."""
+    mock_client_class.return_value = mock_httpx_post_client
+    if failure == "team_check":
+        get_team_info = AsyncMock(side_effect=HTTPException(status_code=503))
+        reprovision = AsyncMock()
+    else:
+        get_team_info = AsyncMock(side_effect=HTTPException(status_code=404))
+        reprovision = AsyncMock(side_effect=RuntimeError("team create failed"))
+
+    with (
+        patch.object(LiteLLMService, "get_team_info", new=get_team_info),
+        patch("app.api.private_ai_keys.reprovision_litellm_team", new=reprovision),
+    ):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "region_id": test_region.id,
+                "name": "Failed Team Key",
+                "team_id": test_team.id,
+            },
+        )
+
+    assert response.status_code == 500
+    assert not [
+        url
+        for url in _post_urls(mock_httpx_post_client)
+        if url.endswith("/key/generate")
+    ]
+    assert (
+        db.query(DBPrivateAIKey)
+        .filter(DBPrivateAIKey.name == "Failed Team Key")
+        .count()
+        == 0
+    )
 
 
 def test_create_vector_db_as_system_admin(client, admin_token, test_region):
