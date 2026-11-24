@@ -22,22 +22,18 @@ logger = logging.getLogger(__name__)
 # read-only requests, so this only bounds load on the LiteLLM proxy.
 LIST_KEYS_PAGE_CONCURRENCY = max(1, int(os.getenv("LIST_KEYS_PAGE_CONCURRENCY", "8")))
 
-# LiteLLM treats a key's team_id as team membership, so any team key can read
-# the whole team via management routes (/team/info returns every sibling key's
-# owner, spend and budget). `llm_api_routes` is LiteLLM's route
-# group for inference only — /chat/completions, /embeddings, /responses,
-# /v1/messages, /models, pass-through providers — and excludes /team/*, /key/*,
-# /user/* and /spend/*. Used for keys that must stay private from their own
-# team, i.e. the shared anonymous-trial team.
+# LiteLLM lets any key call its management routes: /key/generate mints a new
+# key, and /team/info returns every sibling key's owner, spend and budget.
+# `llm_api_routes` is LiteLLM's route group for inference only (/chat/completions,
+# /embeddings, /responses, /v1/messages, /models, pass-through providers) and
+# excludes /team/*, /key/*, /user/* and /spend/*. Every customer key gets it.
 #
-# /model/info is added explicitly: it is an info route, NOT part of
+# /model/info is named explicitly because some LiteLLM versions leave it out of
 # `llm_api_routes`. The Drupal module (`ai_provider_amazeeio`) lists models
-# through it with whatever key it holds — trial keys and self-service keys
-# alike — from `AmazeeClient::models()` and from the provider config form, which
-# needs the human-readable description that the OpenAI-style /models list does
-# not carry. Unrestricted keys reach it anyway, so only the route-restricted
-# trial keys need it named here; without it those sites 403 on model discovery.
-# It exposes the region's model catalogue only, not other keys.
+# through it with its own key, from `AmazeeClient::models()` and from the
+# provider config form, because the OpenAI-style /models list has no
+# description. Without it those sites get 403 on model discovery. It exposes
+# the region's model catalogue only, not other keys.
 INFERENCE_ONLY_ROUTES = ["llm_api_routes", "/model/info"]
 
 # Timeout for regional LiteLLM model calls, which may run inside a BackgroundTask
