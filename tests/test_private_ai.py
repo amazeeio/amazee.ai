@@ -2060,12 +2060,9 @@ def test_create_llm_token_leaves_existing_litellm_team_alone(
 ):
     """An existing LiteLLM team gets no create, member, or update calls."""
     mock_client_class.return_value = mock_httpx_post_client
+    get_team_info = AsyncMock(return_value={"team_id": "existing"})
 
-    with patch.object(
-        LiteLLMService,
-        "get_team_info",
-        new=AsyncMock(return_value={"team_id": "existing"}),
-    ):
+    with patch.object(LiteLLMService, "get_team_info", new=get_team_info):
         response = client.post(
             "/private-ai-keys/token",
             headers={"Authorization": f"Bearer {admin_token}"},
@@ -2077,6 +2074,9 @@ def test_create_llm_token_leaves_existing_litellm_team_alone(
         )
 
     assert response.status_code == 200
+    get_team_info.assert_awaited_once_with(
+        LiteLLMService.format_team_id(test_region.name, test_team.id)
+    )
     urls = _post_urls(mock_httpx_post_client)
     assert len([url for url in urls if url.endswith("/key/generate")]) == 1
     assert not [url for url in urls if url.endswith(_TEAM_SETUP_SUFFIXES)]
