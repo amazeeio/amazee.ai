@@ -248,8 +248,8 @@ Note: Spend enforcement in LiteLLM is evaluated on spend updates, so the blockin
 There is no 30-day trial and no trial expiry. A new `PERIODIC` team's keys start with `DEFAULT_MAX_SPEND` ($27).
 
 - A team that never paid (no `last_payment`, no periodic payment, no ledger credit) keeps that credit for `SIGNUP_CREDIT_DAYS` (default 30) after `created_at`.
-- After that, the daily `monitor_teams` job sets the team's keys to `max_budget = 0` with no `budget_duration`, and new keys start at $0. Keys are not expired, so the team can still buy credit.
-- A periodic top-up restores the zeroed keys of that region straight away.
+- After that, the hourly `monitor_teams` job sets the team's keys to `max_budget = 0` with no `budget_duration`, and new keys start at $0. Keys are not expired, so the team can still buy credit.
+- A periodic top-up restores the zeroed keys of that region straight away, and a subscription cycle sets them to the cycle budget. `monitor_teams` restores any left over in a region that still has credit.
 - `POOL` teams, `is_always_free` teams and the anonymous trial team are exempt.
 - System admins can repair a `POOL` team's keys with `POST /teams/{id}/refresh-pool-keys` (replaces the removed `POST /teams/{id}/extend-trial`).
 

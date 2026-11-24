@@ -67,20 +67,25 @@ def is_anonymous_trial_team(team: Optional[DBTeam]) -> bool:
     return team.admin_email.lower() == settings.AI_TRIAL_TEAM_EMAIL.lower()
 
 
-def periodic_signup_credit_expired(team: Optional[DBTeam]) -> bool:
-    """True when a PERIODIC team is past SIGNUP_CREDIT_DAYS, ignoring payments.
+def periodic_signup_credit_applies(team: Optional[DBTeam]) -> bool:
+    """True when the free-credit cutoff can apply to the team at all.
 
-    Such a team may have had its keys zeroed by the free-credit cutoff at some
-    point, even if it has paid since. POOL, always-free and the anonymous trial
-    team are exempt.
+    POOL, always-free and the anonymous trial team are exempt. The restore
+    paths use this rather than the age check: raising SIGNUP_CREDIT_DAYS later
+    makes a team zeroed under the old value look "not expired" again.
     """
-    if (
+    return not (
         team is None
         or team.budget_type == BudgetType.POOL
         or team.is_always_free
         or is_anonymous_trial_team(team)
         or team.created_at is None
-    ):
+    )
+
+
+def periodic_signup_credit_expired(team: Optional[DBTeam]) -> bool:
+    """True when a PERIODIC team is past SIGNUP_CREDIT_DAYS, ignoring payments."""
+    if not periodic_signup_credit_applies(team):
         return False
     created_at = team.created_at
     if created_at.tzinfo is None:

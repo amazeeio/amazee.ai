@@ -46,7 +46,7 @@ from app.core.team_service import (
     hard_delete_cutoff,
     is_anonymous_trial_team,
     periodic_free_credit_over,
-    periodic_signup_credit_expired,
+    periodic_signup_credit_applies,
 )
 from app.core.limit_service import LimitService
 from app.core.litellm_user_sync import team_role_for_litellm
@@ -1412,11 +1412,8 @@ async def reconcile_team_keys(
     team_total = 0
     total_by_user = defaultdict(float)
     service_key_total = 0
-    restore_duration, restore_max_spend, _ = (
-        LimitService(db).get_token_restrictions(team.id)
-        if restore_zeroed
-        else (None, None, None)
-    )
+    # Looked up on the first key that needs a restore, not for every team.
+    restore_limits: Optional[tuple] = None
 
     # Monitor keys for each region
     for region, keys in keys_by_region.items():
@@ -1553,6 +1550,11 @@ async def reconcile_team_keys(
                         logger.info(
                             f"Key {key.id} zeroed by free-credit cutoff, team has paid: restoring"
                         )
+                        if restore_limits is None:
+                            restore_limits = LimitService(db).get_token_restrictions(
+                                team.id
+                            )
+                        restore_duration, restore_max_spend, _ = restore_limits
                         restore_writes.append(
                             (
                                 key.id,
@@ -1691,7 +1693,7 @@ def _monitor_team_freshness(team: DBTeam, db: Optional[Session] = None) -> int:
 @monitor_teams_duration.time()
 async def monitor_teams(db: Session):
     """
-    Daily monitoring task for teams that:
+    Hourly monitoring task for teams that:
     1. Posts age metrics for teams (since creation, or since last payment)
     2. Applies the team retention policy
     3. Sets an unpaid PERIODIC team's keys to $0 after SIGNUP_CREDIT_DAYS
@@ -1723,8 +1725,10 @@ async def monitor_teams(db: Session):
                 # team can still buy.
                 free_credit_over = periodic_free_credit_over(db, team)
                 # Paid since the cutoff: undo any $0 keys the top-up missed.
+                # No age check, SIGNUP_CREDIT_DAYS may have been raised since
+                # the keys were zeroed. Only regions with credit are restored.
                 restore_zeroed = (
-                    not free_credit_over and periodic_signup_credit_expired(team)
+                    not free_credit_over and periodic_signup_credit_applies(team)
                 )
 
                 # Get all keys for the team grouped by region

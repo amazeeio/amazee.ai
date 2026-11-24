@@ -7,7 +7,7 @@ from app.core.security import get_role_min_system_admin
 from app.core.team_service import (
     get_team_info_or_recreate,
     get_team_region_litellm_keys,
-    periodic_signup_credit_expired,
+    periodic_signup_credit_applies,
     propagate_team_budget_to_keys,
 )
 from app.core.limit_service import LimitService
@@ -602,8 +602,9 @@ async def purchase_periodic_topup(
 
     # Keys zeroed by the free-credit cutoff are found from their LiteLLM state,
     # not from payment history: a retry after a failed restore, or a top-up in
-    # a second region, already has a payment row but still has $0 keys.
-    may_have_zeroed_keys = periodic_signup_credit_expired(team)
+    # a second region, already has a payment row but still has $0 keys. No age
+    # check: SIGNUP_CREDIT_DAYS may have been raised since the keys were zeroed.
+    may_have_zeroed_keys = periodic_signup_credit_applies(team)
 
     try:
         # Reuse an existing payment record if a prior webhook already created one

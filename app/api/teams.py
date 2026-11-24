@@ -643,7 +643,7 @@ async def manual_soft_delete_team(team_id: int, db: Session = Depends(get_db)):
 async def list_teams_for_sales(db: Session = Depends(get_db)):
     """
     Get consolidated team information for sales dashboard.
-    Returns all teams with their regions, spend data, and trial status.
+    Returns all teams with their regions and spend data.
     Accessible by system admin and sales users.
     """
     try:

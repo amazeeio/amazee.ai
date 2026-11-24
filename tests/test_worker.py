@@ -258,6 +258,9 @@ _ZEROED_KEY = {"spend": 5.0, "max_budget": 0, "budget_duration": None}
         (31, "always_free", _ZEROED_KEY, _NONE),
         (31, "anonymous_trial", _ZEROED_KEY, _NONE),
         (29, "topup", _ZEROED_KEY, _NONE),
+        # SIGNUP_CREDIT_DAYS raised after the cutoff zeroed the keys (30 -> 60):
+        # a 45-day team with credit still gets its keys back
+        (45, "active_topup_days_60", _ZEROED_KEY, _RESTORE),
     ],
 )
 @patch("app.core.worker.LimitService")
@@ -294,6 +297,9 @@ async def test_monitor_teams_unpaid_periodic_team_free_credit_ends(
         test_team.admin_email = settings.AI_TRIAL_TEAM_EMAIL
     if variant == "signup_credit_days_10":
         monkeypatch.setattr(settings, "SIGNUP_CREDIT_DAYS", 10)
+    if variant == "active_topup_days_60":
+        monkeypatch.setattr(settings, "SIGNUP_CREDIT_DAYS", 60)
+        variant = "active_topup"
     if variant == "topup":
         db.add(
             DBPeriodicPayment(

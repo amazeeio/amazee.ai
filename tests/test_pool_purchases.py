@@ -422,12 +422,14 @@ def test_create_periodic_topup_skips_keys_not_at_zero(
     mock_instance.update_key_budget.assert_not_called()
 
 
+@pytest.mark.parametrize("cutoff_raised_since", [False, True])
 @patch("app.core.limit_service.DEFAULT_MAX_SPEND", 27.0)  # free credit on
 def test_create_periodic_topup_restores_keys_zeroed_by_free_credit_cutoff(
-    client, admin_token, db, test_team, test_region
+    cutoff_raised_since, client, admin_token, db, test_team, test_region, monkeypatch
 ):
     """
     Given: A never-paid PERIODIC team past SIGNUP_CREDIT_DAYS, keys at $0
+          (or zeroed before ops raised SIGNUP_CREDIT_DAYS past the team's age)
     When: The team buys a top-up
     Then: Each key gets its budget back (an explicit cap stays the cap) and its
           spend is reset, so the team can spend the credit it bought.
@@ -450,6 +452,8 @@ def test_create_periodic_topup_restores_keys_zeroed_by_free_credit_cutoff(
         region_id=test_region.id,
         team_id=test_team.id,
     )
+    if cutoff_raised_since:
+        monkeypatch.setattr(settings, "SIGNUP_CREDIT_DAYS", settings.SIGNUP_CREDIT_DAYS + 30)
     db.add_all([uncapped, capped])
     db.flush()
     db.add(
@@ -491,7 +495,7 @@ def test_create_periodic_topup_restores_keys_zeroed_by_free_credit_cutoff(
 def test_create_periodic_topup_leaves_keys_of_team_in_free_credit(
     client, admin_token, db, test_team, test_region
 ):
-    """A team still inside SIGNUP_CREDIT_DAYS was never zeroed: no key writes."""
+    """A key that is not at the cutoff's $0 is left alone: no key writes."""
     test_team.budget_type = "periodic"
     test_team.last_payment = None
     test_team.created_at = datetime.now(UTC) - timedelta(days=1)
@@ -509,6 +513,9 @@ def test_create_periodic_topup_leaves_keys_of_team_in_free_credit(
         mock_instance = mock_litellm.return_value
         mock_instance.get_team_info = AsyncMock(
             return_value={"team_info": {"spend": 1.0}}
+        )
+        mock_instance.get_key_info = AsyncMock(
+            return_value={"info": {"max_budget": 27.0, "budget_duration": "30d"}}
         )
         mock_instance.update_team_budget = AsyncMock()
         mock_instance.update_key_budget = AsyncMock()
