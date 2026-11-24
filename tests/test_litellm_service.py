@@ -179,6 +179,50 @@ def test_create_key_can_create_blocked_key(
     assert call_args.kwargs["json"]["blocked"] is True
 
 
+@patch("httpx.AsyncClient")
+def test_create_key_defaults_to_inference_only_routes(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    """A caller that leaves out allowed_routes must get a limited key."""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.create_key(email="test@example.com", name="Test Key", user_id=123)
+    )
+
+    # Literal list, not INFERENCE_ONLY_ROUTES: the constant is the default, so
+    # comparing to it would silently accept any route added to it later.
+    payload = mock_httpx_post_client.post.call_args.kwargs["json"]
+    assert payload["allowed_routes"] == ["llm_api_routes", "/model/info"]
+
+
+@patch("httpx.AsyncClient")
+def test_create_key_with_allowed_routes_none_omits_the_field(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.create_key(
+            email="test@example.com",
+            name="Test Key",
+            user_id=123,
+            allowed_routes=None,
+        )
+    )
+
+    payload = mock_httpx_post_client.post.call_args.kwargs["json"]
+    assert "allowed_routes" not in payload
+
+
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
 def test_create_key_with_limits_requires_non_none_values(test_region):
     """Test create_key validates required per-key limits when apply_limits is True."""

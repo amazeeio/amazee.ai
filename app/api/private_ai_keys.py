@@ -37,7 +37,12 @@ from app.db.models import (
     DBSpendCap,
 )
 from app.core.email import escape_like, normalize_email_for_lookup
-from app.services.litellm import INFERENCE_ONLY_ROUTES, LiteLLMService
+from app.services.access_groups import effective_team_group_slugs
+from app.services.litellm import (
+    INFERENCE_ONLY_ROUTES,
+    LiteLLMService,
+    membership_max_budget_by_user,
+)
 from app.core.security import (
     get_current_user_from_auth,
     get_private_ai_access,
@@ -54,9 +59,15 @@ from app.core.limit_service import (
     DEFAULT_MAX_SPEND,
     DEFAULT_RPM_PER_KEY,
 )
-from app.core.pool_budget_service import pool_team_has_ever_purchased
+from app.core.pool_budget_service import (
+    pool_available_budget_for_team_region,
+    pool_team_has_ever_purchased,
+)
 from app.core.team_service import (
-    is_anonymous_trial_team,
+    _capped_member_ids,
+    _reanchor_member_caps_or_fail,
+    allowed_regions_for_team,
+    assigned_regions_for_team,
     periodic_free_credit_over,
 )
 from app.services.signup_velocity import enforce_mailbox_cap, enforce_provision_caps
@@ -538,8 +549,10 @@ async def create_llm_token(
 
     # Get the team if team_id is specified
     team = None
+    requested_team = None
     if team_id is not None:
         team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+        requested_team = team
         if not team:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
@@ -560,6 +573,15 @@ async def create_llm_token(
     effective_team = team
     if effective_team is None and owner is not None and owner.team_id:
         effective_team = db.query(DBTeam).filter(DBTeam.id == owner.team_id).first()
+    # Admins are not exempt: the portal calls as a system admin with the user's region.
+    # Check the requested team, because force_user_keys can leave an admin with no team.
+    scope_team = requested_team or effective_team
+    if scope_team is not None and region.id not in {
+        r.id for r in allowed_regions_for_team(db, scope_team)
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found or inactive"
+        )
     is_pool_team = (
         effective_team is not None and effective_team.requires_pool_purchase_gate
     )
@@ -568,16 +590,6 @@ async def create_llm_token(
         has_pool_purchase = pool_team_has_ever_purchased(
             db, effective_team.id, region.id
         )
-
-    # Every anonymous trial lands in ONE shared team (so the keys stay
-    # trackable), and LiteLLM lets any key in a team read that team —
-    # /team/info returns every sibling key with its owner, spend and budget.
-    # Trial keys therefore get LiteLLM's inference-only route group: LLM calls
-    # work, every management route returns 403. Members of a real (customer)
-    # team are colleagues, so this scoping is deliberately trial-only.
-    allowed_routes = (
-        INFERENCE_ONLY_ROUTES if is_anonymous_trial_team(effective_team) else None
-    )
 
     key_expiry = DEFAULT_KEY_EXPIRY
     if (owner is not None and owner.team_id) or team_id:
@@ -642,6 +654,73 @@ async def create_llm_token(
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
+        # The control plane creates the LiteLLM team in every assigned region, so only
+        # an unassigned one can miss it; /team/info lists every key, too slow for big teams.
+        if litellm_team is not None and region.id not in {
+            r.id for r in assigned_regions_for_team(db, effective_team)
+        }:
+            # LiteLLM rejects /key/generate for a team it does not know in this region.
+            lite_team_id = LiteLLMService.format_team_id(region.name, litellm_team)
+            # A cap row outlives the user leaving the team, so only current members count.
+            capped_users = (
+                db.query(DBUser)
+                .filter(
+                    DBUser.id.in_(_capped_member_ids(db, effective_team.id, region.id)),
+                    DBUser.team_id == effective_team.id,
+                )
+                .all()
+            )
+            capped_ids = {capped_user.id for capped_user in capped_users}
+            try:
+                team_info = await litellm_service.get_team_info(lite_team_id)
+            except HTTPException as team_error:
+                if team_error.status_code != status.HTTP_404_NOT_FOUND:
+                    raise
+                logger.info(
+                    f"Creating missing LiteLLM team {lite_team_id} in region {region.name}"
+                )
+                await litellm_service.create_team(
+                    team_id=lite_team_id,
+                    team_alias=lite_team_id,
+                    models=effective_team_group_slugs(db, effective_team.id, region),
+                    max_budget=pool_available_budget_for_team_region(
+                        db, effective_team.id, region.id
+                    )
+                    if is_pool_team
+                    else None,
+                )
+                # Only capped members are added: a new membership has no member
+                # ceiling, and adding every team user costs two calls per user here.
+                for capped_user in capped_users:
+                    await litellm_service.create_user(
+                        user_id=str(capped_user.id),
+                        user_email=capped_user.email,
+                        auto_create_key=False,
+                    )
+                    await litellm_service.add_team_member(
+                        team_id=lite_team_id, user_id=str(capped_user.id)
+                    )
+                if capped_ids:
+                    team_info = await litellm_service.get_team_info(lite_team_id)
+            # A retry after a failed cap push finds the team present. A member that
+            # already has a ceiling is skipped: a new push would give a fresh allowance.
+            if capped_ids:
+                ceilings = membership_max_budget_by_user(team_info)
+                missing_ceiling = {
+                    user_id
+                    for user_id in capped_ids
+                    if ceilings.get(str(user_id)) is None
+                }
+                if missing_ceiling:
+                    await _reanchor_member_caps_or_fail(
+                        db,
+                        litellm_service,
+                        effective_team,
+                        region,
+                        lite_team_id,
+                        team_info,
+                        missing_ceiling,
+                    )
         litellm_token = await litellm_service.create_key(
             email=owner_email,
             name=private_ai_key.name,
@@ -655,7 +734,11 @@ async def create_llm_token(
             max_budget=max_max_spend,
             rpm_limit=max_rpm_limit,
             apply_limits=not is_pool_team,
-            allowed_routes=allowed_routes,
+            # LiteLLM lets any key call its management routes, so a customer key
+            # could mint an unlimited key through /key/generate or read sibling
+            # keys and member emails through /team/info. The control plane uses
+            # the region master key, so this limit does not affect it.
+            allowed_routes=INFERENCE_ONLY_ROUTES,
             expiry=key_expiry,
         )
         if is_pool_team and not has_pool_purchase:

@@ -1,4 +1,4 @@
-from unittest.mock import patch, Mock, AsyncMock
+from unittest.mock import ANY, patch, Mock, AsyncMock
 
 import pytest
 
@@ -10,6 +10,7 @@ from app.db.models import (
     DBPoolPurchase,
     DBRegion,
     DBTeam,
+    DBTeamRegion,
     DBUser,
     DBSpendCap,
 )
@@ -18,6 +19,7 @@ from app.core.security import get_password_hash
 from httpx import HTTPStatusError
 from fastapi import status, HTTPException
 from app.core.config import settings
+from app.services.litellm import LiteLLMService
 from app.core.limit_service import (
     DEFAULT_KEY_DURATION,
     DEFAULT_MAX_SPEND,
@@ -1929,9 +1931,8 @@ def test_create_llm_token_for_trial_team_is_inference_only(
     test_team,
     mock_httpx_post_client,
 ):
-    """All anonymous trials share one team, and LiteLLM lets any key in a team
-    read that team (/team/info exposes every sibling key's owner, spend and
-    budget). Trial keys must therefore be scoped to inference routes."""
+    """A key in the anonymous trial team gets the same inference-only route
+    limit as every other key."""
     test_team.admin_email = settings.AI_TRIAL_TEAM_EMAIL
     db.commit()
 
@@ -1954,19 +1955,9 @@ def test_create_llm_token_for_trial_team_is_inference_only(
     assert payload["allowed_routes"] == ["llm_api_routes", "/model/info"]
 
 
-@pytest.mark.parametrize(
-    "admin_email",
-    [
-        "customer-team-admin@example.com",
-        # A plus-tag of the trial address is a DIFFERENT team (that's how the
-        # trial team is looked up), so it must not inherit the restriction.
-        settings.AI_TRIAL_TEAM_EMAIL.replace("@", "+customer@"),
-    ],
-)
 @patch("httpx.AsyncClient")
-def test_create_llm_token_for_customer_team_is_unrestricted(
+def test_create_llm_token_for_customer_team_is_inference_only(
     mock_client_class,
-    admin_email,
     client,
     admin_token,
     test_region,
@@ -1974,9 +1965,8 @@ def test_create_llm_token_for_customer_team_is_unrestricted(
     test_team,
     mock_httpx_post_client,
 ):
-    """Members of a real team are colleagues — the trial restriction must not
-    leak into normal team keys."""
-    test_team.admin_email = admin_email
+    """A customer key must not reach LiteLLM management routes either."""
+    test_team.admin_email = "customer-team-admin@example.com"
     db.commit()
 
     mock_client_class.return_value = mock_httpx_post_client
@@ -1993,7 +1983,819 @@ def test_create_llm_token_for_customer_team_is_unrestricted(
 
     assert response.status_code == 200
     payload = _key_generate_payload(mock_httpx_post_client, "Customer Key")
-    assert "allowed_routes" not in payload
+    assert payload["allowed_routes"] == ["llm_api_routes", "/model/info"]
+
+
+_TEAM_SETUP_SUFFIXES = ("/team/new", "/user/new", "/team/member_add", "/team/update")
+
+
+def _post_urls(mock_client):
+    return [str(call.args[0]) for call in mock_client.post.call_args_list]
+
+
+@pytest.mark.parametrize("owner_kind", ["team", "team_member"])
+@patch("httpx.AsyncClient")
+def test_create_llm_token_creates_missing_litellm_team_first(
+    mock_client_class,
+    owner_kind,
+    client,
+    admin_token,
+    test_region,
+    test_team,
+    test_team_user,
+    mock_httpx_post_client,
+):
+    """A team key in a region without the LiteLLM team creates the team first."""
+    mock_client_class.return_value = mock_httpx_post_client
+    owner = (
+        {"team_id": test_team.id}
+        if owner_kind == "team"
+        else {"owner_id": test_team_user.id}
+    )
+
+    with (
+        patch.object(
+            LiteLLMService,
+            "get_team_info",
+            new=AsyncMock(side_effect=HTTPException(status_code=404)),
+        ),
+        patch(
+            "app.api.private_ai_keys.effective_team_group_slugs",
+            return_value=["region-default"],
+        ) as group_slugs,
+    ):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"region_id": test_region.id, "name": "New Region Key", **owner},
+        )
+
+    assert response.status_code == 200
+    urls = _post_urls(mock_httpx_post_client)
+    key_index = next(i for i, url in enumerate(urls) if url.endswith("/key/generate"))
+    team_index = next(i for i, url in enumerate(urls) if url.endswith("/team/new"))
+    assert team_index < key_index
+    assert not [url for url in urls if url.endswith(("/user/new", "/team/member_add"))]
+    team_new_body = next(
+        call.kwargs["json"]
+        for call in mock_httpx_post_client.post.call_args_list
+        if str(call.args[0]).endswith("/team/new")
+    )
+    assert team_new_body["team_id"] == LiteLLMService.format_team_id(
+        test_region.name, test_team.id
+    )
+    assert "max_budget" not in team_new_body
+    assert "budget_duration" not in team_new_body
+    assert team_new_body["models"] == ["region-default"]
+    group_slugs.assert_called_once_with(ANY, test_team.id, ANY)
+    assert group_slugs.call_args.args[2].id == test_region.id
+
+
+@pytest.mark.parametrize("remaining", [12.5, 0.0])
+@patch("httpx.AsyncClient")
+def test_create_llm_token_caps_missing_litellm_team_of_pool_team(
+    mock_client_class,
+    remaining,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_post_client,
+):
+    """A new LiteLLM team of a pool team gets the remaining pool budget as cap."""
+    test_team.budget_type = "pool"
+    test_team.require_purchase_for_requests = True
+    db.commit()
+    mock_client_class.return_value = mock_httpx_post_client
+
+    with (
+        patch.object(
+            LiteLLMService,
+            "get_team_info",
+            new=AsyncMock(side_effect=HTTPException(status_code=404)),
+        ),
+        patch(
+            "app.api.private_ai_keys.pool_team_has_ever_purchased", return_value=True
+        ),
+        patch(
+            "app.api.private_ai_keys.pool_available_budget_for_team_region",
+            return_value=remaining,
+        ) as pool_budget,
+    ):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "region_id": test_region.id,
+                "name": "Pool Region Key",
+                "team_id": test_team.id,
+            },
+        )
+
+    assert response.status_code == 200
+    team_new_body = next(
+        call.kwargs["json"]
+        for call in mock_httpx_post_client.post.call_args_list
+        if str(call.args[0]).endswith("/team/new")
+    )
+    assert team_new_body["max_budget"] == remaining
+    assert "budget_duration" not in team_new_body
+    pool_budget.assert_called_once_with(ANY, test_team.id, test_region.id)
+
+
+@patch("httpx.AsyncClient")
+def test_create_llm_token_leaves_existing_litellm_team_alone(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    test_team,
+    test_team_user,
+    mock_httpx_post_client,
+):
+    """An existing LiteLLM team gets no create, member, or update calls."""
+    mock_client_class.return_value = mock_httpx_post_client
+    get_team_info = AsyncMock(return_value={"team_id": "existing"})
+
+    with patch.object(LiteLLMService, "get_team_info", new=get_team_info):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "region_id": test_region.id,
+                "name": "Existing Team Key",
+                "team_id": test_team.id,
+            },
+        )
+
+    assert response.status_code == 200
+    get_team_info.assert_awaited_once_with(
+        LiteLLMService.format_team_id(test_region.name, test_team.id)
+    )
+    urls = _post_urls(mock_httpx_post_client)
+    assert len([url for url in urls if url.endswith("/key/generate")]) == 1
+    assert not [url for url in urls if url.endswith(_TEAM_SETUP_SUFFIXES)]
+
+
+@patch("httpx.AsyncClient")
+def test_create_llm_token_without_team_skips_litellm_team_check(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    mock_httpx_post_client,
+):
+    """A key with no team makes no LiteLLM team calls."""
+    mock_client_class.return_value = mock_httpx_post_client
+    get_team_info = AsyncMock()
+
+    with patch.object(LiteLLMService, "get_team_info", new=get_team_info):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"region_id": test_region.id, "name": "No Team Key"},
+        )
+
+    assert response.status_code == 200
+    get_team_info.assert_not_awaited()
+    assert not [
+        url for url in _post_urls(mock_httpx_post_client) if url.endswith("/team/new")
+    ]
+
+
+@pytest.mark.parametrize("failure", ["team_check", "team_create"])
+@patch("httpx.AsyncClient")
+def test_create_llm_token_fails_when_litellm_team_check_fails(
+    mock_client_class,
+    failure,
+    client,
+    admin_token,
+    test_region,
+    test_team,
+    db,
+    mock_httpx_post_client,
+):
+    """A failed team check or team create stops the key creation."""
+    mock_client_class.return_value = mock_httpx_post_client
+    if failure == "team_check":
+        get_team_info = AsyncMock(side_effect=HTTPException(status_code=503))
+        create_team = AsyncMock()
+    else:
+        get_team_info = AsyncMock(side_effect=HTTPException(status_code=404))
+        create_team = AsyncMock(side_effect=HTTPException(status_code=500))
+
+    with (
+        patch.object(LiteLLMService, "get_team_info", new=get_team_info),
+        patch.object(LiteLLMService, "create_team", new=create_team),
+    ):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "region_id": test_region.id,
+                "name": "Failed Team Key",
+                "team_id": test_team.id,
+            },
+        )
+
+    assert response.status_code == 500
+    assert not [
+        url
+        for url in _post_urls(mock_httpx_post_client)
+        if url.endswith("/key/generate")
+    ]
+    assert (
+        db.query(DBPrivateAIKey)
+        .filter(DBPrivateAIKey.name == "Failed Team Key")
+        .count()
+        == 0
+    )
+
+
+def _member_cap(db, team, region, user):
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            team_id=team.id,
+            region_id=region.id,
+            user_id=user.id,
+            max_budget=5.0,
+        )
+    )
+    db.commit()
+
+
+def _post_bodies(mock_client, suffix):
+    return [
+        call.kwargs["json"]
+        for call in mock_client.post.call_args_list
+        if str(call.args[0]).endswith(suffix)
+    ]
+
+
+@patch("httpx.AsyncClient")
+def test_create_llm_token_member_cap_restored_on_missing_litellm_team(
+    mock_client_class,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_team_user,
+    mock_httpx_post_client,
+):
+    """A capped member gets its ceiling on the new LiteLLM team before the key."""
+    mock_client_class.return_value = mock_httpx_post_client
+    region = _region_scope_region(db, "unlinked-public")
+    _member_cap(db, test_team, region, test_team_user)
+    get_team_info = AsyncMock(
+        side_effect=[HTTPException(status_code=404), {"team_memberships": []}]
+    )
+
+    with (
+        patch.object(LiteLLMService, "get_team_info", new=get_team_info),
+        patch(
+            "app.api.private_ai_keys.effective_team_group_slugs",
+            return_value=["region-default"],
+        ),
+        patch.object(
+            LiteLLMService, "_update_membership_budget_duration", new=AsyncMock()
+        ),
+    ):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "region_id": region.id,
+                "name": "Capped Member Key",
+                "team_id": test_team.id,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    member_adds = _post_bodies(mock_httpx_post_client, "/team/member_add")
+    assert [body["member"]["user_id"] for body in member_adds] == [
+        str(test_team_user.id)
+    ]
+    urls = _post_urls(mock_httpx_post_client)
+    update_index = next(
+        i for i, url in enumerate(urls) if url.endswith("/team/member_update")
+    )
+    key_index = next(i for i, url in enumerate(urls) if url.endswith("/key/generate"))
+    assert update_index < key_index
+    member_update = _post_bodies(mock_httpx_post_client, "/team/member_update")[0]
+    assert member_update["max_budget_in_team"] == 5.0
+    assert get_team_info.await_count == 2
+
+
+@patch("httpx.AsyncClient")
+def test_create_llm_token_member_cap_none_adds_no_members(
+    mock_client_class,
+    client,
+    admin_token,
+    test_team,
+    test_team_user,
+    db,
+    mock_httpx_post_client,
+):
+    """Without a capped member, the new LiteLLM team gets no member calls."""
+    mock_client_class.return_value = mock_httpx_post_client
+    region = _region_scope_region(db, "unlinked-public")
+    get_team_info = AsyncMock(side_effect=HTTPException(status_code=404))
+
+    with (
+        patch.object(LiteLLMService, "get_team_info", new=get_team_info),
+        patch(
+            "app.api.private_ai_keys.effective_team_group_slugs",
+            return_value=["region-default"],
+        ),
+    ):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "region_id": region.id,
+                "name": "Uncapped Key",
+                "team_id": test_team.id,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert not [
+        url
+        for url in _post_urls(mock_httpx_post_client)
+        if url.endswith(("/user/new", "/team/member_add", "/team/member_update"))
+    ]
+    assert get_team_info.await_count == 1
+
+
+@patch("httpx.AsyncClient")
+def test_create_llm_token_member_cap_push_failure_creates_no_key(
+    mock_client_class,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_team_user,
+    mock_httpx_post_client,
+):
+    """A failed member cap push stops the key creation."""
+    mock_client_class.return_value = mock_httpx_post_client
+    region = _region_scope_region(db, "unlinked-public")
+    _member_cap(db, test_team, region, test_team_user)
+
+    with (
+        patch.object(
+            LiteLLMService,
+            "get_team_info",
+            new=AsyncMock(
+                side_effect=[HTTPException(status_code=404), {"team_memberships": []}]
+            ),
+        ),
+        patch(
+            "app.api.private_ai_keys.effective_team_group_slugs",
+            return_value=["region-default"],
+        ),
+        patch.object(
+            LiteLLMService,
+            "update_team_member",
+            new=AsyncMock(side_effect=Exception("member push failed")),
+        ),
+    ):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "region_id": region.id,
+                "name": "Cap Failure Key",
+                "team_id": test_team.id,
+            },
+        )
+
+    assert response.status_code == 500
+    assert "member push failed" in response.json()["detail"]
+    assert not [
+        url
+        for url in _post_urls(mock_httpx_post_client)
+        if url.endswith("/key/generate")
+    ]
+    assert (
+        db.query(DBPrivateAIKey)
+        .filter(DBPrivateAIKey.name == "Cap Failure Key")
+        .count()
+        == 0
+    )
+
+
+@pytest.mark.parametrize("has_ceiling", [False, True])
+@patch("httpx.AsyncClient")
+def test_create_llm_token_member_cap_repaired_on_existing_litellm_team(
+    mock_client_class,
+    has_ceiling,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_team_user,
+    mock_httpx_post_client,
+):
+    """On an existing team, only a capped member with no ceiling gets a push."""
+    mock_client_class.return_value = mock_httpx_post_client
+    region = _region_scope_region(db, "unlinked-public")
+    _member_cap(db, test_team, region, test_team_user)
+    memberships = (
+        [{"user_id": str(test_team_user.id), "max_budget_in_team": 6.0}]
+        if has_ceiling
+        else []
+    )
+
+    with (
+        patch.object(
+            LiteLLMService,
+            "get_team_info",
+            new=AsyncMock(return_value={"team_memberships": memberships}),
+        ),
+        patch.object(
+            LiteLLMService, "_update_membership_budget_duration", new=AsyncMock()
+        ),
+    ):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "region_id": region.id,
+                "name": "Existing Team Cap Key",
+                "team_id": test_team.id,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    urls = _post_urls(mock_httpx_post_client)
+    assert not [url for url in urls if url.endswith(("/team/new", "/team/member_add"))]
+    update_indexes = [
+        i for i, url in enumerate(urls) if url.endswith("/team/member_update")
+    ]
+    if has_ceiling:
+        assert update_indexes == []
+    else:
+        key_index = next(
+            i for i, url in enumerate(urls) if url.endswith("/key/generate")
+        )
+        assert len(update_indexes) == 1
+        assert update_indexes[0] < key_index
+
+
+@pytest.mark.parametrize("team_missing", [True, False])
+@patch("httpx.AsyncClient")
+def test_create_llm_token_member_cap_ignores_user_who_left_team(
+    mock_client_class,
+    team_missing,
+    client,
+    admin_token,
+    db,
+    test_team,
+    mock_httpx_post_client,
+):
+    """A cap row of a user who left the team makes no extra LiteLLM call."""
+    mock_client_class.return_value = mock_httpx_post_client
+    region = _region_scope_region(db, "unlinked-public")
+    left_user = DBUser(
+        email="lefttheteam@example.com",
+        hashed_password=get_password_hash("password123"),
+        is_active=True,
+        role="user",
+        team_id=None,
+        created_at=datetime.now(UTC),
+    )
+    db.add(left_user)
+    db.commit()
+    _member_cap(db, test_team, region, left_user)
+    get_team_info = AsyncMock(
+        side_effect=HTTPException(status_code=404) if team_missing else None,
+        return_value={"team_memberships": []},
+    )
+
+    with (
+        patch.object(LiteLLMService, "get_team_info", new=get_team_info),
+        patch(
+            "app.api.private_ai_keys.effective_team_group_slugs",
+            return_value=["region-default"],
+        ),
+        patch(
+            "app.api.private_ai_keys._reanchor_member_caps_or_fail",
+            new=AsyncMock(),
+        ) as reanchor,
+    ):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "region_id": region.id,
+                "name": "Left User Cap Key",
+                "team_id": test_team.id,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert not [
+        url
+        for url in _post_urls(mock_httpx_post_client)
+        if url.endswith(("/user/new", "/team/member_add", "/team/member_update"))
+    ]
+    assert get_team_info.await_count == 1
+    reanchor.assert_not_awaited()
+
+
+def _region_scope_region(db, name, dedicated=False, team=None):
+    region = DBRegion(
+        name=name,
+        label=name,
+        postgres_host=f"{name}.example",
+        postgres_port=5432,
+        postgres_admin_user="admin",
+        postgres_admin_password="pw",
+        litellm_api_url=f"https://{name}-litellm.example",
+        litellm_api_key=f"{name}-key",
+        is_active=True,
+        is_dedicated=dedicated,
+    )
+    db.add(region)
+    db.commit()
+    if team is not None:
+        db.add(DBTeamRegion(team_id=team.id, region_id=region.id))
+        db.commit()
+    return region
+
+
+def _region_scope_other_team_dedicated(db):
+    other_team = DBTeam(
+        name="Other Team",
+        admin_email="otherteam@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    db.add(other_team)
+    db.commit()
+    return _region_scope_region(db, "other-dedicated", True, other_team)
+
+
+@pytest.mark.parametrize(
+    "case, token_fixture",
+    [
+        ("other_team_dedicated", "team_admin_token"),
+        ("other_team_dedicated", "admin_token"),
+        ("hidden_public", "admin_token"),
+        ("force_user_keys", "admin_token"),
+    ],
+)
+@patch("httpx.AsyncClient")
+def test_create_llm_token_region_scope_refuses_region_outside_team(
+    mock_client_class,
+    case,
+    token_fixture,
+    request,
+    client,
+    db,
+    test_team,
+    test_region,
+    mock_httpx_post_client,
+):
+    """A team key outside the team's allowed regions is refused before LiteLLM."""
+    mock_client_class.return_value = mock_httpx_post_client
+    if case in ("other_team_dedicated", "force_user_keys"):
+        test_team.force_user_keys = case == "force_user_keys"
+        region = _region_scope_other_team_dedicated(db)
+    else:
+        test_team.hide_public_regions = True
+        db.commit()
+        region = _region_scope_region(db, "unlinked-public")
+    token = request.getfixturevalue(token_fixture)
+    get_team_info = AsyncMock()
+
+    with patch.object(LiteLLMService, "get_team_info", new=get_team_info):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "region_id": region.id,
+                "name": "Out Of Scope Key",
+                "team_id": test_team.id,
+            },
+        )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Region not found or inactive"
+    get_team_info.assert_not_awaited()
+    mock_httpx_post_client.post.assert_not_called()
+    assert (
+        db.query(DBPrivateAIKey)
+        .filter(DBPrivateAIKey.name == "Out Of Scope Key")
+        .count()
+        == 0
+    )
+
+
+@patch("httpx.AsyncClient")
+def test_create_llm_token_region_scope_refuses_region_outside_owner_team(
+    mock_client_class,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+    test_team_user,
+    mock_httpx_post_client,
+):
+    """With no team_id, the owner's team sets the region scope."""
+    mock_client_class.return_value = mock_httpx_post_client
+    region = _region_scope_other_team_dedicated(db)
+    get_team_info = AsyncMock()
+
+    with patch.object(LiteLLMService, "get_team_info", new=get_team_info):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "region_id": region.id,
+                "name": "Owner Scope Key",
+                "owner_id": test_team_user.id,
+            },
+        )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Region not found or inactive"
+    get_team_info.assert_not_awaited()
+    mock_httpx_post_client.post.assert_not_called()
+
+
+@patch("httpx.AsyncClient")
+def test_create_llm_token_region_scope_skips_key_without_team(
+    mock_client_class,
+    client,
+    admin_token,
+    db,
+    mock_httpx_post_client,
+):
+    """A key with no team has no team scope, so any active region works."""
+    mock_client_class.return_value = mock_httpx_post_client
+    region = _region_scope_other_team_dedicated(db)
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"region_id": region.id, "name": "No Team Scope Key"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert [
+        url
+        for url in _post_urls(mock_httpx_post_client)
+        if url.endswith("/key/generate")
+    ] == [f"{region.litellm_api_url}/key/generate"]
+
+
+@pytest.mark.parametrize("dedicated", [False, True])
+@patch("httpx.AsyncClient")
+def test_create_llm_token_region_scope_allows_team_region(
+    mock_client_class,
+    dedicated,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+    mock_httpx_post_client,
+):
+    """A public team gets any public region; a team gets its own dedicated region."""
+    mock_client_class.return_value = mock_httpx_post_client
+    region = (
+        _region_scope_region(db, "own-dedicated", True, test_team)
+        if dedicated
+        else _region_scope_region(db, "unlinked-public")
+    )
+
+    with patch.object(
+        LiteLLMService,
+        "get_team_info",
+        new=AsyncMock(return_value={"team_id": "existing"}),
+    ):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "region_id": region.id,
+                "name": "In Scope Key",
+                "team_id": test_team.id,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    key_urls = [
+        url
+        for url in _post_urls(mock_httpx_post_client)
+        if url.endswith("/key/generate")
+    ]
+    assert key_urls == [f"{region.litellm_api_url}/key/generate"]
+
+
+@pytest.mark.parametrize(
+    "assignment, owner_kind",
+    [
+        ("team_regions", "team"),
+        ("primary", "team"),
+        ("team_regions", "team_member"),
+    ],
+)
+@patch("httpx.AsyncClient")
+def test_create_llm_token_team_check_scope_skips_assigned_region(
+    mock_client_class,
+    assignment,
+    owner_kind,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_team_user,
+    mock_httpx_post_client,
+):
+    """A key in a region assigned to its team makes no LiteLLM team call."""
+    mock_client_class.return_value = mock_httpx_post_client
+    if assignment == "team_regions":
+        region = _region_scope_region(db, "assigned-public", team=test_team)
+    else:
+        region = _region_scope_region(db, "assigned-public")
+        test_team.region_id = region.id
+        db.commit()
+    if owner_kind == "team_member":
+        test_team.admin_email = settings.AI_TRIAL_TEAM_EMAIL
+        db.commit()
+        owner = {"owner_id": test_team_user.id}
+    else:
+        owner = {"team_id": test_team.id}
+    get_team_info = AsyncMock()
+
+    with patch.object(LiteLLMService, "get_team_info", new=get_team_info):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"region_id": region.id, "name": "Assigned Region Key", **owner},
+        )
+
+    assert response.status_code == 200, response.text
+    get_team_info.assert_not_awaited()
+    urls = _post_urls(mock_httpx_post_client)
+    assert not [url for url in urls if url.endswith(_TEAM_SETUP_SUFFIXES)]
+    assert [url for url in urls if url.endswith("/key/generate")] == [
+        f"{region.litellm_api_url}/key/generate"
+    ]
+    key_body = _post_bodies(mock_httpx_post_client, "/key/generate")[0]
+    assert key_body["team_id"] == LiteLLMService.format_team_id(
+        region.name, test_team.id
+    )
+
+
+@patch("httpx.AsyncClient")
+def test_create_llm_token_team_check_scope_creates_team_in_unassigned_region(
+    mock_client_class,
+    client,
+    admin_token,
+    db,
+    test_team,
+    mock_httpx_post_client,
+):
+    """A team key in an unassigned region checks the team and creates it."""
+    mock_client_class.return_value = mock_httpx_post_client
+    region = _region_scope_region(db, "unlinked-public")
+    get_team_info = AsyncMock(side_effect=HTTPException(status_code=404))
+
+    with (
+        patch.object(LiteLLMService, "get_team_info", new=get_team_info),
+        patch(
+            "app.api.private_ai_keys.effective_team_group_slugs",
+            return_value=["region-default"],
+        ),
+    ):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "region_id": region.id,
+                "name": "Unassigned Region Key",
+                "team_id": test_team.id,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    lite_team_id = LiteLLMService.format_team_id(region.name, test_team.id)
+    get_team_info.assert_awaited_once_with(lite_team_id)
+    urls = _post_urls(mock_httpx_post_client)
+    team_index = next(i for i, url in enumerate(urls) if url.endswith("/team/new"))
+    key_index = next(i for i, url in enumerate(urls) if url.endswith("/key/generate"))
+    assert team_index < key_index
+    assert _post_bodies(mock_httpx_post_client, "/team/new")[0]["team_id"] == (
+        lite_team_id
+    )
 
 
 def test_create_vector_db_as_system_admin(client, admin_token, test_region):

@@ -44,7 +44,6 @@ from app.core.team_service import (
     get_team_info_or_recreate,
     get_team_region_litellm_keys,
     hard_delete_cutoff,
-    is_anonymous_trial_team,
     periodic_free_credit_over,
     periodic_signup_credit_applies,
 )
@@ -1017,13 +1016,9 @@ async def apply_billing_cycle_for_team(
                             # Born blocked so a failed limit write cannot leave
                             # the key live and uncapped; the call below unblocks.
                             blocked=True,
-                            # Same route restriction normal provisioning applies,
-                            # or a rebuilt trial key would come back unrestricted.
-                            allowed_routes=(
-                                INFERENCE_ONLY_ROUTES
-                                if is_anonymous_trial_team(team)
-                                else None
-                            ),
+                            # Same route limit as a new key, or a rebuilt key
+                            # would come back with management routes open.
+                            allowed_routes=INFERENCE_ONLY_ROUTES,
                         )
                         await litellm_service.set_key_restrictions(**restrictions)
 

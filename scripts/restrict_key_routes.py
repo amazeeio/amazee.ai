@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """
-One-time backfill: scope existing anonymous-trial keys to inference routes.
+One-time backfill: scope every existing LiteLLM key to inference routes.
 
-All anonymous trials share one team so their keys stay trackable, but LiteLLM
-treats a key's team_id as team membership: a trial key can call
-`/team/info?team_id=<shared team>` and read every sibling trial's owner, spend
-and budget metadata. New keys are created with `allowed_routes` (see
-`create_llm_token`); this script applies the same scoping to keys minted before
-that.
+LiteLLM lets any key call its management routes, so a customer key could mint
+an unlimited key through `/key/generate` or read team member emails through
+`/team/info`. New keys are created with `allowed_routes` (see
+`create_llm_token`); this script applies the same limit to keys minted before
+that. Inactive regions are skipped because their proxy can be gone.
 
 Usage:
-    python scripts/restrict_trial_key_routes.py --dry-run
-    python scripts/restrict_trial_key_routes.py
+    python scripts/restrict_key_routes.py --dry-run
+    python scripts/restrict_key_routes.py
 """
 
 import argparse
@@ -22,29 +21,17 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.core.team_service import is_anonymous_trial_team
 from app.db.database import SessionLocal
-from app.db.models import DBPrivateAIKey, DBRegion, DBTeam, DBUser
+from app.db.models import DBPrivateAIKey, DBRegion
 from app.services.litellm import INFERENCE_ONLY_ROUTES, LiteLLMService
 
 
-def get_trial_keys_grouped_by_region(session):
-    """Return trial-team LiteLLM keys grouped by region_id."""
-    trial_team_ids = [
-        team.id for team in session.query(DBTeam).all() if is_anonymous_trial_team(team)
-    ]
-    if not trial_team_ids:
-        return defaultdict(list)
-
+def get_keys_grouped_by_region(session, region_ids):
+    """Return LiteLLM keys in the given regions, grouped by region_id."""
     keys = (
         session.query(DBPrivateAIKey)
-        .outerjoin(DBUser, DBUser.id == DBPrivateAIKey.owner_id)
         .filter(DBPrivateAIKey.litellm_token.isnot(None))
-        .filter(DBPrivateAIKey.region_id.isnot(None))
-        .filter(
-            (DBPrivateAIKey.team_id.in_(trial_team_ids))
-            | (DBUser.team_id.in_(trial_team_ids))
-        )
+        .filter(DBPrivateAIKey.region_id.in_(region_ids))
         .all()
     )
 
@@ -57,9 +44,12 @@ def get_trial_keys_grouped_by_region(session):
 async def run(dry_run: bool) -> int:
     session = SessionLocal()
     try:
-        regions = {r.id: r for r in session.query(DBRegion).all()}
-        keys_by_region = get_trial_keys_grouped_by_region(session)
+        regions = {
+            r.id: r for r in session.query(DBRegion).filter(DBRegion.is_active).all()
+        }
+        keys_by_region = get_keys_grouped_by_region(session, list(regions))
 
+        total_planned = 0
         total_updated = 0
         total_failed = 0
 
@@ -76,8 +66,9 @@ async def run(dry_run: bool) -> int:
                 if dry_run:
                     print(
                         f"[DRY-RUN] key_id={key.id} region={region.name} -> "
-                        f"allowed_routes={INFERENCE_ONLY_ROUTES}"
+                        f"allowed_routes={list(INFERENCE_ONLY_ROUTES)}"
                     )
+                    total_planned += 1
                     continue
                 try:
                     await service.set_key_allowed_routes(
@@ -89,8 +80,13 @@ async def run(dry_run: bool) -> int:
                 except Exception as e:
                     total_failed += 1
                     print(f"[FAIL] key_id={key.id} region={region.name} error={e}")
+            if dry_run:
+                print(f"[DRY-RUN] region={region.name} planned={len(keys)}")
 
-        print(f"Done. updated={total_updated} failed={total_failed} dry_run={dry_run}")
+        print(
+            f"Done. planned={total_planned} updated={total_updated} "
+            f"failed={total_failed} dry_run={dry_run}"
+        )
         return 0 if total_failed == 0 else 1
     finally:
         session.close()
@@ -98,7 +94,7 @@ async def run(dry_run: bool) -> int:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Restrict existing anonymous-trial LiteLLM keys to inference routes"
+        description="Restrict existing LiteLLM keys in active regions to inference routes"
     )
     parser.add_argument(
         "--dry-run",

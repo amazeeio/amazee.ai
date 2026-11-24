@@ -14,7 +14,7 @@ from app.core.limit_service import (
 )
 from app.core.config import settings
 from collections.abc import AsyncIterator
-from typing import Optional
+from typing import Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -22,23 +22,19 @@ logger = logging.getLogger(__name__)
 # read-only requests, so this only bounds load on the LiteLLM proxy.
 LIST_KEYS_PAGE_CONCURRENCY = max(1, int(os.getenv("LIST_KEYS_PAGE_CONCURRENCY", "8")))
 
-# LiteLLM treats a key's team_id as team membership, so any team key can read
-# the whole team via management routes (/team/info returns every sibling key's
-# owner, spend and budget). `llm_api_routes` is LiteLLM's route
-# group for inference only — /chat/completions, /embeddings, /responses,
-# /v1/messages, /models, pass-through providers — and excludes /team/*, /key/*,
-# /user/* and /spend/*. Used for keys that must stay private from their own
-# team, i.e. the shared anonymous-trial team.
+# LiteLLM lets any key call its management routes: /key/generate mints a new
+# key, and /team/info returns every sibling key's owner, spend and budget.
+# `llm_api_routes` is LiteLLM's route group for inference only (/chat/completions,
+# /embeddings, /responses, /v1/messages, /models, pass-through providers) and
+# excludes /team/*, /key/*, /user/* and /spend/*. Every customer key gets it.
 #
-# /model/info is added explicitly: it is an info route, NOT part of
+# /model/info is named explicitly because some LiteLLM versions leave it out of
 # `llm_api_routes`. The Drupal module (`ai_provider_amazeeio`) lists models
-# through it with whatever key it holds — trial keys and self-service keys
-# alike — from `AmazeeClient::models()` and from the provider config form, which
-# needs the human-readable description that the OpenAI-style /models list does
-# not carry. Unrestricted keys reach it anyway, so only the route-restricted
-# trial keys need it named here; without it those sites 403 on model discovery.
-# It exposes the region's model catalogue only, not other keys.
-INFERENCE_ONLY_ROUTES = ["llm_api_routes", "/model/info"]
+# through it with its own key, from `AmazeeClient::models()` and from the
+# provider config form, because the OpenAI-style /models list has no
+# description. Without it those sites get 403 on model discovery. It exposes
+# the region's model catalogue only, not other keys.
+INFERENCE_ONLY_ROUTES = ("llm_api_routes", "/model/info")
 
 # Timeout for regional LiteLLM model calls, which may run inside a BackgroundTask
 # with no retry — a hung proxy must not park the task on 'pending' forever.
@@ -199,7 +195,7 @@ class LiteLLMService:
         rpm_limit: Optional[int] = DEFAULT_RPM_PER_KEY,
         apply_limits: bool = True,
         blocked: Optional[bool] = None,
-        allowed_routes: Optional[list[str]] = None,
+        allowed_routes: Optional[Sequence[str]] = INFERENCE_ONLY_ROUTES,
         key: Optional[str] = None,
         expiry: str = DEFAULT_KEY_EXPIRY,
     ) -> str:
@@ -210,7 +206,9 @@ class LiteLLMService:
                 None leaves the field out, so LiteLLM never resets the budget.
             allowed_routes: Restrict the key to these LiteLLM routes (exact
                 paths, wildcards or route-group names such as
-                ``llm_api_routes``). None means no route restriction.
+                ``llm_api_routes``). The default is inference-only, so a
+                caller that leaves it out gets a limited key. An explicit None
+                or empty list means no route restriction.
             key: Reuse this key value instead of letting LiteLLM mint one, so a
                 token we already store keeps working after the key is rebuilt.
             expiry: How long the key itself lives (LiteLLM ``duration``, which
@@ -256,7 +254,7 @@ class LiteLLMService:
             if blocked is not None:
                 request_data["blocked"] = blocked
             if allowed_routes:
-                request_data["allowed_routes"] = allowed_routes
+                request_data["allowed_routes"] = list(allowed_routes)
 
             request_data["duration"] = expiry  # Sets the key expiry date
             if settings.ENABLE_LIMITS and apply_limits:
@@ -1025,7 +1023,7 @@ class LiteLLMService:
             )
 
     async def set_key_allowed_routes(
-        self, litellm_token: str, allowed_routes: list[str]
+        self, litellm_token: str, allowed_routes: Sequence[str]
     ) -> None:
         """Scope an existing key to *allowed_routes* (used by the backfill)."""
         try:
@@ -1033,7 +1031,7 @@ class LiteLLMService:
                 response = await client.post(
                     f"{self.api_url}/key/update",
                     headers={"Authorization": f"Bearer {self.master_key}"},
-                    json={"key": litellm_token, "allowed_routes": allowed_routes},
+                    json={"key": litellm_token, "allowed_routes": list(allowed_routes)},
                 )
                 response.raise_for_status()
         except httpx.HTTPStatusError as e:
