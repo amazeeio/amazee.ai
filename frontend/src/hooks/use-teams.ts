@@ -107,14 +107,22 @@ export function useTeams(
     },
   });
 
-  const extendTrialMutation = useMutation({
+  const refreshPoolKeysMutation = useMutation({
     mutationFn: async (id: string | number) => {
-      const response = await post(`/teams/${id}/extend-trial`, {});
-      return response.json();
+      const response = await post(`/teams/${id}/refresh-pool-keys`, {});
+      return (await response.json()) as { failed_keys?: number };
     },
-    onSuccess: (_, id) => {
-      queryClient.invalidateQueries({ queryKey: ["team", id.toString()] });
-      toast({ title: "Success", description: "Trial extended successfully" });
+    onSuccess: (data) => {
+      const failed = data?.failed_keys ?? 0;
+      if (failed > 0) {
+        toast({
+          title: "Error",
+          description: `${failed} key(s) could not be refreshed in LiteLLM`,
+          variant: "destructive",
+        });
+        return;
+      }
+      toast({ title: "Success", description: "Pool keys refreshed" });
     },
     onError: (error: Error) => {
       toast({
@@ -240,8 +248,8 @@ export function useTeams(
     isDeleting: deleteTeamMutation.isPending,
     restoreTeam: restoreTeamMutation.mutate,
     isRestoring: restoreTeamMutation.isPending,
-    extendTrial: extendTrialMutation.mutate,
-    isExtendingTrial: extendTrialMutation.isPending,
+    refreshPoolKeys: refreshPoolKeysMutation.mutate,
+    isRefreshingPoolKeys: refreshPoolKeysMutation.isPending,
     mergeTeams: mergeTeamsMutation.mutate,
     isMerging: mergeTeamsMutation.isPending,
     addUserToTeam: addUserToTeamMutation.mutate,

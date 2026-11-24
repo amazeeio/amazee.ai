@@ -5,6 +5,8 @@ from datetime import UTC, datetime, timedelta
 from functools import partial
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, and_, or_, update as sa_update
+from sqlalchemy.exc import OperationalError
+from app.db.database import SessionLocal
 from app.db.models import (
     DBTeam,
     DBAuditLog,
@@ -37,13 +39,13 @@ from app.services.litellm import (
     hash_litellm_token,
     membership_spend_by_user,
 )
-from app.services.ses import SESService
 from app.core.team_service import (
     get_team_keys_by_region,
     get_team_info_or_recreate,
     get_team_region_litellm_keys,
     hard_delete_cutoff,
-    is_anonymous_trial_team,
+    periodic_free_credit_over,
+    periodic_signup_credit_applies,
 )
 from app.core.limit_service import LimitService
 from app.core.litellm_user_sync import team_role_for_litellm
@@ -76,10 +78,6 @@ from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
-FIRST_EMAIL_DAYS_LEFT = 7
-SECOND_EMAIL_DAYS_LEFT = 5
-TRIAL_OVER_DAYS = 30
-
 # A key is created with a 30-day expiry and the billing cycle is the only thing
 # that renews it. This is key expiry, not a LiteLLM budget cycle.
 KEY_EXPIRY_EXTENSION = "31d"
@@ -92,12 +90,6 @@ SUBSCRIPTION_BUDGET_TYPES = frozenset({BudgetType.PERIODIC, BudgetType.POOL})
 team_freshness_days = Gauge(
     "team_freshness_days",
     "Freshness of teams in days (since creation, or since last payment)",
-    ["team_id", "team_name"],
-)
-
-team_expired_metric = Counter(
-    "team_expired_total",
-    "Total number of teams that have expired",
     ["team_id", "team_name"],
 )
 
@@ -1261,12 +1253,123 @@ def _same_budget_amount(current: float | None, expected: float | None) -> bool:
     return round(float(current), 4) == round(float(expected), 4)
 
 
+async def _run_cutoff_writes(
+    team_id: int,
+    region: DBRegion,
+    writes: list[tuple[int, Callable[[], Awaitable[None]]]],
+) -> None:
+    """Zero a never-paid team's keys under the purchase's region lock.
+
+    The cutoff is decided before LiteLLM is read, so a first top-up can restore
+    the keys in between and this run would zero them again. The top-up holds
+    this region row lock until it commits, so take it NOWAIT (a purchase in
+    flight skips the cutoff until the next run), re-check payment state under
+    it, then write. A separate session limits the lock to these writes; the
+    run's own session only commits at the end of the whole run.
+    """
+    if not writes:
+        return
+    # ponytail: purchases in this region wait while the zero writes run, fine
+    # for a handful of keys per team; batch per region if that ever grows.
+    with SessionLocal() as lock_db:
+        if not _lock_region_nowait(lock_db, region):
+            logger.info(
+                "Region %s is locked by a purchase, free-credit cutoff for team %s "
+                "waits for the next run",
+                region.name,
+                team_id,
+            )
+            return
+        team = lock_db.query(DBTeam).filter(DBTeam.id == team_id).first()
+        if not periodic_free_credit_over(lock_db, team):
+            return
+        await _run_key_writes(writes, region.name)
+
+
+async def _run_restore_writes(
+    region: DBRegion,
+    litellm_service: LiteLLMService,
+    writes: list[tuple[int, str, dict]],
+) -> None:
+    """Restore cutoff-zeroed keys, with a spend reset, under the region lock.
+
+    The restore is decided from a cached snapshot, so a top-up may have
+    restored the key since and it may already carry new paid spend. Under the
+    lock no purchase is mid-restore, so a live /key/info that still shows $0
+    with no budget_duration is a real leftover and resetting spend cannot erase
+    paid spend.
+    """
+    if not writes:
+        return
+    with SessionLocal() as lock_db:
+        if not _lock_region_nowait(lock_db, region):
+            logger.info(
+                "Region %s is locked by a purchase, key restores wait for the next run",
+                region.name,
+            )
+            return
+
+        async def _restore(token: str, kwargs: dict) -> None:
+            info = (await litellm_service.get_key_info(token)).get("info", {}) or {}
+            if info.get("budget_duration") is None and _same_budget_amount(
+                info.get("max_budget"), 0
+            ):
+                await litellm_service.update_key_budget(token, **kwargs)
+
+        await _run_key_writes(
+            [(key_id, partial(_restore, token, kw)) for key_id, token, kw in writes],
+            region.name,
+        )
+
+
+def _lock_region_nowait(lock_db: Session, region: DBRegion) -> bool:
+    """Take the region row lock a purchase holds until it commits, or give up."""
+    try:
+        return (
+            lock_db.query(DBRegion.id)
+            .filter(DBRegion.id == region.id)
+            .with_for_update(key_share=True, nowait=True)
+            .first()
+            is not None
+        )
+    except OperationalError:
+        return False
+
+
+def _region_has_paid_credit(db: Session, team_id: int, region_id: int) -> bool:
+    """An active subscription or unspent top-up in the region.
+
+    A cancelled subscriber with nothing left has keys at $0 with no
+    budget_duration too (subscription deactivation), so payment history alone
+    cannot tell those keys from cutoff leftovers.
+    """
+    if compute_active_topup_remaining(db, team_id=team_id, region_id=region_id) > 0:
+        return True
+    now = datetime.now(UTC)
+    return (
+        db.query(DBPeriodicBudgetLedgerEntry.id)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team_id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            (
+                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                | (DBPeriodicBudgetLedgerEntry.expires_at > now)
+            ),
+        )
+        .first()
+        is not None
+    )
+
+
 async def reconcile_team_keys(
     db: Session,
     team: DBTeam,
     keys_by_region: Dict[DBRegion, List[DBPrivateAIKey]],
-    expire_keys: bool,
     key_state_cache: Optional["RegionKeyStateCache"] = None,
+    zero_budget: bool = False,
+    restore_zeroed: bool = False,
 ) -> float:
     """
     Monitor spend for all keys in a team across different regions and repair drifted key caps.
@@ -1282,10 +1385,19 @@ async def reconcile_team_keys(
     Args:
         team: The team to monitor keys for
         keys_by_region: Dictionary mapping regions to lists of keys
-        expire_keys: Whether to expire keys (set duration to 0)
         key_state_cache: Shared snapshot cache. Callers reconciling more than
             one team must pass a single instance so each region is listed once
             per TTL window; when omitted a private cache is used.
+        zero_budget: Set every key's max_budget to 0 (and clear its
+            budget_duration so LiteLLM never resets it). Keys stay alive.
+        restore_zeroed: The team has paid since the free-credit cutoff. Keys
+            without a cap row that are still at max_budget 0 with no
+            budget_duration go back to the key-creation budget, in regions
+            where the team has an active subscription or unspent top-up.
+            Covers keys a top-up restore missed (failed sync, other region,
+            subscription). A cancelled subscriber with no credit left keeps
+            its $0 keys. Capped keys found at $0 there get their cap back
+            with spend reset.
 
     Returns:
         float: Total spend across all keys for the team
@@ -1295,6 +1407,8 @@ async def reconcile_team_keys(
     team_total = 0
     total_by_user = defaultdict(float)
     service_key_total = 0
+    # Looked up on the first key that needs a restore, not for every team.
+    restore_limits: Optional[tuple] = None
 
     # Monitor keys for each region
     for region, keys in keys_by_region.items():
@@ -1312,12 +1426,18 @@ async def reconcile_team_keys(
             is_pool = team.budget_type == BudgetType.POOL
             # One gate lookup per team and region, never per key.
             gate_locked = team_gate_locked(db, team, region.id)
+            # Only restore where the team still has credit to spend.
+            restore_region = restore_zeroed and _region_has_paid_credit(
+                db, team.id, region.id
+            )
 
             # Writes are queued here and run concurrently in batches of
-            # KEY_WRITE_BATCH. Issuing them inline costs one round-trip per key,
-            # which is ~34 minutes for the 11.5k-key trial team on the daily
-            # expiry run.
+            # KEY_WRITE_BATCH. Issuing them inline costs one round-trip per key.
             pending_writes: list[tuple[int, Callable[[], Awaitable[None]]]] = []
+            # Free-credit zero writes run last, under the region lock.
+            cutoff_writes: list[tuple[int, Callable[[], Awaitable[None]]]] = []
+            # Spend-resetting restores also run last, under the region lock.
+            restore_writes: list[tuple[int, str, dict]] = []
 
             # Check spend for each key in this region
             for key in keys:
@@ -1345,20 +1465,24 @@ async def reconcile_team_keys(
                     else:
                         service_key_total += current_spend
 
-                    if expire_keys:
-                        logger.info(
-                            f"Key {key.id} expiring, setting duration to 0 days"
-                        )
-                        pending_writes.append(
-                            (
-                                key.id,
-                                partial(
-                                    litellm_service.update_key_duration,
-                                    key.litellm_token,
-                                    "0d",
-                                ),
+                    if zero_budget:
+                        if info.get("budget_duration") is not None or not (
+                            _same_budget_amount(info.get("max_budget"), 0)
+                        ):
+                            logger.info(
+                                f"Key {key.id} free credit over, max_budget -> 0"
                             )
-                        )
+                            cutoff_writes.append(
+                                (
+                                    key.id,
+                                    partial(
+                                        litellm_service.update_key_budget,
+                                        key.litellm_token,
+                                        max_budget=0,
+                                        clear_budget_duration=True,
+                                    ),
+                                )
+                            )
                     elif not gate_locked and (is_pool or key.id in cap_map):
                         # Only keys whose cycle the ledger owns: every POOL key,
                         # and any key with a cap row. A PERIODIC key without a
@@ -1385,16 +1509,58 @@ async def reconcile_team_keys(
                             if max_drifted:
                                 budget_kwargs["max_budget"] = expected_max
                                 budget_kwargs["clear_max_budget"] = expected_max is None
-                            pending_writes.append(
-                                (
-                                    key.id,
-                                    partial(
-                                        litellm_service.update_key_budget,
-                                        key.litellm_token,
-                                        **budget_kwargs,
-                                    ),
+                                if (
+                                    restore_region
+                                    and current_duration is None
+                                    and _same_budget_amount(current_max, 0)
+                                ):
+                                    # Cutoff-zeroed capped key on a paid team:
+                                    # reset spend like the top-up restore, or
+                                    # old free-credit spend keeps it at its cap.
+                                    budget_kwargs["spend"] = 0.0
+                            if "spend" in budget_kwargs:
+                                restore_writes.append(
+                                    (key.id, key.litellm_token, budget_kwargs)
                                 )
+                            else:
+                                pending_writes.append(
+                                    (
+                                        key.id,
+                                        partial(
+                                            litellm_service.update_key_budget,
+                                            key.litellm_token,
+                                            **budget_kwargs,
+                                        ),
+                                    )
+                                )
+                    elif (
+                        restore_region
+                        and key.id not in cap_map
+                        and info.get("budget_duration") is None
+                        and _same_budget_amount(info.get("max_budget"), 0)
+                    ):
+                        # ponytail: $0 + no duration on a paid PERIODIC team is
+                        # read as "left over from the cutoff"; a key an admin
+                        # zeroed on purpose should get a cap row instead.
+                        logger.info(
+                            f"Key {key.id} zeroed by free-credit cutoff, team has paid: restoring"
+                        )
+                        if restore_limits is None:
+                            restore_limits = LimitService(db).get_token_restrictions(
+                                team.id
                             )
+                        restore_duration, restore_max_spend, _ = restore_limits
+                        restore_writes.append(
+                            (
+                                key.id,
+                                key.litellm_token,
+                                {
+                                    "max_budget": restore_max_spend,
+                                    "budget_duration": f"{restore_duration}d",
+                                    "spend": 0.0,
+                                },
+                            )
+                        )
 
                     # Add to team total
                     team_total += current_spend
@@ -1434,6 +1600,8 @@ async def reconcile_team_keys(
 
             # Execute any writes left over from the last partial batch
             await _run_key_writes(pending_writes, region.name)
+            await _run_cutoff_writes(team.id, region, cutoff_writes)
+            await _run_restore_writes(region, litellm_service, restore_writes)
 
         except Exception as e:
             logger.error(
@@ -1517,98 +1685,14 @@ def _monitor_team_freshness(team: DBTeam, db: Optional[Session] = None) -> int:
     return team_freshness
 
 
-def _send_expiry_notification(
-    db: Session,
-    team: DBTeam,
-    should_send_notifications: bool,
-    days_remaining: int,
-    ses_service: Optional[SESService],
-):
-    # Check for notification conditions for teams still in the trial (only if not recently monitored)
-    if should_send_notifications:
-        # Find the admin email for the team
-        try:
-            admin_email = get_team_admin_email(db, team)
-        except ValueError:
-            logger.warning(
-                f"No admin user found for team {team.name} (ID: {team.id}), skipping email notifications"
-            )
-            admin_email = None
-
-        if (
-            days_remaining == FIRST_EMAIL_DAYS_LEFT
-            or days_remaining == SECOND_EMAIL_DAYS_LEFT
-        ):
-            logger.info(
-                f"Team {team.name} (ID: {team.id}) is approaching expiration in {days_remaining} days"
-            )
-            # Send expiration notification email
-            try:
-                if admin_email and ses_service:
-                    template_data = {
-                        "name": team.name,
-                        "days_remaining": days_remaining,
-                    }
-                    ses_service.send_email(
-                        to_addresses=[admin_email],
-                        template_name="team-expiring",
-                        template_data=template_data,
-                    )
-                    logger.info(
-                        f"Sent expiration notification email to team {team.name} (ID: {team.id})"
-                    )
-                elif admin_email and not ses_service:
-                    logger.warning(
-                        f"SES service not available, skipping expiration notification email for team {team.name} (ID: {team.id})"
-                    )
-                else:
-                    logger.warning(
-                        f"No email found for team {team.name} (ID: {team.id})"
-                    )
-            except Exception as e:
-                logger.error(
-                    f"Failed to send expiration notification email to team {team.name}: {str(e)}"
-                )
-        elif days_remaining == 0:
-            # Send expired email
-            try:
-                if admin_email and ses_service:
-                    template_data = {
-                        "name": team.name,
-                    }
-                    ses_service.send_email(
-                        to_addresses=[admin_email],
-                        template_name="trial-expired",
-                        template_data=template_data,
-                    )
-                    logger.info(
-                        f"Sent expired email to team {team.name} (ID: {team.id})"
-                    )
-                elif admin_email and not ses_service:
-                    logger.warning(
-                        f"SES service not available, skipping expired email for team {team.name} (ID: {team.id})"
-                    )
-                else:
-                    logger.warning(
-                        f"No email found for team {team.name} (ID: {team.id})"
-                    )
-            except Exception as e:
-                logger.error(
-                    f"Failed to send expired email to team {team.name}: {str(e)}"
-                )
-        elif days_remaining <= 0:
-            # Post expired metric
-            team_expired_metric.labels(team_id=str(team.id), team_name=team.name).inc()
-
-
 @monitor_teams_duration.time()
 async def monitor_teams(db: Session):
     """
-    Daily monitoring task for teams that:
+    Hourly monitoring task for teams that:
     1. Posts age metrics for teams (since creation, or since last payment)
-    2. Sends notifications for teams approaching expiration (25-30 days)
-    3. Posts metrics for expired teams (>30 days)
-    4. Monitors key spend and notifies if approaching limits
+    2. Applies the team retention policy
+    3. Sets an unpaid PERIODIC team's keys to $0 after SIGNUP_CREDIT_DAYS
+    4. Reconciles keys (spend, drifted caps) and team/user limits
     """
     logger.info("Monitoring teams")
     try:
@@ -1618,12 +1702,6 @@ async def monitor_teams(db: Session):
 
         # Track current active team labels
         current_team_labels = set()
-        try:
-            # Initialize SES service
-            ses_service = SESService()
-        except Exception as e:
-            logger.error(f"Error initializing SES service: {str(e)}")
-            ses_service = None
 
         logger.info(f"Found {len(teams)} teams to track")
         # Shared across every team so each region is bulk-listed once per TTL
@@ -1634,61 +1712,31 @@ async def monitor_teams(db: Session):
                 team_label = (str(team.id), team.name)
                 current_team_labels.add(team_label)
 
-                # Handle trial expiry notifications and key expiry
-                is_pool_team = team.budget_type == BudgetType.POOL
+                # Emits the team_freshness_days metric
+                _monitor_team_freshness(team, db)
 
-                # Check if team was monitored within 24 hours
-                should_send_notifications = settings.ENABLE_LIMITS
-                if team.last_monitored:
-                    hours_since_monitored = (
-                        current_time - team.last_monitored.replace(tzinfo=UTC)
-                    ).total_seconds() / 3600
-                    should_send_notifications = hours_since_monitored >= 24
-
-                # Always compute freshness to emit team_freshness_days metrics for all teams.
-                # POOL teams have their own lifecycle and are excluded from trial notifications.
-                team_freshness = _monitor_team_freshness(team, db)
-                days_remaining = TRIAL_OVER_DAYS - team_freshness
-                if not is_pool_team and not is_anonymous_trial_team(team):
-                    _send_expiry_notification(
-                        db,
-                        team,
-                        should_send_notifications,
-                        days_remaining,
-                        ses_service,
-                    )
+                # A never-paid PERIODIC team's free credit ends after
+                # SIGNUP_CREDIT_DAYS: keys go to $0 but stay alive, so the
+                # team can still buy.
+                free_credit_over = periodic_free_credit_over(db, team)
+                # Paid since the cutoff: undo any $0 keys the top-up missed.
+                # No age check, SIGNUP_CREDIT_DAYS may have been raised since
+                # the keys were zeroed. Only regions with credit are restored.
+                restore_zeroed = (
+                    not free_credit_over and periodic_signup_credit_applies(team)
+                )
 
                 # Get all keys for the team grouped by region
                 keys_by_region = get_team_keys_by_region(db, team.id)
-                expire_keys = False
-
-                # POOL teams are always exempt from trial expiration.
-                #
-                # The anonymous-trial team is exempt too. Its freshness ran
-                # out long ago and never renews, so leaving it in scope expires
-                # every trial key in every region on each run. Per-user budget
-                # limits are enforced separately by monitor_trial_users.
-                #
-                # Note the two unrelated meanings of "trial" here:
-                # days_remaining is a real member's 30-day trial.
-                if (
-                    not is_pool_team
-                    and not is_anonymous_trial_team(team)
-                    and days_remaining <= 0
-                    and should_send_notifications
-                ):
-                    logger.info(
-                        f"Team {team.id} has {days_remaining} days remaining, expiring keys"
-                    )
-                    expire_keys = True
 
                 # Monitor keys and get total spend (also repairs drifted key caps)
                 team_total = await reconcile_team_keys(
                     db,
                     team,
                     keys_by_region,
-                    expire_keys,
                     key_state_cache=key_state_cache,
+                    zero_budget=free_credit_over,
+                    restore_zeroed=restore_zeroed,
                 )
 
                 # Set the total spend metric for the team (always emit metrics)
@@ -1729,10 +1777,6 @@ async def monitor_teams(db: Session):
 
                 # Ensure all limits are correct - will not override MANUAL limits
                 set_team_and_user_limits(db, team)
-
-                # Update last_monitored timestamp only if notifications were sent
-                if should_send_notifications:
-                    team.last_monitored = current_time
             except Exception as error:
                 logger.error(
                     f"Unable to process team {team.id} due to {str(error)}, continuing with next team."

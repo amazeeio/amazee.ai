@@ -330,6 +330,16 @@ class PublicModelSummary(BaseModel):
             "picker from this list alone."
         ),
     )
+    zero_data_retention: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Whether the backend serving this model in this region keeps no "
+            "prompts or completions: true = zero data retention, false = the "
+            "provider keeps some data (e.g. abuse monitoring), null = not "
+            "verified. Set from the model catalog's config/zdr.csv; an alias "
+            "reports its regional target's value."
+        ),
+    )
     aliased_to: Optional[str] = Field(
         default=None,
         description=(
@@ -1189,7 +1199,6 @@ class SalesTeam(BaseModel):
     budget_type: BudgetType
     regions: List[str]
     total_spend: float
-    trial_status: str
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -1367,6 +1376,8 @@ class AdminModelRegionResponse(BaseModel):
     litellm_params_override: Optional[dict] = None
     # Replaces the model's access groups in this region when set
     access_groups_override: Optional[List[str]] = None
+    # True = zero data retention, False = keeps data, None = unverified
+    zero_data_retention: Optional[bool] = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -1494,6 +1505,8 @@ class ApplyDeploymentSpec(BaseModel):
     model_info_override: Optional[dict] = None
     # When set, replaces the model's access_groups in this region only.
     access_groups: Optional[List[str]] = None
+    # True = zero data retention, False = keeps data, None = unverified.
+    zero_data_retention: Optional[bool] = None
 
 
 class ApplyAliasTargetSpec(BaseModel):
