@@ -2234,6 +2234,19 @@ def _region_scope_region(db, name, dedicated=False, team=None):
     return region
 
 
+def _region_scope_other_team_dedicated(db):
+    other_team = DBTeam(
+        name="Other Team",
+        admin_email="otherteam@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    db.add(other_team)
+    db.commit()
+    return _region_scope_region(db, "other-dedicated", True, other_team)
+
+
 @pytest.mark.parametrize(
     "case, token_fixture",
     [
@@ -2259,16 +2272,7 @@ def test_create_llm_token_region_scope_refuses_region_outside_team(
     mock_client_class.return_value = mock_httpx_post_client
     if case in ("other_team_dedicated", "force_user_keys"):
         test_team.force_user_keys = case == "force_user_keys"
-        other_team = DBTeam(
-            name="Other Team",
-            admin_email="otherteam@example.com",
-            is_active=True,
-            created_at=datetime.now(UTC),
-            budget_type="periodic",
-        )
-        db.add(other_team)
-        db.commit()
-        region = _region_scope_region(db, "other-dedicated", True, other_team)
+        region = _region_scope_other_team_dedicated(db)
     else:
         test_team.hide_public_regions = True
         db.commit()
@@ -2297,6 +2301,65 @@ def test_create_llm_token_region_scope_refuses_region_outside_team(
         .count()
         == 0
     )
+
+
+@patch("httpx.AsyncClient")
+def test_create_llm_token_region_scope_refuses_region_outside_owner_team(
+    mock_client_class,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+    test_team_user,
+    mock_httpx_post_client,
+):
+    """With no team_id, the owner's team sets the region scope."""
+    mock_client_class.return_value = mock_httpx_post_client
+    region = _region_scope_other_team_dedicated(db)
+    get_team_info = AsyncMock()
+
+    with patch.object(LiteLLMService, "get_team_info", new=get_team_info):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "region_id": region.id,
+                "name": "Owner Scope Key",
+                "owner_id": test_team_user.id,
+            },
+        )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Region not found or inactive"
+    get_team_info.assert_not_awaited()
+    mock_httpx_post_client.post.assert_not_called()
+
+
+@patch("httpx.AsyncClient")
+def test_create_llm_token_region_scope_skips_key_without_team(
+    mock_client_class,
+    client,
+    admin_token,
+    db,
+    mock_httpx_post_client,
+):
+    """A key with no team has no team scope, so any active region works."""
+    mock_client_class.return_value = mock_httpx_post_client
+    region = _region_scope_other_team_dedicated(db)
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"region_id": region.id, "name": "No Team Scope Key"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert [
+        url
+        for url in _post_urls(mock_httpx_post_client)
+        if url.endswith("/key/generate")
+    ] == [f"{region.litellm_api_url}/key/generate"]
 
 
 @pytest.mark.parametrize("dedicated", [False, True])
