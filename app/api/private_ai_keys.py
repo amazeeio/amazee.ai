@@ -542,8 +542,10 @@ async def create_llm_token(
 
     # Get the team if team_id is specified
     team = None
+    requested_team = None
     if team_id is not None:
         team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+        requested_team = team
         if not team:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
@@ -564,10 +566,11 @@ async def create_llm_token(
     effective_team = team
     if effective_team is None and owner is not None and owner.team_id:
         effective_team = db.query(DBTeam).filter(DBTeam.id == owner.team_id).first()
-    # Admins are not exempt: the portal calls as a system admin and passes the
-    # region the end user chose. Same detail as inactive, so dedicated regions stay hidden.
-    if effective_team is not None and region.id not in {
-        r.id for r in allowed_regions_for_team(db, effective_team)
+    # Admins are not exempt: the portal calls as a system admin with the user's region.
+    # Check the requested team, because force_user_keys can leave an admin with no team.
+    scope_team = requested_team or effective_team
+    if scope_team is not None and region.id not in {
+        r.id for r in allowed_regions_for_team(db, scope_team)
     }:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Region not found or inactive"

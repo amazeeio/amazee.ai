@@ -2240,6 +2240,7 @@ def _region_scope_region(db, name, dedicated=False, team=None):
         ("other_team_dedicated", "team_admin_token"),
         ("other_team_dedicated", "admin_token"),
         ("hidden_public", "admin_token"),
+        ("force_user_keys", "admin_token"),
     ],
 )
 @patch("httpx.AsyncClient")
@@ -2256,7 +2257,8 @@ def test_create_llm_token_region_scope_refuses_region_outside_team(
 ):
     """A team key outside the team's allowed regions is refused before LiteLLM."""
     mock_client_class.return_value = mock_httpx_post_client
-    if case == "other_team_dedicated":
+    if case in ("other_team_dedicated", "force_user_keys"):
+        test_team.force_user_keys = case == "force_user_keys"
         other_team = DBTeam(
             name="Other Team",
             admin_email="otherteam@example.com",
