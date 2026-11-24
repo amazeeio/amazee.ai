@@ -1,4 +1,4 @@
-from unittest.mock import patch, Mock, AsyncMock
+from unittest.mock import ANY, patch, Mock, AsyncMock
 
 import pytest
 
@@ -2021,7 +2021,7 @@ def test_create_llm_token_creates_missing_litellm_team_first(
         patch(
             "app.api.private_ai_keys.effective_team_group_slugs",
             return_value=["region-default"],
-        ),
+        ) as group_slugs,
     ):
         response = client.post(
             "/private-ai-keys/token",
@@ -2046,6 +2046,8 @@ def test_create_llm_token_creates_missing_litellm_team_first(
     assert "max_budget" not in team_new_body
     assert "budget_duration" not in team_new_body
     assert team_new_body["models"] == ["region-default"]
+    group_slugs.assert_called_once_with(ANY, test_team.id, ANY)
+    assert group_slugs.call_args.args[2].id == test_region.id
 
 
 @patch("httpx.AsyncClient")
