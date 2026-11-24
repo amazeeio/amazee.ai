@@ -66,7 +66,7 @@ async def run(dry_run: bool) -> int:
                 if dry_run:
                     print(
                         f"[DRY-RUN] key_id={key.id} region={region.name} -> "
-                        f"allowed_routes={INFERENCE_ONLY_ROUTES}"
+                        f"allowed_routes={list(INFERENCE_ONLY_ROUTES)}"
                     )
                     total_planned += 1
                     continue
