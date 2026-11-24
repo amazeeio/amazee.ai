@@ -67,6 +67,7 @@ from app.core.team_service import (
     _capped_member_ids,
     _reanchor_member_caps_or_fail,
     allowed_regions_for_team,
+    assigned_regions_for_team,
     periodic_free_credit_over,
 )
 from app.services.signup_velocity import enforce_mailbox_cap, enforce_provision_caps
@@ -653,7 +654,11 @@ async def create_llm_token(
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
-        if litellm_team is not None:
+        # The control plane creates the LiteLLM team in every assigned region, so only
+        # an unassigned one can miss it; /team/info lists every key, too slow for big teams.
+        if litellm_team is not None and region.id not in {
+            r.id for r in assigned_regions_for_team(db, effective_team)
+        }:
             # LiteLLM rejects /key/generate for a team it does not know in this region.
             lite_team_id = LiteLLMService.format_team_id(region.name, litellm_team)
             # A cap row outlives the user leaving the team, so only current members count.

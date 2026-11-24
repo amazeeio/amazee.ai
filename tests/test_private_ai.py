@@ -2242,12 +2242,12 @@ def test_create_llm_token_member_cap_restored_on_missing_litellm_team(
     db,
     test_team,
     test_team_user,
-    test_region,
     mock_httpx_post_client,
 ):
     """A capped member gets its ceiling on the new LiteLLM team before the key."""
     mock_client_class.return_value = mock_httpx_post_client
-    _member_cap(db, test_team, test_region, test_team_user)
+    region = _region_scope_region(db, "unlinked-public")
+    _member_cap(db, test_team, region, test_team_user)
     get_team_info = AsyncMock(
         side_effect=[HTTPException(status_code=404), {"team_memberships": []}]
     )
@@ -2266,7 +2266,7 @@ def test_create_llm_token_member_cap_restored_on_missing_litellm_team(
             "/private-ai-keys/token",
             headers={"Authorization": f"Bearer {admin_token}"},
             json={
-                "region_id": test_region.id,
+                "region_id": region.id,
                 "name": "Capped Member Key",
                 "team_id": test_team.id,
             },
@@ -2295,11 +2295,12 @@ def test_create_llm_token_member_cap_none_adds_no_members(
     admin_token,
     test_team,
     test_team_user,
-    test_region,
+    db,
     mock_httpx_post_client,
 ):
     """Without a capped member, the new LiteLLM team gets no member calls."""
     mock_client_class.return_value = mock_httpx_post_client
+    region = _region_scope_region(db, "unlinked-public")
     get_team_info = AsyncMock(side_effect=HTTPException(status_code=404))
 
     with (
@@ -2313,7 +2314,7 @@ def test_create_llm_token_member_cap_none_adds_no_members(
             "/private-ai-keys/token",
             headers={"Authorization": f"Bearer {admin_token}"},
             json={
-                "region_id": test_region.id,
+                "region_id": region.id,
                 "name": "Uncapped Key",
                 "team_id": test_team.id,
             },
@@ -2336,12 +2337,12 @@ def test_create_llm_token_member_cap_push_failure_creates_no_key(
     db,
     test_team,
     test_team_user,
-    test_region,
     mock_httpx_post_client,
 ):
     """A failed member cap push stops the key creation."""
     mock_client_class.return_value = mock_httpx_post_client
-    _member_cap(db, test_team, test_region, test_team_user)
+    region = _region_scope_region(db, "unlinked-public")
+    _member_cap(db, test_team, region, test_team_user)
 
     with (
         patch.object(
@@ -2365,7 +2366,7 @@ def test_create_llm_token_member_cap_push_failure_creates_no_key(
             "/private-ai-keys/token",
             headers={"Authorization": f"Bearer {admin_token}"},
             json={
-                "region_id": test_region.id,
+                "region_id": region.id,
                 "name": "Cap Failure Key",
                 "team_id": test_team.id,
             },
@@ -2396,12 +2397,12 @@ def test_create_llm_token_member_cap_repaired_on_existing_litellm_team(
     db,
     test_team,
     test_team_user,
-    test_region,
     mock_httpx_post_client,
 ):
     """On an existing team, only a capped member with no ceiling gets a push."""
     mock_client_class.return_value = mock_httpx_post_client
-    _member_cap(db, test_team, test_region, test_team_user)
+    region = _region_scope_region(db, "unlinked-public")
+    _member_cap(db, test_team, region, test_team_user)
     memberships = (
         [{"user_id": str(test_team_user.id), "max_budget_in_team": 6.0}]
         if has_ceiling
@@ -2422,7 +2423,7 @@ def test_create_llm_token_member_cap_repaired_on_existing_litellm_team(
             "/private-ai-keys/token",
             headers={"Authorization": f"Bearer {admin_token}"},
             json={
-                "region_id": test_region.id,
+                "region_id": region.id,
                 "name": "Existing Team Cap Key",
                 "team_id": test_team.id,
             },
@@ -2453,11 +2454,11 @@ def test_create_llm_token_member_cap_ignores_user_who_left_team(
     admin_token,
     db,
     test_team,
-    test_region,
     mock_httpx_post_client,
 ):
     """A cap row of a user who left the team makes no extra LiteLLM call."""
     mock_client_class.return_value = mock_httpx_post_client
+    region = _region_scope_region(db, "unlinked-public")
     left_user = DBUser(
         email="lefttheteam@example.com",
         hashed_password=get_password_hash("password123"),
@@ -2468,7 +2469,7 @@ def test_create_llm_token_member_cap_ignores_user_who_left_team(
     )
     db.add(left_user)
     db.commit()
-    _member_cap(db, test_team, test_region, left_user)
+    _member_cap(db, test_team, region, left_user)
     get_team_info = AsyncMock(
         side_effect=HTTPException(status_code=404) if team_missing else None,
         return_value={"team_memberships": []},
@@ -2489,7 +2490,7 @@ def test_create_llm_token_member_cap_ignores_user_who_left_team(
             "/private-ai-keys/token",
             headers={"Authorization": f"Bearer {admin_token}"},
             json={
-                "region_id": test_region.id,
+                "region_id": region.id,
                 "name": "Left User Cap Key",
                 "team_id": test_team.id,
             },
@@ -4783,7 +4784,6 @@ def test_create_key_for_unpaid_periodic_team_past_free_credit_starts_at_zero(
     test_team.is_always_free = False
     test_team.created_at = datetime.now(UTC) - timedelta(days=age_days)
     db.commit()
-    mock_litellm.return_value.get_team_info = AsyncMock(return_value={"team_id": "t"})
     mock_litellm.return_value.create_key = AsyncMock(return_value="cutoff-token")
 
     response = client.post(
