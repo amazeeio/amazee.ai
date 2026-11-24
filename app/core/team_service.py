@@ -124,6 +124,59 @@ def periodic_free_credit_over(db: Session, team: Optional[DBTeam]) -> bool:
     return not has_ledger
 
 
+def active_public_regions(db: Session) -> List[DBRegion]:
+    """Active regions in the shared public pool."""
+    return (
+        db.query(DBRegion)
+        .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
+        .all()
+    )
+
+
+def allowed_regions_for_team(db: Session, team: DBTeam) -> List[DBRegion]:
+    """Active regions the team may use."""
+    # The team's own regions: its explicit allowlist plus its primary region.
+    # Both are read because they model different things — the allowlist is the
+    # set a team may use, while the scalar records which one it currently sits
+    # in. Reading only the scalar would strand a team on a single region even
+    # when more are assigned, and return nothing at all once that region goes
+    # inactive.
+    assigned = (
+        db.query(DBRegion)
+        .outerjoin(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
+        .filter(
+            DBRegion.is_active.is_(True),
+            (DBTeamRegion.team_id == team.id) | (DBRegion.id == team.region_id),
+        )
+        .distinct()
+        .all()
+    )
+
+    # A team holding any dedicated region is served by dedicated infrastructure
+    # and must not be offered the public pool. Teams that only hold public
+    # regions can use any public region.
+    #
+    # Inactive dedicated regions count here, unlike above: retiring a dedicated
+    # region must not quietly hand that team the whole public pool.
+    holds_dedicated_region = (
+        db.query(DBRegion.id)
+        .outerjoin(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
+        .filter(
+            DBRegion.is_dedicated.is_(True),
+            (DBTeamRegion.team_id == team.id) | (DBRegion.id == team.region_id),
+        )
+        .first()
+        is not None
+    )
+    if team.hide_public_regions or holds_dedicated_region:
+        return assigned
+
+    by_id = {region.id: region for region in assigned}
+    for region in active_public_regions(db):
+        by_id.setdefault(region.id, region)
+    return list(by_id.values())
+
+
 def get_team_region_litellm_keys(
     db: Session,
     *,
