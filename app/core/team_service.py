@@ -133,15 +133,15 @@ def active_public_regions(db: Session) -> List[DBRegion]:
     )
 
 
-def allowed_regions_for_team(db: Session, team: DBTeam) -> List[DBRegion]:
-    """Active regions the team may use."""
+def assigned_regions_for_team(db: Session, team: DBTeam) -> List[DBRegion]:
+    """Active regions assigned to the team: its team_regions rows plus its primary region."""
     # The team's own regions: its explicit allowlist plus its primary region.
     # Both are read because they model different things — the allowlist is the
     # set a team may use, while the scalar records which one it currently sits
     # in. Reading only the scalar would strand a team on a single region even
     # when more are assigned, and return nothing at all once that region goes
     # inactive.
-    assigned = (
+    return (
         db.query(DBRegion)
         .outerjoin(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
         .filter(
@@ -151,6 +151,11 @@ def allowed_regions_for_team(db: Session, team: DBTeam) -> List[DBRegion]:
         .distinct()
         .all()
     )
+
+
+def allowed_regions_for_team(db: Session, team: DBTeam) -> List[DBRegion]:
+    """Active regions the team may use."""
+    assigned = assigned_regions_for_team(db, team)
 
     # A team holding any dedicated region is served by dedicated infrastructure
     # and must not be offered the public pool. Teams that only hold public
