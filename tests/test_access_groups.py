@@ -759,3 +759,20 @@ def test_public_listing_reports_zero_data_retention(db, test_region, monkeypatch
     monkeypatch.setattr(settings, "CATALOG_MANAGED_REGIONS", "")
     listed = {m.model_id: m.zero_data_retention for m in _filter_region_groups_by_access(db, groups, None)[0].models}
     assert listed == {"openai/zdr": True, "openai/keeps": False, "openai/unknown": None, "chat": False}
+
+
+def test_admin_models_alias_reports_target_zero_data_retention(client, admin_token, db, test_region):
+    """The admin API agrees with /public/models: an alias reports its target's value."""
+    from app.db.models import DBModelAliasTarget
+
+    keeps = _make_model(db, "openai/zdr-target")
+    alias = _make_model(db, "zdr-alias", is_alias=True)
+    _deploy_model(db, keeps, test_region).zero_data_retention = True
+    _deploy_model(db, alias, test_region)
+    db.add(DBModelAliasTarget(alias_model_id=alias.id, region_id=test_region.id, target_model_id=keeps.id))
+    db.commit()
+
+    resp = client.get(f"/admin/models/{alias.id}", headers=auth(admin_token))
+    assert resp.status_code == 200
+    region = next(r for r in resp.json()["regions"] if r["region_id"] == test_region.id)
+    assert region["zero_data_retention"] is True

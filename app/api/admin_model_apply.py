@@ -386,17 +386,9 @@ def _apply_deployments(
             )
             to_sync.add(region_id)
             continue
-        if assoc.zero_data_retention != zdr:
-            # Listing only: LiteLLM never sees it, so no sync.
-            assoc.zero_data_retention = zdr
-            changes.append(
-                ApplyChange(
-                    entity="deployment",
-                    key=f"{spec_key}@{region_names[region_id]}",
-                    action="update",
-                    detail="zero_data_retention",
-                )
-            )
+        # Listing only: LiteLLM never sees it, so it never triggers a sync.
+        zdr_changed = assoc.zero_data_retention != zdr
+        assoc.zero_data_retention = zdr
         deployment_changed = []
         if not assoc.is_active:
             assoc.is_active = True
@@ -414,6 +406,10 @@ def _apply_deployments(
             assoc.sync_status = "pending"
             assoc.sync_error = None
             assoc.updated_at = datetime.now(UTC)
+            to_sync.add(region_id)
+        if zdr_changed:
+            deployment_changed.append("zero_data_retention")
+        if deployment_changed:
             changes.append(
                 ApplyChange(
                     entity="deployment",
@@ -422,7 +418,6 @@ def _apply_deployments(
                     detail=", ".join(deployment_changed),
                 )
             )
-            to_sync.add(region_id)
     # Only managed regions are ours to turn off; a deployment in a skipped
     # region is someone else's row and stays exactly as it is.
     for region_id, assoc in existing.items():

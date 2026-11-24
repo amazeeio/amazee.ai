@@ -785,3 +785,15 @@ def test_apply_stores_zero_data_retention_without_resync(mock_svc, client, admin
     assert data["syncs_scheduled"] == 0  # listing only, LiteLLM never sees it
     db.refresh(assoc)
     assert assoc.zero_data_retention is None
+
+    # A ZDR change alongside a real change is one update row, not two.
+    payload["models"][0]["deployments"][0]["zero_data_retention"] = False
+    payload["models"][0]["deployments"][0]["litellm_params_override"] = {"model": "bedrock/eu.anthropic.claude-sonnet"}
+    data = _apply(client, admin_token, payload).json()
+    rows = [c for c in data["changes"] if c["key"] == f"claude-sonnet@{test_region.name}"]
+    assert rows == [{
+        "entity": "deployment",
+        "key": f"claude-sonnet@{test_region.name}",
+        "action": "update",
+        "detail": "override, zero_data_retention",
+    }]
