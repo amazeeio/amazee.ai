@@ -86,3 +86,32 @@ class TestKeywordPriority:
         result = _infer_manufacturer("deepseek-v3", _item("openai"))
         assert result is not None
         assert result.name == "DeepSeek"
+
+
+class TestLogoUrl:
+    """Every keyword rule except Meta has a logo, and it is served without auth."""
+
+    @pytest.mark.parametrize(
+        "model_id,slug",
+        [
+            ("gpt-4o", "openai"),
+            ("claude-sonnet-4", "anthropic"),
+            ("gemini-2.5-pro", "google"),
+            ("mistral-large-latest", "mistralai"),
+            ("deepseek-v3", "deepseek"),
+            ("kimi-k2", "moonshot"),
+            ("glm-4.6", "zai"),
+            ("minimax-m2", "minimax"),
+            ("qwen-2.5-72b", "alibaba"),
+            ("titan-text-express", "amazon"),
+        ],
+    )
+    def test_logo_url_is_served(self, client, model_id: str, slug: str):
+        url = _infer_manufacturer(model_id, _item()).logo_url
+        assert url.endswith(f"/logos/{slug}.png")
+        response = client.get(f"/logos/{slug}.png")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+
+    def test_no_logo_is_none(self):
+        assert _infer_manufacturer("llama-3.1-70b", _item()).logo_url is None

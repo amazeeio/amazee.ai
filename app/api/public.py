@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timedelta, UTC
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -281,6 +282,26 @@ _MANUFACTURER_RULES: list[dict[str, str | None]] = [
 ]
 
 
+_LOGO_DIR = Path(__file__).resolve().parent.parent / "static" / "logos"
+_LOGOS = {logo.stem for logo in _LOGO_DIR.glob("*.png")}
+# Names that do not slug to their logo file.
+_LOGO_ALIASES = {
+    "mistral": "mistralai",
+    "moonshotai": "moonshot",
+    "qwen": "alibaba",
+    "aws": "amazon",
+}
+
+
+def _logo_url(manufacturer_name: str) -> str | None:
+    """Absolute URL of the manufacturer's logo, served from /logos, or None."""
+    slug = re.sub(r"[^a-z0-9]", "", manufacturer_name.lower())
+    slug = _LOGO_ALIASES.get(slug, slug)
+    if slug not in _LOGOS:
+        return None
+    return f"{settings.main_route.rstrip('/')}/logos/{slug}.png"
+
+
 def _catalog_manufacturers(db: Session) -> dict[str, tuple[str, str | None]]:
     """``{model_id.lower(): (name, website)}`` from the model catalog, for live
     models. Lowercased so a LiteLLM ``model_name`` that differs from the
@@ -335,6 +356,7 @@ def _infer_manufacturer(
     return PublicModelManufacturer(
         name=name,
         website=website,
+        logo_url=_logo_url(name),
         version=str(version) if version else None,
         release_date=release_date,
         attribution=f"{name} model routed through LiteLLM",
