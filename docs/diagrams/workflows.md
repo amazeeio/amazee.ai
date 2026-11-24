@@ -29,8 +29,8 @@ graph TD
     subgraph Polydock_Workflow [Polydock Demos via Engine]
         API --> PolyReq[Polydock Key Request / Claim]
         PolyReq --> RealEntity[Create Real Team/User/Email]
-        RealEntity --> DefaultKey[Default Key: PERIODIC / Trial]
-        DefaultKey --> LifeSpan[30-Day Trial Status]
+        RealEntity --> DefaultKey[Default Key: PERIODIC]
+        DefaultKey --> LifeSpan[Free Credit: $0 after SIGNUP_CREDIT_DAYS if never paid]
     end
 
     %% MoaD Dashboard

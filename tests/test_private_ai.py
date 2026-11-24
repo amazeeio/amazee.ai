@@ -13,7 +13,7 @@ from app.db.models import (
     DBUser,
     DBSpendCap,
 )
-from datetime import datetime, UTC
+from datetime import datetime, UTC, timedelta
 from app.core.security import get_password_hash
 from httpx import HTTPStatusError
 from fastapi import status, HTTPException
@@ -4052,3 +4052,52 @@ def test_extend_token_life_allowed_for_system_admin(
     mock_update_key_duration.assert_awaited_once_with(
         litellm_token="sk-extend-allowed", duration="30d"
     )
+
+
+@pytest.mark.parametrize(
+    "age_days, expect_zero",
+    [(settings.SIGNUP_CREDIT_DAYS + 1, True), (1, False)],
+)
+@patch("app.api.private_ai_keys.LiteLLMService")
+@patch("app.core.limit_service.DEFAULT_MAX_SPEND", 27.0)  # free credit on
+def test_create_key_for_unpaid_periodic_team_past_free_credit_starts_at_zero(
+    mock_litellm,
+    age_days,
+    expect_zero,
+    client,
+    team_admin_token,
+    test_team,
+    test_region,
+    db,
+):
+    """
+    Given: A never-paid PERIODIC team aged age_days
+    When: A team admin creates a key
+    Then: Past SIGNUP_CREDIT_DAYS the key starts at $0 with no LiteLLM reset,
+          so deleting and recreating keys cannot renew the free credit.
+    """
+    test_team.budget_type = "periodic"
+    test_team.last_payment = None
+    test_team.is_always_free = False
+    test_team.created_at = datetime.now(UTC) - timedelta(days=age_days)
+    db.commit()
+    mock_litellm.return_value.create_key = AsyncMock(return_value="cutoff-token")
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Cutoff Key",
+            "team_id": test_team.id,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    kwargs = mock_litellm.return_value.create_key.await_args.kwargs
+    if expect_zero:
+        assert kwargs["max_budget"] == 0.0
+        assert kwargs["budget_duration"] is None
+    else:
+        assert kwargs["max_budget"] > 0
+        assert kwargs["budget_duration"] is not None
