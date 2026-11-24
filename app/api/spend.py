@@ -127,6 +127,8 @@ async def get_team_spend_history(
         .filter(
             DBTeamSpendPeriod.team_id == team_id,
             DBTeamSpendPeriod.region_id == region_id,
+            # A top-up settlement is a ledger baseline, not a billing period.
+            DBTeamSpendPeriod.source != "topup_settlement",
         )
         .order_by(DBTeamSpendPeriod.period_end.desc(), DBTeamSpendPeriod.id.desc())
         .limit(period_limit)
@@ -1120,6 +1122,9 @@ def _pool_previous_period_spend_baseline(
     """
     Snapshot baseline used for POOL max_budget projection when caps are changed
     mid-period. This is the latest captured period spend total.
+
+    Newest row by id, not by period_end: a cancelled cycle keeps a future
+    period_end and would win over the settlements written after it.
     """
     row = (
         db.query(DBTeamSpendPeriod.total_spend)
@@ -1128,7 +1133,7 @@ def _pool_previous_period_spend_baseline(
             DBTeamSpendPeriod.region_id == region_id,
             DBTeamSpendPeriod.budget_type == BudgetType.POOL,
         )
-        .order_by(DBTeamSpendPeriod.period_end.desc(), DBTeamSpendPeriod.id.desc())
+        .order_by(DBTeamSpendPeriod.id.desc())
         .first()
     )
     if row is None or row[0] is None:
@@ -1596,8 +1601,9 @@ async def get_team_spend(
         # is incremented at cycle-close (by allocate_period_spend_fifo)
         # while LiteLLM's total_spend is simultaneously reset on the same
         # call. The two therefore never reflect the same dollars at the
-        # same time. If mid-cycle allocation is ever introduced, this will
-        # silently double-count that spend.
+        # same time. The mid-cycle top-up settlement (settle_topup_spend)
+        # runs only for purchase-gated POOL teams, never for this branch,
+        # because nothing here resets the key spend it would double-count.
         live_remaining_dollars = max(0.0, purchased_dollars - float(total_spend or 0.0))
         live_remaining_cents = int(round(live_remaining_dollars * 100))
         periodic_budget_view = PeriodicTeamBudgetView(
