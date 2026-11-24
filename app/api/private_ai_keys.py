@@ -59,7 +59,10 @@ from app.core.pool_budget_service import (
     pool_available_budget_for_team_region,
     pool_team_has_ever_purchased,
 )
-from app.core.team_service import periodic_free_credit_over
+from app.core.team_service import (
+    allowed_regions_for_team,
+    periodic_free_credit_over,
+)
 from app.services.signup_velocity import enforce_mailbox_cap, enforce_provision_caps
 
 router = APIRouter(tags=["private-ai-keys"])
@@ -561,6 +564,14 @@ async def create_llm_token(
     effective_team = team
     if effective_team is None and owner is not None and owner.team_id:
         effective_team = db.query(DBTeam).filter(DBTeam.id == owner.team_id).first()
+    # Admins are not exempt: the portal calls as a system admin and passes the
+    # region the end user chose. Same detail as inactive, so dedicated regions stay hidden.
+    if effective_team is not None and region.id not in {
+        r.id for r in allowed_regions_for_team(db, effective_team)
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found or inactive"
+        )
     is_pool_team = (
         effective_team is not None and effective_team.requires_pool_purchase_gate
     )
