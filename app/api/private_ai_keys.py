@@ -37,6 +37,7 @@ from app.db.models import (
     DBSpendCap,
 )
 from app.core.email import escape_like, normalize_email_for_lookup
+from app.services.access_groups import effective_team_group_slugs
 from app.services.litellm import INFERENCE_ONLY_ROUTES, LiteLLMService
 from app.core.security import (
     get_current_user_from_auth,
@@ -55,7 +56,6 @@ from app.core.limit_service import (
     DEFAULT_RPM_PER_KEY,
 )
 from app.core.pool_budget_service import pool_team_has_ever_purchased
-from app.core.team_service import reprovision_litellm_team
 from app.services.signup_velocity import enforce_mailbox_cap, enforce_provision_caps
 
 router = APIRouter(tags=["private-ai-keys"])
@@ -624,8 +624,8 @@ async def create_llm_token(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
         if litellm_team is not None:
-            # LiteLLM rejects /key/generate for a team it does not know in this
-            # region. The team gets no team budget, so the key spends as before.
+            # LiteLLM rejects /key/generate for a team it does not know in this region.
+            # The team gets no budget and no members, so the key behaves as before.
             lite_team_id = LiteLLMService.format_team_id(region.name, litellm_team)
             try:
                 await litellm_service.get_team_info(lite_team_id)
@@ -635,11 +635,10 @@ async def create_llm_token(
                 logger.info(
                     f"Creating missing LiteLLM team {lite_team_id} in region {region.name}"
                 )
-                team_users = (
-                    db.query(DBUser).filter(DBUser.team_id == effective_team.id).all()
-                )
-                await reprovision_litellm_team(
-                    db, effective_team, region, litellm_service, team_users
+                await litellm_service.create_team(
+                    team_id=lite_team_id,
+                    team_alias=lite_team_id,
+                    models=effective_team_group_slugs(db, effective_team.id, region),
                 )
         litellm_token = await litellm_service.create_key(
             email=owner_email,

@@ -2012,10 +2012,16 @@ def test_create_llm_token_creates_missing_litellm_team_first(
         else {"owner_id": test_team_user.id}
     )
 
-    with patch.object(
-        LiteLLMService,
-        "get_team_info",
-        new=AsyncMock(side_effect=HTTPException(status_code=404)),
+    with (
+        patch.object(
+            LiteLLMService,
+            "get_team_info",
+            new=AsyncMock(side_effect=HTTPException(status_code=404)),
+        ),
+        patch(
+            "app.api.private_ai_keys.effective_team_group_slugs",
+            return_value=["region-default"],
+        ),
     ):
         response = client.post(
             "/private-ai-keys/token",
@@ -2026,9 +2032,9 @@ def test_create_llm_token_creates_missing_litellm_team_first(
     assert response.status_code == 200
     urls = _post_urls(mock_httpx_post_client)
     key_index = next(i for i, url in enumerate(urls) if url.endswith("/key/generate"))
-    for suffix in ("/team/new", "/user/new", "/team/member_add"):
-        index = next(i for i, url in enumerate(urls) if url.endswith(suffix))
-        assert index < key_index
+    team_index = next(i for i, url in enumerate(urls) if url.endswith("/team/new"))
+    assert team_index < key_index
+    assert not [url for url in urls if url.endswith(("/user/new", "/team/member_add"))]
     team_new_body = next(
         call.kwargs["json"]
         for call in mock_httpx_post_client.post.call_args_list
@@ -2038,6 +2044,8 @@ def test_create_llm_token_creates_missing_litellm_team_first(
         test_region.name, test_team.id
     )
     assert "max_budget" not in team_new_body
+    assert "budget_duration" not in team_new_body
+    assert team_new_body["models"] == ["region-default"]
 
 
 @patch("httpx.AsyncClient")
@@ -2116,14 +2124,14 @@ def test_create_llm_token_fails_when_litellm_team_check_fails(
     mock_client_class.return_value = mock_httpx_post_client
     if failure == "team_check":
         get_team_info = AsyncMock(side_effect=HTTPException(status_code=503))
-        reprovision = AsyncMock()
+        create_team = AsyncMock()
     else:
         get_team_info = AsyncMock(side_effect=HTTPException(status_code=404))
-        reprovision = AsyncMock(side_effect=RuntimeError("team create failed"))
+        create_team = AsyncMock(side_effect=HTTPException(status_code=500))
 
     with (
         patch.object(LiteLLMService, "get_team_info", new=get_team_info),
-        patch("app.api.private_ai_keys.reprovision_litellm_team", new=reprovision),
+        patch.object(LiteLLMService, "create_team", new=create_team),
     ):
         response = client.post(
             "/private-ai-keys/token",
