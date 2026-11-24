@@ -301,6 +301,7 @@ class PublicModelCapabilities(BaseModel):
 class PublicModelManufacturer(BaseModel):
     name: str
     website: Optional[str] = None
+    logo_url: Optional[str] = None
     version: Optional[str] = None
     release_date: Optional[str] = None
     attribution: Optional[str] = None

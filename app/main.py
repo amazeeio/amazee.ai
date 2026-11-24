@@ -38,6 +38,7 @@ from fastapi.openapi.docs import (
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
+from fastapi.staticfiles import StaticFiles
 from copy import deepcopy
 from sqlalchemy.orm import Session
 from app.db.database import get_db
@@ -244,6 +245,8 @@ app.include_router(users.router, prefix="/users", tags=["users"])
 app.include_router(regions.router, prefix="/regions", tags=["regions"])
 app.include_router(public.router, prefix="/public", tags=["public"])
 app.include_router(public.protected_router, tags=["models"])
+# Manufacturer logos linked from /public/models as manufacturer.logo_url.
+app.mount("/logos", StaticFiles(directory=public._LOGO_DIR), name="logos")
 app.include_router(audit.router, prefix="/audit", tags=["audit"])
 app.include_router(teams.router, prefix="/teams", tags=["teams"])
 app.include_router(
