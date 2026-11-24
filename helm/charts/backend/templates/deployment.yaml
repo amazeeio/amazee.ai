@@ -117,6 +117,10 @@ spec:
               port: 8800
             initialDelaySeconds: 30
             periodSeconds: 10
+            # 9 x 10s = 90s, longer than the 60s event-loop watchdog in
+            # backend-start.sh. A frozen worker then dumps its stacks and is
+            # replaced before the kubelet kills the whole pod and loses them.
+            failureThreshold: 9
           readinessProbe:
             httpGet:
               path: /health
