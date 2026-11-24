@@ -2444,6 +2444,67 @@ def test_create_llm_token_member_cap_repaired_on_existing_litellm_team(
         assert update_indexes[0] < key_index
 
 
+@pytest.mark.parametrize("team_missing", [True, False])
+@patch("httpx.AsyncClient")
+def test_create_llm_token_member_cap_ignores_user_who_left_team(
+    mock_client_class,
+    team_missing,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+    mock_httpx_post_client,
+):
+    """A cap row of a user who left the team makes no extra LiteLLM call."""
+    mock_client_class.return_value = mock_httpx_post_client
+    left_user = DBUser(
+        email="lefttheteam@example.com",
+        hashed_password=get_password_hash("password123"),
+        is_active=True,
+        role="user",
+        team_id=None,
+        created_at=datetime.now(UTC),
+    )
+    db.add(left_user)
+    db.commit()
+    _member_cap(db, test_team, test_region, left_user)
+    get_team_info = AsyncMock(
+        side_effect=HTTPException(status_code=404) if team_missing else None,
+        return_value={"team_memberships": []},
+    )
+
+    with (
+        patch.object(LiteLLMService, "get_team_info", new=get_team_info),
+        patch(
+            "app.api.private_ai_keys.effective_team_group_slugs",
+            return_value=["region-default"],
+        ),
+        patch(
+            "app.api.private_ai_keys._reanchor_member_caps_or_fail",
+            new=AsyncMock(),
+        ) as reanchor,
+    ):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "region_id": test_region.id,
+                "name": "Left User Cap Key",
+                "team_id": test_team.id,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert not [
+        url
+        for url in _post_urls(mock_httpx_post_client)
+        if url.endswith(("/user/new", "/team/member_add", "/team/member_update"))
+    ]
+    assert get_team_info.await_count == 1
+    reanchor.assert_not_awaited()
+
+
 def _region_scope_region(db, name, dedicated=False, team=None):
     region = DBRegion(
         name=name,

@@ -656,7 +656,16 @@ async def create_llm_token(
         if litellm_team is not None:
             # LiteLLM rejects /key/generate for a team it does not know in this region.
             lite_team_id = LiteLLMService.format_team_id(region.name, litellm_team)
-            capped_ids = _capped_member_ids(db, effective_team.id, region.id)
+            # A cap row outlives the user leaving the team, so only current members count.
+            capped_users = (
+                db.query(DBUser)
+                .filter(
+                    DBUser.id.in_(_capped_member_ids(db, effective_team.id, region.id)),
+                    DBUser.team_id == effective_team.id,
+                )
+                .all()
+            )
+            capped_ids = {capped_user.id for capped_user in capped_users}
             try:
                 team_info = await litellm_service.get_team_info(lite_team_id)
             except HTTPException as team_error:
@@ -677,14 +686,6 @@ async def create_llm_token(
                 )
                 # Only capped members are added: a new membership has no member
                 # ceiling, and adding every team user costs two calls per user here.
-                capped_users = (
-                    db.query(DBUser)
-                    .filter(
-                        DBUser.id.in_(capped_ids),
-                        DBUser.team_id == effective_team.id,
-                    )
-                    .all()
-                )
                 for capped_user in capped_users:
                     await litellm_service.create_user(
                         user_id=str(capped_user.id),
