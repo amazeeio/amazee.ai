@@ -1929,9 +1929,8 @@ def test_create_llm_token_for_trial_team_is_inference_only(
     test_team,
     mock_httpx_post_client,
 ):
-    """All anonymous trials share one team, and LiteLLM lets any key in a team
-    read that team (/team/info exposes every sibling key's owner, spend and
-    budget). Trial keys must therefore be scoped to inference routes."""
+    """A key in the anonymous trial team gets the same inference-only route
+    limit as every other key."""
     test_team.admin_email = settings.AI_TRIAL_TEAM_EMAIL
     db.commit()
 
