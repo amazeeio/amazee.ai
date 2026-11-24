@@ -982,6 +982,10 @@ class DBModelRegion(Base):
     # Merged over the model's model_info at sync time. base_model is keyed on
     # the backend id, which can differ per region (au. vs us. profiles).
     model_info_override = Column(JSON, nullable=True)
+    # Whether the backend serving this region keeps prompts or completions:
+    # True = zero data retention, False = it keeps some, None = unverified.
+    # Set by the model catalog (config/zdr.csv); listing only, never synced.
+    zero_data_retention = Column(Boolean, nullable=True)
     sync_status = Column(String, default="pending", nullable=False)
     sync_error = Column(String, nullable=True)
     synced_at = Column(DateTime(timezone=True), nullable=True)

@@ -341,7 +341,7 @@ def _apply_deployments(
     db: Session,
     model: DBModel,
     spec_key: str,
-    desired: Dict[int, Tuple[Optional[dict], Optional[List[str]], Optional[dict]]],
+    desired: Dict[int, Tuple[Optional[dict], Optional[List[str]], Optional[dict], Optional[bool]]],
     region_names: Dict[int, str],
     managed_ids: Set[int],
     changes: List[ApplyChange],
@@ -351,7 +351,7 @@ def _apply_deployments(
     ids needing a sync."""
     to_sync: Set[int] = set()
     existing = {a.region_id: a for a in db.query(DBModelRegion).filter_by(model_id=model.id).all()}
-    for region_id, (override, groups_override, info_override) in desired.items():
+    for region_id, (override, groups_override, info_override, zdr) in desired.items():
         info_override = info_override or None
         # `[]` would store a real override with no groups: synced untagged,
         # callable by nobody. Treat it as "no override" (inherit) instead.
@@ -374,6 +374,7 @@ def _apply_deployments(
                     litellm_params_override=resolved,
                     access_groups_override=groups_override,
                     model_info_override=info_override,
+                    zero_data_retention=zdr,
                 )
             )
             changes.append(
@@ -385,6 +386,9 @@ def _apply_deployments(
             )
             to_sync.add(region_id)
             continue
+        # Listing only: LiteLLM never sees it, so it never triggers a sync.
+        zdr_changed = assoc.zero_data_retention != zdr
+        assoc.zero_data_retention = zdr
         deployment_changed = []
         if not assoc.is_active:
             assoc.is_active = True
@@ -402,6 +406,10 @@ def _apply_deployments(
             assoc.sync_status = "pending"
             assoc.sync_error = None
             assoc.updated_at = datetime.now(UTC)
+            to_sync.add(region_id)
+        if zdr_changed:
+            deployment_changed.append("zero_data_retention")
+        if deployment_changed:
             changes.append(
                 ApplyChange(
                     entity="deployment",
@@ -410,7 +418,6 @@ def _apply_deployments(
                     detail=", ".join(deployment_changed),
                 )
             )
-            to_sync.add(region_id)
     # Only managed regions are ours to turn off; a deployment in a skipped
     # region is someone else's row and stays exactly as it is.
     for region_id, assoc in existing.items():
@@ -523,12 +530,15 @@ async def apply_model_config(
                     ApplyChange(entity="alias_target", key=spec.model_id, action="update")
                 )
                 catalog_changed.add(model.id)
-            desired_deployments: Dict[int, Tuple[Optional[dict], Optional[List[str]], Optional[dict]]] = {
-                region_id: (None, None, None) for region_id, _ in desired_targets
+            # An alias's zero_data_retention is read from its target.
+            desired_deployments: Dict[int, Tuple[Optional[dict], Optional[List[str]], Optional[dict], Optional[bool]]] = {
+                region_id: (None, None, None, None) for region_id, _ in desired_targets
             }
         else:
             desired_deployments = {
-                regions[d.region].id: (d.litellm_params_override, d.access_groups, d.model_info_override)
+                regions[d.region].id: (
+                    d.litellm_params_override, d.access_groups, d.model_info_override, d.zero_data_retention
+                )
                 for d in spec.deployments
                 if d.region in regions
             }

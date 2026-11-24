@@ -730,7 +730,7 @@ def _filter_region_groups_by_access(
     db: Session, region_groups: list[PublicRegionModels], user: DBUser | None
 ) -> list[PublicRegionModels]:
     """Access-group enforcement for the catalog, and the per-model
-    ``access_groups`` tag.
+    ``access_groups`` and ``zero_data_retention`` tags.
 
     A model's groups in a region follow the same rule as the tags pushed to
     LiteLLM (``model_access_group_slugs``): the deployment's
@@ -829,24 +829,26 @@ def _filter_region_groups_by_access(
             .all()
         )
     }
-    overrides: dict[tuple[int, str], set[str]] = {
-        (region_id, model_name): set(slugs)
-        for region_id, model_name, slugs in (
-            db.query(
-                DBModelRegion.region_id,
-                DBModel.model_id,
-                DBModelRegion.access_groups_override,
-            )
-            .join(DBModel, DBModel.id == DBModelRegion.model_id)
-            .filter(
-                DBModelRegion.region_id.in_(region_ids),
-                DBModelRegion.is_active.is_(True),
-                DBModelRegion.access_groups_override.isnot(None),
-                DBModel.deleted_at.is_(None),
-            )
-            .all()
+    overrides: dict[tuple[int, str], set[str]] = {}
+    zdr: dict[tuple[int, str], bool | None] = {}
+    for region_id, model_name, slugs, zero_data_retention in (
+        db.query(
+            DBModelRegion.region_id,
+            DBModel.model_id,
+            DBModelRegion.access_groups_override,
+            DBModelRegion.zero_data_retention,
         )
-    }
+        .join(DBModel, DBModel.id == DBModelRegion.model_id)
+        .filter(
+            DBModelRegion.region_id.in_(region_ids),
+            DBModelRegion.is_active.is_(True),
+            DBModel.deleted_at.is_(None),
+        )
+        .all()
+    ):
+        if slugs is not None:
+            overrides[(region_id, model_name)] = set(slugs)
+        zdr[(region_id, model_name)] = zero_data_retention
 
     filtered: list[PublicRegionModels] = []
     for group in region_groups:
@@ -874,7 +876,14 @@ def _filter_region_groups_by_access(
             if enforced and not is_admin and not shown:
                 continue
             # Copy: summaries are shared through the module-level cache.
-            models.append(model.model_copy(update={"access_groups": sorted(shown)}))
+            models.append(
+                model.model_copy(
+                    update={
+                        "access_groups": sorted(shown),
+                        "zero_data_retention": zdr.get((region.id, effective)),
+                    }
+                )
+            )
         filtered.append(
             PublicRegionModels(region=group.region, status=group.status, models=models)
         )

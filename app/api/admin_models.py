@@ -131,6 +131,15 @@ def _build_model_response(
 
     # Map of region_id -> DBModelRegion record for this model
     model_regions_map = {mr.region_id: mr for mr in db_model.regions}
+    # An alias reports its regional target's zero_data_retention, like /public/models.
+    alias_zdr = {
+        t.region_id: next(
+            (mr.zero_data_retention for mr in t.target_model.regions
+             if mr.region_id == t.region_id and mr.is_active),
+            None,
+        )
+        for t in db_model.alias_targets
+    } if db_model.is_alias else {}
 
     regions_list = []
     for reg in all_regions:
@@ -150,6 +159,11 @@ def _build_model_response(
                         else _redact_litellm_params(mr_record.litellm_params_override)
                     ),
                     access_groups_override=mr_record.access_groups_override,
+                    zero_data_retention=(
+                        alias_zdr.get(reg.id)
+                        if db_model.is_alias
+                        else mr_record.zero_data_retention
+                    ),
                 )
             )
         else:
