@@ -199,7 +199,7 @@ class LiteLLMService:
         rpm_limit: Optional[int] = DEFAULT_RPM_PER_KEY,
         apply_limits: bool = True,
         blocked: Optional[bool] = None,
-        allowed_routes: Optional[list[str]] = None,
+        allowed_routes: Optional[list[str]] = INFERENCE_ONLY_ROUTES,
         key: Optional[str] = None,
         expiry: str = DEFAULT_KEY_EXPIRY,
     ) -> str:
@@ -210,7 +210,9 @@ class LiteLLMService:
                 None leaves the field out, so LiteLLM never resets the budget.
             allowed_routes: Restrict the key to these LiteLLM routes (exact
                 paths, wildcards or route-group names such as
-                ``llm_api_routes``). None means no route restriction.
+                ``llm_api_routes``). The default is inference-only, so a
+                caller that leaves it out gets a limited key. An explicit None
+                or empty list means no route restriction.
             key: Reuse this key value instead of letting LiteLLM mint one, so a
                 token we already store keeps working after the key is rebuilt.
             expiry: How long the key itself lives (LiteLLM ``duration``, which
