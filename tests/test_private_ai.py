@@ -1954,19 +1954,9 @@ def test_create_llm_token_for_trial_team_is_inference_only(
     assert payload["allowed_routes"] == ["llm_api_routes", "/model/info"]
 
 
-@pytest.mark.parametrize(
-    "admin_email",
-    [
-        "customer-team-admin@example.com",
-        # A plus-tag of the trial address is a DIFFERENT team (that's how the
-        # trial team is looked up), so it must not inherit the restriction.
-        settings.AI_TRIAL_TEAM_EMAIL.replace("@", "+customer@"),
-    ],
-)
 @patch("httpx.AsyncClient")
-def test_create_llm_token_for_customer_team_is_unrestricted(
+def test_create_llm_token_for_customer_team_is_inference_only(
     mock_client_class,
-    admin_email,
     client,
     admin_token,
     test_region,
@@ -1974,9 +1964,8 @@ def test_create_llm_token_for_customer_team_is_unrestricted(
     test_team,
     mock_httpx_post_client,
 ):
-    """Members of a real team are colleagues — the trial restriction must not
-    leak into normal team keys."""
-    test_team.admin_email = admin_email
+    """A customer key must not reach LiteLLM management routes either."""
+    test_team.admin_email = "customer-team-admin@example.com"
     db.commit()
 
     mock_client_class.return_value = mock_httpx_post_client
@@ -1993,7 +1982,7 @@ def test_create_llm_token_for_customer_team_is_unrestricted(
 
     assert response.status_code == 200
     payload = _key_generate_payload(mock_httpx_post_client, "Customer Key")
-    assert "allowed_routes" not in payload
+    assert payload["allowed_routes"] == ["llm_api_routes", "/model/info"]
 
 
 def test_create_vector_db_as_system_admin(client, admin_token, test_region):

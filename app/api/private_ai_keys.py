@@ -55,7 +55,6 @@ from app.core.limit_service import (
     DEFAULT_RPM_PER_KEY,
 )
 from app.core.pool_budget_service import pool_team_has_ever_purchased
-from app.core.team_service import is_anonymous_trial_team
 from app.services.signup_velocity import enforce_mailbox_cap, enforce_provision_caps
 
 router = APIRouter(tags=["private-ai-keys"])
@@ -566,16 +565,6 @@ async def create_llm_token(
             db, effective_team.id, region.id
         )
 
-    # Every anonymous trial lands in ONE shared team (so the keys stay
-    # trackable), and LiteLLM lets any key in a team read that team —
-    # /team/info returns every sibling key with its owner, spend and budget.
-    # Trial keys therefore get LiteLLM's inference-only route group: LLM calls
-    # work, every management route returns 403. Members of a real (customer)
-    # team are colleagues, so this scoping is deliberately trial-only.
-    allowed_routes = (
-        INFERENCE_ONLY_ROUTES if is_anonymous_trial_team(effective_team) else None
-    )
-
     key_expiry = DEFAULT_KEY_EXPIRY
     if (owner is not None and owner.team_id) or team_id:
         if settings.ENABLE_LIMITS and not is_pool_team:
@@ -646,7 +635,11 @@ async def create_llm_token(
             max_budget=max_max_spend,
             rpm_limit=max_rpm_limit,
             apply_limits=not is_pool_team,
-            allowed_routes=allowed_routes,
+            # LiteLLM lets any key call its management routes, so a customer key
+            # could mint an unlimited key through /key/generate or read sibling
+            # keys and member emails through /team/info. The control plane uses
+            # the region master key, so this limit does not affect it.
+            allowed_routes=INFERENCE_ONLY_ROUTES,
             expiry=key_expiry,
         )
         if is_pool_team and not has_pool_purchase:

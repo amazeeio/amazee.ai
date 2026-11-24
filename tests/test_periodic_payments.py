@@ -563,7 +563,10 @@ async def test_apply_billing_cycle_for_team_rebuilds_a_lost_key_on_a_live_team(
 
     assert errors == []
     assert mock_litellm.create_key.await_args.kwargs["key"] == "lost-token"
-    assert mock_litellm.create_key.await_args.kwargs["allowed_routes"] is None
+    assert (
+        mock_litellm.create_key.await_args.kwargs["allowed_routes"]
+        == INFERENCE_ONLY_ROUTES
+    )
     assert mock_litellm.create_key.await_args.kwargs["blocked"] is True
     assert mock_litellm.set_key_restrictions.await_count == 2
     db.refresh(payment)
