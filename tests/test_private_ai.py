@@ -10,6 +10,7 @@ from app.db.models import (
     DBPoolPurchase,
     DBRegion,
     DBTeam,
+    DBTeamRegion,
     DBUser,
     DBSpendCap,
 )
@@ -2210,6 +2211,134 @@ def test_create_llm_token_fails_when_litellm_team_check_fails(
         .count()
         == 0
     )
+
+
+def _region_scope_region(db, name, dedicated=False, team=None):
+    region = DBRegion(
+        name=name,
+        label=name,
+        postgres_host=f"{name}.example",
+        postgres_port=5432,
+        postgres_admin_user="admin",
+        postgres_admin_password="pw",
+        litellm_api_url=f"https://{name}-litellm.example",
+        litellm_api_key=f"{name}-key",
+        is_active=True,
+        is_dedicated=dedicated,
+    )
+    db.add(region)
+    db.commit()
+    if team is not None:
+        db.add(DBTeamRegion(team_id=team.id, region_id=region.id))
+        db.commit()
+    return region
+
+
+@pytest.mark.parametrize(
+    "case, token_fixture",
+    [
+        ("other_team_dedicated", "team_admin_token"),
+        ("other_team_dedicated", "admin_token"),
+        ("hidden_public", "admin_token"),
+    ],
+)
+@patch("httpx.AsyncClient")
+def test_create_llm_token_region_scope_refuses_region_outside_team(
+    mock_client_class,
+    case,
+    token_fixture,
+    request,
+    client,
+    db,
+    test_team,
+    test_region,
+    mock_httpx_post_client,
+):
+    """A team key outside the team's allowed regions is refused before LiteLLM."""
+    mock_client_class.return_value = mock_httpx_post_client
+    if case == "other_team_dedicated":
+        other_team = DBTeam(
+            name="Other Team",
+            admin_email="otherteam@example.com",
+            is_active=True,
+            created_at=datetime.now(UTC),
+            budget_type="periodic",
+        )
+        db.add(other_team)
+        db.commit()
+        region = _region_scope_region(db, "other-dedicated", True, other_team)
+    else:
+        test_team.hide_public_regions = True
+        db.commit()
+        region = _region_scope_region(db, "unlinked-public")
+    token = request.getfixturevalue(token_fixture)
+    get_team_info = AsyncMock()
+
+    with patch.object(LiteLLMService, "get_team_info", new=get_team_info):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "region_id": region.id,
+                "name": "Out Of Scope Key",
+                "team_id": test_team.id,
+            },
+        )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Region not found or inactive"
+    get_team_info.assert_not_awaited()
+    mock_httpx_post_client.post.assert_not_called()
+    assert (
+        db.query(DBPrivateAIKey)
+        .filter(DBPrivateAIKey.name == "Out Of Scope Key")
+        .count()
+        == 0
+    )
+
+
+@pytest.mark.parametrize("dedicated", [False, True])
+@patch("httpx.AsyncClient")
+def test_create_llm_token_region_scope_allows_team_region(
+    mock_client_class,
+    dedicated,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+    mock_httpx_post_client,
+):
+    """A public team gets any public region; a team gets its own dedicated region."""
+    mock_client_class.return_value = mock_httpx_post_client
+    region = (
+        _region_scope_region(db, "own-dedicated", True, test_team)
+        if dedicated
+        else _region_scope_region(db, "unlinked-public")
+    )
+
+    with patch.object(
+        LiteLLMService,
+        "get_team_info",
+        new=AsyncMock(return_value={"team_id": "existing"}),
+    ):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "region_id": region.id,
+                "name": "In Scope Key",
+                "team_id": test_team.id,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    key_urls = [
+        url
+        for url in _post_urls(mock_httpx_post_client)
+        if url.endswith("/key/generate")
+    ]
+    assert key_urls == [f"{region.litellm_api_url}/key/generate"]
 
 
 def test_create_vector_db_as_system_admin(client, admin_token, test_region):
