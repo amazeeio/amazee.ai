@@ -38,7 +38,11 @@ from app.db.models import (
 )
 from app.core.email import escape_like, normalize_email_for_lookup
 from app.services.access_groups import effective_team_group_slugs
-from app.services.litellm import INFERENCE_ONLY_ROUTES, LiteLLMService
+from app.services.litellm import (
+    INFERENCE_ONLY_ROUTES,
+    LiteLLMService,
+    membership_max_budget_by_user,
+)
 from app.core.security import (
     get_current_user_from_auth,
     get_private_ai_access,
@@ -60,6 +64,8 @@ from app.core.pool_budget_service import (
     pool_team_has_ever_purchased,
 )
 from app.core.team_service import (
+    _capped_member_ids,
+    _reanchor_member_caps_or_fail,
     allowed_regions_for_team,
     periodic_free_credit_over,
 )
@@ -649,10 +655,10 @@ async def create_llm_token(
         )
         if litellm_team is not None:
             # LiteLLM rejects /key/generate for a team it does not know in this region.
-            # No members. A pool team gets its pool budget left as cap, others no cap.
             lite_team_id = LiteLLMService.format_team_id(region.name, litellm_team)
+            capped_ids = _capped_member_ids(db, effective_team.id, region.id)
             try:
-                await litellm_service.get_team_info(lite_team_id)
+                team_info = await litellm_service.get_team_info(lite_team_id)
             except HTTPException as team_error:
                 if team_error.status_code != status.HTTP_404_NOT_FOUND:
                     raise
@@ -669,6 +675,46 @@ async def create_llm_token(
                     if is_pool_team
                     else None,
                 )
+                # Only capped members are added: a new membership has no member
+                # ceiling, and adding every team user costs two calls per user here.
+                capped_users = (
+                    db.query(DBUser)
+                    .filter(
+                        DBUser.id.in_(capped_ids),
+                        DBUser.team_id == effective_team.id,
+                    )
+                    .all()
+                )
+                for capped_user in capped_users:
+                    await litellm_service.create_user(
+                        user_id=str(capped_user.id),
+                        user_email=capped_user.email,
+                        auto_create_key=False,
+                    )
+                    await litellm_service.add_team_member(
+                        team_id=lite_team_id, user_id=str(capped_user.id)
+                    )
+                if capped_ids:
+                    team_info = await litellm_service.get_team_info(lite_team_id)
+            # A retry after a failed cap push finds the team present. A member that
+            # already has a ceiling is skipped: a new push would give a fresh allowance.
+            if capped_ids:
+                ceilings = membership_max_budget_by_user(team_info)
+                missing_ceiling = {
+                    user_id
+                    for user_id in capped_ids
+                    if ceilings.get(str(user_id)) is None
+                }
+                if missing_ceiling:
+                    await _reanchor_member_caps_or_fail(
+                        db,
+                        litellm_service,
+                        effective_team,
+                        region,
+                        lite_team_id,
+                        team_info,
+                        missing_ceiling,
+                    )
         litellm_token = await litellm_service.create_key(
             email=owner_email,
             name=private_ai_key.name,
