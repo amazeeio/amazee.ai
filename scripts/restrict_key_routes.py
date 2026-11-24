@@ -49,6 +49,7 @@ async def run(dry_run: bool) -> int:
         }
         keys_by_region = get_keys_grouped_by_region(session, list(regions))
 
+        total_planned = 0
         total_updated = 0
         total_failed = 0
 
@@ -67,6 +68,7 @@ async def run(dry_run: bool) -> int:
                         f"[DRY-RUN] key_id={key.id} region={region.name} -> "
                         f"allowed_routes={INFERENCE_ONLY_ROUTES}"
                     )
+                    total_planned += 1
                     continue
                 try:
                     await service.set_key_allowed_routes(
@@ -78,8 +80,13 @@ async def run(dry_run: bool) -> int:
                 except Exception as e:
                     total_failed += 1
                     print(f"[FAIL] key_id={key.id} region={region.name} error={e}")
+            if dry_run:
+                print(f"[DRY-RUN] region={region.name} planned={len(keys)}")
 
-        print(f"Done. updated={total_updated} failed={total_failed} dry_run={dry_run}")
+        print(
+            f"Done. planned={total_planned} updated={total_updated} "
+            f"failed={total_failed} dry_run={dry_run}"
+        )
         return 0 if total_failed == 0 else 1
     finally:
         session.close()
